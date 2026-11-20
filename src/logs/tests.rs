@@ -646,23 +646,6 @@ fn long_messages_are_cut_at_64_kib_on_a_character_boundary() {
 }
 
 #[test]
-fn the_log_queue_is_full_at_its_row_or_byte_limit() {
-    use super::store::{LogQueue, QueueError};
-    let big = || vec![record(1, 1, 1, LogLevel::Info, &"x".repeat(600_000))];
-    let (queue, inbox) = LogQueue::bounded(1000, 1_000_000);
-    assert!(queue.push(big()).is_ok());
-    assert!(matches!(queue.push(big()), Err(QueueError::Full)));
-    assert_eq!(inbox.try_recv().map(|b| b.len()), Some(1));
-    assert!(queue.push(big()).is_ok(), "a drained batch frees its bytes");
-
-    let small = || vec![record(1, 1, 1, LogLevel::Info, "x")];
-    let (queue, _inbox) = LogQueue::bounded(2, 1_000_000);
-    assert!(queue.push(small()).is_ok());
-    assert!(queue.push(small()).is_ok());
-    assert!(matches!(queue.push(small()), Err(QueueError::Full)));
-}
-
-#[test]
 fn log_retention_is_1_to_36500_days() {
     let dir = scratch("logs");
     for days in [0, 36_501, u32::MAX] {

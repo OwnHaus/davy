@@ -62,7 +62,7 @@ fn server() -> Server {
     )
     .unwrap();
     let (errors, error_inbox) = mpsc::sync_channel(1);
-    let (logs, log_inbox) = LogQueue::bounded(1, 1 << 20);
+    let (logs, log_inbox) = LogQueue::bounded(3, 1 << 20);
     let parsing = Arc::new(Semaphore::new(1));
     let app = router(App {
         parsing: Arc::clone(&parsing),
@@ -458,13 +458,30 @@ async fn an_envelope_stores_only_its_first_event() {
 async fn full_log_queue_is_429() {
     let s = server();
     let body = fixture("otlp-json/2.body");
-    assert_eq!(
-        s.send(otlp("application/json", body.clone())).await.status,
-        200
-    );
+    for _ in 0..3 {
+        let r = s.send(otlp("application/json", body.clone())).await;
+        assert_eq!(r.status, 200);
+    }
     let r = s.send(otlp("application/json", body)).await;
     assert_eq!(r.status, 429);
     assert_eq!(r.headers["retry-after"], "1");
+}
+
+#[tokio::test]
+async fn a_log_batch_larger_than_the_queue_is_413() {
+    let s = server();
+    let r = s
+        .send(post(
+            "/",
+            &[
+                ("authorization", "Bearer key-a"),
+                ("content-type", "application/x-ndjson"),
+            ],
+            "{\"message\":\"a\"}\n".repeat(4),
+        ))
+        .await;
+    assert_eq!(r.status, 413);
+    assert!(s.logs.try_recv().is_none(), "no log was queued");
 }
 
 fn request(method: &str, uri: &str) -> Request<Body> {

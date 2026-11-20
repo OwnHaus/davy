@@ -1,5 +1,8 @@
 use super::{LogLevel, LogRecord, LogSource, ORIGINAL_TIMESTAMP};
-use crate::time::{day_of, now_ns, rfc3339};
+use crate::{
+    heap,
+    time::{day_of, now_ns, rfc3339},
+};
 use anyhow::{Context, Result, anyhow};
 use jiff::civil::Date;
 use serde::Serialize;
@@ -33,7 +36,7 @@ const IDLE_CLOSE: Duration = Duration::from_secs(600);
 const RETENTION_EVERY: Duration = Duration::from_secs(3600);
 const WRITER_HEAP: usize = 64_000_000;
 pub const QUEUE_ROWS: usize = 50_000;
-pub const QUEUE_BYTES: usize = 256 * 1024 * 1024;
+pub const QUEUE_BYTES: usize = 128 * 1024 * 1024;
 /// 100 years. A longer window would overflow the nanosecond cutoff.
 pub const MAX_RETENTION_DAYS: u32 = 36_500;
 
@@ -267,29 +270,34 @@ impl State {
 }
 
 pub enum QueueError {
+    /// The queue has no room for the batch now.
     Full,
+    /// The batch is larger than the whole queue and never fits.
+    TooLarge,
     Stopped,
 }
 
-/// What the log queue holds, counted in rows and in the bytes of text a
-/// sender controls. Rows bound the fixed cost of a record, bytes its strings.
+/// What the log queue holds, counted in rows and in the heap the records
+/// take, from the moment a batch is queued until the writer is done with it.
 #[derive(Default)]
 struct Load {
     rows: AtomicUsize,
     bytes: AtomicUsize,
 }
 
-impl Load {
-    fn add(&self, rows: usize, bytes: usize) -> (usize, usize) {
-        (
-            self.rows.fetch_add(rows, SeqCst),
-            self.bytes.fetch_add(bytes, SeqCst),
-        )
-    }
+/// A batch's share of the [`Load`], given back when it is dropped: after the
+/// writer has indexed the batch, or when the batch is refused or lost with
+/// the channel.
+pub struct Held {
+    load: Arc<Load>,
+    rows: usize,
+    bytes: usize,
+}
 
-    fn sub(&self, rows: usize, bytes: usize) {
-        self.rows.fetch_sub(rows, SeqCst);
-        self.bytes.fetch_sub(bytes, SeqCst);
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.load.rows.fetch_sub(self.rows, SeqCst);
+        self.load.bytes.fetch_sub(self.bytes, SeqCst);
     }
 }
 
@@ -298,90 +306,66 @@ impl Load {
 /// follows the records.
 #[derive(Clone)]
 pub struct LogQueue {
-    sender: mpsc::Sender<(Vec<LogRecord>, usize)>,
+    sender: mpsc::Sender<(Vec<LogRecord>, Held)>,
     load: Arc<Load>,
     rows: usize,
     bytes: usize,
 }
 
 pub struct LogInbox {
-    receiver: mpsc::Receiver<(Vec<LogRecord>, usize)>,
-    load: Arc<Load>,
+    receiver: mpsc::Receiver<(Vec<LogRecord>, Held)>,
 }
 
 impl LogQueue {
     pub fn bounded(rows: usize, bytes: usize) -> (Self, LogInbox) {
         let (sender, receiver) = mpsc::channel();
-        let load = Arc::new(Load::default());
-        let inbox = LogInbox {
-            receiver,
-            load: Arc::clone(&load),
+        let queue = Self {
+            sender,
+            load: Arc::default(),
+            rows,
+            bytes,
         };
-        (
-            Self {
-                sender,
-                load,
-                rows,
-                bytes,
-            },
-            inbox,
-        )
+        (queue, LogInbox { receiver })
     }
 
-    /// An empty queue takes any batch, so one oversized batch is not refused forever.
     pub fn push(&self, batch: Vec<LogRecord>) -> Result<(), QueueError> {
         let rows = batch.len();
         if rows == 0 {
             return Ok(());
         }
-        let bytes = batch.iter().map(text_bytes).sum();
-        let (rows_before, bytes_before) = self.load.add(rows, bytes);
-        let full = rows_before + rows > self.rows || bytes_before + bytes > self.bytes;
-        if rows_before > 0 && full {
-            self.load.sub(rows, bytes);
+        let bytes = batch.iter().map(heap::of_record).sum();
+        if rows > self.rows || bytes > self.bytes {
+            return Err(QueueError::TooLarge);
+        }
+        let rows_before = self.load.rows.fetch_add(rows, SeqCst);
+        let bytes_before = self.load.bytes.fetch_add(bytes, SeqCst);
+        let held = Held {
+            load: Arc::clone(&self.load),
+            rows,
+            bytes,
+        };
+        if rows_before + rows > self.rows || bytes_before + bytes > self.bytes {
             return Err(QueueError::Full);
         }
         self.sender
-            .send((batch, bytes))
-            .map_err(|mpsc::SendError(_)| {
-                self.load.sub(rows, bytes);
-                QueueError::Stopped
-            })
+            .send((batch, held))
+            .map_err(|mpsc::SendError(_)| QueueError::Stopped)
     }
 }
 
 impl LogInbox {
-    pub fn recv_timeout(&self, wait: Duration) -> Result<Vec<LogRecord>, mpsc::RecvTimeoutError> {
-        let (batch, bytes) = self.receiver.recv_timeout(wait)?;
-        self.load.sub(batch.len(), bytes);
-        Ok(batch)
+    /// The next batch, and its share of the queue to drop once it is written.
+    pub fn recv_timeout(
+        &self,
+        wait: Duration,
+    ) -> Result<(Vec<LogRecord>, Held), mpsc::RecvTimeoutError> {
+        self.receiver.recv_timeout(wait)
     }
 
+    /// The next batch, giving back its share of the queue at once.
     pub fn try_recv(&self) -> Option<Vec<LogRecord>> {
-        let (batch, bytes) = self.receiver.try_recv().ok()?;
-        self.load.sub(batch.len(), bytes);
-        Some(batch)
+        self.receiver.try_recv().ok().map(|(batch, _)| batch)
     }
-}
-
-/// The bytes of a record's strings and attribute values.
-fn text_bytes(r: &LogRecord) -> usize {
-    fn value(v: &Value) -> usize {
-        size_of::<Value>()
-            + match v {
-                Value::String(s) => s.len(),
-                Value::Array(a) => a.iter().map(value).sum(),
-                Value::Object(m) => m.iter().map(|(k, v)| k.len() + value(v)).sum(),
-                Value::Null | Value::Bool(_) | Value::Number(_) => 0,
-            }
-    }
-    let ids = [&r.service, &r.trace_id, &r.span_id];
-    r.message.len()
-        + ids.into_iter().flatten().map(String::len).sum::<usize>()
-        + r.attributes
-            .iter()
-            .map(|(k, v)| k.len() + value(v))
-            .sum::<usize>()
 }
 
 pub struct LogWriter {
@@ -413,7 +397,7 @@ impl LogWriter {
             loop {
                 let wait = next_commit.saturating_duration_since(Instant::now());
                 match inbox.recv_timeout(wait) {
-                    Ok(batch) => report("write", state.add(batch)),
+                    Ok((batch, _held)) => report("write", state.add(batch)),
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
@@ -573,3 +557,7 @@ fn hit(schema: &Schema, f: &Fields, doc: &TantivyDocument) -> Result<LogHit> {
         },
     })
 }
+
+#[cfg(test)]
+#[path = "queue_tests.rs"]
+mod queue_tests;

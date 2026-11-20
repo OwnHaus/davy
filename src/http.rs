@@ -166,6 +166,10 @@ impl From<QueueError> for Failure {
     fn from(e: QueueError) -> Self {
         match e {
             QueueError::Full => queue_full(),
+            QueueError::TooLarge => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "log batch is larger than the whole ingest queue".into(),
+            ),
             QueueError::Stopped => writer_stopped(),
         }
     }
