@@ -13,4 +13,5 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 - HTTP uptime monitors with status and keyword checks, and heartbeat monitors for cron jobs with a failure ping.
 - Alerts for new issues, regressions and monitor incidents to signed webhooks, Slack and e-mail over SMTP, with retries.
 - The admin token and the SMTP URL can come from files named by `DAVY_TOKEN_FILE` and `DAVY_SMTP_URL_FILE`, the way systemd credentials and container secrets hand them over.
+- `davy setup` prepares a machine in one command: a private data directory, a random admin token in `DATA/token` and a hardened systemd unit or launchd job. It prints the next commands as JSON and can run again safely.
 - The CLI commands `project`, `issues`, `event`, `logs`, `sql`, `context`, `resolve`, `monitor` and `channel`.

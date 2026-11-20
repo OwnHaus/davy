@@ -153,7 +153,7 @@ pub fn retry_after(failures: u32) -> Option<Duration> {
     Some(Duration::from_secs(30 << doublings))
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes
         .iter()
         .flat_map(|b| [b >> 4, b & 0xf])

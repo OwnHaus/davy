@@ -4,6 +4,7 @@ pub mod envelope;
 pub mod event;
 pub mod grouping;
 pub mod http;
+pub mod install;
 pub mod logs;
 pub mod mcp;
 pub mod monitor;

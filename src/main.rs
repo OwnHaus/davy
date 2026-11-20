@@ -1,6 +1,6 @@
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use davy::{
-    alert, context, http,
+    alert, context, http, install,
     logs::{
         LogLevel,
         store::{LogHit, LogQuery, search},
@@ -24,6 +24,9 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Prepares a data directory, an admin token and a service file, and
+    /// prints the next commands as JSON. Safe to run again.
+    Setup(install::setup::Args),
     /// Runs the ingest server. With an admin token in DAVY_TOKEN or a file named
     /// by DAVY_TOKEN_FILE it also serves MCP at /mcp and takes source map uploads.
     Serve(Serve),
@@ -229,18 +232,12 @@ enum ChannelKind {
 fn duration(s: &str) -> Result<Duration, String> {
     time::duration(s).ok_or_else(|| format!("expected 30s, 15m, 1h or 2d, got {s:?}"))
 }
-fn validate_url(url: &url::Url) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        matches!(url.scheme(), "http" | "https") && url.host_str().is_some(),
-        "public URL must be HTTP(S)"
-    );
-    Ok(())
-}
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut out = std::io::stdout();
     match Cli::parse().command {
         Command::Serve(args) => serve(args).await?,
+        Command::Setup(args) => install::setup::run(&mut out.lock(), &args)?,
         Command::Project {
             command:
                 Project::Create {
@@ -295,7 +292,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 async fn serve(args: Serve) -> anyhow::Result<()> {
-    validate_url(&args.public_url)?;
+    install::check_public_url(&args.public_url)?;
     let env = |key: &str| std::env::var(key).ok();
     let token = secret::admin_token(env)?;
     let smtp = match (secret::read("DAVY_SMTP_URL", env)?, &args.mail_from) {
@@ -454,7 +451,7 @@ fn run_channel(out: &mut impl Write, command: Channel) -> anyhow::Result<()> {
 }
 /// Creates the project and returns its DSN.
 fn create_project(data: &Path, slug: &str, mut public_url: url::Url) -> anyhow::Result<url::Url> {
-    validate_url(&public_url)?;
+    install::check_public_url(&public_url)?;
     anyhow::ensure!(!slug.trim().is_empty(), "slug must not be empty");
     let (id, key) = store::create_project(&store::open(data)?, slug)?;
     let cannot_carry_key = |()| anyhow::anyhow!("public URL cannot carry a key");
