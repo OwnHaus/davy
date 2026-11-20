@@ -85,9 +85,9 @@ struct ErrorEvent {
     trace_id: Option<String>,      // contexts.trace.trace_id, 32 lowercase hex, else None
     raw: serde_json::Value,        // kept to store and serve the full payload
 }
-struct Exception { ty: String, value: Option<String>, module: Option<String>, frames: Vec<Frame> }
+struct Exception { ty: String, value: Option<String>, frames: Vec<Frame> }
 struct Frame { filename: Option<String>, abs_path: Option<String>, module: Option<String>,
-               function: Option<String>, lineno: Option<u32>, colno: Option<u32>, in_app: Option<bool> }
+               function: Option<String>, in_app: Option<bool> }
 ```
 
 `EventId` is 32 lowercase hex characters. Accept the dashed UUID form and normalize it.

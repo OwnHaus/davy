@@ -115,7 +115,6 @@ fn event_boundary() {
     assert_eq!(e.fingerprint, Some(vec!["a".to_owned(), "1".to_owned()]));
     assert_eq!(e.exceptions[0].value, None);
     assert_eq!(e.exceptions[0].frames[0].function.as_deref(), Some("f"));
-    assert_eq!(e.exceptions[0].frames[0].lineno, None);
     let e = event(json!({"timestamp":"yesterday","level":7}));
     assert_eq!(e.level, Level::Error);
     assert!(e.timestamp > 1_577_836_800_000);

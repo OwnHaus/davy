@@ -67,7 +67,6 @@ pub struct ErrorEvent {
 pub struct Exception {
     pub ty: String,
     pub value: Option<String>,
-    pub module: Option<String>,
     pub frames: Vec<Frame>,
 }
 #[derive(Debug)]
@@ -76,8 +75,6 @@ pub struct Frame {
     pub abs_path: Option<String>,
     pub module: Option<String>,
     pub function: Option<String>,
-    pub lineno: Option<u32>,
-    pub colno: Option<u32>,
     pub in_app: Option<bool>,
 }
 impl Exception {
@@ -85,7 +82,6 @@ impl Exception {
         Self {
             ty: string(&v["type"]).unwrap_or_default(),
             value: string(&v["value"]),
-            module: string(&v["module"]),
             frames: v["stacktrace"]["frames"]
                 .as_array()
                 .map(|frames| frames.iter().map(Frame::parse).collect())
@@ -95,14 +91,11 @@ impl Exception {
 }
 impl Frame {
     fn parse(v: &Value) -> Self {
-        let number = |k: &str| v[k].as_u64().and_then(|n| u32::try_from(n).ok());
         Self {
             filename: string(&v["filename"]),
             abs_path: string(&v["abs_path"]),
             module: string(&v["module"]),
             function: string(&v["function"]),
-            lineno: number("lineno"),
-            colno: number("colno"),
             in_app: v["in_app"].as_bool(),
         }
     }
