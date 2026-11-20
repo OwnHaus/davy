@@ -65,15 +65,18 @@ fn server() -> Server {
     let (errors, error_inbox) = mpsc::sync_channel(1);
     let (logs, log_inbox) = LogQueue::bounded(3, 1 << 20);
     let budget = Budget::new(BUDGET);
-    let app = router(App {
-        budget: budget.clone(),
-        keys: Arc::new(Keys::new(c)),
-        sender: errors.clone(),
-        logs,
-        sourcemaps: Arc::new(crate::sourcemaps::Store::open(std::path::Path::new(
-            "target/no-sourcemaps",
-        ))),
-    });
+    let app = router(
+        App {
+            budget: budget.clone(),
+            keys: Arc::new(Keys::new(c)),
+            sender: errors.clone(),
+            logs,
+            sourcemaps: Arc::new(crate::sourcemaps::Store::open(std::path::Path::new(
+                "target/no-sourcemaps",
+            ))),
+        },
+        Router::new().route("/admin", axum::routing::get(|| async { "ok" })),
+    );
     Server {
         app,
         errors,
@@ -669,3 +672,6 @@ async fn a_heartbeat_ping_to_a_full_queue_is_429() {
     assert_eq!(r.status, 429);
     assert_eq!(r.headers["retry-after"], "1");
 }
+
+#[path = "http_surface.rs"]
+mod surface;

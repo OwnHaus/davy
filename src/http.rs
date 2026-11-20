@@ -96,7 +96,14 @@ pub struct App {
     /// The memory request bodies may hold while they are read and parsed.
     pub budget: body::Budget,
 }
-pub fn router(app: App) -> Router {
+/// Ingest, the `admin` routes, and a 404 for anything else, all with
+/// [`protect`]ive headers.
+pub fn router(app: App, admin: Router) -> Router {
+    ingest_routes(app)
+        .merge(admin)
+        .layer(middleware::from_fn(protect))
+}
+fn ingest_routes(app: App) -> Router {
     let preflight = || async { StatusCode::NO_CONTENT };
     Router::new()
         .route(
@@ -110,6 +117,24 @@ pub fn router(app: App) -> Router {
         .route("/api/heartbeat/{token}/fail", get(fail).post(fail))
         .with_state(app)
         .layer(middleware::from_fn(headers))
+}
+/// Davy serves no pages, so a browser may not sniff, run, frame or cache
+/// anything it sends.
+async fn protect(req: Request, next: Next) -> Response {
+    let mut response = next.run(req).await;
+    let h = response.headers_mut();
+    let fixed = [
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        (
+            header::CONTENT_SECURITY_POLICY,
+            "default-src 'none'; frame-ancestors 'none'",
+        ),
+        (header::CACHE_CONTROL, "no-store"),
+    ];
+    for (name, value) in fixed {
+        h.insert(name, HeaderValue::from_static(value));
+    }
+    response
 }
 async fn headers(req: Request, next: Next) -> Response {
     let mut response = next.run(req).await;
@@ -469,17 +494,17 @@ pub async fn serve(
         budget: body::Budget::new(body::MEMORY),
     };
     let maps = Arc::clone(&app.sourcemaps);
-    let mut routes = router(app);
-    if let Some(token) = token {
-        routes = routes
-            .merge(mcp::router(
-                data.to_owned(),
-                writer.sender.clone(),
-                token.clone(),
-                public_url.host_str().unwrap_or("localhost"),
-            ))
-            .merge(upload::router(maps, token, public_url));
-    }
+    let admin = match token {
+        Some(token) => mcp::router(
+            data.to_owned(),
+            writer.sender.clone(),
+            token.clone(),
+            public_url,
+        )
+        .merge(upload::router(maps, token, public_url)),
+        None => Router::new(),
+    };
+    let routes = router(app, admin);
     let listener = tokio::net::TcpListener::bind(listen).await?;
     crate::ready::notify()?;
     let sweeper = tokio::spawn(store::sweep_every(writer.sender.clone(), SWEEP_EVERY));

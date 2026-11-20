@@ -22,7 +22,7 @@ Every byte that arrives over the network is hostile until a parser accepts it. D
 
 - **Anyone on the internet with an ingest URL.** Ingest keys are public by design, because browser SDKs ship them. A key lets a sender write events and logs into one project and nothing else. Davy caps every body before and after decompression, prices what a body parses into before it parses it, pays for that from one memory budget, answers `429` when the budget or a writer queue is full and never buffers without a bound.
 - **Anyone without the admin token.** `/mcp` and the source map upload need `Authorization: Bearer <token>`. The server keeps only a hash of the token and compares in constant time. Without a token, `/mcp` and the upload routes are not mounted at all.
-- **A browser page that points at a local Davy.** `/mcp` accepts only known `Host` headers, which stops DNS rebinding.
+- **A browser page that points at a local Davy.** `/mcp` accepts only known `Host` and `Origin` headers, which stops DNS rebinding. Every response forbids sniffing, framing and caching.
 - **An agent with the admin token that runs arbitrary SQL.** `query.rs` opens the database read-only behind an SQLite authorizer, and limits rows, text size and run time.
 - **Uploaded files that name paths.** Chunks and builds are stored under names Davy computes (a SHA-1 or a debug ID). Nothing from a request becomes a path.
 

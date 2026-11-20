@@ -46,14 +46,21 @@ Logs are not in SQL. Use search_logs. Its query is Tantivy syntax over these fie
 - service, trace_id, span_id (exact match, e.g. trace_id:4bf92f3577b34da6a3ce929d0e0e4736)
 Combine with AND, OR, NOT and parentheses. Levels are trace, debug, info, warn, error, fatal.";
 
-/// `/mcp`, behind the token. Requests must name loopback or `public_host` in
-/// their `Host` header, which stops DNS rebinding from a browser.
+/// `/mcp`, behind the token. Requests must name loopback or the host of
+/// `public_url` in their `Host` header, and a browser page that sends one
+/// must come from loopback or `public_url`, which stops DNS rebinding.
 pub fn router(
     data: PathBuf,
     writes: mpsc::SyncSender<Write>,
     token: Token,
-    public_host: &str,
+    public_url: &url::Url,
 ) -> Router {
+    let public_host = public_url.host_str().unwrap_or("localhost");
+    let public_origin = format!(
+        "{}://{public_host}:{}",
+        public_url.scheme(),
+        public_url.port_or_known_default().unwrap_or(443)
+    );
     let tools = Tools {
         data: Arc::from(data),
         writes,
@@ -62,7 +69,13 @@ pub fn router(
     let config = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)
         .with_json_response(true)
-        .with_allowed_hosts(["localhost", "127.0.0.1", "::1", public_host]);
+        .with_allowed_hosts(["localhost", "127.0.0.1", "::1", public_host])
+        .with_allowed_origins([
+            public_origin.as_str(),
+            "http://localhost:*",
+            "http://127.0.0.1:*",
+            "http://[::1]:*",
+        ]);
     let service: StreamableHttpService<Tools, LocalSessionManager> =
         StreamableHttpService::new(move || Ok(tools.clone()), Arc::default(), config);
     Router::new()
@@ -311,7 +324,12 @@ mod tests {
         store::create_project(&c, "api").unwrap();
         let (tx, writes) = mpsc::sync_channel(1);
         Server {
-            app: router(data, tx, Token::new(SECRET), "davy.example"),
+            app: router(
+                data,
+                tx,
+                Token::new(SECRET),
+                &url::Url::parse("https://davy.example/").unwrap(),
+            ),
             writes,
         }
     }
@@ -373,6 +391,33 @@ mod tests {
         ] {
             let (status, body) = post(&s.app, host, Some(SECRET), list.clone()).await;
             assert_eq!(status, expected, "{host}: {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_refuses_pages_from_other_origins_and_an_empty_host() {
+        let s = server();
+        let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+        for (host, origin, expected) in [
+            ("davy.example", None, 200),
+            ("davy.example", Some("https://davy.example"), 200),
+            ("localhost", Some("http://localhost:6274"), 200),
+            ("davy.example", Some("https://attacker.example"), 403),
+            ("davy.example", Some("http://davy.example"), 403),
+            ("davy.example", Some("null"), 403),
+            ("", None, 400),
+        ] {
+            let mut req = axum::http::Request::post("/mcp")
+                .header(header::HOST, host)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, "application/json, text/event-stream")
+                .header(header::AUTHORIZATION, format!("Bearer {SECRET}"));
+            if let Some(origin) = origin {
+                req = req.header(header::ORIGIN, origin);
+            }
+            let req = req.body(Body::from(list.to_string())).unwrap();
+            let status = s.app.clone().oneshot(req).await.unwrap().status();
+            assert_eq!(status.as_u16(), expected, "{host} {origin:?}");
         }
     }
 
