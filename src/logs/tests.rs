@@ -268,6 +268,25 @@ fn otlp_json_accepts_int64_as_string() {
     assert!(otlp::parse(b"\xff\xff\xff", otlp::Encoding::Protobuf, 1, 7).is_err());
 }
 
+/// Every request the server decodes must also have a price, because a
+/// request without one is refused. These came from the fuzz targets.
+#[test]
+fn a_request_that_decodes_has_a_price() {
+    // An unknown field 12 sent as an empty group, which prost skips.
+    let group = b"cd";
+    assert!(otlp::decode(group, otlp::Encoding::Protobuf).is_ok());
+    assert!(otlp::cost(group, otlp::Encoding::Protobuf).is_ok());
+    // A lone end of a group is broken either way.
+    assert!(otlp::decode(b"d", otlp::Encoding::Protobuf).is_err());
+    // JSON must be UTF-8, even inside a field that is not read.
+    let latin = b"{\"resourceLogs\":[],\"x\":\"\xff\"}";
+    assert!(otlp::decode(latin, otlp::Encoding::Json).is_err());
+    // rmpv reads the unused marker 0xc1 as nil.
+    let reserved = [0x81, 0xc1, 0x74];
+    assert!(logtail::parse(&reserved, "application/msgpack", 1, 7).is_ok());
+    assert!(logtail::cost(&reserved, "application/msgpack").is_ok());
+}
+
 #[test]
 fn otlp_status_bodies() {
     assert_eq!(

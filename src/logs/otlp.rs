@@ -7,7 +7,7 @@ use opentelemetry_proto::tonic::{
 };
 use prost::{
     Message,
-    encoding::{WireType, decode_key, decode_varint},
+    encoding::{DecodeContext, WireType, decode_key, decode_varint, skip_field},
 };
 use serde_json::{Map, Value};
 
@@ -78,7 +78,11 @@ pub fn parse(
 pub fn decode(body: &[u8], encoding: Encoding) -> Result<ExportLogsServiceRequest, String> {
     match encoding {
         Encoding::Protobuf => ExportLogsServiceRequest::decode(body).map_err(|e| e.to_string()),
-        Encoding::Json => serde_json::from_slice(body).map_err(|e| e.to_string()),
+        // serde_json skips the text of a field it does not read without
+        // checking it, and JSON must be UTF-8 throughout.
+        Encoding::Json => std::str::from_utf8(body)
+            .map_err(|e| e.to_string())
+            .and_then(|text| serde_json::from_str(text).map_err(|e| e.to_string())),
     }
 }
 
@@ -260,9 +264,14 @@ fn walk(mut bytes: &[u8], fields: &[(u32, Field)], depth: usize) -> Result<usize
                 usize::try_from(decode_varint(&mut bytes).map_err(|e| e.to_string())?)
                     .map_err(|e| e.to_string())?
             }
-            WireType::StartGroup | WireType::EndGroup => {
-                return Err("groups are not supported".into());
+            // No OTLP field is a group, so a group is unknown and skipped,
+            // as prost skips it, without allocating.
+            WireType::StartGroup => {
+                skip_field(wire, tag, &mut bytes, DecodeContext::default())
+                    .map_err(|e| e.to_string())?;
+                continue;
             }
+            WireType::EndGroup => return Err("end of a group that never started".into()),
         };
         let (inner, rest) = bytes.split_at_checked(skip).ok_or("message cut short")?;
         bytes = rest;

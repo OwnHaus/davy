@@ -214,7 +214,8 @@ fn msgpack_value(input: &mut &[u8], per_object: usize, depth: usize) -> Option<u
     }
     let marker = take(input, 1)?[0];
     let (fixed, text_len, items, pairs) = match marker {
-        0x00..=0x7f | 0xc0 | 0xc2 | 0xc3 | 0xe0..=0xff => (0, None, 0, 0),
+        // rmpv reads the unused marker 0xc1 as nil.
+        0x00..=0x7f | 0xc0..=0xc3 | 0xe0..=0xff => (0, None, 0, 0),
         0xcc | 0xd0 => (1, None, 0, 0),
         0xcd | 0xd1 | 0xd4 => (2, None, 0, 0),
         0xca | 0xce | 0xd2 => (4, None, 0, 0),
@@ -236,7 +237,6 @@ fn msgpack_value(input: &mut &[u8], per_object: usize, depth: usize) -> Option<u
         0x80..=0x8f => (0, None, 0, usize::from(marker & 0x0f)),
         0xde => (0, None, 0, length(input, 2)?),
         0xdf => (0, None, 0, length(input, 4)?),
-        0xc1 => return None,
     };
     take(input, fixed)?;
     let mut total = 0;

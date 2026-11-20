@@ -93,6 +93,8 @@ fn a_messagepack_tree_is_held_beside_its_json() {
         msgpack(&body, 100),
         Some((96 + 128 + 3 * (96 + 100)) * scale)
     );
+    // The unused marker 0xc1 is read as nil.
+    assert_eq!(msgpack(&[0xc1], 0), Some(96 * scale));
     // bin 8 of three bytes becomes base64 text.
     assert_eq!(msgpack(&[0xc4, 3, 1, 2, 3], 0), Some((96 + 16) * scale));
 }
@@ -106,14 +108,7 @@ fn a_messagepack_value_outweighs_a_json_value_at_most_twice() {
 #[test]
 fn broken_messagepack_has_no_price() {
     let deep = [vec![0x91; 130], vec![0xc0]].concat();
-    let cases: [&[u8]; 6] = [
-        &[],
-        &[0xc1],
-        &[0x92, 0x01],
-        &[0xa3, b'a'],
-        &[0x01, 0x02],
-        &deep,
-    ];
+    let cases: [&[u8]; 5] = [&[], &[0x92, 0x01], &[0xa3, b'a'], &[0x01, 0x02], &deep];
     for body in cases {
         assert_eq!(msgpack(body, 0), None, "{body:?}");
     }
