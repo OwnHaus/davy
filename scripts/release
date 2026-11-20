@@ -1,0 +1,65 @@
+#!/bin/sh
+# Cuts release X.Y.Z as RELEASING.md describes: checks the tree, runs the gate
+# and e2e, sets the version, dates the changelog section, commits and tags.
+# It pushes nothing; the last line it prints is the push command.
+# Usage: scripts/release [--unsigned] X.Y.Z
+set -eu
+cd "$(dirname "$0")/.."
+
+die() {
+    printf 'release: %s\n' "$1" >&2
+    exit 1
+}
+
+sign=-s
+if [ "${1:-}" = --unsigned ]; then
+    sign=-a
+    shift
+fi
+version=${1:-}
+printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' ||
+    die 'usage: scripts/release [--unsigned] X.Y.Z'
+tag=v$version
+if [ "$sign" = -s ] && [ -z "$(git config user.signingkey || true)" ]; then
+    die 'no signing key in git config user.signingkey (RELEASING.md, Signing), or pass --unsigned for a test tag'
+fi
+
+[ -z "$(git status --porcelain)" ] || die 'the tree has changes, commit or stash them'
+[ "$(git symbolic-ref --quiet --short HEAD || true)" = main ] || die 'not on main'
+git fetch --quiet origin main
+[ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] ||
+    die 'main differs from origin/main, pull or push first'
+if git rev-parse --quiet --verify "refs/tags/$tag" >/dev/null; then
+    die "tag $tag exists"
+fi
+
+# The lines between "## Unreleased" and the next release heading. Headings
+# alone do not count, a release needs at least one entry.
+section=$(awk '/^## /{ if (on) exit; on = ($0 == "## Unreleased"); next } on' CHANGELOG.md)
+printf '%s\n' "$section" | grep -q '^- ' || die 'CHANGELOG.md has nothing under ## Unreleased'
+
+last=$(git describe --tags --abbrev=0 2>/dev/null || true)
+printf 'release: feat, fix and perf commits since %s, each should have its changelog line:\n' "${last:-the start}"
+git log --format='  %h %s' ${last:+"$last.."} | grep -E '^  [0-9a-f]+ (feat|fix|perf)(\(|!|:)' || true
+
+scripts/check
+bash e2e/run.sh
+
+awk -v v="$version" '
+    !done && /^version = / { print "version = \"" v "\""; done = 1; next }
+    { print }
+' Cargo.toml >Cargo.toml.new
+mv Cargo.toml.new Cargo.toml
+cargo update --workspace --quiet
+
+date=$(date -u +%Y-%m-%d)
+awk -v h="## $version ($date)" '
+    $0 == "## Unreleased" && !done { print; print ""; print h; done = 1; next }
+    { print }
+' CHANGELOG.md >CHANGELOG.md.new
+mv CHANGELOG.md.new CHANGELOG.md
+
+git commit --quiet -am "chore(release): release $version"
+printf '%s %s\n%s\n' "Davy $version" "($date)" "$section" | git tag "$sign" "$tag" -F -
+printf 'release: tagged %s. Push it to start the release workflow:\n' "$tag"
+printf 'git push origin main %s\n' "$tag"

@@ -28,6 +28,7 @@ else
 fi
 
 scripts/test-commit-msg || problem 'scripts/commit-msg fails its table test'
+scripts/test-release || problem 'scripts/release fails its test'
 
 # Prose and code are written without the long dash. Captured fixtures stay as
 # the client sent them.

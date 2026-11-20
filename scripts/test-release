@@ -1,0 +1,82 @@
+#!/bin/sh
+# Runs scripts/release in a throwaway repository with a stub gate: each case
+# is a state of the repository and the exact refusal it must print, then one
+# release that must go through. scripts/check runs it.
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+
+dir=$(mktemp -d)
+trap 'rm -rf "$dir"' EXIT
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 CARGO_NET_OFFLINE=true
+fail=0
+check() {
+    if [ "$1" != "$2" ]; then
+        printf 'test-release: %s\n  want: %s\n  got:  %s\n' "$3" "$2" "$1" >&2
+        fail=1
+    fi
+}
+refuses() {
+    want=$1
+    shift
+    if scripts/release "$@" >/dev/null 2>"$dir/err"; then
+        got='exit 0'
+    else
+        got=$(tail -n 1 "$dir/err")
+    fi
+    check "$got" "release: $want" "scripts/release $*"
+}
+
+git init --quiet --bare -b main "$dir/origin.git"
+git init --quiet -b main "$dir/repo"
+cd "$dir/repo"
+git config user.name Test
+git config user.email test@example.com
+git remote add origin "$dir/origin.git"
+mkdir -p scripts e2e src
+cp "$root/scripts/release" scripts/
+printf '#!/bin/sh\n' >scripts/check
+printf '#!/bin/sh\n' >e2e/run.sh
+chmod +x scripts/check
+printf '[package]\nname = "t"\nversion = "0.1.0"\nedition = "2024"\n' >Cargo.toml
+: >src/lib.rs
+printf 'target/\n' >.gitignore
+printf '# Changelog\n\n## Unreleased\n\n### Added\n\n' >CHANGELOG.md
+cargo generate-lockfile --quiet
+git add -A
+git commit --quiet -m 'feat(core): start'
+git push --quiet origin main
+
+refuses 'usage: scripts/release [--unsigned] X.Y.Z' --unsigned 1.2
+refuses 'usage: scripts/release [--unsigned] X.Y.Z' --unsigned 01.2.3
+refuses 'no signing key in git config user.signingkey (RELEASING.md, Signing), or pass --unsigned for a test tag' 0.2.0
+refuses 'CHANGELOG.md has nothing under ## Unreleased' --unsigned 0.2.0
+
+printf -- '- A thing.\n\n## 0.1.0 (2026-01-01)\n\n- The start.\n' >>CHANGELOG.md
+refuses 'the tree has changes, commit or stash them' --unsigned 0.2.0
+git commit --quiet -am 'docs(repo): add a changelog line'
+refuses 'main differs from origin/main, pull or push first' --unsigned 0.2.0
+git push --quiet origin main
+git checkout --quiet -b other
+refuses 'not on main' --unsigned 0.2.0
+git checkout --quiet main
+git tag v0.2.0
+refuses 'tag v0.2.0 exists' --unsigned 0.2.0
+git tag -d v0.2.0 >/dev/null
+git clone --quiet "$dir/origin.git" "$dir/other"
+git -C "$dir/other" commit --quiet --allow-empty -m 'fix(core): elsewhere'
+git -C "$dir/other" push --quiet origin main
+refuses 'main differs from origin/main, pull or push first' --unsigned 0.2.0
+git pull --quiet --ff-only origin main
+
+scripts/release --unsigned 0.2.0 >"$dir/out" 2>&1 || cat "$dir/out" >&2
+check "$(tail -n 1 "$dir/out")" 'git push origin main v0.2.0' 'the push command'
+check "$(sed -n 3p Cargo.toml)" 'version = "0.2.0"' 'Cargo.toml'
+check "$(grep -A1 '^name = "t"' Cargo.lock | tail -n 1)" 'version = "0.2.0"' 'Cargo.lock'
+check "$(grep -n '^## ' CHANGELOG.md | tr '\n' ' ')" "3:## Unreleased 5:## 0.2.0 ($(date -u +%Y-%m-%d)) 11:## 0.1.0 (2026-01-01) " 'CHANGELOG.md headings'
+check "$(git log -1 --format=%s)" 'chore(release): release 0.2.0' 'the commit'
+check "$(git cat-file -t v0.2.0)" tag 'an annotated tag'
+check "$(git tag -l --format='%(contents)' v0.2.0 | grep -c '^- A thing.$')" 1 'the tag message holds the changelog section'
+check "$(git tag -l --format='%(contents)' v0.2.0 | grep -c 'The start')" 0 'the tag message stops at the next release'
+check "$(grep -c 'fix(core): elsewhere' "$dir/out")" 1 'the fix commit is listed'
+check "$(git status --porcelain)" '' 'a clean tree after the release'
+exit "$fail"

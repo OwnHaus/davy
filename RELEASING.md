@@ -17,7 +17,7 @@ No version has been released yet. `0.1.0` in `Cargo.toml` is unreleased. The mil
 ## Steps
 
 1. `main` is clean, pushed and green in CI.
-2. `scripts/release X.Y.Z` (planned) runs the gate and e2e, sets the version in `Cargo.toml` and `Cargo.lock`, turns `## Unreleased` into `## X.Y.Z (YYYY-MM-DD)` with an empty `## Unreleased` above it, commits `chore(release): release X.Y.Z` and creates the signed tag `vX.Y.Z`. The tag message is the changelog section.
+2. `scripts/release X.Y.Z` runs the gate and e2e, sets the version in `Cargo.toml` and `Cargo.lock`, turns `## Unreleased` into `## X.Y.Z (YYYY-MM-DD)` with an empty `## Unreleased` above it, commits `chore(release): release X.Y.Z` and creates the signed tag `vX.Y.Z`. The tag message is the changelog section. It refuses a tree with changes, a branch other than `main`, a `main` that differs from `origin/main`, an existing tag and a `## Unreleased` without an entry. It lists the `feat`, `fix` and `perf` commits since the last tag, to check each has its changelog line. `--unsigned` makes an annotated tag without a signature, for a test tag before signing is set up. `scripts/test-release` tests it in a throwaway repository.
 3. `git push origin main vX.Y.Z`. The tag starts the release workflow.
 4. The release workflow (planned) builds and publishes a draft release, below.
 5. The owner downloads one artifact, verifies it as a user would (below), runs it against the e2e suite and publishes the draft.
@@ -40,7 +40,7 @@ No version has been released yet. `0.1.0` in `Cargo.toml` is unreleased. The mil
 ## Tools
 
 - The release workflow is generated with `dist` (cargo-dist) if its output passes `zizmor`, pins every action to a SHA and needs no write token outside the release job. Otherwise it is written by hand. The milestone decides with a dry run on a test tag.
-- `release-plz` and `git-cliff` do not write the changelog. They would copy commit subjects, and the changelog here is written for operators. `scripts/release` may print the `feat`, `fix` and `perf` commits since the last tag as a checklist.
+- `release-plz` and `git-cliff` do not write the changelog. They would copy commit subjects, and the changelog here is written for operators. `scripts/release` prints the `feat`, `fix` and `perf` commits since the last tag as a checklist instead.
 - Reproducible builds are the goal after 0.1.0: two builds of one tag give the same bytes, checked in CI.
 
 ## Supported versions
