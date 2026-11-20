@@ -1,0 +1,44 @@
+#!/bin/bash
+# Checks release TAG the way RELEASING.md asks a user to: the checksums, the
+# build provenance of every binary, the dependency list inside the Linux
+# binary, and the signature and SBOM of the image, which must run and print
+# the version. It downloads the files of the release, which may be a draft,
+# or checks the ones already in DIR. Needs gh, cosign, cargo-audit and Docker
+# logged in to ghcr.io.
+# Usage: scripts/verify-release TAG [DIR]
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+tag=${1:?usage: scripts/verify-release TAG [DIR]}
+version=${tag#v}
+repo=${GITHUB_REPOSITORY:-dominikzabcik/davy}
+image=ghcr.io/${repo,,}:$version
+identity="^https://github.com/$repo/.github/workflows/release.yml@refs/tags/$tag\$"
+issuer=https://token.actions.githubusercontent.com
+
+if [ -n "${2:-}" ]; then
+    cd "$2"
+else
+    dir=$(mktemp -d)
+    trap 'rm -rf "$dir"' EXIT
+    gh release download "$tag" --repo "$repo" --dir "$dir"
+    cd "$dir"
+fi
+if command -v sha256sum >/dev/null; then sha256sum -c SHA256SUMS; else shasum -a 256 -c SHA256SUMS; fi
+for f in davy-*; do
+    gh attestation verify "$f" --repo "$repo" >/dev/null
+    printf 'verify-release: %s has build provenance from %s\n' "$f" "$repo"
+done
+cargo audit bin --deny warnings davy-x86_64-unknown-linux-musl
+cosign verify --certificate-identity-regexp "$identity" --certificate-oidc-issuer "$issuer" "$image" >/dev/null
+# Each platform's manifest carries the SBOM of its binary.
+for arch in amd64 arm64; do
+    digest=$(docker buildx imagetools inspect --raw "$image" |
+        jq -r --arg a "$arch" '.manifests[] | select(.platform.architecture == $a) | .digest')
+    cosign verify-attestation --type cyclonedx --certificate-identity-regexp "$identity" \
+        --certificate-oidc-issuer "$issuer" "${image%:*}@$digest" >/dev/null
+    printf 'verify-release: the %s image is signed and has its SBOM\n' "$arch"
+done
+got=$(docker run --rm "$image" --version)
+[ "$got" = "davy ${version%%-*}" ] || { printf 'verify-release: the image prints %s\n' "$got" >&2; exit 1; }
+printf 'verify-release: %s and %s verify\n' "$tag" "$image"

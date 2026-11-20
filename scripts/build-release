@@ -1,0 +1,44 @@
+#!/bin/sh
+# Builds the release files for TARGET into dist/: the binary davy-TARGET,
+# built with cargo auditable so scanners read its dependency list from the
+# binary, and its CycloneDX SBOM davy-TARGET.cdx.json. A Linux target builds
+# static with musl in rust:alpine and needs Docker on a machine of that
+# architecture. A macOS target builds with the host's cargo and needs
+# cargo-auditable. Both need cargo-cyclonedx.
+# Usage: scripts/build-release TARGET
+set -eu
+cd "$(dirname "$0")/.."
+
+ALPINE=rust:1.99.1-alpine@sha256:44819b27be4c97b0e4d7203bd2e02c4820f97700211b6a37fb4c246a2de59383
+AUDITABLE=0.7.7
+
+die() {
+    printf 'build-release: %s\n' "$1" >&2
+    exit 1
+}
+
+target=${1:-}
+mkdir -p dist
+case $target in
+x86_64-unknown-linux-musl | aarch64-unknown-linux-musl)
+    arch=$(docker info --format '{{.Architecture}}')
+    [ "$arch" = "${target%%-*}" ] || die "$target needs a $(printf '%s' "$target" | cut -d- -f1) machine, Docker runs on $arch"
+    docker run --rm -v "$PWD":/src:ro -v "$PWD/dist":/dist -e CARGO_TARGET_DIR=/build -w /src "$ALPINE" sh -euc '
+        apk add --no-cache musl-dev >/dev/null
+        cargo install --quiet --locked "cargo-auditable@$1"
+        cargo auditable build --release --locked --target "$2"
+        cp "/build/$2/release/davy" "/dist/davy-$2"
+    ' sh "$AUDITABLE" "$target"
+    ;;
+aarch64-apple-darwin | x86_64-apple-darwin)
+    rustup target add "$target"
+    cargo auditable build --release --locked --target "$target"
+    cp "target/$target/release/davy" "dist/davy-$target"
+    ;;
+*)
+    die 'usage: scripts/build-release x86_64-unknown-linux-musl|aarch64-unknown-linux-musl|aarch64-apple-darwin|x86_64-apple-darwin'
+    ;;
+esac
+cargo cyclonedx --quiet --format json --spec-version 1.5 --all --target "$target" --override-filename "davy-$target.cdx"
+mv "davy-$target.cdx.json" dist/
+printf 'build-release: dist/davy-%s and dist/davy-%s.cdx.json\n' "$target" "$target"

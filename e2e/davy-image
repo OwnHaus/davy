@@ -1,0 +1,11 @@
+#!/bin/sh
+# Runs the image DAVY_IMAGE as if it were the davy binary, so e2e/run.sh can
+# test the release image with DAVY_BIN=e2e/davy-image. Every call is its own
+# container on the host network, as the calling user, with .scratch mounted
+# at the same path, so ports, paths and file owners match a native run.
+# Linux only: Docker Desktop does not share the host network by default.
+set -eu
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+exec docker run --rm --init --network host --user "$(id -u):$(id -g)" \
+    -v "$ROOT/.scratch:$ROOT/.scratch" -e DAVY_TOKEN -e DAVY_SMTP_URL \
+    "${DAVY_IMAGE:?set DAVY_IMAGE to the image to test}" "$@"

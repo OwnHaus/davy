@@ -19,8 +19,10 @@ No version has been released yet. `0.1.0` in `Cargo.toml` is unreleased. The mil
 1. `main` is clean, pushed and green in CI.
 2. `scripts/release X.Y.Z` runs the gate and e2e, sets the version in `Cargo.toml` and `Cargo.lock`, turns `## Unreleased` into `## X.Y.Z (YYYY-MM-DD)` with an empty `## Unreleased` above it, commits `chore(release): release X.Y.Z` and creates the signed tag `vX.Y.Z`. The tag message is the changelog section. It refuses a tree with changes, a branch other than `main`, a `main` that differs from `origin/main`, an existing tag and a `## Unreleased` without an entry. It lists the `feat`, `fix` and `perf` commits since the last tag, to check each has its changelog line. `--unsigned` makes an annotated tag without a signature, for a test tag before signing is set up. `scripts/test-release` tests it in a throwaway repository.
 3. `git push origin main vX.Y.Z`. The tag starts the release workflow.
-4. The release workflow (planned) builds and publishes a draft release, below.
-5. The owner downloads one artifact, verifies it as a user would (below), runs it against the e2e suite and publishes the draft.
+4. The release workflow (`.github/workflows/release.yml`) builds each binary with `scripts/build-release` on a runner of its platform. Its publish job, the only one that can write, attests the files, pushes and signs the image and opens a draft release with the files below. Its verify job runs `scripts/verify-release` on the same files and the image. It gets the files as a workflow artifact, because a job that cannot write cannot see a draft.
+5. The owner runs `scripts/verify-release vX.Y.Z` on their own machine, which downloads the draft itself, runs the e2e suite against a downloaded binary and publishes the draft.
+
+A tag `vX.Y.Z-suffix`, such as `v0.1.0-test.1`, runs the same workflow and opens a draft prerelease with the `## Unreleased` notes. It tests the workflow, and its draft, tag and image are deleted after.
 
 ## What a release contains (planned)
 
@@ -39,7 +41,9 @@ No version has been released yet. `0.1.0` in `Cargo.toml` is unreleased. The mil
 
 ## Tools
 
-- The release workflow is generated with `dist` (cargo-dist) if its output passes `zizmor`, pins every action to a SHA and needs no write token outside the release job. Otherwise it is written by hand. The milestone decides with a dry run on a test tag.
+- The release workflow is written by hand. `dist` (cargo-dist) was the first choice, but it grants `contents: write` to the whole workflow (its `src/backend/ci/github.rs` sets it as a root permission), which breaks the rule that only the publish job can write, and it builds no container image.
+- Linux binaries build in `rust:alpine` pinned by digest, natively on an x86_64 and an arm64 runner, because musl there is the system C library and the C dependencies (SQLite, zstd, aws-lc) build without a cross toolchain. The image copies those binaries and compiles nothing.
+- The release workflow uses no cache, so nothing an earlier run left can end up in a release.
 - `release-plz` and `git-cliff` do not write the changelog. They would copy commit subjects, and the changelog here is written for operators. `scripts/release` prints the `feat`, `fix` and `perf` commits since the last tag as a checklist instead.
 - Reproducible builds are the goal after 0.1.0: two builds of one tag give the same bytes, checked in CI.
 

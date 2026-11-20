@@ -2,8 +2,14 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-cargo build --release -j 4
-BIN="$ROOT/target/release/davy"
+# DAVY_BIN runs the suite against another binary, such as a release download
+# or e2e/davy-image, instead of building one.
+if [ -n "${DAVY_BIN:-}" ]; then
+  BIN="$(cd "$(dirname "$DAVY_BIN")" && pwd)/$(basename "$DAVY_BIN")"
+else
+  cargo build --release -j 4
+  BIN="$ROOT/target/release/davy"
+fi
 SCRATCH="$ROOT/.scratch/e2e-$$"
 mkdir -p "$SCRATCH"
 PID=''
