@@ -26,7 +26,7 @@ A tag `vX.Y.Z-suffix`, such as `v0.1.0-test.1`, runs the same workflow and opens
 
 A release needs a public repository. GitHub keeps artifact attestations only for public repositories (or GitHub Enterprise Cloud), and Sigstore records every signature in a public log, which would name a private repository. So in a private repository a test tag runs unsigned: no attestations, no image signature, and the verify job runs `scripts/verify-release --unsigned`, which still checks the checksums, the dependency list and the image. The workflow refuses a release tag there.
 
-## What a release contains (planned)
+## What a release contains
 
 - **Binaries** for Linux x86_64 and aarch64 (static, musl) and macOS aarch64 and x86_64, built from the tag on a clean GitHub runner with `--locked`.
 - **Embedded dependency list.** The binaries are built with `cargo auditable`, so `cargo audit bin`, Trivy and Grype can scan a binary on a server without its source.

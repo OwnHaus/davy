@@ -621,6 +621,12 @@ Fuzzing, measured on 2026-11-20 with `FUZZ_CPUS=5 fuzz/docker 3600` on an M-seri
 
 The peak of `logtail_msgpack` is libFuzzer's whole process, not one input: a further 90 seconds with `-malloc_limit_mb=128` found no single allocation over 128 MB.
 
+After the pentest fixes each log parser target also asserts that a body it accepts has a price in `src/heap.rs`. That found three bodies that parsed without one: a protobuf group, invalid UTF-8 inside an unknown JSON field and the MessagePack marker `0xc1`. The server refused all three, with the wrong status. After the fix in `4f30c5b`, `fuzz/docker 60` ran all nine targets without a failure.
+
+The internal penetration test of `dede8b8` is in `docs/security/pentest-0.1.0.md`. It found one high, two medium, seven low and six informational findings. The high and both mediums are fixed with tests, and so are most of the rest. What stays is accepted there with a reason.
+
+The release workflow ran end to end on the test tag `v0.1.0-test.3` (run 44816788766), unsigned, because the repository is private: the four binaries, the image for both architectures, the checksums and the dependency list verified, and the e2e suite passed against a downloaded binary and the image.
+
 The cleanup pass surveyed the code at `eb4de33` and found 28 items: duplicated code, dead fields, loose visibility and stale docs. 24 are fixed, one in part, in the `refactor`, `fix` and `docs` commits up to `997a7a7`. These stay, each for a reason:
 
 - `ErrorEvent::parse` reads the clock itself, because the fuzz targets call it with one argument.

@@ -24,3 +24,7 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 - An install guide for coding agents in `docs/install.md`, one page per SDK in `docs/connect/` and an index in `llms.txt`.
 - The CLI commands `project`, `issues`, `event`, `logs`, `sql`, `context`, `resolve`, `monitor` and `channel`.
 - Release downloads: static Linux binaries for x86_64 and aarch64 and macOS binaries for both architectures, each with a CycloneDX SBOM, build provenance and `SHA256SUMS`, and a signed multi-arch image `ghcr.io/dominikzabcik/davy` on distroless as a non-root user. `RELEASING.md` shows how to verify them.
+
+### Security
+
+- An internal penetration test before the release found one high, two medium, seven low and six informational findings. The high and both mediums are fixed, and `docs/security/pentest-0.1.0.md` lists what became of each one.
