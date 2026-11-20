@@ -10,6 +10,7 @@ use davy::{
     token::Token,
 };
 use std::{
+    borrow::Cow,
     io::Write,
     path::{Path, PathBuf},
 };
@@ -243,10 +244,10 @@ fn print_issues(out: &mut impl Write, issues: Vec<store::Issue>, json: bool) -> 
             out,
             "{}\t{}\t{}\t{}\t{}",
             i.id,
-            i.status,
+            safe(&i.status),
             i.count,
-            i.title,
-            i.culprit.unwrap_or_default()
+            safe(&i.title),
+            safe(i.culprit.as_deref().unwrap_or_default())
         )?;
     }
     Ok(())
@@ -256,13 +257,13 @@ fn print_rows(out: &mut impl Write, rows: &query::Rows, json: bool) -> anyhow::R
         writeln!(out, "{}", serde_json::to_string(rows)?)?;
         return Ok(());
     }
-    writeln!(out, "{}", rows.columns.join("\t"))?;
+    writeln!(out, "{}", safe(&rows.columns.join("\t")))?;
     for row in &rows.rows {
         let cells: Vec<String> = row
             .iter()
             .map(|v| match v {
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
+                serde_json::Value::String(s) => safe(s).into_owned(),
+                other => safe(&other.to_string()).into_owned(),
             })
             .collect();
         writeln!(out, "{}", cells.join("\t"))?;
@@ -285,16 +286,67 @@ fn print_logs(out: &mut impl Write, mut hits: Vec<LogHit>, json: bool) -> anyhow
             "{} {:<5} {} {}",
             hit.timestamp,
             hit.level.as_str(),
-            hit.service.as_deref().unwrap_or("-"),
-            hit.message
+            safe(hit.service.as_deref().unwrap_or("-")),
+            safe(&hit.message)
         )?;
         for (k, v) in &hit.attributes {
             match v {
-                serde_json::Value::String(s) => write!(out, " {k}={s}")?,
-                other => write!(out, " {k}={other}")?,
+                serde_json::Value::String(s) => write!(out, " {}={}", safe(k), safe(s))?,
+                other => write!(out, " {}={}", safe(k), safe(&other.to_string()))?,
             }
         }
         writeln!(out)?;
     }
     Ok(())
+}
+/// Text from ingest with every control character replaced by U+FFFD, so a
+/// stored string cannot move the cursor, retitle the terminal or split a line.
+fn safe(s: &str) -> Cow<'_, str> {
+    if s.chars().any(char::is_control) {
+        Cow::Owned(
+            s.chars()
+                .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+                .collect(),
+        )
+    } else {
+        Cow::Borrowed(s)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_output_replaces_control_characters() {
+        let mut out = Vec::new();
+        let issue = store::Issue {
+            id: 1,
+            status: "unresolved".into(),
+            count: 2,
+            title: "Error: \u{1b}]52;c;cHduZWQ=\u{7}".into(),
+            culprit: Some("a\tb\u{9b}2J".into()),
+        };
+        print_issues(&mut out, vec![issue], false).unwrap();
+        let hit = LogHit {
+            timestamp: "2026-11-20T10:00:00Z".into(),
+            timestamp_ns: 0,
+            project_id: 1,
+            source: davy::logs::LogSource::Logtail,
+            level: LogLevel::Info,
+            service: Some("api\r".into()),
+            message: "line\n\u{1b}[2Jgone".into(),
+            trace_id: None,
+            span_id: None,
+            attributes: serde_json::json!({"k\u{1b}": "v\u{7}"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        };
+        print_logs(&mut out, vec![hit], false).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "1\tunresolved\t2\tError: \u{fffd}]52;c;cHduZWQ=\u{fffd}\ta\u{fffd}b\u{fffd}2J\n\
+             2026-11-20T10:00:00Z info  api\u{fffd} line\u{fffd}\u{fffd}[2Jgone k\u{fffd}=v\u{fffd}\n"
+        );
+    }
 }
