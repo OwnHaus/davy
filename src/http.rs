@@ -269,7 +269,8 @@ fn event(json: &[u8], maps: &sourcemaps::Store, held: &mut Held) -> Result<Error
     held.take(2 * heap::json(json, 0).map_err(bad)?)?;
     let mut value = serde_json::from_slice(json).map_err(bad)?;
     // A stored map that no longer reads leaves frames minified. The event still counts.
-    symbolicate(&mut value, |id| maps.build(id).ok().flatten());
+    let added = symbolicate(&mut value, |id| maps.build(id).ok().flatten());
+    held.take(2 * added)?;
     ErrorEvent::parse(value).map_err(bad)
 }
 fn parse_sentry(

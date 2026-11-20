@@ -377,10 +377,10 @@ pub fn symbolicate(event: &mut serde_json::Value, maps: &impl Fn(DebugId) -> Opt
 ```
 
 - For each image in `debug_meta.images` with `type: "sourcemap"`, `code_file` names the minified file and `debug_id` the build.
-- A frame whose `abs_path` or `filename` equals a `code_file` with a known build is looked up at (`lineno` − 1, `colno` − 1). The frame gets the original `filename` (the map's source), `lineno`, `colno`, the original function name, and `pre_context`, `context_line`, `post_context` (5 lines each) from `sourcesContent`. `in_app` becomes false when the source path contains `node_modules`. The minified position moves to `data.minified` (`{filename, lineno, colno, function}`), so nothing is lost.
+- A frame whose `abs_path` or `filename` equals a `code_file` with a known build is looked up at (`lineno` − 1, `colno` − 1). The frame gets the original `filename` (the map's source), `lineno`, `colno`, the original function name, and `pre_context`, `context_line`, `post_context` (5 lines each) from `sourcesContent`. A line over 256 bytes keeps the 256 around the original column, with `…` at each cut, because a source that is itself minified has lines of megabytes. `in_app` becomes false when the source path contains `node_modules`. The minified position moves to `data.minified` (`{filename, lineno, colno, function}`), so nothing is lost.
 - The original function name is the map's name for the nearest earlier token that spells the minified name right after the `function` keyword (`async function o` too), searched over at most 1024 tokens. Without a match, or without the minified file, the minified name stays.
 - A frame with no image, no stored build or no token on its line stays as it is. A map without `sourcesContent` still gives file, line and function, without context lines.
-- Parsed builds sit in a small cache (32 entries), so a burst of one error parses its map once.
+- Parsed builds sit in a small cache (32 entries). One map parses at a time, and requests that need a build being parsed wait for it, so a burst of one error after a restart parses its map once. The event pays the budget for what symbolication added to it.
 
 Grouping is unchanged. It sees original frames when a map was uploaded before the event, so issues stay the same across builds. An event that arrived before its map stays minified.
 
@@ -661,6 +661,7 @@ Sentry's own limits (develop.sentry.dev, Envelopes, Size Limits) are 200 MiB for
 | Items per envelope | 1,000 | `400` |
 | Event items per envelope | 1 (develop.sentry.dev, Envelope Items) | later event items are dropped |
 | Frames symbolicated per event | 256, from the frame that threw outward | older frames stay minified |
+| Source line kept per context line | 256 bytes around the column | the rest is cut, marked `…` |
 | Log message | 64 KiB | cut at a character boundary, attribute `davy.truncated` set to `true` |
 | Log queue | 50,000 rows or 128 MiB of record heap, held until written | `429`, or `413` for a batch larger than the queue |
 | `payload_json()` output in `sql` | 16 MiB | the query fails with an error |

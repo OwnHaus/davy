@@ -1,6 +1,6 @@
 use super::{
-    Build, DebugId,
-    bundle::{self, Limit},
+    Build, DebugId, Store,
+    bundle::{self, Kind, Limit},
     symbolicate,
 };
 use crate::envelope::{Envelope, ItemKind};
@@ -111,6 +111,64 @@ fn an_event_looks_up_each_build_once_and_symbolicates_at_most_256_frames() {
         [&frames[43]["function"], &frames[44]["function"]],
         [&json!("n"), &json!("parseOrder")]
     );
+}
+
+#[test]
+fn a_context_line_keeps_256_bytes_around_the_column() {
+    let mut map: Value = serde_json::from_slice(&fixture("sentry-cli-3/app.min.js.map")).unwrap();
+    let app = map["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|s| s == "../src/app.js")
+        .unwrap();
+    let source = map["sourcesContent"][app].as_str().unwrap();
+    let long = source.replacen(
+        "  return order.items.length",
+        &format!("  return order.items.length{}", "x".repeat(1 << 20)),
+        1,
+    );
+    map["sourcesContent"][app] = json!(long);
+    let build = Arc::new(Build::parse(&serde_json::to_vec(&map).unwrap(), None).unwrap());
+    let mut event = captured_event();
+    symbolicate(&mut event, |_| Some(Arc::clone(&build)));
+    let line = format!("  return order.items.length{}", "x".repeat(1 << 20));
+    assert_eq!(
+        frames(&event)[3]["context_line"],
+        json!(format!("{}…", &line[..256]))
+    );
+}
+
+#[test]
+fn symbolication_returns_the_heap_it_adds() {
+    let mut event = captured_event();
+    let before = crate::heap::of_value(&event);
+    let build = captured_build();
+    let added = symbolicate(&mut event, |_| Some(Arc::clone(&build)));
+    assert!(added > 0);
+    assert_eq!(before + added, crate::heap::of_value(&event));
+}
+
+#[test]
+fn requests_that_miss_the_cache_together_parse_a_build_once() {
+    let store = Arc::new(Store::open(&crate::test_support::scratch("parse-once")));
+    let id = DebugId::parse(BUILD).unwrap();
+    let map = zstd::encode_all(&fixture("sentry-cli-3/app.min.js.map")[..], 3).unwrap();
+    super::write_atomic(&store.path(id, Kind::Map), &map).unwrap();
+    let start = Arc::new(std::sync::Barrier::new(8));
+    let builds: Vec<Arc<Build>> = (0..8)
+        .map(|_| {
+            let (store, start) = (Arc::clone(&store), Arc::clone(&start));
+            std::thread::spawn(move || {
+                start.wait();
+                store.build(id).unwrap().unwrap()
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|t| t.join().unwrap())
+        .collect();
+    assert!(builds.iter().all(|b| Arc::ptr_eq(b, &builds[0])));
 }
 
 fn zip(manifest: &Value, files: &[(&str, &[u8])]) -> Vec<u8> {

@@ -1,9 +1,13 @@
 use super::{Build, DebugId};
+use crate::heap;
 use serde_json::{Map, Value, json};
 use sourcemap::{SourceMap, SourceView};
 use std::{collections::HashMap, sync::Arc};
 
 const CONTEXT_LINES: u32 = 5;
+/// The longest source line a frame keeps, in bytes. A source that is itself
+/// minified has lines of megabytes, and a frame copies up to eleven lines.
+const MAX_LINE: usize = 256;
 /// Each frame costs a token scan, so one event cannot buy unbounded CPU.
 const MAX_FRAMES: usize = 256;
 /// A frame deep in a long function sits many tokens after the function's name.
@@ -13,8 +17,9 @@ const SCAN_TOKENS: usize = 1024;
 /// `debug_meta.images` to original source positions, in place. A frame whose
 /// build `builds` does not know stays as it is. `builds` runs once per debug
 /// ID. Only the newest [`MAX_FRAMES`] frames are rewritten, counted from the
-/// frame that threw, because Sentry lists frames oldest first.
-pub fn symbolicate(event: &mut Value, builds: impl Fn(DebugId) -> Option<Arc<Build>>) {
+/// frame that threw, because Sentry lists frames oldest first. Returns the
+/// heap the rewritten frames grew by, by the prices of [`crate::heap`].
+pub fn symbolicate(event: &mut Value, builds: impl Fn(DebugId) -> Option<Arc<Build>>) -> usize {
     let images: HashMap<String, DebugId> = event
         .pointer("/debug_meta/images")
         .and_then(Value::as_array)
@@ -30,13 +35,13 @@ pub fn symbolicate(event: &mut Value, builds: impl Fn(DebugId) -> Option<Arc<Bui
         })
         .collect();
     if images.is_empty() {
-        return;
+        return 0;
     }
     let Some(exceptions) = event
         .pointer_mut("/exception/values")
         .and_then(Value::as_array_mut)
     else {
-        return;
+        return 0;
     };
     let mut found: HashMap<DebugId, Option<Arc<Build>>> = HashMap::new();
     let frames = exceptions
@@ -55,11 +60,15 @@ pub fn symbolicate(event: &mut Value, builds: impl Fn(DebugId) -> Option<Arc<Bui
             Some((frame, id))
         })
         .take(MAX_FRAMES);
+    let mut added = 0;
     for (frame, id) in frames {
         if let Some(build) = found.entry(id).or_insert_with(|| builds(id)) {
+            let before = heap::of_map(frame);
             rewrite(frame, build);
+            added += heap::of_map(frame).saturating_sub(before);
         }
     }
+    added
 }
 
 fn rewrite(frame: &mut Map<String, Value>, build: &Build) -> Option<()> {
@@ -98,15 +107,19 @@ fn rewrite(frame: &mut Map<String, Value>, build: &Build) -> Option<()> {
         frame.insert("function".into(), json!(function));
     }
     if let Some(view) = build.map.get_source_view(token.get_src_id()) {
-        let lines = |range: std::ops::Range<u32>| -> Vec<&str> {
-            range.filter_map(|n| view.get_line(n)).collect()
+        let src_col = usize::try_from(token.get_src_col()).unwrap_or(usize::MAX);
+        let lines = |range: std::ops::Range<u32>| -> Vec<String> {
+            range
+                .filter_map(|n| view.get_line(n))
+                .map(|line| trim(line, src_col))
+                .collect()
         };
         frame.insert(
             "pre_context".into(),
             json!(lines(src_line.saturating_sub(CONTEXT_LINES)..src_line)),
         );
         if let Some(context) = view.get_line(src_line) {
-            frame.insert("context_line".into(), json!(context));
+            frame.insert("context_line".into(), json!(trim(context, src_col)));
         }
         frame.insert(
             "post_context".into(),
@@ -126,6 +139,23 @@ fn rewrite(frame: &mut Map<String, Value>, build: &Build) -> Option<()> {
         data.insert("minified".into(), Value::Object(minified));
     }
     Some(())
+}
+
+/// `line` cut to [`MAX_LINE`] bytes around byte `col`, with `…` at each cut.
+fn trim(line: &str, col: usize) -> String {
+    if line.len() <= MAX_LINE {
+        return line.to_owned();
+    }
+    let start =
+        line.floor_char_boundary(col.saturating_sub(MAX_LINE / 2).min(line.len() - MAX_LINE));
+    let end = line.floor_char_boundary(start + MAX_LINE);
+    let cut = |at: bool| if at { "…" } else { "" };
+    format!(
+        "{}{}{}",
+        cut(start > 0),
+        &line[start..end],
+        cut(end < line.len())
+    )
 }
 
 /// The original name of the minified function `name` that holds the position

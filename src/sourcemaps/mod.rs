@@ -16,7 +16,7 @@ use std::{
     collections::VecDeque,
     fmt, fs, io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, PoisonError},
 };
 
 /// The largest bundle, and the largest file inside one, that Davy accepts.
@@ -104,6 +104,9 @@ pub struct Store {
     chunks: PathBuf,
     builds: PathBuf,
     cache: Mutex<VecDeque<(DebugId, Arc<Build>)>>,
+    /// A parse takes many times the size of its map, so one runs at a time,
+    /// and requests for a build that is being parsed wait for it.
+    parsing: Mutex<()>,
 }
 
 impl Store {
@@ -112,6 +115,7 @@ impl Store {
             chunks: data.join("chunks"),
             builds: data.join("sourcemaps"),
             cache: Mutex::default(),
+            parsing: Mutex::default(),
         }
     }
 
@@ -175,6 +179,10 @@ impl Store {
 
     /// The build with this debug ID, if its map was uploaded.
     pub fn build(&self, id: DebugId) -> io::Result<Option<Arc<Build>>> {
+        if let Some(found) = self.cached(id) {
+            return Ok(Some(found));
+        }
+        let _parsing = self.parsing.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(found) = self.cached(id) {
             return Ok(Some(found));
         }
