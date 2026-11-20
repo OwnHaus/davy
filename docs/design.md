@@ -432,7 +432,7 @@ enum Channel { Webhook { url: Url, secret: Secret }, Slack { url: Url } }
 
 ### Heartbeat route
 
-`GET`, `HEAD` or `POST /api/heartbeat/{token}` records a ping. `/api/heartbeat/{token}/fail` records a failure. The token is 32 lowercase hex characters made by `davy monitor add --heartbeat` and is the credential. An unknown token is `404`. The body is not read, so its limit is 64 KiB. A full writer queue is `429` with `Retry-After: 1`. The answer is `200` with body `ok`.
+`GET`, `HEAD` or `POST /api/heartbeat/{token}` records a ping. `/api/heartbeat/{token}/fail` records a failure. The token is 32 lowercase hex characters made by `davy monitor add --heartbeat` and is the credential. A malformed or unknown token is `404`. The body is never read, so its size does not matter. A full writer queue is `429` with `Retry-After: 1`. The route waits for the writer, so `200` with body `ok` means the ping is stored.
 
 ### Reaching targets
 

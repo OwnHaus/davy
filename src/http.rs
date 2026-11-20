@@ -6,6 +6,7 @@ use crate::{
         store::{LogQueue, LogWriter, QueueError},
     },
     mcp,
+    monitor::{self, HeartbeatToken},
     sourcemaps::{self, symbolicate},
     store::{self, Job, Write},
     time,
@@ -19,7 +20,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
 };
 use serde_json::json;
 use std::{
@@ -62,6 +63,12 @@ impl Keys {
         }
         Ok(found)
     }
+    /// Not cached like project keys, because `davy monitor remove` can delete
+    /// a monitor while the server runs.
+    fn monitor_for(&self, token: &HeartbeatToken) -> Result<Option<i64>, Failure> {
+        let db = self.db.lock().map_err(internal)?;
+        monitor::store::by_token(&db, token).map_err(internal)
+    }
     fn authenticate(&self, key: Option<&str>) -> Result<i64, Failure> {
         let key = key
             .filter(|s| !s.is_empty())
@@ -90,6 +97,8 @@ pub fn router(app: App) -> Router {
         .route("/api/{project}/store/", post(legacy).options(preflight))
         .route("/", post(logtail_ingest).options(preflight))
         .route("/v1/logs", post(otlp_ingest).options(preflight))
+        .route("/api/heartbeat/{token}", get(ping).post(ping))
+        .route("/api/heartbeat/{token}/fail", get(fail).post(fail))
         .with_state(app)
         .layer(middleware::from_fn(headers))
 }
@@ -379,6 +388,40 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
             .map_err(internal)?;
     }
     Ok(Json(json!({"id":id.0})).into_response())
+}
+async fn ping(State(app): State<App>, Path(token): Path<String>) -> Result<&'static str, Failure> {
+    heartbeat(&app, &token, false).await
+}
+async fn fail(State(app): State<App>, Path(token): Path<String>) -> Result<&'static str, Failure> {
+    heartbeat(&app, &token, true).await
+}
+/// The token is the credential, so a malformed and an unknown one get the
+/// same `404`.
+async fn heartbeat(app: &App, token: &str, failed: bool) -> Result<&'static str, Failure> {
+    let unknown = || {
+        (
+            StatusCode::NOT_FOUND,
+            "no heartbeat with this token".to_owned(),
+        )
+    };
+    let token = HeartbeatToken::parse(token).ok_or_else(unknown)?;
+    let monitor = app.keys.monitor_for(&token)?.ok_or_else(unknown)?;
+    let (done, rx) = tokio::sync::oneshot::channel();
+    queue(
+        &app.sender,
+        Write {
+            job: Job::Ping {
+                monitor,
+                at: time::now_ms(),
+                failed,
+            },
+            done,
+        },
+    )?;
+    rx.await
+        .map_err(|e| internal(format!("writer stopped: {e}")))?
+        .map_err(internal)?;
+    Ok("ok")
 }
 async fn logtail_ingest(State(app): State<App>, req: Request) -> Response {
     let run = async {

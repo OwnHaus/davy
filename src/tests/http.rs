@@ -19,8 +19,11 @@ use std::{
 use tokio::sync::Semaphore;
 use tower::ServiceExt;
 
+const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
 /// The router with projects `a` (id 1, key `key-a`) and `b` (id 2, key `key-b`),
-/// both ingest queues one slot deep and one parsing slot.
+/// a heartbeat monitor (id 1, token [`TOKEN`]) in `a`, both ingest queues one
+/// slot deep and one parsing slot.
 struct Server {
     app: Router,
     errors: mpsc::SyncSender<store::Write>,
@@ -49,6 +52,14 @@ fn server() -> Server {
     store::create_project(&c, "b").unwrap();
     c.execute("UPDATE projects SET public_key='key-' || slug", [])
         .unwrap();
+    c.execute(
+        &format!(
+            "INSERT INTO monitors(project_id,name,kind,heartbeat_token,every_s,grace_s,state,created_at)
+             VALUES (1,'Backup','heartbeat','{TOKEN}',3600,300,'pending',0)"
+        ),
+        [],
+    )
+    .unwrap();
     let (errors, error_inbox) = mpsc::sync_channel(1);
     let (logs, log_inbox) = LogQueue::bounded(1, 1 << 20);
     let parsing = Arc::new(Semaphore::new(1));
@@ -459,6 +470,78 @@ async fn full_log_queue_is_429() {
         200
     );
     let r = s.send(otlp("application/json", body)).await;
+    assert_eq!(r.status, 429);
+    assert_eq!(r.headers["retry-after"], "1");
+}
+
+fn request(method: &str, uri: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_heartbeat_ping_queues_the_monitor_it_names() {
+    let s = server();
+    for (method, path, failed) in [
+        ("GET", String::new(), false),
+        ("HEAD", String::new(), false),
+        ("POST", String::new(), false),
+        ("GET", "/fail".to_owned(), true),
+        ("POST", "/fail".to_owned(), true),
+    ] {
+        let uri = format!("/api/heartbeat/{TOKEN}{path}");
+        let queued = async {
+            loop {
+                if let Ok(write) = s.error_inbox.try_recv() {
+                    let store::Job::Ping {
+                        monitor, failed, ..
+                    } = write.job
+                    else {
+                        return None;
+                    };
+                    write.done.send(Ok(())).unwrap();
+                    return Some((monitor, failed));
+                }
+                tokio::task::yield_now().await;
+            }
+        };
+        let (r, ping) = tokio::join!(s.send(request(method, &uri)), queued);
+        assert_eq!(r.status, 200, "{method} {uri}");
+        let body = if method == "HEAD" { "" } else { "ok" };
+        assert_eq!(r.body, body.as_bytes(), "{method} {uri}");
+        assert_eq!(ping, Some((1, failed)), "{method} {uri}");
+    }
+}
+
+#[tokio::test]
+async fn a_heartbeat_with_an_unknown_token_is_404() {
+    let s = server();
+    for uri in [
+        "/api/heartbeat/ffffffffffffffffffffffffffffffff",
+        "/api/heartbeat/ffffffffffffffffffffffffffffffff/fail",
+        "/api/heartbeat/0123456789ABCDEF0123456789ABCDEF",
+        "/api/heartbeat/not-a-token",
+        "/api/heartbeat/",
+    ] {
+        let r = s.send(request("GET", uri)).await;
+        assert_eq!(r.status, 404, "{uri}");
+    }
+    assert!(
+        s.errors.try_send(dummy_write()).is_ok(),
+        "nothing was queued"
+    );
+}
+
+#[tokio::test]
+async fn a_heartbeat_ping_to_a_full_queue_is_429() {
+    let s = server();
+    s.errors.try_send(dummy_write()).unwrap();
+    let r = s
+        .send(request("GET", &format!("/api/heartbeat/{TOKEN}")))
+        .await;
     assert_eq!(r.status, 429);
     assert_eq!(r.headers["retry-after"], "1");
 }

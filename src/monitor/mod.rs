@@ -157,6 +157,21 @@ pub enum Reason {
     Failed,
 }
 
+impl std::fmt::Display for Reason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Timeout => f.write_str("timeout"),
+            Self::Connect(e) => write!(f, "connection failed: {e}"),
+            Self::Status(s) => write!(f, "HTTP {s}"),
+            Self::KeywordMissing => f.write_str("keyword missing"),
+            Self::KeywordFound => f.write_str("keyword found"),
+            Self::NotPublic => f.write_str("address is not public"),
+            Self::Late => f.write_str("no ping in time"),
+            Self::Failed => f.write_str("failure ping"),
+        }
+    }
+}
+
 impl Reason {
     /// A heartbeat's grace period is its confirmation, so its failures open an
     /// incident without a second check.

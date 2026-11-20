@@ -1,6 +1,6 @@
 //! Monitor rows. The tables are created by the migrations in `crate::store`.
 
-use super::{Expect, HeartbeatToken, NewMonitor, State, Target};
+use super::{Change, Expect, HeartbeatToken, NewMonitor, Outcome, Reason, State, Target};
 use crate::event::Timestamp;
 use anyhow::{Context as _, Result};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -95,6 +95,64 @@ pub fn by_token(c: &Connection, token: &HeartbeatToken) -> Result<Option<i64>> {
         |r| r.get(0),
     )
     .optional()?)
+}
+
+/// Records a heartbeat ping, a failure ping when `failed`. False when the
+/// monitor is gone.
+pub fn ping(c: &Connection, monitor: i64, at: Timestamp, failed: bool) -> Result<bool> {
+    let outcome = if failed {
+        Outcome::Down(Reason::Failed)
+    } else {
+        Outcome::Up
+    };
+    let found = record(c, monitor, at, outcome)?;
+    if found {
+        c.execute(
+            "UPDATE monitors SET last_ping_at=?2 WHERE id=?1",
+            params![monitor, at],
+        )?;
+    }
+    Ok(found)
+}
+
+/// Stores one check row, moves the monitor to its next state and opens or
+/// closes its incident. False when the monitor is gone.
+fn record(c: &Connection, monitor: i64, at: Timestamp, outcome: Outcome) -> Result<bool> {
+    let Some(state) = c
+        .query_row("SELECT state FROM monitors WHERE id=?1", [monitor], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()?
+    else {
+        return Ok(false);
+    };
+    let state = State::parse(&state)
+        .with_context(|| format!("monitor {monitor} has unknown state {state:?}"))?;
+    let reason = match &outcome {
+        Outcome::Up => None,
+        Outcome::Down(reason) => Some(reason.to_string()),
+    };
+    c.execute(
+        "INSERT INTO checks(monitor_id,at,ok,reason) VALUES (?1,?2,?3,?4)",
+        params![monitor, at, reason.is_none(), reason],
+    )?;
+    let (next, change) = state.next(outcome);
+    c.execute(
+        "UPDATE monitors SET state=?2,last_check_at=?3 WHERE id=?1",
+        params![monitor, next.as_str(), at],
+    )?;
+    match change {
+        Some(Change::Opened(reason)) => c.execute(
+            "INSERT INTO incidents(monitor_id,started_at,reason) VALUES (?1,?2,?3)",
+            params![monitor, at, reason.to_string()],
+        )?,
+        Some(Change::Resolved) => c.execute(
+            "UPDATE incidents SET resolved_at=?2 WHERE monitor_id=?1 AND resolved_at IS NULL",
+            params![monitor, at],
+        )?,
+        None => 0,
+    };
+    Ok(true)
 }
 
 #[derive(Debug, Serialize)]

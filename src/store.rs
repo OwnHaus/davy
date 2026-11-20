@@ -183,6 +183,11 @@ pub enum Job {
         issue: i64,
         release: Option<String>,
     },
+    Ping {
+        monitor: i64,
+        at: Timestamp,
+        failed: bool,
+    },
 }
 pub type Outcome = std::result::Result<(), String>;
 pub struct Write {
@@ -204,6 +209,16 @@ fn apply(c: &Connection, job: &Job) -> Result<Outcome> {
             Ok(found
                 .then_some(())
                 .ok_or_else(|| format!("no issue {issue}")))
+        }
+        Job::Ping {
+            monitor,
+            at,
+            failed,
+        } => {
+            let found = crate::monitor::store::ping(c, *monitor, *at, *failed)?;
+            Ok(found
+                .then_some(())
+                .ok_or_else(|| format!("no monitor {monitor}")))
         }
     }
 }

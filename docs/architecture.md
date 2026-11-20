@@ -11,6 +11,7 @@ SDK / shipper ──HTTP──> http.rs ──parse──> envelope.rs, event.rs
                            │                        (pure: bytes in, typed records out)
                            ├── errors ──> sourcemaps::symbolicate ──> store::Writer (one thread) ──> data/davy.sqlite (SQLite, WAL)
                            └── logs ────> logs::store::LogWriter (one thread) ──> data/logs/YYYY-MM-DD/ (Tantivy)
+cron job ──HTTP /api/heartbeat──> http.rs ──> store::Writer ──> monitor::store
 sentry-cli ──HTTP──> upload.rs ──> sourcemaps::Store ──> data/sourcemaps/<debug-id>.{map,js}.zst
 agent ──HTTP /mcp──> mcp.rs ──reads──> query.rs, context.rs, logs::store::search
                        └── mark_fixed ──> store::Writer
@@ -40,15 +41,16 @@ CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::se
 
 ## Trust boundaries
 
-Three kinds of caller reach the server. Each route belongs to exactly one.
+Four kinds of caller reach the server. Each route belongs to exactly one.
 
 | Caller | Credential | Routes | May do |
 |---|---|---|---|
 | SDK or log shipper | Project ingest key, public | `/api/{project}/envelope/`, `/api/{project}/store/`, `/`, `/v1/logs` | Write events and logs into the one project the key names |
+| Heartbeat sender, such as a cron job | Heartbeat token, secret, in the path | `/api/heartbeat/{token}`, `/api/heartbeat/{token}/fail` | Record a ping or a failure for the one monitor the token names |
 | Coding agent | Admin token, secret | `/mcp` | Read everything, mark issues fixed |
 | `sentry-cli` | Admin token, secret | `/api/0/organizations/{org}/chunk-upload/`, `.../artifactbundle/assemble/` | Write source map builds |
 
-The CLI is a fourth caller. It runs on the host with file access to the data directory and needs no credential. The cloud service adds tenants above projects. A cloud feature must not let one tenant's key or token reach another tenant's data, so every query the cloud runs carries the tenant in its type, not in a string filter.
+The CLI is a fifth caller. It runs on the host with file access to the data directory and needs no credential. The cloud service adds tenants above projects. A cloud feature must not let one tenant's key or token reach another tenant's data, so every query the cloud runs carries the tenant in its type, not in a string filter.
 
 ## Invariants
 

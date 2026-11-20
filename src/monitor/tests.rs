@@ -279,3 +279,87 @@ fn a_heartbeat_token_is_32_lowercase_hex_characters() {
         assert!(HeartbeatToken::parse(bad).is_none(), "{bad}");
     }
 }
+
+#[test]
+fn a_reason_reads_as_a_short_phrase() {
+    for (reason, text) in [
+        (Reason::Timeout, "timeout"),
+        (
+            Reason::Connect("connection refused".into()),
+            "connection failed: connection refused",
+        ),
+        (Reason::Status(503), "HTTP 503"),
+        (Reason::KeywordMissing, "keyword missing"),
+        (Reason::KeywordFound, "keyword found"),
+        (Reason::NotPublic, "address is not public"),
+        (Reason::Late, "no ping in time"),
+        (Reason::Failed, "failure ping"),
+    ] {
+        assert_eq!(reason.to_string(), text);
+    }
+}
+
+fn backup(c: &rusqlite::Connection) -> i64 {
+    let target = Target::Heartbeat {
+        grace: Duration::from_secs(300),
+    };
+    let m = NewMonitor::new("Backup", target, None).unwrap();
+    store::add(c, 1, &m, 0).unwrap().id
+}
+
+/// State, last check, open incident start and last ping of monitor `id`.
+fn status(c: &rusqlite::Connection, id: i64) -> (State, Option<i64>, Option<i64>, Option<i64>) {
+    let m = store::list(c)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.id == id)
+        .unwrap();
+    let ping = c
+        .query_row("SELECT last_ping_at FROM monitors WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    (m.state, m.last_check_at, m.open_since, ping)
+}
+
+#[test]
+fn pings_move_a_heartbeat_and_open_and_close_its_incident() {
+    let c = memory();
+    let id = backup(&c);
+    assert!(store::ping(&c, id, 1_000, false).unwrap());
+    assert_eq!(status(&c, id), (State::Up, Some(1_000), None, Some(1_000)));
+    assert!(store::ping(&c, id, 2_000, true).unwrap());
+    assert_eq!(
+        status(&c, id),
+        (State::Down, Some(2_000), Some(2_000), Some(2_000))
+    );
+    assert!(store::ping(&c, id, 3_000, true).unwrap());
+    assert!(store::ping(&c, id, 4_000, false).unwrap());
+    assert_eq!(status(&c, id), (State::Up, Some(4_000), None, Some(4_000)));
+    let incidents: Vec<(i64, Option<i64>, String)> = c
+        .prepare("SELECT started_at,resolved_at,reason FROM incidents ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(incidents, [(2_000, Some(4_000), "failure ping".to_owned())]);
+    let checks: Vec<(i64, bool, Option<String>)> = c
+        .prepare("SELECT at,ok,reason FROM checks ORDER BY at")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let failed = Some("failure ping".to_owned());
+    assert_eq!(
+        checks,
+        [
+            (1_000, true, None),
+            (2_000, false, failed.clone()),
+            (3_000, false, failed),
+            (4_000, true, None),
+        ]
+    );
+    assert!(!store::ping(&c, 99, 5_000, false).unwrap());
+}
