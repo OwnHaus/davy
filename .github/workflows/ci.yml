@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A new RustSec advisory can hit code that did not change.
+  schedule:
+    - cron: '17 6 * * 1'
 
 permissions:
   contents: read
@@ -25,10 +28,11 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
-          tool: cargo-deny
+          tool: cargo-deny,zizmor
       - run: scripts/check
 
   e2e:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -49,6 +53,7 @@ jobs:
       - run: bash e2e/run.sh
 
   commits:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

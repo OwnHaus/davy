@@ -20,6 +20,12 @@ else
     printf 'check: cargo-deny is not installed, skipping (brew install cargo-deny)\n' >&2
 fi
 
+if command -v zizmor >/dev/null 2>&1; then
+    zizmor --offline --quiet .github/workflows || problem 'zizmor has findings in the workflows'
+else
+    printf 'check: zizmor is not installed, skipping (brew install zizmor)\n' >&2
+fi
+
 scripts/test-commit-msg || problem 'scripts/commit-msg fails its table test'
 
 # Prose and code are written without the long dash. Captured fixtures stay as
