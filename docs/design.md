@@ -153,8 +153,6 @@ issue_hourly(issue_id INTEGER NOT NULL, hour INTEGER NOT NULL, count INTEGER NOT
 
 ### Known follow-ups
 
-- Decompression and JSON parsing run on the async runtime threads. Move them to `spawn_blocking` before load tests.
-- Key lookup takes a `Mutex` around one SQLite connection. Cache the project keys in memory before load tests.
 - A single bad event in an envelope fails the whole request with 400. Relay drops only the bad item. Decide when the first real case shows up.
 
 ## Milestone 3: logs
