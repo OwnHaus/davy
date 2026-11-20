@@ -2,7 +2,7 @@
 
 use super::Kind;
 use crate::{event::Timestamp, time};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Slack shows a long title in full, so one event cannot fill a channel.
 const MAX_TEXT_CHARS: usize = 200;
@@ -34,6 +34,16 @@ pub enum Notice {
     MonitorDown(Incident),
     MonitorUp(Incident),
     Test,
+}
+
+/// The payload of an e-mail row: what the notifier puts in the message.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mail {
+    pub subject: String,
+    pub text: String,
+    /// `<row id>.<created ms>`, the local part of the `Message-ID` after
+    /// `davy.`, so a repeat after a restart has the same ID.
+    pub message_id: String,
 }
 
 #[derive(Serialize)]
@@ -88,9 +98,54 @@ impl Notice {
         match kind {
             Kind::Webhook => serde_json::to_string(&self.webhook(id, project, at)),
             Kind::Slack => {
-                serde_json::to_string(&serde_json::json!({ "text": self.line(project) }))
+                serde_json::to_string(&serde_json::json!({ "text": slack(&self.line(project)) }))
             }
+            Kind::Email => serde_json::to_string(&self.mail(id, project, at)),
         }
+    }
+
+    fn mail(&self, id: i64, project: Option<&str>, at: Timestamp) -> Mail {
+        let line = self.line(project);
+        let details = self
+            .details(at)
+            .into_iter()
+            .map(|(name, value)| format!("{name}: {value}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text = format!("{line}\n\n{details}\n");
+        Mail {
+            subject: line
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect(),
+            text,
+            message_id: format!("{id}.{at}"),
+        }
+    }
+
+    /// The `name: value` lines of an e-mail body.
+    fn details(&self, at: Timestamp) -> Vec<(&'static str, String)> {
+        let mut lines = match self {
+            Self::IssueNew(issue) | Self::IssueRegressed(issue) => {
+                let mut lines = vec![
+                    ("title", cut(&issue.title)),
+                    ("issue_id", issue.id.to_string()),
+                    ("level", issue.level.clone()),
+                ];
+                lines.extend(issue.culprit.as_deref().map(|c| ("culprit", cut(c))));
+                lines.extend(issue.release.as_deref().map(|r| ("release", cut(r))));
+                lines
+            }
+            Self::MonitorDown(i) | Self::MonitorUp(i) => vec![
+                ("monitor", i.name.clone()),
+                ("monitor_id", i.monitor.to_string()),
+                ("incident_id", i.id.to_string()),
+                ("reason", cut(&i.reason)),
+            ],
+            Self::Test => Vec::new(),
+        };
+        lines.push(("at", time::rfc3339_ms(at)));
+        lines
     }
 
     fn webhook<'a>(&'a self, id: i64, project: Option<&'a str>, at: Timestamp) -> Webhook<'a> {
@@ -116,10 +171,8 @@ impl Notice {
         }
     }
 
-    /// One line such as `[shop] API is down: HTTP 503`, escaped so a title
-    /// from an event cannot mention `@channel` or hide a link.
+    /// One line such as `[shop] API is down: HTTP 503`.
     fn line(&self, project: Option<&str>) -> String {
-        let cut = |s: &str| s.chars().take(MAX_TEXT_CHARS).collect::<String>();
         let text = match self {
             Self::IssueNew(issue) => format!("New issue: {}", cut(&issue.title)),
             Self::IssueRegressed(issue) => format!("Issue regressed: {}", cut(&issue.title)),
@@ -127,12 +180,20 @@ impl Notice {
             Self::MonitorUp(i) => format!("{} is up again", i.name),
             Self::Test => "Test notice from Davy".to_owned(),
         };
-        let line = match project {
+        match project {
             Some(project) => format!("[{project}] {text}"),
             None => text,
-        };
-        line.replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
+        }
     }
+}
+
+fn cut(s: &str) -> String {
+    s.chars().take(MAX_TEXT_CHARS).collect()
+}
+
+/// Escaped so a title from an event cannot mention `@channel` or hide a link.
+fn slack(line: &str) -> String {
+    line.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }

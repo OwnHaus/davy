@@ -93,6 +93,9 @@ struct Serve {
     public_url: url::Url,
     #[arg(long, default_value_t = 30)]
     log_retention_days: u32,
+    /// The sender of alert e-mail, required when DAVY_SMTP_URL is set.
+    #[arg(long)]
+    mail_from: Option<String>,
 }
 #[derive(clap::Args)]
 struct Logs {
@@ -179,9 +182,9 @@ struct MonitorAdd {
 }
 #[derive(Subcommand)]
 enum Channel {
-    /// Adds a webhook or a Slack incoming webhook for --project or --all.
-    /// Prints the channel's ID, and for a webhook its signing secret, shown
-    /// only this once.
+    /// Adds a webhook, a Slack incoming webhook or an e-mail address for
+    /// --project or --all. Prints the channel's ID, and for a webhook its
+    /// signing secret, shown only this once.
     Add(ChannelAdd),
     /// Prints each channel with its unsent, failed and dropped notices.
     List {
@@ -207,7 +210,8 @@ enum Channel {
 #[command(group(ArgGroup::new("scope").required(true).args(["project", "all"])))]
 struct ChannelAdd {
     kind: ChannelKind,
-    url: String,
+    /// The URL of a webhook or Slack channel, or the address of an e-mail one.
+    to: String,
     #[arg(long)]
     project: Option<String>,
     /// Alerts for every project, including ones created later.
@@ -220,6 +224,7 @@ struct ChannelAdd {
 enum ChannelKind {
     Webhook,
     Slack,
+    Email,
 }
 fn duration(s: &str) -> Result<Duration, String> {
     time::duration(s).ok_or_else(|| format!("expected 30s, 15m, 1h or 2d, got {s:?}"))
@@ -296,12 +301,25 @@ async fn serve(args: Serve) -> anyhow::Result<()> {
     if let Some(t) = &token {
         anyhow::ensure!(t.len() >= 32, "DAVY_TOKEN must be at least 32 characters");
     }
+    // Read from the environment only, because the URL holds the SMTP password.
+    let smtp = match (
+        std::env::var("DAVY_SMTP_URL")
+            .ok()
+            .filter(|u| !u.is_empty()),
+        &args.mail_from,
+    ) {
+        (Some(url), Some(from)) => Some(alert::mail::Smtp::new(&url, from)?),
+        (Some(_), None) => anyhow::bail!("DAVY_SMTP_URL needs --mail-from"),
+        (None, Some(_)) => anyhow::bail!("--mail-from needs DAVY_SMTP_URL"),
+        (None, None) => None,
+    };
     http::serve(
         &args.data,
         &args.listen,
         &args.public_url,
         args.log_retention_days,
         token.as_deref().map(Token::new),
+        smtp,
     )
     .await
 }
@@ -391,12 +409,15 @@ fn run_channel(out: &mut impl Write, command: Channel) -> anyhow::Result<()> {
                 ),
                 None => None,
             };
-            let kind = match args.kind {
-                ChannelKind::Webhook => alert::Kind::Webhook,
-                ChannelKind::Slack => alert::Kind::Slack,
-            };
-            let url = CheckUrl::parse(&args.url).map_err(anyhow::Error::msg)?;
-            let added = alert::store::add(&c, project, kind, &url, time::now_ms())?;
+            let to = match args.kind {
+                ChannelKind::Webhook => CheckUrl::parse(&args.to).map(alert::Destination::Webhook),
+                ChannelKind::Slack => CheckUrl::parse(&args.to).map(alert::Destination::Slack),
+                ChannelKind::Email => {
+                    alert::EmailAddress::parse(&args.to).map(alert::Destination::Email)
+                }
+            }
+            .map_err(anyhow::Error::msg)?;
+            let added = alert::store::add(&c, project, &to, time::now_ms())?;
             match added.secret {
                 Some(secret) => writeln!(out, "{}\t{}", added.id, secret.as_str())?,
                 None => writeln!(out, "{}", added.id)?,
@@ -415,7 +436,7 @@ fn run_channel(out: &mut impl Write, command: Channel) -> anyhow::Result<()> {
                     ch.id,
                     ch.project.as_deref().map_or(Cow::Borrowed("*"), safe),
                     ch.kind.as_str(),
-                    safe(&ch.host),
+                    safe(&ch.to),
                     ch.unsent,
                     ch.failed,
                     ch.dropped
@@ -587,6 +608,7 @@ mod tests {
             "shop"
         ]));
         assert!(add(&["slack", "https://hooks.slack.com/", "--all"]));
+        assert!(add(&["email", "ops@example.com", "--all"]));
         for bad in [
             &["webhook", "https://hooks.example/"][..],
             &[
@@ -596,7 +618,7 @@ mod tests {
                 "shop",
                 "--all",
             ],
-            &["email", "https://hooks.example/", "--all"],
+            &["sms", "+420123456789", "--all"],
         ] {
             assert!(!add(bad), "{bad:?}");
         }

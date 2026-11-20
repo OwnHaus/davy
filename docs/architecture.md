@@ -14,7 +14,7 @@ SDK / shipper ──HTTP──> http.rs ──parse──> envelope.rs, event.rs
 cron job ──HTTP /api/heartbeat──> http.rs ──> store::Writer ──> monitor::store
 monitor::check::run (task) ──reads due monitors, HTTP GET──> checked sites ──result──> store::Writer ──> monitor::store
                                     store::Writer ──new issue, regression, incident──> alert::store::notify (outbox rows, same transaction)
-                                    alert::deliver::run (task) ──reads due rows, HTTP POST──> webhook, Slack ──result──> store::Writer
+                                    alert::deliver::run (task) ──reads due rows, HTTP POST or SMTP──> webhook, Slack, e-mail ──result──> store::Writer
 sentry-cli ──HTTP──> upload.rs ──> sourcemaps::Store ──> data/sourcemaps/<debug-id>.{map,js}.zst
 agent ──HTTP /mcp──> mcp.rs ──reads──> query.rs, context.rs, logs::store::search
                        └── mark_fixed ──> store::Writer
@@ -37,7 +37,7 @@ CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::se
 - `src/sourcemaps/` stores uploaded builds per debug ID (`mod.rs`), unpacks artifact bundles (`bundle.rs`) and rewrites minified frames in an event before it is parsed (`symbolicate.rs`, pure apart from the build lookup).
 - `src/mcp.rs` is the MCP boundary: allowed hosts behind the admin token, and the tools as thin calls into `query`, `context`, `logs::store::search` and the writer queue.
 - `src/monitor/` holds uptime monitors: what a monitor watches, its limits and the state machine a check result moves (`mod.rs`), the HTTP check and its scheduler task (`check.rs`), and the monitor rows (`store.rs`). The tables are created by `store.rs` migrations like every other table.
-- `src/alert/` holds alert channels: their kinds and signing secret (`mod.rs`), what a notice says and the body each channel kind gets (`notice.rs`, pure), the channel and outbox rows (`store.rs`), and the notifier task that sends due rows and stores each result through the writer queue (`deliver.rs`). `store::insert` and `monitor::store` call `alert::store::notify` inside the writer's transaction.
+- `src/alert/` holds alert channels: their kinds and signing secret (`mod.rs`), what a notice says and the body each channel kind gets (`notice.rs`, pure), the channel and outbox rows (`store.rs`), the SMTP sender of e-mail rows (`mail.rs`), and the notifier task that sends due rows and stores each result through the writer queue (`deliver.rs`). `store::insert` and `monitor::store` call `alert::store::notify` inside the writer's transaction.
 - `src/net.rs` holds what checks and deliveries share when they reach a URL a user typed: the client, the `Reach` it enforces (any address, or public ones only for the cloud), the User-Agent and the error text that never holds the URL.
 - `src/tasks.rs` holds `poll`, the loop behind each background task in `davy serve` that reads due work from SQLite: one task per key, a limit on how many run, and the result stored through the writer before the key is free.
 - `src/logs/mod.rs` defines `LogRecord`, `LogLevel` and the timestamp and level rules shared by every log source.

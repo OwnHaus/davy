@@ -1,8 +1,9 @@
-//! Sends queued notifications over HTTP. The rows are read here and marked
-//! through the writer, like every other write in the server.
+//! Sends queued notifications over HTTP or SMTP. The rows are read here and
+//! marked through the writer, like every other write in the server.
 
 use super::{
     Channel,
+    mail::Smtp,
     store::{self, Due},
 };
 use crate::{
@@ -16,15 +17,29 @@ use std::{sync::mpsc, time::Duration};
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The client every delivery uses. A redirect is a failed send, so a
-/// receiver cannot bounce a signed body to another address.
-pub fn client(reach: net::Reach) -> reqwest::Result<net::Client> {
-    net::Client::new(reach, 0)
+const NO_SMTP: &str = "no SMTP server, set DAVY_SMTP_URL";
+
+/// What deliveries go out through.
+#[derive(Clone, Debug)]
+pub struct Transports {
+    http: net::Client,
+    smtp: Option<Smtp>,
 }
 
-/// Sends one notification at `now`. Any status but `2xx` is an error. An
-/// error never holds the URL, because the URL is a credential.
-pub async fn send(client: &net::Client, due: &Due, now: Timestamp) -> Result<(), String> {
+impl Transports {
+    /// A redirect is a failed send, so a receiver cannot bounce a signed body
+    /// to another address. Without `smtp`, e-mail rows fail.
+    pub fn new(reach: net::Reach, smtp: Option<Smtp>) -> reqwest::Result<Self> {
+        Ok(Self {
+            http: net::Client::new(reach, 0)?,
+            smtp,
+        })
+    }
+}
+
+/// Sends one notification at `now`. Any HTTP status but `2xx` is an error.
+/// An error never holds the URL, because the URL is a credential.
+pub async fn send(transports: &Transports, due: &Due, now: Timestamp) -> Result<(), String> {
     let (url, signed) = match &due.to {
         Channel::Webhook { url, secret } => {
             let signature = secret
@@ -33,8 +48,13 @@ pub async fn send(client: &net::Client, due: &Due, now: Timestamp) -> Result<(),
             (url, Some(signature))
         }
         Channel::Slack { url } => (url, None),
+        Channel::Email { to } => {
+            let smtp = transports.smtp.as_ref().ok_or(NO_SMTP)?;
+            return smtp.send(to, &due.payload).await;
+        }
     };
-    let mut request = client
+    let mut request = transports
+        .http
         .request(reqwest::Method::POST, url)
         .map_err(|e| e.to_string())?;
     if let Some(signature) = signed {
@@ -62,7 +82,7 @@ pub async fn send(client: &net::Client, due: &Due, now: Timestamp) -> Result<(),
 /// stored, so a row is not sent twice by one server. Runs until aborted.
 pub async fn run(
     c: Connection,
-    client: net::Client,
+    transports: Transports,
     writer: mpsc::SyncSender<Write>,
     period: Duration,
 ) {
@@ -72,13 +92,13 @@ pub async fn run(
         usize::MAX,
         move || store::due(&c, time::now_ms()),
         |due| due.channel,
-        |due| deliver(client.clone(), due, writer.clone()),
+        |due| deliver(transports.clone(), due, writer.clone()),
     )
     .await;
 }
 
-async fn deliver(client: net::Client, due: Due, writer: mpsc::SyncSender<Write>) {
-    let result = send(&client, &due, time::now_ms()).await;
+async fn deliver(transports: Transports, due: Due, writer: mpsc::SyncSender<Write>) {
+    let result = send(&transports, &due, time::now_ms()).await;
     let job = Job::Delivery {
         id: due.id,
         at: time::now_ms(),

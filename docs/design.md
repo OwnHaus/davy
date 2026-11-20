@@ -450,7 +450,7 @@ A host name goes through a resolver that keeps only the public addresses DNS ret
 
 ### Alerts
 
-- A channel belongs to one project or to all projects and receives every notice kind for them. Channels are a webhook or a Slack incoming webhook URL. Email over SMTP comes after these two, inside this milestone.
+- A channel belongs to one project or to all projects and receives every notice kind for them. Channels are a webhook, a Slack incoming webhook URL or an e-mail address.
 - **Outbox.** When the writer opens a new issue, regresses one, opens or closes an incident, it inserts one `notifications` row per matching channel in the same transaction. A crash cannot lose a notice or send one for a change that did not commit. The body is rendered when the row is stored, so delivery only signs and sends it. A new issue is noticed once, by the event that created it, and a regression once, by the event that reopened it.
 - **Delivery.** One notifier task looks for due rows every second and sends the oldest unsent row of each channel, one at a time per channel, so `monitor.down` never arrives after its `monitor.up`. A row waiting for its retry holds back the newer rows of its channel. A channel stays busy until the writer has stored the result, so one server never sends a row twice in a row. A send has 10 s, carries `User-Agent: Davy/<version>` and follows no redirect, so a receiver cannot bounce a signed body elsewhere and a `3xx` is a failure. A `2xx` marks the row sent. Anything else retries after 30 s, 1, 2, 4 and 8 min, then the row is marked failed and the channel moves on. `last_error` keeps the status (`HTTP 500`) or the connection error, cut to 200 characters and never with the URL, because the URL is a credential. An `https` URL is checked against the operating system's trust store, so a host without root certificates (a bare container image) needs its CA bundle installed. An invalid or expired certificate fails the send. Delivery is at least once, so a row in flight at shutdown is sent again on the next start. Each payload carries its `id` so a receiver can drop a repeat.
 - **Bounds.** At most 100 unsent rows per channel. Over that a notice is not stored and the channel's `dropped` counter grows, which `davy channel list` shows.
@@ -464,6 +464,21 @@ A host name goes through a resolver that keeps only the public addresses DNS ret
 ```
 
 - **Slack.** `POST {"text": "<line>"}` to the incoming webhook URL, for example `[shop] API is down: HTTP 503`. The lines are `New issue: <title>`, `Issue regressed: <title>`, `<monitor> is down: <reason>`, `<monitor> is up again` and `Test notice from Davy`, after `[<project>]` when the notice has one. Titles and reasons are cut to 200 characters. `&`, `<` and `>` are escaped, so an event title cannot mention `@channel` or hide a link. A Slack line carries no `id`, because Slack cannot drop a repeat.
+- **E-mail.** `davy serve` sends through the SMTP server in `DAVY_SMTP_URL`, read only from the environment because it holds the password, from the address in `--mail-from`. Either one without the other stops the start. `smtps://user:pass@host:465` speaks TLS from the first byte. `smtp://user:pass@host:587?tls=required` upgrades with STARTTLS and fails when the server cannot. `smtp://host:25` is plain, for a relay on the same host or network. A URL with a password in any other form is refused at start, `tls=opportunistic` included, because an attacker on the path can strip STARTTLS and read the password. The certificate is checked against the operating system's trust store, like `https`. The SMTP server is the operator's choice, so `Reach` does not apply to it.
+- One message per row, plain UTF-8 text. The subject is the Slack line without the escaping, with control characters replaced by spaces, so a title cannot add a header. The body is the line, a blank line, then the details as `name: value` lines, as below. An issue has `title`, `issue_id`, `level` and, when set, `culprit` and `release`. The `Message-ID` is `<davy.<row id>.<created ms>@<domain of --mail-from>>`, so a repeat after a restart has the same ID and a mail client can drop it. A send has 10 s. Any SMTP error, a refused recipient included, retries on the schedule above, and `last_error` keeps the server's answer cut to 200 characters. Without `DAVY_SMTP_URL` an e-mail row fails with `no SMTP server, set DAVY_SMTP_URL` and retries, so `davy channel list` shows the problem. A cloud tenant could mail any address, so the cloud crate must verify a recipient before it sends.
+
+```
+Subject: [shop] API is down: HTTP 503
+
+[shop] API is down: HTTP 503
+
+monitor: API
+monitor_id: 1
+incident_id: 4
+reason: HTTP 503
+at: 2026-11-20T08:43:10Z
+```
+
 - `type` is one of `issue.new`, `issue.regressed`, `monitor.down`, `monitor.up`, `test`.
 
 ### Storage
@@ -483,8 +498,8 @@ At most 1,000 monitors and 100 channels per data directory. The `sql` tool reads
 - `davy monitor add <project> <name> --url <url> [--keyword <text> | --no-keyword <text>] [--every 60s] [--timeout 10s]`
 - `davy monitor add <project> <name> --heartbeat [--every 1h] [--grace 5m]` prints the ping path `/api/heartbeat/<token>`.
 - `davy monitor list` shows each monitor with its state, last check and open incident. `davy monitor remove <id>`.
-- `davy channel add webhook <url> (--project <slug> | --all)` prints the channel ID and the signing secret, once. `davy channel add slack <url> (--project <slug> | --all)` prints the ID. The project is a flag because clap cannot read an optional positional before two required ones.
-- `davy channel list` shows each channel with its unsent, failed and dropped counts, and only the host of its URL, because a Slack webhook URL is a credential. `davy channel remove <id>`. `davy channel test <id>` queues a `test` notice for that channel alone. Its `project` is `null` on a channel of every project.
+- `davy channel add webhook <url> (--project <slug> | --all)` prints the channel ID and the signing secret, once. `davy channel add slack <url> (--project <slug> | --all)` and `davy channel add email <address> (--project <slug> | --all)` print the ID. An address is one `user@domain` of at most 254 characters, stored as a `mailto:` URL. The project is a flag because clap cannot read an optional positional before two required ones.
+- `davy channel list` shows each channel with its unsent, failed and dropped counts and where it goes: only the host of a webhook or Slack URL, because a Slack webhook URL is a credential, and the whole address of an e-mail channel. `davy channel remove <id>`. `davy channel test <id>` queues a `test` notice for that channel alone. Its `project` is `null` on a channel of every project.
 
 Monitors and channels are added from the CLI only. No MCP tool creates them, so an agent cannot point the server at an address.
 
@@ -539,6 +554,7 @@ Sentry's own limits (develop.sentry.dev, Envelopes, Size Limits) are 200 MiB for
 - A `trace_id` that is not 32 hex characters is ignored, so it cannot break the log query in `issue_context`.
 - The CLI replaces control characters other than newline and tab in titles, messages and attributes with `U+FFFD` before printing to a terminal. `--json` output is unchanged, because JSON already escapes them.
 - The admin token is read only from `DAVY_TOKEN`. A token on the command line shows up in `ps` and shell history.
+- The SMTP URL is read only from `DAVY_SMTP_URL`, for the same reason, because it holds the SMTP password.
 
 ### Before the cloud launch
 
@@ -548,6 +564,7 @@ These are fine for one team on its own server and must change before tenants sha
 - **Retention for errors.** Events, issues and hourly counts are kept forever. A sender with a key can open a new issue per event. A retention sweep by age and a cap on new issues per project per hour come with the cloud quotas.
 - **Abandoned chunks.** Chunks of an upload that never assembles stay in `data/chunks/`. A sweep removes chunks older than an hour.
 - **Tenant scope in agent tools.** `sql` and `mark_fixed` see every project in the database.
+- **E-mail recipients.** An e-mail channel mails any address. The cloud verifies an address with a confirmation link before a channel sends to it.
 
 ## License and open core
 

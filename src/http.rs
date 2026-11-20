@@ -511,6 +511,7 @@ pub async fn serve(
     public_url: &url::Url,
     log_retention_days: u32,
     token: Option<Token>,
+    smtp: Option<alert::mail::Smtp>,
 ) -> anyhow::Result<()> {
     let writer = store::Writer::start(store::open(data)?, 1024);
     let log_writer = LogWriter::start(data.join("logs"), log_retention_days)?;
@@ -543,7 +544,7 @@ pub async fn serve(
     ));
     let notifier = tokio::spawn(alert::deliver::run(
         store::open(data)?,
-        alert::deliver::client(net::Reach::Any)?,
+        alert::deliver::Transports::new(net::Reach::Any, smtp)?,
         writer.sender.clone(),
         NOTIFY_EVERY,
     ));

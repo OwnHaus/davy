@@ -18,8 +18,7 @@ fn channels_are_added_listed_and_removed() {
     let hook = store::add(
         &c,
         Some(1),
-        Kind::Webhook,
-        &url("https://hooks.example/davy"),
+        &Destination::Webhook(url("https://hooks.example/davy")),
         1_000,
     )
     .unwrap();
@@ -29,8 +28,7 @@ fn channels_are_added_listed_and_removed() {
     let slack = store::add(
         &c,
         None,
-        Kind::Slack,
-        &url("https://hooks.slack.com/services/T0/B0/x"),
+        &Destination::Slack(url("https://hooks.slack.com/services/T0/B0/x")),
         2_000,
     )
     .unwrap();
@@ -49,7 +47,7 @@ fn channels_are_added_listed_and_removed() {
                 id: 1,
                 project: Some("shop".into()),
                 kind: Kind::Webhook,
-                host: "hooks.example".into(),
+                to: "hooks.example".into(),
                 unsent: 0,
                 failed: 0,
                 dropped: 0
@@ -58,7 +56,7 @@ fn channels_are_added_listed_and_removed() {
                 id: 2,
                 project: None,
                 kind: Kind::Slack,
-                host: "hooks.slack.com".into(),
+                to: "hooks.slack.com".into(),
                 unsent: 0,
                 failed: 0,
                 dropped: 0
@@ -74,10 +72,15 @@ fn channels_are_added_listed_and_removed() {
 fn a_webhook_secret_is_64_hex_characters_and_new_each_time() {
     let c = memory();
     let secret = || {
-        store::add(&c, None, Kind::Webhook, &url("https://hooks.example/"), 0)
-            .unwrap()
-            .secret
-            .unwrap()
+        store::add(
+            &c,
+            None,
+            &Destination::Webhook(url("https://hooks.example/")),
+            0,
+        )
+        .unwrap()
+        .secret
+        .unwrap()
     };
     let (first, second) = (secret(), secret());
     assert!(
@@ -99,7 +102,12 @@ fn a_data_directory_holds_at_most_100_channels() {
          INSERT INTO channels(kind,url,created_at) SELECT 'slack','https://hooks.slack.com/',0 FROM n",
     )
     .unwrap();
-    let refused = store::add(&c, None, Kind::Slack, &url("https://hooks.slack.com/"), 0);
+    let refused = store::add(
+        &c,
+        None,
+        &Destination::Slack(url("https://hooks.slack.com/")),
+        0,
+    );
     assert_eq!(
         refused.unwrap_err().to_string(),
         "a data directory holds at most 100 channels"
@@ -184,10 +192,49 @@ fn a_slack_message_is_one_escaped_line() {
     );
 }
 
+#[test]
+fn an_email_has_the_plain_line_as_subject_and_the_details_in_its_body() {
+    let mail = |project, notice: Notice, at| -> Mail {
+        serde_json::from_str(&notice.render(Kind::Email, 19, project, at).unwrap()).unwrap()
+    };
+    assert_eq!(
+        mail(Some("shop"), Notice::MonitorDown(incident()), 1_795_164_190_000),
+        Mail {
+            subject: "[shop] API is down: HTTP 503".into(),
+            text: "[shop] API is down: HTTP 503\n\nmonitor: API\nmonitor_id: 1\nincident_id: 4\nreason: HTTP 503\nat: 2026-11-20T08:43:10Z\n".into(),
+            message_id: "19.1795164190000".into(),
+        }
+    );
+    assert_eq!(
+        mail(Some("shop"), Notice::IssueRegressed(issue("<b> & x\r\nBcc: a@b.c")), 0),
+        Mail {
+            subject: "[shop] Issue regressed: <b> & x  Bcc: a@b.c".into(),
+            text: "[shop] Issue regressed: <b> & x\r\nBcc: a@b.c\n\ntitle: <b> & x\r\nBcc: a@b.c\nissue_id: 3\nlevel: error\nculprit: parseOrder(src/app.js)\nrelease: shop@2.0.0\nat: 1970-01-01T00:00:00Z\n".into(),
+            message_id: "19.0".into(),
+        }
+    );
+    let bare = Issue {
+        culprit: None,
+        release: None,
+        ..issue("TypeError: x")
+    };
+    assert_eq!(
+        mail(None, Notice::IssueNew(bare), 0).text,
+        "New issue: TypeError: x\n\ntitle: TypeError: x\nissue_id: 3\nlevel: error\nat: 1970-01-01T00:00:00Z\n"
+    );
+    assert_eq!(
+        mail(None, Notice::Test, 1_000).text,
+        "Test notice from Davy\n\nat: 1970-01-01T00:00:01Z\n"
+    );
+}
+
 fn channel(c: &rusqlite::Connection, project: Option<i64>, kind: Kind) -> i64 {
-    store::add(c, project, kind, &url("https://hooks.example/x"), 0)
-        .unwrap()
-        .id
+    let to = match kind {
+        Kind::Webhook => Destination::Webhook(url("https://hooks.example/x")),
+        Kind::Slack => Destination::Slack(url("https://hooks.example/x")),
+        Kind::Email => Destination::Email(EmailAddress::parse("ops@example.com").unwrap()),
+    };
+    store::add(c, project, &to, 0).unwrap().id
 }
 
 fn queued(c: &rusqlite::Connection) -> Vec<(i64, i64, String, String, i64)> {
@@ -300,6 +347,36 @@ fn a_failed_delivery_retries_five_times_with_doubling_waits() {
     );
 }
 
+#[test]
+fn an_email_channel_is_listed_and_due_with_its_address() {
+    let c = memory();
+    let id = channel(&c, Some(1), Kind::Email);
+    assert_eq!(store::list(&c).unwrap()[0].to, "ops@example.com".to_owned());
+    store::notify(&c, 1, &Notice::Test, 0).unwrap();
+    let due = store::due(&c, 0).unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].channel, id);
+    assert_eq!(
+        due[0].to,
+        Channel::Email {
+            to: "ops@example.com".into()
+        }
+    );
+}
+
+#[test]
+fn an_address_is_one_user_at_domain_of_at_most_254_bytes() {
+    let at_most = format!("op@{}.com", vec!["a".repeat(61); 4].join("."));
+    assert_eq!(EmailAddress::parse(&at_most).unwrap().as_str(), at_most);
+    assert_eq!(
+        EmailAddress::parse(&format!("a{at_most}")),
+        Err("the address is longer than 254 bytes".to_owned())
+    );
+    for bad in ["ops", "ops@", "Ops <ops@example.com>", "a@b.com, c@d.com"] {
+        assert!(EmailAddress::parse(bad).is_err(), "{bad:?}");
+    }
+}
+
 fn row(c: &rusqlite::Connection, id: i64) -> (i64, i64, Option<i64>, Option<i64>, Option<String>) {
     c.query_row(
         "SELECT attempts,next_at,sent_at,failed_at,last_error FROM notifications WHERE id=?1",
@@ -327,6 +404,7 @@ fn only_the_oldest_unsent_row_of_each_channel_is_due() {
                     Channel::Webhook { secret, .. } if secret.as_str().len() == 64 => "webhook",
                     Channel::Webhook { .. } => "webhook without its secret",
                     Channel::Slack { .. } => "slack",
+                    Channel::Email { .. } => "email",
                 };
                 (d.id, d.channel, kind)
             })

@@ -186,7 +186,7 @@ fn a_new_and_a_regressed_issue_each_queue_one_notice() {
     let c = memory();
     store::create_project(&c, "shop").unwrap();
     let hook = crate::monitor::CheckUrl::parse("https://hooks.example/x").unwrap();
-    crate::alert::store::add(&c, None, crate::alert::Kind::Slack, &hook, 0).unwrap();
+    crate::alert::store::add(&c, None, &crate::alert::Destination::Slack(hook), 0).unwrap();
     let in_release = |release: &str, received_at| ErrorEvent {
         received_at,
         ..event(json!({"message":"boom","release":release}))

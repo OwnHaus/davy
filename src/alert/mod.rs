@@ -3,24 +3,32 @@
 pub mod deliver;
 #[cfg(test)]
 mod deliver_tests;
+pub mod mail;
+#[cfg(test)]
+mod mail_tests;
 mod notice;
 pub mod store;
 #[cfg(test)]
 mod tests;
 
-pub use notice::{Incident, Issue, Notice};
+pub use notice::{Incident, Issue, Mail, Notice};
 
+use crate::monitor::CheckUrl;
 use anyhow::anyhow;
 use hmac::{Hmac, KeyInit as _, Mac as _};
 use sha2::Sha256;
 use std::time::Duration;
 
-/// A webhook gets a signed JSON body, Slack an incoming webhook message.
+const MAX_ADDRESS: usize = 254;
+
+/// A webhook gets a signed JSON body, Slack an incoming webhook message and
+/// an e-mail channel a plain text message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     Webhook,
     Slack,
+    Email,
 }
 
 impl Kind {
@@ -29,22 +37,72 @@ impl Kind {
         match self {
             Self::Webhook => "webhook",
             Self::Slack => "slack",
+            Self::Email => "email",
         }
     }
 
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
-        [Self::Webhook, Self::Slack]
+        [Self::Webhook, Self::Slack, Self::Email]
             .into_iter()
             .find(|kind| kind.as_str() == s)
     }
 }
 
-/// Where a notification goes. Both URLs are credentials.
+/// One `user@domain` address of at most 254 bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmailAddress(lettre::Address);
+
+impl EmailAddress {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        if s.len() > MAX_ADDRESS {
+            return Err(format!("the address is longer than {MAX_ADDRESS} bytes"));
+        }
+        s.parse()
+            .map(Self)
+            .map_err(|e| format!("the address is not valid: {e}"))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
+/// Where a new channel sends its notices.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Destination {
+    Webhook(CheckUrl),
+    Slack(CheckUrl),
+    Email(EmailAddress),
+}
+
+impl Destination {
+    #[must_use]
+    pub fn kind(&self) -> Kind {
+        match self {
+            Self::Webhook(_) => Kind::Webhook,
+            Self::Slack(_) => Kind::Slack,
+            Self::Email(_) => Kind::Email,
+        }
+    }
+
+    /// The `url` column of the channel row. An address becomes a `mailto:`
+    /// URL.
+    fn url(&self) -> String {
+        match self {
+            Self::Webhook(url) | Self::Slack(url) => url.as_str().to_owned(),
+            Self::Email(address) => format!("mailto:{}", address.as_str()),
+        }
+    }
+}
+
+/// Where a notification goes. Both URLs are credentials. An address is not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Channel {
     Webhook { url: String, secret: Secret },
     Slack { url: String },
+    Email { to: String },
 }
 
 /// 32 random bytes as 64 lowercase hex characters. A webhook receiver checks

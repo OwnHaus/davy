@@ -1,6 +1,6 @@
-use super::deliver::{client, run, send};
+use super::deliver::{Transports, run, send};
 use super::store::{self, Due};
-use super::{Channel, Kind, Notice, Secret};
+use super::{Channel, Destination, Notice, Secret};
 use crate::net::Reach;
 use axum::{Router, http::HeaderMap, http::StatusCode, routing::post};
 use std::time::Duration;
@@ -44,7 +44,7 @@ fn header<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
 async fn a_webhook_gets_the_body_with_its_delivery_id_and_signature() {
     let (url, mut seen) = receiver(StatusCode::NO_CONTENT).await;
     let sent = send(
-        &client(Reach::Any).unwrap(),
+        &Transports::new(Reach::Any, None).unwrap(),
         &webhook(&url),
         1_795_164_121_999,
     )
@@ -68,12 +68,17 @@ async fn slack_gets_no_signature_and_an_error_status_or_redirect_fails_the_send(
         to: Channel::Slack { url },
         ..webhook("")
     };
-    let sent = send(&client(Reach::Any).unwrap(), &slack, 0).await;
+    let sent = send(&Transports::new(Reach::Any, None).unwrap(), &slack, 0).await;
     assert_eq!(sent, Err("HTTP 500".to_owned()));
     let (headers, _) = seen.recv().await.unwrap();
     assert_eq!(header(&headers, "davy-signature"), None);
     let (url, _seen) = receiver(StatusCode::FOUND).await;
-    let sent = send(&client(Reach::Any).unwrap(), &webhook(&url), 0).await;
+    let sent = send(
+        &Transports::new(Reach::Any, None).unwrap(),
+        &webhook(&url),
+        0,
+    )
+    .await;
     assert_eq!(sent, Err("HTTP 302".to_owned()));
 }
 
@@ -82,9 +87,13 @@ async fn a_refused_connection_names_the_cause_but_not_the_url() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/hook/secret-path", listener.local_addr().unwrap());
     drop(listener);
-    let error = send(&client(Reach::Any).unwrap(), &webhook(&url), 0)
-        .await
-        .unwrap_err();
+    let error = send(
+        &Transports::new(Reach::Any, None).unwrap(),
+        &webhook(&url),
+        0,
+    )
+    .await
+    .unwrap_err();
     assert!(error.contains("onnect"), "{error}");
     assert!(!error.contains("secret-path"), "{error}");
     assert!(!error.contains("127.0.0.1"), "{error}");
@@ -93,7 +102,7 @@ async fn a_refused_connection_names_the_cause_but_not_the_url() {
 #[tokio::test]
 async fn a_public_reach_sends_nothing_to_a_local_address() {
     let (url, mut seen) = receiver(StatusCode::OK).await;
-    let public = client(Reach::Public).unwrap();
+    let public = Transports::new(Reach::Public, None).unwrap();
     let sent = send(&public, &webhook(&url), 0).await;
     assert_eq!(sent, Err("address is not public".to_owned()));
     let port = url.split(':').nth(2).unwrap().split('/').next().unwrap();
@@ -112,13 +121,13 @@ async fn the_notifier_sends_a_channel_s_rows_in_order_and_marks_them_sent() {
     crate::store::create_project(&c, "shop").unwrap();
     let (url, mut seen) = receiver(StatusCode::OK).await;
     let url = crate::monitor::CheckUrl::parse(&url).unwrap();
-    store::add(&c, Some(1), Kind::Webhook, &url, 0).unwrap();
+    store::add(&c, Some(1), &Destination::Webhook(url), 0).unwrap();
     store::notify(&c, 1, &Notice::Test, 0).unwrap();
     store::notify(&c, 1, &Notice::Test, 0).unwrap();
     let writer = crate::store::Writer::start(crate::store::open(&dir).unwrap(), 8);
     let notifier = tokio::spawn(run(
         crate::store::open(&dir).unwrap(),
-        client(Reach::Any).unwrap(),
+        Transports::new(Reach::Any, None).unwrap(),
         writer.sender.clone(),
         Duration::from_millis(10),
     ));

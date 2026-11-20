@@ -237,8 +237,9 @@ mod tests {
         crate::alert::store::add(
             &store::open(&data).unwrap(),
             None,
-            crate::alert::Kind::Webhook,
-            &crate::monitor::CheckUrl::parse("https://hooks.example/").unwrap(),
+            &crate::alert::Destination::Webhook(
+                crate::monitor::CheckUrl::parse("https://hooks.example/").unwrap(),
+            ),
             0,
         )
         .unwrap();
