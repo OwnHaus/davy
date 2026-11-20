@@ -147,19 +147,28 @@ pub(crate) async fn blocking<T: Send + 'static>(
 ) -> Result<T, Failure> {
     tokio::task::spawn_blocking(f).await.map_err(internal)?
 }
-fn queue<T>(sender: &mpsc::SyncSender<T>, value: T) -> Result<(), Failure> {
-    sender.try_send(value).map_err(|e| match e {
-        mpsc::TrySendError::Full(_) => (StatusCode::TOO_MANY_REQUESTS, "ingest queue full".into()),
-        mpsc::TrySendError::Disconnected(_) => {
-            (StatusCode::SERVICE_UNAVAILABLE, "writer stopped".into())
-        }
-    })
+fn queue_full() -> Failure {
+    (StatusCode::TOO_MANY_REQUESTS, "ingest queue full".into())
 }
-fn queue_logs(logs: &LogQueue, batch: Vec<LogRecord>) -> Result<(), Failure> {
-    logs.push(batch).map_err(|e| match e {
-        QueueError::Full => (StatusCode::TOO_MANY_REQUESTS, "ingest queue full".into()),
-        QueueError::Stopped => (StatusCode::SERVICE_UNAVAILABLE, "writer stopped".into()),
-    })
+fn writer_stopped() -> Failure {
+    (StatusCode::SERVICE_UNAVAILABLE, "writer stopped".into())
+}
+impl From<store::Refused> for Failure {
+    fn from(e: store::Refused) -> Self {
+        match e {
+            store::Refused::Full => queue_full(),
+            store::Refused::Stopped => writer_stopped(),
+            store::Refused::Failed(e) => internal(e),
+        }
+    }
+}
+impl From<QueueError> for Failure {
+    fn from(e: QueueError) -> Self {
+        match e {
+            QueueError::Full => queue_full(),
+            QueueError::Stopped => writer_stopped(),
+        }
+    }
 }
 fn decoder<'a>(bytes: &'a [u8], encoding: &str) -> Result<impl BufRead + 'a, Failure> {
     let source = Cursor::new(bytes);
@@ -369,23 +378,11 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
         .or_else(|| parsed.event.as_ref().map(|e| e.event_id.clone()))
         .unwrap_or_else(EventId::fresh);
     if !parsed.logs.is_empty() {
-        queue_logs(&app.logs, parsed.logs)?;
+        app.logs.push(parsed.logs)?;
     }
     if let Some(event) = parsed.event {
-        let (done, rx) = tokio::sync::oneshot::channel();
-        queue(
-            &app.sender,
-            Write {
-                job: Job::Ingest {
-                    project,
-                    events: vec![event],
-                },
-                done,
-            },
-        )?;
-        rx.await
-            .map_err(|e| internal(format!("writer stopped: {e}")))?
-            .map_err(internal)?;
+        let events = vec![event];
+        store::submit(&app.sender, Job::Ingest { project, events }).await?;
     }
     Ok(Json(json!({"id":id.0})).into_response())
 }
@@ -406,21 +403,16 @@ async fn heartbeat(app: &App, token: &str, failed: bool) -> Result<&'static str,
     };
     let token = HeartbeatToken::parse(token).ok_or_else(unknown)?;
     let monitor = app.keys.monitor_for(&token)?.ok_or_else(unknown)?;
-    let (done, rx) = tokio::sync::oneshot::channel();
-    queue(
+    let at = time::now_ms();
+    store::submit(
         &app.sender,
-        Write {
-            job: Job::Ping {
-                monitor,
-                at: time::now_ms(),
-                failed,
-            },
-            done,
+        Job::Ping {
+            monitor,
+            at,
+            failed,
         },
-    )?;
-    rx.await
-        .map_err(|e| internal(format!("writer stopped: {e}")))?
-        .map_err(internal)?;
+    )
+    .await?;
     Ok("ok")
 }
 async fn logtail_ingest(State(app): State<App>, req: Request) -> Response {
@@ -443,7 +435,7 @@ async fn logtail_ingest(State(app): State<App>, req: Request) -> Response {
         })
         .await?;
         if !records.is_empty() {
-            queue_logs(&app.logs, records)?;
+            app.logs.push(records)?;
         }
         Ok::<_, Failure>(StatusCode::ACCEPTED.into_response())
     };
@@ -476,7 +468,7 @@ async fn otlp_ingest(State(app): State<App>, req: Request) -> Response {
         })
         .await?;
         if !records.is_empty() {
-            queue_logs(&app.logs, records)?;
+            app.logs.push(records)?;
         }
         Ok::<_, Failure>(encoding)
     };

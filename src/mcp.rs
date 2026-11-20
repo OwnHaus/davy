@@ -213,11 +213,13 @@ impl Tools {
             Some(r) => format!("issue {issue_id} resolved in release {r}"),
             None => format!("issue {issue_id} resolved until a new release reports it"),
         };
-        self.write(Job::Resolve {
+        let job = Job::Resolve {
             issue: issue_id,
             release,
-        })
-        .await?;
+        };
+        store::submit(&self.writes, job)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(reply)
     }
 
@@ -234,11 +236,13 @@ impl Tools {
         }): Parameters<SubmitFeedback>,
     ) -> Reply {
         let feedback = Feedback::new(client_name(&ctx).as_deref(), tried, happened, fix)?;
-        self.write(Job::Feedback {
+        let job = Job::Feedback {
             at: time::now_ms(),
             feedback,
-        })
-        .await?;
+        };
+        store::submit(&self.writes, job)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok("Thanks. The feedback is stored for the person who runs Davy.".to_owned())
     }
 }
@@ -259,17 +263,6 @@ fn client_name(ctx: &RequestContext<RoleServer>) -> Option<String> {
 }
 
 impl Tools {
-    /// Queues `job` for the writer and waits for its outcome.
-    async fn write(&self, job: Job) -> Result<(), String> {
-        let (done, outcome) = tokio::sync::oneshot::channel();
-        self.writes
-            .try_send(Write { job, done })
-            .map_err(|e| format!("the writer is busy, try again: {e}"))?;
-        outcome
-            .await
-            .map_err(|e| format!("the writer stopped: {e}"))?
-    }
-
     /// Runs blocking store or index work off the async runtime. Errors become
     /// tool errors the agent can read and act on.
     async fn blocking(

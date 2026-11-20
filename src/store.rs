@@ -230,7 +230,7 @@ pub enum Job {
     Delivery {
         id: i64,
         at: Timestamp,
-        result: std::result::Result<(), String>,
+        result: Outcome,
     },
     /// What an agent reported with `submit_feedback`.
     Feedback {
@@ -324,8 +324,38 @@ impl Writer {
         Self { sender, thread }
     }
 }
-/// Queues a [`Job::Sweep`] every `period`, the first one at once. A full
-/// queue skips a tick. The task ends when the writer stops.
+/// Why the writer did not apply a job given to [`submit`].
+#[derive(Debug)]
+pub enum Refused {
+    Full,
+    Stopped,
+    Failed(String),
+}
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Full => f.write_str("the writer is busy, try again"),
+            Self::Stopped => f.write_str("the writer stopped"),
+            Self::Failed(e) => f.write_str(e),
+        }
+    }
+}
+/// Queues `job` and waits until the writer has applied it. A full queue is
+/// refused at once, so a caller can answer `429`.
+pub async fn submit(
+    sender: &mpsc::SyncSender<Write>,
+    job: Job,
+) -> std::result::Result<(), Refused> {
+    let (done, outcome) = oneshot::channel();
+    sender.try_send(Write { job, done }).map_err(|e| match e {
+        mpsc::TrySendError::Full(_) => Refused::Full,
+        mpsc::TrySendError::Disconnected(_) => Refused::Stopped,
+    })?;
+    outcome
+        .await
+        .map_err(|_closed| Refused::Stopped)?
+        .map_err(Refused::Failed)
+}
 /// Queues `job` and waits until the writer has applied it. A full queue is
 /// tried again every 50 ms. Returns without waiting when the writer is gone.
 pub async fn queue_and_wait(sender: &mpsc::SyncSender<Write>, mut job: Job) {
@@ -345,6 +375,8 @@ pub async fn queue_and_wait(sender: &mpsc::SyncSender<Write>, mut job: Job) {
     }
 }
 
+/// Queues a [`Job::Sweep`] every `period`, the first one at once. A full
+/// queue skips a tick. The task ends when the writer stops.
 pub async fn sweep_every(sender: mpsc::SyncSender<Write>, period: std::time::Duration) {
     let mut ticks = tokio::time::interval(period);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
