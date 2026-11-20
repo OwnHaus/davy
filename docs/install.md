@@ -98,10 +98,10 @@ Setup prints the same JSON as before. Step 8 checks that the SMTP server accepts
 
 ## 6. Start the service
 
-On Linux, run these commands. They match `next` in the JSON of step 4. The first one prints the systemd unit and writes it to `/etc/systemd/system`. The unit holds only the binary, the data directory and the user, never anything from the data directory, so the davy user cannot change what root installs.
+On Linux, run these commands. They match `next` in the JSON of step 4. The first one generates the systemd unit and writes it to `/etc/systemd/system` only when that worked, so a failed run leaves an installed unit as it was. The unit holds only the binary, the data directory and the user, never anything from the data directory, so the davy user cannot change what root installs.
 
 ```sh
-davy systemd-unit --data /var/lib/davy --user davy | sudo tee /etc/systemd/system/davy.service > /dev/null
+unit="$(davy systemd-unit --data /var/lib/davy --user davy)" && printf '%s\n' "$unit" | sudo tee /etc/systemd/system/davy.service > /dev/null
 sudo systemctl daemon-reload
 sudo systemctl enable davy
 sudo systemctl restart davy
@@ -113,29 +113,43 @@ sudo systemctl restart davy
 
 Skip this step when the public URL starts with `http://127.0.0.1`, or when a TLS proxy already serves the name and forwards to `127.0.0.1:8000`.
 
-Otherwise install Caddy, which gets a certificate on its own. The name must already point at this server in DNS, and ports 80 and 443 must be open. Install it, keep a copy of its config and show it:
+Otherwise install Caddy, which gets a certificate on its own. The name must already point at this server in DNS, and ports 80 and 443 must be open. Install it, keep a copy of its config and compare the config with the one the package installed:
 
 <!-- e2e: skip, the test has no public name -->
 ```sh
 sudo apt-get install -y caddy
-sudo cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.before-davy
-sudo cat /etc/caddy/Caddyfile
+sudo cp -np /etc/caddy/Caddyfile /etc/caddy/Caddyfile.before-davy
+sudo md5sum /etc/caddy/Caddyfile
+dpkg-query -W -f='${Conffiles}\n' caddy
 ```
 
-If the file holds nothing but comments and the `:80` site with `file_server` that the package installs, replace it. Otherwise it serves other sites, so add Davy after them: use `sudo tee -a` in place of `sudo tee` below.
+Do not print the Caddyfile itself. It can hold passwords of the other sites it serves. When the checksum from `md5sum` is the one `dpkg-query` lists for `/etc/caddy/Caddyfile`, the file is still the package's sample, so start Davy's config from an empty file:
 
 <!-- e2e: skip, the test has no public name -->
 ```sh
-sudo tee /etc/caddy/Caddyfile > /dev/null <<'EOF'
+sudo install -m 644 /dev/null /etc/caddy/Caddyfile.davy
+```
+
+When the checksums differ, the file serves other sites, so start from a copy of it and Davy goes after them:
+
+<!-- e2e: skip, the test has no public name -->
+```sh
+sudo cp -p /etc/caddy/Caddyfile /etc/caddy/Caddyfile.davy
+```
+
+Then add Davy, check the new file and only then put it in place and reload:
+
+<!-- e2e: skip, the test has no public name -->
+```sh
+sudo tee -a /etc/caddy/Caddyfile.davy > /dev/null <<'EOF'
 davy.example.com {
 	reverse_proxy 127.0.0.1:8000
 }
 EOF
-sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-sudo systemctl reload caddy
+sudo caddy validate --config /etc/caddy/Caddyfile.davy --adapter caddyfile && sudo mv /etc/caddy/Caddyfile.davy /etc/caddy/Caddyfile && sudo systemctl reload caddy
 ```
 
-Replace `davy.example.com` with the name from the public URL, without `https://`. `caddy validate` prints `Valid configuration` at the end. When it prints an error, do not reload. Restore the copy with `sudo cp /etc/caddy/Caddyfile.before-davy /etc/caddy/Caddyfile` and tell the person.
+Replace `davy.example.com` with the name from the public URL, without `https://`. `caddy validate` prints `Valid configuration` at the end. When it prints an error instead, the running config is untouched. Tell the person and show them the error.
 
 ## 8. Check the install
 

@@ -6,14 +6,14 @@ The token gives full read access to errors and logs. It goes into a file only th
 
 ## 1. Give the person the token
 
-On the Davy server, copy it into the person's home directory:
+On the Davy server, copy it into the person's home directory. It is read as the davy user, never as root, so a link in the data directory cannot point the copy at a file only root may read:
 
 ```sh
 mkdir -p ~/.config/davy
-(umask 077 && sudo cat /var/lib/davy/token > ~/.config/davy/token)
+(umask 077 && sudo runuser -u davy -- cat /var/lib/davy/token > ~/.config/davy/token)
 ```
 
-From a laptop, fetch it over SSH: `(umask 077 && ssh SERVER sudo cat /var/lib/davy/token > ~/.config/davy/token)`.
+From a laptop, fetch it over SSH: `(umask 077 && ssh SERVER sudo runuser -u davy -- cat /var/lib/davy/token > ~/.config/davy/token)`.
 
 Then load it into the environment the client starts from. Use the profile of the person's shell, `~/.zshrc` on a Mac and usually `~/.bashrc` on Linux:
 

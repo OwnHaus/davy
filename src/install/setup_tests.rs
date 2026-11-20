@@ -98,12 +98,12 @@ fn setup_twice_keeps_the_token_tightens_modes_and_prints_the_same_report() {
         second.next,
         [
             format!(
-                "/usr/local/bin/davy systemd-unit --data {d} --user {user} | sudo tee /etc/systemd/system/davy.service > /dev/null"
+                "unit=\"$(/usr/local/bin/davy systemd-unit --data {d} --user {user})\" && printf '%s\\n' \"$unit\" | sudo tee /etc/systemd/system/davy.service > /dev/null"
             ),
             "sudo systemctl daemon-reload".to_owned(),
             "sudo systemctl enable davy".to_owned(),
             "sudo systemctl restart davy".to_owned(),
-            format!("/usr/local/bin/davy doctor --data {d}"),
+            format!("sudo runuser -u {user} -- /usr/local/bin/davy doctor --data {d}"),
         ]
     );
     let names: Vec<String> = std::fs::read_dir(&data)

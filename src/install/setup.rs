@@ -137,7 +137,9 @@ fn service(
                 sh(user.unwrap_or_default())
             );
             let next = vec![
-                format!("{unit} | sudo tee /etc/systemd/system/davy.service > /dev/null"),
+                format!(
+                    "unit=\"$({unit})\" && printf '%s\\n' \"$unit\" | sudo tee /etc/systemd/system/davy.service > /dev/null"
+                ),
                 "sudo systemctl daemon-reload".to_owned(),
                 "sudo systemctl enable davy".to_owned(),
                 "sudo systemctl restart davy".to_owned(),
@@ -160,11 +162,15 @@ fn service(
         }
         Service::None => (None, vec![serve.shell()]),
     };
-    next.push(format!(
+    let doctor = format!(
         "{} doctor --data {}",
         sh(&exe.to_string_lossy()),
         sh(&data.to_string_lossy())
-    ));
+    );
+    next.push(match (service, user) {
+        (Service::Systemd, Some(user)) => format!("sudo runuser -u {} -- {doctor}", sh(user)),
+        _ => doctor,
+    });
     Ok((service_file, next))
 }
 
