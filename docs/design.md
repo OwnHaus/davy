@@ -401,12 +401,14 @@ Better Stack's uptime product is the reference (docs: Monitor types, Create a ne
 The organizing structures are a state machine per monitor and an outbox table that the writer fills in the same transaction as the change it reports. `Down` carries no incident ID, because the open incident is the one row of `incidents` with no `resolved_at` for the monitor.
 
 ```rust
-struct Monitor { id: i64, project_id: i64, name: String, kind: Kind, every: Duration, timeout: Duration }
+struct Monitor { id: i64, project_id: i64, name: String, kind: Kind, every: Duration }
 
 enum Kind {
-    Http { url: CheckUrl, expect: Expect },    // CheckUrl: http or https, no user info
+    Http { url: CheckUrl, expect: Expect, timeout: Duration },    // CheckUrl: http or https, no user info
     Heartbeat { token: HeartbeatToken, grace: Duration },
 }
+// What `davy monitor add` asks for. The token is made when the row is stored.
+enum Target { Http { url: CheckUrl, expect: Expect, timeout: Duration }, Heartbeat { grace: Duration } }
 enum Expect { Status, Keyword(String), NoKeyword(String) }
 
 enum Outcome { Up, Down(Reason) }                  // a check row keeps status and ms beside it
@@ -422,7 +424,8 @@ enum Channel { Webhook { url: Url, secret: Secret }, Slack { url: Url } }
 ### Monitors
 
 - An HTTP monitor sends `GET` to its URL every `every` (30 s to 24 h, default 60 s) with a `timeout` (1 to 60 s, default 10 s, shorter than `every`). It follows up to 5 redirects. It is up when the final status is below 400 and, with a keyword, when the first 1 MiB of the body contains the keyword (or, for `NoKeyword`, does not). Matching is case-sensitive, on the body as UTF-8 with invalid bytes replaced.
-- A heartbeat monitor is up while pings arrive. It is down when no ping came within `every` plus `grace` (grace 0 to 24 h, default 5 min) of the last one, or when a ping goes to `/fail`. It is `Pending` until the first ping.
+- A heartbeat monitor is up while pings arrive. It expects a ping every `every` (1 min to 31 d, default 1 h). It is down when no ping came within `every` plus `grace` (grace 0 to 24 h, default 5 min) of the last one, or when a ping goes to `/fail`. It is `Pending` until the first ping.
+- A name is 1 to 100 characters, a keyword 1 to 1,000 bytes, a URL at most 2,048 bytes, `http` or `https`, with no user or password.
 - **Confirmation.** One failed HTTP check moves `Up` to `Failing` and schedules the next check after 10 s instead of `every`. A second failure in a row opens an incident (`Down`). One success closes it. A heartbeat opens its incident on the first late check or `/fail`, because the grace period is its confirmation.
 - One scheduler task in `davy serve` runs the checks, at most 16 at a time. It reloads the monitor table every 10 s, so `davy monitor add` in another process takes effect without a restart.
 - Check results, incident changes and pings go to the writer queue. The writer keeps a row per check for 30 days and deletes older rows once an hour, 10,000 at a time.

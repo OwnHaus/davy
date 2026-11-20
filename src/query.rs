@@ -23,6 +23,7 @@ const NOTES: &str = "Notes:
 - Times in projects, issues, events and releases are unix milliseconds. issue_hourly.hour is unix hours.
 - events.payload is the compressed Sentry event, kept for a sample of events. payload_json(payload) returns it as JSON text, so json_extract(payload_json(payload), '$.exception.values[0].type') works.
 - issues.status is unresolved, resolved or ignored. A resolved issue reopens when an event arrives without a release, in the release it was resolved in, or in a release first seen after resolved_at.
+- monitors.state is pending, up, failing or down. Times in monitors, checks and incidents are unix milliseconds. An incident with no resolved_at is open. monitors.heartbeat_token reads as NULL.
 - Results stop at 500 rows, text at 4000 characters, payload_json at 16 MiB, and a query at 5 seconds.";
 
 #[derive(Debug, Serialize)]
@@ -71,11 +72,19 @@ pub fn open(data: &Path) -> Result<Connection> {
     Ok(c)
 }
 
+/// Columns that hold a credential. An agent has no use for one, and a
+/// prompt-injected agent could leak it, so they read as NULL.
+const CREDENTIALS: [(&str, &str); 1] = [("monitors", "heartbeat_token")];
+
 /// SQLite counts ATTACH and most PRAGMAs as read-only, so `Statement::readonly`
 /// is not enough. This allows a query to select, read tables and call
 /// functions, and nothing else.
 fn only_reads(ctx: AuthContext<'_>) -> Authorization {
     match ctx.action {
+        AuthAction::Read {
+            table_name,
+            column_name,
+        } if CREDENTIALS.contains(&(table_name, column_name)) => Authorization::Ignore,
         AuthAction::Select
         | AuthAction::Read { .. }
         | AuthAction::Function { .. }
@@ -191,6 +200,36 @@ mod tests {
         assert!(!r.truncated);
         let blob = run(&c, "SELECT payload FROM events").unwrap();
         assert!(blob.rows[0][0]["blob_bytes"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn credential_columns_read_as_null() {
+        let (data, _) = store_with_one_event();
+        let heartbeat = crate::monitor::NewMonitor::new(
+            "Backup",
+            crate::monitor::Target::Heartbeat {
+                grace: Duration::from_secs(300),
+            },
+            None,
+        )
+        .unwrap();
+        crate::monitor::store::add(&store::open(&data).unwrap(), 1, &heartbeat, 0).unwrap();
+        let c = open(&data).unwrap();
+        let r = run(
+            &c,
+            "SELECT name, heartbeat_token, length(heartbeat_token), heartbeat_token IS NULL FROM monitors",
+        )
+        .unwrap();
+        assert_eq!(
+            r.rows,
+            [vec![json!("Backup"), Value::Null, Value::Null, json!(1)]]
+        );
+        let r = run(
+            &c,
+            "SELECT count(*) FROM monitors WHERE heartbeat_token LIKE '%'",
+        )
+        .unwrap();
+        assert_eq!(r.rows, [vec![json!(0)]]);
     }
 
     #[test]

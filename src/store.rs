@@ -7,9 +7,14 @@ CREATE INDEX IF NOT EXISTS issues_last_seen ON issues(last_seen DESC);
 CREATE INDEX IF NOT EXISTS events_issue ON events(issue_id, id DESC);";
 /// Schema changes after the first release, applied in order. `PRAGMA
 /// user_version` counts how many ran.
-const MIGRATIONS: [&str; 1] = [
+const MIGRATIONS: [&str; 2] = [
     "CREATE TABLE releases(project_id INTEGER NOT NULL REFERENCES projects(id), version TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY(project_id, version));
 INSERT INTO releases SELECT project_id, release, min(received_at) FROM events WHERE release IS NOT NULL GROUP BY project_id, release;",
+    "CREATE TABLE monitors(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), name TEXT NOT NULL, kind TEXT NOT NULL, url TEXT, expect TEXT, keyword TEXT, heartbeat_token TEXT UNIQUE, every_s INTEGER NOT NULL, timeout_s INTEGER, grace_s INTEGER, state TEXT NOT NULL, last_check_at INTEGER, last_ping_at INTEGER, created_at INTEGER NOT NULL);
+CREATE TABLE checks(monitor_id INTEGER NOT NULL REFERENCES monitors(id) ON DELETE CASCADE, at INTEGER NOT NULL, ok INTEGER NOT NULL, status INTEGER, ms INTEGER, reason TEXT);
+CREATE INDEX checks_monitor_at ON checks(monitor_id, at);
+CREATE TABLE incidents(id INTEGER PRIMARY KEY, monitor_id INTEGER NOT NULL REFERENCES monitors(id) ON DELETE CASCADE, started_at INTEGER NOT NULL, resolved_at INTEGER, reason TEXT NOT NULL);
+CREATE INDEX incidents_open ON incidents(monitor_id) WHERE resolved_at IS NULL;",
 ];
 use crate::{
     event::{ErrorEvent, Timestamp},

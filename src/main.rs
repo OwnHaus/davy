@@ -1,10 +1,11 @@
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 use davy::{
     context, http,
     logs::{
         LogLevel,
         store::{LogHit, LogQuery, search},
     },
+    monitor::{self, CheckUrl, Expect, NewMonitor, Target},
     query, store,
     time::{self, now_ns},
     token::Token,
@@ -13,6 +14,7 @@ use std::{
     borrow::Cow,
     io::Write,
     path::{Path, PathBuf},
+    time::Duration,
 };
 #[derive(Parser)]
 #[command(version)]
@@ -28,6 +30,11 @@ enum Command {
     Project {
         #[command(subcommand)]
         command: Project,
+    },
+    /// Uptime checks of a URL and heartbeats from cron jobs.
+    Monitor {
+        #[command(subcommand)]
+        command: Monitor,
     },
     Issues {
         #[arg(long)]
@@ -118,6 +125,56 @@ enum Project {
         public_url: url::Url,
     },
 }
+#[derive(Subcommand)]
+enum Monitor {
+    /// Adds an HTTP check with --url, or a heartbeat with --heartbeat. Prints
+    /// the monitor's ID and its URL or ping path.
+    Add(MonitorAdd),
+    /// Prints each monitor with its state, last check and open incident.
+    List {
+        #[arg(long)]
+        data: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Deletes a monitor with its checks and incidents.
+    Remove {
+        id: i64,
+        #[arg(long)]
+        data: PathBuf,
+    },
+}
+#[derive(clap::Args)]
+#[command(group(ArgGroup::new("target").required(true).args(["url", "heartbeat"])))]
+struct MonitorAdd {
+    project: String,
+    name: String,
+    #[arg(long)]
+    data: PathBuf,
+    #[arg(long)]
+    url: Option<String>,
+    /// Up only when the first 1 MiB of the body contains this text.
+    #[arg(long, conflicts_with_all = ["no_keyword", "heartbeat"])]
+    keyword: Option<String>,
+    /// Up only when the first 1 MiB of the body does not contain this text.
+    #[arg(long, conflicts_with = "heartbeat")]
+    no_keyword: Option<String>,
+    /// Expect a ping to /api/heartbeat/<token> every --every.
+    #[arg(long)]
+    heartbeat: bool,
+    /// Default 60s for --url, 1h for --heartbeat.
+    #[arg(long, value_parser = duration)]
+    every: Option<Duration>,
+    /// Default 10s.
+    #[arg(long, value_parser = duration, conflicts_with = "heartbeat")]
+    timeout: Option<Duration>,
+    /// How late a ping may be before the monitor is down. Default 5m.
+    #[arg(long, value_parser = duration, conflicts_with = "url")]
+    grace: Option<Duration>,
+}
+fn duration(s: &str) -> Result<Duration, String> {
+    time::duration(s).ok_or_else(|| format!("expected 30s, 15m, 1h or 2d, got {s:?}"))
+}
 fn validate_url(url: &url::Url) -> anyhow::Result<()> {
     anyhow::ensure!(
         matches!(url.scheme(), "http" | "https") && url.host_str().is_some(),
@@ -138,6 +195,7 @@ async fn main() -> anyhow::Result<()> {
                     public_url,
                 },
         } => writeln!(out, "{}", create_project(&data, &slug, public_url)?)?,
+        Command::Monitor { command } => run_monitor(&mut out.lock(), command)?,
         Command::Issues {
             data,
             project,
@@ -217,6 +275,60 @@ fn logs(out: &mut impl Write, args: Logs) -> anyhow::Result<()> {
         },
     )?;
     print_logs(out, hits, args.json)
+}
+fn run_monitor(out: &mut impl Write, command: Monitor) -> anyhow::Result<()> {
+    match command {
+        Monitor::Add(args) => {
+            let c = store::open(&args.data)?;
+            let project = store::project_id(&c, &args.project)?
+                .ok_or_else(|| anyhow::anyhow!("unknown project {:?}", args.project))?;
+            let target = match args.url {
+                Some(url) => Target::Http {
+                    url: CheckUrl::parse(&url).map_err(anyhow::Error::msg)?,
+                    expect: match (args.keyword, args.no_keyword) {
+                        (Some(k), _) => Expect::Keyword(k),
+                        (None, Some(k)) => Expect::NoKeyword(k),
+                        (None, None) => Expect::Status,
+                    },
+                    timeout: args.timeout.unwrap_or(monitor::DEFAULT_TIMEOUT),
+                },
+                None => Target::Heartbeat {
+                    grace: args.grace.unwrap_or(monitor::DEFAULT_GRACE),
+                },
+            };
+            let m = NewMonitor::new(&args.name, target, args.every).map_err(anyhow::Error::msg)?;
+            let added = monitor::store::add(&c, project, &m, time::now_ms())?;
+            writeln!(out, "{}\t{}", added.id, added.target)?;
+        }
+        Monitor::List { data, json } => {
+            let monitors = monitor::store::list(&store::open(&data)?)?;
+            if json {
+                writeln!(out, "{}", serde_json::to_string(&monitors)?)?;
+                return Ok(());
+            }
+            let at = |ms: Option<i64>| ms.map_or_else(|| "-".to_owned(), time::rfc3339_ms);
+            for m in monitors {
+                writeln!(
+                    out,
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    m.id,
+                    safe(&m.project),
+                    safe(&m.name),
+                    m.state.as_str(),
+                    safe(&m.target),
+                    at(m.last_check_at),
+                    at(m.open_since)
+                )?;
+            }
+        }
+        Monitor::Remove { id, data } => {
+            anyhow::ensure!(
+                monitor::store::remove(&store::open(&data)?, id)?,
+                "no monitor {id}"
+            );
+        }
+    }
+    Ok(())
 }
 /// Creates the project and returns its DSN.
 fn create_project(data: &Path, slug: &str, mut public_url: url::Url) -> anyhow::Result<url::Url> {
@@ -322,6 +434,33 @@ mod tests {
         };
         assert!(serve(&[]));
         assert!(!serve(&["--token", "0123456789abcdef0123456789abcdef"]));
+    }
+
+    #[test]
+    fn monitor_add_takes_the_flags_of_one_kind() {
+        let add = |extra: &[&str]| {
+            let base = ["davy", "monitor", "add", "shop", "API", "--data", "d"];
+            Cli::try_parse_from(base.iter().chain(extra)).is_ok()
+        };
+        assert!(add(&["--url", "https://shop.example/", "--timeout", "5s"]));
+        assert!(add(&["--heartbeat", "--grace", "1m"]));
+        for bad in [
+            &[][..],
+            &["--url", "https://shop.example/", "--heartbeat"],
+            &["--heartbeat", "--timeout", "5s"],
+            &["--heartbeat", "--keyword", "ok"],
+            &["--url", "https://shop.example/", "--grace", "1m"],
+            &[
+                "--url",
+                "https://shop.example/",
+                "--keyword",
+                "a",
+                "--no-keyword",
+                "b",
+            ],
+        ] {
+            assert!(!add(bad), "{bad:?}");
+        }
     }
 
     #[test]
