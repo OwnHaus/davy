@@ -120,6 +120,21 @@ fn event_boundary() {
     assert_eq!(e.level, Level::Error);
     assert!(e.timestamp > 1_577_836_800_000);
 }
+#[test]
+fn an_event_keeps_only_a_trace_id_of_32_hex_digits() {
+    let trace = |id: &str| event(json!({"contexts":{"trace":{"trace_id":id}}})).trace_id;
+    assert_eq!(
+        trace("0AF7651916CD43DD8448EB211C80319C").as_deref(),
+        Some("0af7651916cd43dd8448eb211c80319c")
+    );
+    for bad in [
+        "x OR level:error",
+        "0af7651916cd43dd8448eb211c80319",
+        "00000000000000000000000000000000",
+    ] {
+        assert_eq!(trace(bad), None, "{bad}");
+    }
+}
 fn memory() -> rusqlite::Connection {
     let mut c = rusqlite::Connection::open_in_memory().unwrap();
     store::init(&mut c).unwrap();

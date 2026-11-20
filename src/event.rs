@@ -171,7 +171,9 @@ impl ErrorEvent {
             }),
             user_id: string(&raw["user"]["id"])
                 .or_else(|| raw["user"]["id"].as_i64().map(|n| n.to_string())),
-            trace_id: string(&raw["contexts"]["trace"]["trace_id"]),
+            trace_id: raw["contexts"]["trace"]["trace_id"]
+                .as_str()
+                .and_then(|s| crate::logs::hex_id(s, 32)),
             raw,
         })
     }

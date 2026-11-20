@@ -76,7 +76,7 @@ struct ErrorEvent {
     exceptions: Vec<Exception>,    // `exception.values` or legacy `exception` array; oldest first, last = the one raised
     fingerprint: Option<Vec<String>>,
     user_id: Option<String>,
-    trace_id: Option<String>,      // contexts.trace.trace_id
+    trace_id: Option<String>,      // contexts.trace.trace_id, 32 lowercase hex, else None
     raw: serde_json::Value,        // kept to store and serve the full payload
 }
 struct Exception { ty: String, value: Option<String>, module: Option<String>, frames: Vec<Frame> }
