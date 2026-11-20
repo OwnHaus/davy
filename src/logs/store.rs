@@ -460,6 +460,9 @@ pub struct LogHit {
 
 /// The newest `q.limit` hits, oldest first.
 pub fn search(root: &Path, q: &LogQuery) -> Result<Vec<LogHit>> {
+    // Retention can delete a day between the meta.json check and the open.
+    // tantivy reports that only as text, so a second pass that no longer
+    // sees the day is the way to recover.
     search_once(root, q).or_else(|e| {
         let missing = format!("{e:#}");
         if missing.contains("does not exist") || missing.contains("No such file") {
