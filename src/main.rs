@@ -134,12 +134,15 @@ fn level(s: &str) -> Result<LogLevel, String> {
 }
 #[derive(Subcommand)]
 enum Project {
+    /// Creates a project and prints its DSN. For an existing slug it prints
+    /// the DSN it already has.
     Create {
         slug: String,
         #[arg(long)]
         data: PathBuf,
+        /// Defaults to the public URL given to `davy setup` for this directory.
         #[arg(long)]
-        public_url: url::Url,
+        public_url: Option<url::Url>,
     },
 }
 #[derive(Subcommand)]
@@ -253,7 +256,13 @@ async fn main() -> anyhow::Result<()> {
                     data,
                     public_url,
                 },
-        } => writeln!(out, "{}", create_project(&data, &slug, public_url)?)?,
+        } => {
+            let public_url = match public_url {
+                Some(url) => url,
+                None => install::Settings::load(&data)?.public_url()?,
+            };
+            writeln!(out, "{}", create_project(&data, &slug, public_url)?)?;
+        }
         Command::Monitor { command } => run_monitor(&mut out.lock(), command)?,
         Command::Channel { command } => run_channel(&mut out.lock(), command)?,
         Command::Issues {
@@ -457,7 +466,7 @@ fn run_channel(out: &mut impl Write, command: Channel) -> anyhow::Result<()> {
     }
     Ok(())
 }
-/// Creates the project and returns its DSN.
+/// Creates the project, or finds the one with this slug, and returns its DSN.
 fn create_project(data: &Path, slug: &str, mut public_url: url::Url) -> anyhow::Result<url::Url> {
     install::check_public_url(&public_url)?;
     anyhow::ensure!(!slug.trim().is_empty(), "slug must not be empty");

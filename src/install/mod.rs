@@ -17,7 +17,8 @@ use url::Url;
 pub const TOKEN_FILE: &str = "token";
 /// The SMTP URL with its password, one line, written by the operator.
 pub const SMTP_FILE: &str = "smtp-url";
-/// What `davy setup` was given, read back by `doctor` and `mcp-config`.
+/// What `davy setup` was given, read back by `doctor`, `mcp-config` and
+/// `project create`.
 pub const SETTINGS_FILE: &str = "setup.json";
 
 /// The flags of the last `davy setup` in a data directory.

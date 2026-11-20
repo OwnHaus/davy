@@ -141,6 +141,16 @@ fn memory() -> rusqlite::Connection {
     c
 }
 #[test]
+fn creating_a_project_twice_returns_the_same_key() {
+    let c = memory();
+    let first = store::create_project(&c, "shop").unwrap();
+    let other = store::create_project(&c, "blog").unwrap();
+    assert_eq!(store::create_project(&c, "shop").unwrap(), first);
+    assert_ne!(other, first);
+    assert_eq!(first.1.len(), 32);
+}
+
+#[test]
 fn a_resolved_issue_reopens_only_for_a_release_that_can_contain_the_bug() {
     use store::IssueStatus::{Ignored, Resolved, Unresolved};
     let fixed_in = |release: Option<&str>| Resolved {

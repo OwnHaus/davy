@@ -104,13 +104,19 @@ pub fn init(c: &mut Connection) -> Result<()> {
     tx.commit()?;
     Ok(())
 }
+/// Creates the project, or returns the one that has this slug, so running
+/// `davy project create` again prints the same DSN.
 pub fn create_project(c: &Connection, slug: &str) -> Result<(i64, String)> {
     let key = uuid::Uuid::new_v4().simple().to_string();
     c.execute(
-        "INSERT INTO projects(slug,public_key,created_at) VALUES (?1,?2,?3)",
+        "INSERT INTO projects(slug,public_key,created_at) VALUES (?1,?2,?3) ON CONFLICT(slug) DO NOTHING",
         params![slug, key, time::now_ms()],
     )?;
-    Ok((c.last_insert_rowid(), key))
+    Ok(c.query_row(
+        "SELECT id, public_key FROM projects WHERE slug=?1",
+        params![slug],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?)
 }
 pub fn project_for_key(c: &Connection, key: &str) -> Result<Option<i64>> {
     Ok(c.query_row(
