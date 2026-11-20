@@ -476,13 +476,7 @@ fn print_rows(out: &mut impl Write, rows: &query::Rows, json: bool) -> anyhow::R
     let columns: Vec<_> = rows.columns.iter().map(|c| safe(c)).collect();
     writeln!(out, "{}", columns.join("\t"))?;
     for row in &rows.rows {
-        let cells: Vec<String> = row
-            .iter()
-            .map(|v| match v {
-                serde_json::Value::String(s) => safe(s).into_owned(),
-                other => safe(&other.to_string()).into_owned(),
-            })
-            .collect();
+        let cells: Vec<String> = row.iter().map(cell).collect();
         writeln!(out, "{}", cells.join("\t"))?;
     }
     if rows.truncated {
@@ -506,14 +500,18 @@ fn print_logs(out: &mut impl Write, hits: Vec<LogHit>, json: bool) -> anyhow::Re
             safe(&hit.message)
         )?;
         for (k, v) in &hit.attributes {
-            match v {
-                serde_json::Value::String(s) => write!(out, " {}={}", safe(k), safe(s))?,
-                other => write!(out, " {}={}", safe(k), safe(&other.to_string()))?,
-            }
+            write!(out, " {}={}", safe(k), cell(v))?;
         }
         writeln!(out)?;
     }
     Ok(())
+}
+/// A string as its text and any other value as JSON, made [`safe`].
+fn cell(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => safe(s).into_owned(),
+        other => safe(&other.to_string()).into_owned(),
+    }
 }
 /// Text from ingest with every control character replaced by U+FFFD, so a
 /// stored string cannot move the cursor, retitle the terminal or split a line.
