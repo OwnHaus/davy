@@ -27,7 +27,8 @@ CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::se
 - `src/store.rs` owns the SQLite schema and its migrations (`PRAGMA user_version`), the issue status and regression rule, the single error writer thread and the read queries the CLI uses.
 - `src/query.rs` runs one read-only SQL statement for an agent, behind an authorizer, with row, text and time limits.
 - `src/context.rs` gathers one issue with its compacted latest event, recent events, releases and nearby logs.
-- `src/mcp.rs` is the MCP boundary: bearer token, allowed hosts, and the tools as thin calls into `query`, `context`, `logs::store::search` and the writer queue.
+- `src/token.rs` holds the admin token and the middleware that requires it.
+- `src/mcp.rs` is the MCP boundary: allowed hosts behind the admin token, and the tools as thin calls into `query`, `context`, `logs::store::search` and the writer queue.
 - `src/logs/mod.rs` defines `LogRecord`, `LogLevel` and the timestamp and level rules shared by every log source.
 - `src/logs/{logtail,otlp,sentry}.rs` are the log adapters. Each is a pure function from a request body to `Vec<LogRecord>`.
 - `src/logs/store.rs` owns the Tantivy schema, the log writer thread, retention and search.

@@ -5,8 +5,9 @@ use davy::{
         LogLevel,
         store::{LogHit, LogQuery, search},
     },
-    mcp, query, store,
+    query, store,
     time::{self, now_ns},
+    token::Token,
 };
 use std::{
     io::Write,
@@ -194,7 +195,7 @@ async fn serve(args: Serve) -> anyhow::Result<()> {
         &args.listen,
         args.public_url.host_str().unwrap_or("localhost"),
         args.log_retention_days,
-        args.token.as_deref().map(mcp::Token::new),
+        args.token.as_deref().map(Token::new),
     )
     .await
 }

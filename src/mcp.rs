@@ -10,14 +10,9 @@ use crate::{
     query,
     store::{self, Job, Write},
     time,
+    token::{self, Token},
 };
-use axum::{
-    Router,
-    extract::{Request, State},
-    http::{StatusCode, header},
-    middleware::{self, Next},
-    response::{IntoResponse, Response},
-};
+use axum::{Router, middleware};
 use rmcp::{
     ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -48,21 +43,6 @@ Logs are not in SQL. Use search_logs. Its query is Tantivy syntax over these fie
 - service, trace_id, span_id (exact match, e.g. trace_id:4bf92f3577b34da6a3ce929d0e0e4736)
 Combine with AND, OR, NOT and parentheses. Levels are trace, debug, info, warn, error, fatal.";
 
-/// An access token, kept only as its hash.
-#[derive(Clone)]
-pub struct Token(blake3::Hash);
-
-impl Token {
-    pub fn new(secret: &str) -> Self {
-        Self(blake3::hash(secret.as_bytes()))
-    }
-
-    /// `blake3::Hash` compares in constant time.
-    fn admits(&self, presented: &str) -> bool {
-        blake3::hash(presented.as_bytes()) == self.0
-    }
-}
-
 /// `/mcp`, behind the token. Requests must name loopback or `public_host` in
 /// their `Host` header, which stops DNS rebinding from a browser.
 pub fn router(
@@ -84,24 +64,10 @@ pub fn router(
         StreamableHttpService::new(move || Ok(tools.clone()), Arc::default(), config);
     Router::new()
         .nest_service("/mcp", service)
-        .layer(middleware::from_fn_with_state(Arc::new(token), auth))
-}
-
-async fn auth(State(token): State<Arc<Token>>, req: Request, next: Next) -> Response {
-    let presented = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    if presented.is_some_and(|p| token.admits(p)) {
-        return next.run(req).await;
-    }
-    (
-        StatusCode::UNAUTHORIZED,
-        [(header::WWW_AUTHENTICATE, "Bearer")],
-        "missing or wrong access token",
-    )
-        .into_response()
+        .layer(middleware::from_fn_with_state(
+            Arc::new(token),
+            token::require,
+        ))
 }
 
 #[derive(Clone)]
@@ -285,6 +251,7 @@ impl ServerHandler for Tools {
 mod tests {
     use super::*;
     use axum::body::{Body, to_bytes};
+    use axum::http::header;
     use serde_json::{Value, json};
     use tower::ServiceExt;
 

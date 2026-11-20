@@ -8,6 +8,7 @@ use crate::{
     mcp,
     store::{self, Job, Write},
     time,
+    token::Token,
 };
 use axum::{
     Json, Router,
@@ -362,7 +363,7 @@ pub async fn serve(
     listen: &str,
     public_host: &str,
     log_retention_days: u32,
-    mcp_token: Option<mcp::Token>,
+    mcp_token: Option<Token>,
 ) -> anyhow::Result<()> {
     let writer = store::Writer::start(store::open(data)?, 1024);
     let log_writer = LogWriter::start(data.join("logs"), log_retention_days)?;
