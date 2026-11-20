@@ -12,6 +12,7 @@ pub mod net;
 #[cfg(test)]
 mod net_tests;
 pub mod query;
+pub mod ready;
 pub mod secret;
 pub mod sourcemaps;
 pub mod store;

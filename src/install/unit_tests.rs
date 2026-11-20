@@ -30,6 +30,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+Type=notify
 User=davy
 ExecStart=/usr/local/bin/davy serve --data /var/lib/davy --listen 127.0.0.1:8000 --public-url https://davy.example.com/
 Environment=DAVY_TOKEN_FILE=/var/lib/davy/token

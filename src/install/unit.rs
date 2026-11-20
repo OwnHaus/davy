@@ -87,6 +87,7 @@ impl Serve {
              Wants=network-online.target\n\
              \n\
              [Service]\n\
+             Type=notify\n\
              User={user}\n\
              ExecStart={exec}\n\
              {env}\

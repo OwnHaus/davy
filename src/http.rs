@@ -535,6 +535,7 @@ pub async fn serve(
             .merge(upload::router(maps, token, public_url));
     }
     let listener = tokio::net::TcpListener::bind(listen).await?;
+    crate::ready::notify()?;
     let sweeper = tokio::spawn(store::sweep_every(writer.sender.clone(), SWEEP_EVERY));
     let checker = tokio::spawn(monitor::check::run(
         store::open(data)?,
