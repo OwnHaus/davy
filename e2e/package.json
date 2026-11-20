@@ -10,6 +10,8 @@
     "@opentelemetry/exporter-logs-otlp-proto": "^0.301.2",
     "@opentelemetry/resources": "^3.1.1",
     "@opentelemetry/sdk-logs": "^3.1.1",
+    "@sentry/cli": "^3.8.2",
+    "esbuild": "^0.28.2",
     "pino": "^9",
     "sentry-node-10": "npm:@sentry/node@^10",
     "sentry-node-7": "npm:@sentry/node@7.107.0"

@@ -1,0 +1,10 @@
+{
+  "method": "GET",
+  "url": "/api/0/organizations/davy/chunk-upload/",
+  "headers": {
+    "host": "dev-host",
+    "accept": "*/*",
+    "user-agent": "sentry-cli/3.8.2",
+    "authorization": "Bearer <token>"
+  }
+}

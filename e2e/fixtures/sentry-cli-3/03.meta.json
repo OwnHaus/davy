@@ -1,0 +1,12 @@
+{
+  "method": "POST",
+  "url": "/api/0/organizations/davy/chunk-upload/",
+  "headers": {
+    "host": "dev-host",
+    "accept": "*/*",
+    "user-agent": "sentry-cli/3.8.2",
+    "authorization": "Bearer <token>",
+    "content-length": "1599",
+    "content-type": "multipart/form-data; boundary=------------------------Ep7ndAdp2bHv1UaC41UeOj"
+  }
+}

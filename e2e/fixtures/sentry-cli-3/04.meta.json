@@ -1,0 +1,12 @@
+{
+  "method": "POST",
+  "url": "/api/0/organizations/davy/artifactbundle/assemble/",
+  "headers": {
+    "host": "dev-host",
+    "accept": "*/*",
+    "user-agent": "sentry-cli/3.8.2",
+    "authorization": "Bearer <token>",
+    "content-type": "application/json",
+    "content-length": "152"
+  }
+}
