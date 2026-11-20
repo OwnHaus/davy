@@ -1,4 +1,4 @@
-use super::{LogLevel, LogRecord, LogSource, hex_id, message, settle};
+use super::{LogLevel, LogRecord, LogSource, binary, hex_id, message, mime, settle};
 use serde_json::{Map, Value};
 
 const MSGPACK_TIMESTAMP: i8 = -1;
@@ -9,13 +9,7 @@ pub fn parse(
     project_id: i64,
     observed_at: i64,
 ) -> Result<Vec<LogRecord>, String> {
-    let mime = content_type
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase();
-    let values = match mime.as_str() {
+    let values = match mime(content_type).as_str() {
         "application/msgpack" | "application/x-msgpack" => vec![msgpack(body)?],
         "application/x-ndjson" | "application/ndjson" => ndjson(body)?,
         "application/json" => json(body)?,
@@ -75,10 +69,7 @@ fn to_json(v: rmpv::Value) -> Value {
         M::F32(f) => Value::from(f64::from(f)),
         M::F64(f) => Value::from(f),
         M::String(s) => s.into_str().map_or(Value::Null, Value::from),
-        M::Binary(b) => {
-            use base64::Engine;
-            base64::engine::general_purpose::STANDARD.encode(b).into()
-        }
+        M::Binary(b) => binary(b),
         M::Array(a) => a.into_iter().map(to_json).collect(),
         M::Map(m) => Value::Object(
             m.into_iter()

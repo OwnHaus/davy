@@ -171,6 +171,24 @@ fn settle(raw: Option<Value>, observed: i64, attributes: &mut Map<String, Value>
     observed
 }
 
+/// The media type of a `Content-Type` value, lowercase and without parameters.
+fn mime(content_type: &str) -> String {
+    content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+/// Bytes, which JSON cannot hold, as standard base64 text.
+fn binary(bytes: Vec<u8>) -> Value {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .encode(bytes)
+        .into()
+}
+
 pub fn hex_id(s: &str, len: usize) -> Option<String> {
     let s = s.to_ascii_lowercase();
     (s.len() == len && s.bytes().all(|b| b.is_ascii_hexdigit()) && s.bytes().any(|b| b != b'0'))

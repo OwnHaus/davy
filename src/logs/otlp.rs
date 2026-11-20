@@ -1,4 +1,4 @@
-use super::{LogLevel, LogRecord, LogSource, hex_bytes, message};
+use super::{LogLevel, LogRecord, LogSource, binary, hex_bytes, message, mime};
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
     common::v1::{AnyValue, KeyValue, any_value},
@@ -14,14 +14,7 @@ pub enum Encoding {
 
 impl Encoding {
     pub fn from_content_type(content_type: &str) -> Option<Self> {
-        match content_type
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase()
-            .as_str()
-        {
+        match mime(content_type).as_str() {
             "application/x-protobuf" | "application/protobuf" => Some(Self::Protobuf),
             "application/json" => Some(Self::Json),
             _ => None,
@@ -139,10 +132,7 @@ fn any(v: AnyValue) -> Value {
         Some(V::DoubleValue(f)) => f.into(),
         Some(V::ArrayValue(a)) => a.values.into_iter().map(any).collect(),
         Some(V::KvlistValue(l)) => Value::Object(l.values.into_iter().map(pair).collect()),
-        Some(V::BytesValue(b)) => {
-            use base64::Engine;
-            base64::engine::general_purpose::STANDARD.encode(b).into()
-        }
+        Some(V::BytesValue(b)) => binary(b),
         _ => Value::Null,
     }
 }
