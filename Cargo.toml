@@ -30,6 +30,8 @@ sourcemap = "9.3.2"
 sha1 = "0.11.0"
 zip = { version = "9.8.1", default-features = false, features = ["deflate-flate2"] }
 getrandom = "0.4"
+hmac = "0.13"
+sha2 = "0.11"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

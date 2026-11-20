@@ -269,3 +269,33 @@ fn a_test_notice_goes_to_the_one_channel_it_names() {
         )]
     );
 }
+
+#[test]
+fn a_signature_is_the_hmac_of_the_time_and_body_under_the_secret() {
+    let secret = Secret::load("a1".repeat(32));
+    assert_eq!(
+        secret
+            .sign(1_795_164_121, r#"{"id":18,"type":"test"}"#)
+            .unwrap(),
+        "t=1795164121,v1=7f853164c56305474a83e2915c371a155f004fcf1e8566e8b3fa968f58271262"
+    );
+}
+
+#[test]
+fn a_failed_delivery_retries_five_times_with_doubling_waits() {
+    let waits: Vec<Option<u64>> = (1..=7)
+        .map(|failures| retry_after(failures).map(|d| d.as_secs()))
+        .collect();
+    assert_eq!(
+        waits,
+        [
+            Some(30),
+            Some(60),
+            Some(120),
+            Some(240),
+            Some(480),
+            None,
+            None
+        ]
+    );
+}

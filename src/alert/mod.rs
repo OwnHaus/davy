@@ -8,6 +8,9 @@ mod tests;
 pub use notice::{Incident, Issue, Notice};
 
 use anyhow::anyhow;
+use hmac::{Hmac, KeyInit as _, Mac as _};
+use sha2::Sha256;
+use std::time::Duration;
 
 /// A webhook gets a signed JSON body, Slack an incoming webhook message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -43,16 +46,43 @@ impl Secret {
     fn random() -> anyhow::Result<Self> {
         let mut bytes = [0_u8; 32];
         getrandom::fill(&mut bytes).map_err(|e| anyhow!("no randomness for a secret: {e}"))?;
-        let hex = bytes
-            .iter()
-            .flat_map(|b| [b >> 4, b & 0xf])
-            .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
-            .collect();
-        Ok(Self(hex))
+        Ok(Self(hex(&bytes)))
+    }
+
+    /// A secret read back from its channel row.
+    #[must_use]
+    pub fn load(s: String) -> Self {
+        Self(s)
+    }
+
+    /// The `Davy-Signature` header of `body` sent at unix second `t`, the
+    /// scheme Stripe uses. The key is the secret's 64 characters as text.
+    pub fn sign(&self, t: i64, body: &str) -> anyhow::Result<String> {
+        let mut mac = Hmac::<Sha256>::new_from_slice(self.0.as_bytes())
+            .map_err(|e| anyhow!("HMAC refused the secret as a key: {e}"))?;
+        mac.update(format!("{t}.").as_bytes());
+        mac.update(body.as_bytes());
+        Ok(format!("t={t},v1={}", hex(&mac.finalize().into_bytes())))
     }
 
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// How long to wait after the `failures`-th failed delivery of a row, or
+/// `None` when the row has failed for good: 30 s, then doubling to 8 min.
+#[must_use]
+pub fn retry_after(failures: u32) -> Option<Duration> {
+    let doublings = failures.checked_sub(1).filter(|&d| d < 5)?;
+    Some(Duration::from_secs(30 << doublings))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .flat_map(|b| [b >> 4, b & 0xf])
+        .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
+        .collect()
 }
