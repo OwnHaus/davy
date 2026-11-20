@@ -10,6 +10,8 @@ use std::time::Duration;
 use url::Url;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
+/// Davy's `initialize` reply is under 1 KiB.
+const MAX_REPLY: usize = 64 * 1024;
 const GIB: u64 = 1 << 30;
 
 #[derive(clap::Args)]
@@ -293,13 +295,11 @@ async fn mcp(client: &reqwest::Client, url: &Url, token: &str, d: &str) -> Check
         .send()
         .await
     {
-        Ok(r) => (r.status(), r.text().await.unwrap_or_default()),
+        Ok(r) => (r.status(), initialized(r).await),
         Err(e) => return not_ok("mcp", Status::Fail, crate::net::error_text(e), restart),
     };
     match reply {
-        (StatusCode::OK, body) if body.contains("\"serverInfo\"") => {
-            ok("mcp", format!("{mcp} accepts the token"))
-        }
+        (StatusCode::OK, true) => ok("mcp", format!("{mcp} accepts the token")),
         (StatusCode::UNAUTHORIZED, _) => not_ok(
             "mcp",
             Status::Fail,
@@ -349,6 +349,21 @@ async fn smtp(data: &Path, settings: &Settings, d: &str) -> Check {
             fix,
         ),
     }
+}
+
+/// Whether `r` is the JSON-RPC reply to [`INITIALIZE`], read up to
+/// [`MAX_REPLY`] bytes.
+async fn initialized(mut r: reqwest::Response) -> bool {
+    let mut body = Vec::new();
+    while let Ok(Some(chunk)) = r.chunk().await {
+        if body.len() + chunk.len() > MAX_REPLY {
+            return false;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice::<serde_json::Value>(&body).is_ok_and(|v| {
+        v["jsonrpc"] == "2.0" && v["id"] == 1 && v["result"]["serverInfo"]["name"].is_string()
+    })
 }
 
 fn disk(data: &Path, free: Option<u64>) -> Check {

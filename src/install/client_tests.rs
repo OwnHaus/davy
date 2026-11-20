@@ -156,7 +156,7 @@ fn the_token_goes_out_over_https_or_to_this_machine_only() {
         )
     };
     assert!(config("http://127.0.0.1:8000/").is_ok());
-    assert!(config("http://localhost:8000/").is_ok());
+    assert!(config("http://localhost:8000/").is_err());
     assert_eq!(
         config("http://davy.example.com/").unwrap_err().to_string(),
         "http://davy.example.com/ is plain http, so the agent would send the admin token unencrypted, put Davy behind https first (docs/install.md, step 7)"

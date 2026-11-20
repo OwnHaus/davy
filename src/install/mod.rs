@@ -39,13 +39,19 @@ impl Settings {
                 sh(&data.to_string_lossy())
             )
         })?;
-        serde_json::from_str(&text)
-            .with_context(|| format!("{} is not valid, run `davy setup` again", path.display()))
+        let settings: Self = serde_json::from_str(&text)
+            .with_context(|| format!("{} is not valid, run `davy setup` again", path.display()))?;
+        anyhow::ensure!(
+            settings.listen.parse::<std::net::SocketAddr>().is_ok(),
+            "the listen address in {} is not an address and port, run `davy setup` again",
+            path.display()
+        );
+        Ok(settings)
     }
 
     pub fn public_url(&self) -> anyhow::Result<Url> {
         let url = Url::parse(&self.public_url)
-            .with_context(|| format!("public URL {:?} is not a URL", self.public_url))?;
+            .context("the public URL in setup.json is not a URL, run `davy setup` again")?;
         check_public_url(&url)?;
         Ok(url)
     }
@@ -68,13 +74,14 @@ pub fn check_public_url(url: &Url) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Whether `url` names this machine, where plain http does not leave it.
+/// Whether `url` names this machine by a loopback address, where plain http
+/// does not leave it. A name such as `localhost` does not count, because a
+/// resolver can send it to DNS and get an address elsewhere.
 pub fn loopback(url: &Url) -> bool {
     match url.host() {
         Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
         Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-        Some(url::Host::Domain(name)) => name == "localhost" || name.ends_with(".localhost"),
-        None => false,
+        Some(url::Host::Domain(_)) | None => false,
     }
 }
 

