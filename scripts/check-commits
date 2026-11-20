@@ -1,0 +1,26 @@
+#!/bin/sh
+# Runs scripts/commit-msg on every commit in BASE..HEAD, merges excluded.
+# CI passes the commits a push or a pull request adds.
+set -eu
+cd "$(dirname "$0")/.."
+
+base=$1
+head=$2
+# A new branch or a force push has no usable base, so only HEAD is checked.
+if git cat-file -e "$base^{commit}" 2>/dev/null; then
+    commits=$(git rev-list --no-merges "$base..$head")
+else
+    commits=$(git rev-list --no-merges --max-count=1 "$head")
+fi
+
+msg=$(mktemp)
+trap 'rm -f "$msg"' EXIT
+fail=0
+for c in $commits; do
+    git log -1 --format=%B "$c" >"$msg"
+    if ! scripts/commit-msg "$msg"; then
+        printf 'check-commits: %s above\n' "$(git log -1 --format='%h %s' "$c")" >&2
+        fail=1
+    fi
+done
+exit "$fail"

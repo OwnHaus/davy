@@ -20,6 +20,8 @@ else
     printf 'check: cargo-deny is not installed, skipping (brew install cargo-deny)\n' >&2
 fi
 
+scripts/test-commit-msg || problem 'scripts/commit-msg fails its table test'
+
 # Prose and code are written without the long dash. Captured fixtures stay as
 # the client sent them.
 dash=$(printf '\342\200\224')

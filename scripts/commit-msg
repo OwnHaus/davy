@@ -1,0 +1,53 @@
+#!/bin/sh
+# Checks one commit message file against the rules in CONTRIBUTING.md. The
+# commit-msg hook runs it on every commit, CI on every pushed commit.
+set -eu
+
+# git hands the hook the message before it strips comments and the diff
+# below the scissors line of `git commit -v`.
+msg=$(sed -e '/^# -* >8 -*$/,$d' -e '/^#/d' "$1")
+subject=$(printf '%s\n' "$msg" | sed -n 1p)
+second=$(printf '%s\n' "$msg" | sed -n 2p)
+
+fail=0
+problem() {
+    printf 'commit-msg: %s\n' "$1" >&2
+    fail=1
+}
+
+# Characters, not bytes: drop UTF-8 continuation bytes before counting.
+length=$(printf '%s' "$subject" | LC_ALL=C tr -d '\200-\277' | wc -c | tr -d ' ')
+max=72
+
+case $subject in
+'') problem 'the subject line is empty' ;;
+[A-Z]*) ;;
+*) problem 'the subject starts with a capital letter' ;;
+esac
+if [ "$length" -gt "$max" ]; then
+    problem "the subject has $length characters, the limit is $max"
+fi
+case $subject in
+*.) problem 'the subject ends without a period' ;;
+esac
+case ${subject%% *} in
+Added | Adds | Adding | Fixed | Fixes | Fixing | Updated | Updates | Updating | Removed | Removes | Removing | Changed | Changes | Changing)
+    problem "the subject is imperative: \"${subject%% *}\" reads as a report, write what the commit does (Add, Fix, Update)" ;;
+fixup! | squash! | amend! | WIP | WIP:)
+    problem 'a fixup or WIP commit does not land, fold it into the commit it fixes' ;;
+esac
+if [ -n "$second" ]; then
+    problem 'a blank line separates the subject from the body'
+fi
+if printf '%s\n' "$msg" | grep -q "$(printf '\342\200\224')"; then
+    problem 'the message has a long dash, rewrite the sentence'
+fi
+# The repo owner is the only author of every commit.
+if printf '%s\n' "$msg" | grep -qiE '^co-authored-by:.*(claude|anthropic|openai|codex|chatgpt|gpt|copilot|gemini|cursor|devin|aider)'; then
+    problem 'the message credits an AI model as co-author, remove the trailer'
+fi
+if printf '%s\n' "$msg" | grep -qiE "(generated|written|created) (with|by) \\[?(claude|codex|chatgpt|copilot|gemini|cursor|ai\\b)|$(printf '\360\237\244\226')"; then
+    problem 'the message says an AI tool made it, remove the line'
+fi
+
+exit "$fail"
