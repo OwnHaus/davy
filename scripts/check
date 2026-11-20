@@ -11,6 +11,7 @@ problem() {
 }
 
 cargo fmt --check || problem 'run cargo fmt'
+cargo fmt --check --manifest-path fuzz/Cargo.toml || problem 'run cargo fmt --manifest-path fuzz/Cargo.toml'
 cargo clippy --all-targets --locked --quiet -- -D warnings || problem 'clippy has findings'
 cargo test --locked --quiet || problem 'tests fail'
 

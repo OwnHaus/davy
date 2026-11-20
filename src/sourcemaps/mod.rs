@@ -1,7 +1,7 @@
 //! Source maps that `sentry-cli` uploads, stored per debug ID, and the lookup
 //! symbolication uses. `upload.rs` is the HTTP side.
 
-mod bundle;
+pub mod bundle;
 mod symbolicate;
 #[cfg(test)]
 mod tests;
@@ -80,6 +80,21 @@ impl fmt::Display for ChunkId {
 pub struct Build {
     map: SourceMap,
     minified: Option<SourceView>,
+}
+
+impl Build {
+    /// A build from its source map and, when it was uploaded, its minified
+    /// file, which must be UTF-8.
+    pub fn parse(map: &[u8], minified: Option<Vec<u8>>) -> io::Result<Self> {
+        let map = SourceMap::from_slice(map).map_err(io::Error::other)?;
+        let minified = match minified {
+            Some(js) => Some(SourceView::new(
+                String::from_utf8(js).map_err(io::Error::other)?.into(),
+            )),
+            None => None,
+        };
+        Ok(Self { map, minified })
+    }
 }
 
 /// What an assemble request found.
@@ -172,14 +187,7 @@ impl Store {
         let Some(map) = self.read(id, Kind::Map)? else {
             return Ok(None);
         };
-        let map = SourceMap::from_slice(&map).map_err(io::Error::other)?;
-        let minified = match self.read(id, Kind::Minified)? {
-            Some(js) => Some(SourceView::new(
-                String::from_utf8(js).map_err(io::Error::other)?.into(),
-            )),
-            None => None,
-        };
-        let build = Arc::new(Build { map, minified });
+        let build = Arc::new(Build::parse(&map, self.read(id, Kind::Minified)?)?);
         if let Ok(mut cache) = self.cache.lock() {
             if cache.len() == CACHED_BUILDS {
                 cache.pop_front();

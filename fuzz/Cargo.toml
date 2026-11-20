@@ -1,0 +1,83 @@
+[package]
+name = "davy-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace, so the main build never needs nightly or libFuzzer.
+[workspace]
+members = ["."]
+
+[dependencies]
+davy = { path = ".." }
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "envelope"
+path = "fuzz_targets/envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "event"
+path = "fuzz_targets/event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sentry_log"
+path = "fuzz_targets/sentry_log.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "logtail_json"
+path = "fuzz_targets/logtail_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "logtail_msgpack"
+path = "fuzz_targets/logtail_msgpack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "otlp_protobuf"
+path = "fuzz_targets/otlp_protobuf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "otlp_json"
+path = "fuzz_targets/otlp_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "artifact_bundle"
+path = "fuzz_targets/artifact_bundle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sourcemap"
+path = "fuzz_targets/sourcemap.rs"
+test = false
+doc = false
+bench = false

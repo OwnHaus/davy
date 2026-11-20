@@ -1,0 +1,30 @@
+#!/bin/sh
+# Runs fuzz targets for SECONDS each, all at once, in rust:bookworm with
+# nightly. Without targets it runs all of them. A crash lands in
+# fuzz/artifacts/<target>/ and the run exits non-zero.
+# Usage: fuzz/docker SECONDS [TARGET...]
+set -eu
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+SECONDS_EACH=${1:?usage: fuzz/docker SECONDS [TARGET...]}
+shift
+python3 "$ROOT/fuzz/seed" >/dev/null
+docker run --rm --cpus "${FUZZ_CPUS:-6}" -v "$ROOT":/src \
+  -v davy-cargo:/usr/local/cargo/registry -v davy-rustup:/usr/local/rustup \
+  -v davy-fuzz-bin:/fuzzbin -v davy-fuzz-target:/target -e CARGO_TARGET_DIR=/target \
+  -w /src/fuzz rust:bookworm bash -euc '
+    rustup toolchain install nightly --profile minimal >/dev/null 2>&1
+    [ -x /fuzzbin/bin/cargo-fuzz ] || cargo install --locked --root /fuzzbin cargo-fuzz
+    export PATH=/fuzzbin/bin:$PATH
+    targets=${*:-$(cargo +nightly fuzz list)}
+    for t in $targets; do cargo +nightly fuzz build "$t"; done
+    failed=0
+    for t in $targets; do
+      nice -n 19 cargo +nightly fuzz run "$t" -- -max_total_time='"$SECONDS_EACH"' \
+        -rss_limit_mb=2048 -timeout=10 -print_final_stats=1 > "/target/$t.log" 2>&1 &
+    done
+    for t in $targets; do wait -n || failed=1; done
+    for t in $targets; do
+      printf "%s: %s\n" "$t" "$(grep -E "^stat::number_of_executed_units|^Done|^==.*ERROR|deadly signal" "/target/$t.log" | tr "\n" " ")"
+    done
+    exit $failed
+  ' bash "$@"

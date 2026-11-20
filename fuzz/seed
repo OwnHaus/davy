@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Fills fuzz/corpus/<target>/ with the requests in e2e/fixtures, so each
+fuzzer starts from what real clients send."""
+
+import gzip
+import io
+import json
+import pathlib
+import struct
+import zipfile
+
+root = pathlib.Path(__file__).resolve().parent
+fixtures = root.parent / "e2e" / "fixtures"
+corpus = root / "corpus"
+
+
+def put(target, name, data):
+    path = corpus / target
+    path.mkdir(parents=True, exist_ok=True)
+    (path / name).write_bytes(data)
+
+
+def items(envelope):
+    """The (type, payload) items of an envelope."""
+    _, _, rest = envelope.partition(b"\n")
+    while rest.strip():
+        header, _, rest = rest.lstrip(b"\r\n").partition(b"\n")
+        meta = json.loads(header)
+        if "length" in meta:
+            payload, rest = rest[: meta["length"]], rest[meta["length"] + 1 :]
+        else:
+            payload, _, rest = rest.partition(b"\n")
+        yield meta.get("type"), payload
+
+
+envelopes = [
+    p
+    for p in sorted(fixtures.glob("*/*.body"))
+    if "/envelope/" in json.loads(p.with_suffix(".meta.json").read_text())["url"]
+]
+for p in envelopes:
+    name = f"{p.parent.name}-{p.stem}"
+    put("envelope", name, p.read_bytes())
+    for i, (kind, payload) in enumerate(items(p.read_bytes())):
+        if kind == "event":
+            put("event", f"{name}-{i}", payload)
+        elif kind == "log":
+            put("sentry_log", f"{name}-{i}", payload)
+
+for p in sorted(fixtures.glob("otlp-proto/*.body")):
+    put("otlp_protobuf", p.stem, p.read_bytes())
+for p in sorted(fixtures.glob("otlp-json/*.body")):
+    put("otlp_json", p.stem, p.read_bytes())
+for p in sorted(fixtures.glob("logtail-pino/*.body")):
+    put("logtail_msgpack", p.stem, gzip.decompress(p.read_bytes()))
+put("logtail_json", "object", b'{"dt":"2026-11-20T10:00:00Z","level":"error","message":"boom"}')
+put("logtail_json", "array", b'[{"message":"a","level":"info"},{"msg":"b","nested":{"k":[1,2]}}]')
+put("logtail_json", "ndjson", b'{"message":"a"}\n{"message":"b","level":"warn"}\n')
+
+cli = fixtures / "sentry-cli-3"
+minified, sourcemap = (cli / "app.min.js").read_bytes(), (cli / "app.min.js.map").read_bytes()
+debug_id = json.loads(sourcemap).get("debug_id", "c0ffee00-0000-4000-8000-000000000001")
+put("sourcemap", "app", struct.pack("<II", 1, 1) + sourcemap + b"\0" + minified)
+put("sourcemap", "map-only", struct.pack("<II", 1, 10) + sourcemap)
+
+bundle = io.BytesIO()
+with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as z:
+    headers = {"debug-id": debug_id}
+    manifest = {
+        "files": {
+            "_/_/app.min.js": {"type": "minified_source", "headers": headers},
+            "_/_/app.min.js.map": {"type": "source_map", "headers": headers},
+        }
+    }
+    z.writestr("manifest.json", json.dumps(manifest))
+    z.writestr("_/_/app.min.js", minified)
+    z.writestr("_/_/app.min.js.map", sourcemap)
+put("artifact_bundle", "app", bundle.getvalue())
+
+for target in sorted(corpus.iterdir()):
+    print(f"{target.name}: {len(list(target.iterdir()))} seeds")

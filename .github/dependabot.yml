@@ -7,6 +7,13 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+    groups:
+      fuzz:
+        patterns: ["*"]
   - package-ecosystem: npm
     directory: /e2e
     schedule:
