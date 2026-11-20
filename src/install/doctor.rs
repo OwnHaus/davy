@@ -2,7 +2,11 @@
 //! what fixes it. It reaches only the public URL and the SMTP server.
 
 use super::{SMTP_FILE, Settings, TOKEN_FILE, loopback, sh};
-use crate::{alert::mail::Smtp, secret::MIN_TOKEN_CHARS, text};
+use crate::{
+    alert::mail::Smtp,
+    secret::{self, MIN_TOKEN_CHARS},
+    text,
+};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -159,7 +163,7 @@ fn token_file(path: &Path, token: Option<&str>, d: &str) -> Check {
             format!("davy setup --data {d} --public-url URL"),
         );
     };
-    let chars = token.trim_end_matches(['\n', '\r']).chars().count();
+    let chars = secret::line(token).chars().count();
     if chars < MIN_TOKEN_CHARS {
         return not_ok(
             "token",
@@ -287,11 +291,7 @@ async fn mcp(client: &reqwest::Client, url: &Url, token: &str, d: &str) -> Check
         }
         Err(e) => return not_ok("mcp", Status::Fail, crate::net::error_text(e), restart),
     }
-    let reply = match post()
-        .bearer_auth(token.trim_end_matches(['\n', '\r']))
-        .send()
-        .await
-    {
+    let reply = match post().bearer_auth(secret::line(token)).send().await {
         Ok(r) => (r.status(), initialized(r).await),
         Err(e) => return not_ok("mcp", Status::Fail, crate::net::error_text(e), restart),
     };
@@ -333,7 +333,7 @@ async fn smtp(data: &Path, settings: &Settings, d: &str) -> Check {
             format!("davy setup --data {d} --public-url URL --mail-from ADDRESS"),
         );
     };
-    let checked = match Smtp::new(url.trim_end_matches(['\n', '\r']), from) {
+    let checked = match Smtp::new(secret::line(&url), from) {
         Ok(smtp) => smtp.check().await,
         Err(e) => Err(format!("{e:#}")),
     };

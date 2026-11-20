@@ -43,7 +43,7 @@ pub fn run(out: &mut impl Write, args: &Args) -> anyhow::Result<()> {
             let path = data.join(TOKEN_FILE);
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("cannot read {}, run davy setup first", path.display()))?;
-            Token::Literal(text.trim_end_matches(['\n', '\r']).to_owned())
+            Token::Literal(crate::secret::line(&text).to_owned())
         }
         _ => Token::Env,
     };

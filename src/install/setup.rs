@@ -6,7 +6,7 @@ use super::{
     SETTINGS_FILE, SMTP_FILE, Settings, TOKEN_FILE, check_public_url, sh,
     unit::{Serve, check_user},
 };
-use crate::secret::MIN_TOKEN_CHARS;
+use crate::secret::{self, MIN_TOKEN_CHARS};
 use anyhow::{Context as _, bail, ensure};
 use serde::Serialize;
 use std::io::Write;
@@ -230,16 +230,16 @@ fn ensure_token(path: &Path) -> anyhow::Result<()> {
     if regular_file(path)? {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("cannot read {}", path.display()))?;
-        let chars = text.trim_end_matches(['\n', '\r']).chars().count();
-        ensure!(
-            chars >= MIN_TOKEN_CHARS,
-            "{} holds {chars} characters and needs {MIN_TOKEN_CHARS}. Delete it and run setup again for a new token, then update every agent and sentry-cli that used the old one",
-            path.display()
-        );
+        if let Some(chars) = secret::too_short(secret::line(&text)) {
+            bail!(
+                "{} holds {chars} characters and needs {MIN_TOKEN_CHARS}. Delete it and run setup again for a new token, then update every agent and sentry-cli that used the old one",
+                path.display()
+            );
+        }
         return restrict(path, 0o600);
     }
-    let token = crate::secret::random_hex()
-        .map_err(|e| anyhow::anyhow!("no randomness for the token: {e}"))?;
+    let token =
+        secret::random_hex().map_err(|e| anyhow::anyhow!("no randomness for the token: {e}"))?;
     let mut file = new_private_file(path)?;
     writeln!(file, "{token}")?;
     Ok(())

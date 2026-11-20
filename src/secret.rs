@@ -20,7 +20,7 @@ pub fn read(name: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::Result<
             let text = std::fs::read_to_string(&path).with_context(|| {
                 format!("cannot read {file_var} {path:?}, check that it exists and that this user may read it")
             })?;
-            let value = text.trim_end_matches(['\n', '\r']);
+            let value = line(&text);
             ensure!(!value.is_empty(), "{file_var} {path:?} is empty");
             Ok(Some(value.to_owned()))
         }
@@ -31,14 +31,24 @@ pub fn read(name: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::Result<
 /// Reads `DAVY_TOKEN` or `DAVY_TOKEN_FILE` and refuses a short token.
 pub fn admin_token(env: impl Fn(&str) -> Option<String>) -> anyhow::Result<Option<String>> {
     let token = read("DAVY_TOKEN", env)?;
-    if let Some(t) = &token {
-        ensure!(
-            t.chars().count() >= MIN_TOKEN_CHARS,
-            "the admin token has {} characters and needs {MIN_TOKEN_CHARS}, `davy setup` writes one to DATA/token",
-            t.chars().count()
+    if let Some(chars) = token.as_deref().and_then(too_short) {
+        bail!(
+            "the admin token has {chars} characters and needs {MIN_TOKEN_CHARS}, `davy setup` writes one to DATA/token"
         );
     }
     Ok(token)
+}
+
+/// The text of a secret file without its trailing line break.
+pub fn line(text: &str) -> &str {
+    text.trim_end_matches(['\n', '\r'])
+}
+
+/// The length of `token` in characters when it is shorter than
+/// [`MIN_TOKEN_CHARS`].
+pub fn too_short(token: &str) -> Option<usize> {
+    let chars = token.chars().count();
+    (chars < MIN_TOKEN_CHARS).then_some(chars)
 }
 
 /// 32 random bytes as 64 hex digits, for a token or a signing secret.
