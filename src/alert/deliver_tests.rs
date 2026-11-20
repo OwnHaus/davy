@@ -121,7 +121,7 @@ async fn the_notifier_sends_a_channel_s_rows_in_order_and_marks_them_sent() {
     crate::store::create_project(&c, "shop").unwrap();
     let (url, mut seen) = receiver(StatusCode::OK).await;
     let url = crate::monitor::CheckUrl::parse(&url).unwrap();
-    store::add(&c, Some(1), &Destination::Webhook(url), 0).unwrap();
+    store::add(&c, Some(1), &Destination::Webhook(url), false, 0).unwrap();
     store::notify(&c, 1, &Notice::Test, 0).unwrap();
     store::notify(&c, 1, &Notice::Test, 0).unwrap();
     let writer = crate::store::Writer::start(crate::store::open(&dir).unwrap(), 8);

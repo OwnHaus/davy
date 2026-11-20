@@ -10,7 +10,7 @@ const client = new Client({ name: 'davy-e2e', version: '1.0.0' })
 await client.connect(transport)
 
 const { tools } = await client.listTools()
-assert.deepEqual(tools.map(t => t.name).sort(), ['issue_context', 'mark_fixed', 'schema', 'search_logs', 'sql'])
+assert.deepEqual(tools.map(t => t.name).sort(), ['issue_context', 'mark_fixed', 'schema', 'search_logs', 'sql', 'submit_feedback'])
 
 async function call(name, args) {
   const result = await client.callTool({ name, arguments: args })
@@ -46,5 +46,12 @@ assert.deepEqual(fixed, { text: `issue ${issue} resolved in release e2e@2`, isEr
 const status = JSON.parse((await call('sql', { query: `SELECT status, resolved_in_release FROM issues WHERE id = ${issue}` })).text)
 assert.deepEqual(status.rows, [['resolved', 'e2e@2']])
 
+const thanks = await call('submit_feedback', { tried: 'e2e tried', happened: 'e2e happened' })
+assert.deepEqual(thanks, { text: 'Thanks. The feedback is stored for the person who runs Davy.', isError: false })
+const feedback = JSON.parse((await call('sql', { query: "SELECT client, tried, happened, fix FROM feedback WHERE tried = 'e2e tried'" })).text)
+assert.equal(feedback.rows.length, 1)
+assert.deepEqual(feedback.rows[0].slice(1), ['e2e tried', 'e2e happened', null])
+assert.ok(feedback.rows[0][0], 'the client name comes from _meta or User-Agent')
+
 await client.close()
-console.log(`mcp: verified 5 tools, sql, issue_context, search_logs and mark_fixed on issue ${issue}`)
+console.log(`mcp: verified 6 tools, sql, issue_context, search_logs, mark_fixed on issue ${issue} and submit_feedback from client ${feedback.rows[0][0]}`)

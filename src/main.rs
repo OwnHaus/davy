@@ -1,6 +1,6 @@
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use davy::{
-    alert, context, http, install,
+    alert, context, feedback, http, install,
     logs::{
         LogLevel,
         store::{LogHit, LogQuery, search},
@@ -33,6 +33,9 @@ enum Command {
     /// Prints the MCP config for Claude Code, Codex or Cursor. The config
     /// reads the token from DAVY_TOKEN, so it can be committed.
     McpConfig(install::client::Args),
+    /// Lists what agents reported about Davy's tools and docs with the MCP
+    /// tool submit_feedback, oldest first.
+    Feedback(feedback::Args),
     /// Runs the ingest server. With an admin token in DAVY_TOKEN or a file named
     /// by DAVY_TOKEN_FILE it also serves MCP at /mcp and takes source map uploads.
     Serve(Serve),
@@ -229,6 +232,9 @@ struct ChannelAdd {
     /// Alerts for every project, including ones created later.
     #[arg(long)]
     all: bool,
+    /// Also sends what agents report with the MCP tool submit_feedback.
+    #[arg(long)]
+    feedback: bool,
     #[arg(long)]
     data: PathBuf,
 }
@@ -249,6 +255,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Setup(args) => install::setup::run(&mut out.lock(), &args)?,
         Command::Doctor(args) => install::doctor::run(&mut out.lock(), &args).await?,
         Command::McpConfig(args) => install::client::run(&mut out.lock(), &args)?,
+        Command::Feedback(args) => feedback::run(&mut out.lock(), &args)?,
         Command::Project {
             command:
                 Project::Create {
@@ -422,7 +429,7 @@ fn run_channel(out: &mut impl Write, command: Channel) -> anyhow::Result<()> {
                 }
             }
             .map_err(anyhow::Error::msg)?;
-            let added = alert::store::add(&c, project, &to, time::now_ms())?;
+            let added = alert::store::add(&c, project, &to, args.feedback, time::now_ms())?;
             match added.secret {
                 Some(secret) => writeln!(out, "{}\t{}", added.id, secret.as_str())?,
                 None => writeln!(out, "{}", added.id)?,

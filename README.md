@@ -60,7 +60,7 @@ export DAVY_TOKEN="$(cat ./data/token)"
 ./target/release/davy mcp-config --client claude-code --data ./data
 ```
 
-The agent gets five tools: `schema`, `sql` (one read-only SQLite query), `search_logs`, `issue_context` (stack with source lines, breadcrumbs, releases and the logs around the error) and `mark_fixed`. A fixed issue reopens when the error comes back in the fix release or a newer one, not from older releases still running.
+The agent gets six tools: `schema`, `sql` (one read-only SQLite query), `search_logs`, `issue_context` (stack with source lines, breadcrumbs, releases and the logs around the error), `mark_fixed` and `submit_feedback`, which reports a problem with Davy's own tools to whoever runs it (`davy feedback`). A fixed issue reopens when the error comes back in the fix release or a newer one, not from older releases still running.
 
 The same works from a shell:
 

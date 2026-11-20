@@ -240,6 +240,7 @@ mod tests {
             &crate::alert::Destination::Webhook(
                 crate::monitor::CheckUrl::parse("https://hooks.example/").unwrap(),
             ),
+            false,
             0,
         )
         .unwrap();

@@ -3,6 +3,7 @@
 
 use crate::{
     context,
+    feedback::Feedback,
     logs::{
         LogLevel,
         store::{LogQuery, search},
@@ -14,10 +15,11 @@ use crate::{
 };
 use axum::{Router, middleware};
 use rmcp::{
-    ServerHandler,
+    RoleServer, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{ServerCapabilities, ServerConfig},
     schemars::JsonSchema,
+    service::RequestContext,
     tool, tool_handler, tool_router,
     transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
@@ -34,7 +36,8 @@ const MAX_LOGS: usize = 500;
 const INSTRUCTIONS: &str = "Davy stores the errors that Sentry SDKs report and the logs that services ship. \
 To triage, list open issues with `sql` (SELECT id,title,event_count,last_seen FROM issues WHERE status='unresolved' ORDER BY last_seen DESC LIMIT 20), \
 then call `issue_context` on one issue. It returns the stack with source lines, breadcrumbs, releases and the logs around the error. \
-Call `schema` before writing other SQL. After a fix ships, call `mark_fixed`.";
+Call `schema` before writing other SQL. After a fix ships, call `mark_fixed`. \
+When a tool was missing, returned the wrong thing or needed a workaround, call `submit_feedback`.";
 
 const LOG_NOTES: &str = "
 Logs are not in SQL. Use search_logs. Its query is Tantivy syntax over these fields:
@@ -113,6 +116,17 @@ struct MarkFixed {
     issue_id: i64,
     /// The release that contains the fix. Leave out to mean any release first seen after now.
     release: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct SubmitFeedback {
+    /// What you tried: the tool and its arguments, or the doc step.
+    tried: String,
+    /// What happened instead of what you needed.
+    happened: String,
+    /// How Davy could fix it, when you know.
+    fix: Option<String>,
 }
 
 type Reply = Result<String, String>;
@@ -195,28 +209,67 @@ impl Tools {
         &self,
         Parameters(MarkFixed { issue_id, release }): Parameters<MarkFixed>,
     ) -> Reply {
-        let (done, outcome) = tokio::sync::oneshot::channel();
         let reply = match &release {
             Some(r) => format!("issue {issue_id} resolved in release {r}"),
             None => format!("issue {issue_id} resolved until a new release reports it"),
         };
-        self.writes
-            .try_send(Write {
-                job: Job::Resolve {
-                    issue: issue_id,
-                    release,
-                },
-                done,
-            })
-            .map_err(|e| format!("the writer is busy, try again: {e}"))?;
-        outcome
-            .await
-            .map_err(|e| format!("the writer stopped: {e}"))??;
+        self.write(Job::Resolve {
+            issue: issue_id,
+            release,
+        })
+        .await?;
         Ok(reply)
+    }
+
+    #[tool(
+        description = "Report a problem with Davy itself: a tool that was missing, returned the wrong thing or needed a workaround, or a step in its docs that failed. Make one call per problem. Do not copy data from the errors or logs you read. The person who runs Davy reads it with `davy feedback`."
+    )]
+    async fn submit_feedback(
+        &self,
+        ctx: RequestContext<RoleServer>,
+        Parameters(SubmitFeedback {
+            tried,
+            happened,
+            fix,
+        }): Parameters<SubmitFeedback>,
+    ) -> Reply {
+        let feedback = Feedback::new(client_name(&ctx).as_deref(), tried, happened, fix)?;
+        self.write(Job::Feedback {
+            at: time::now_ms(),
+            feedback,
+        })
+        .await?;
+        Ok("Thanks. The feedback is stored for the person who runs Davy.".to_owned())
     }
 }
 
+/// The client's name from the request metadata, or its `User-Agent`. The
+/// server keeps no sessions, so the name from `initialize` is gone and rmcp
+/// fills in its own default.
+fn client_name(ctx: &RequestContext<RoleServer>) -> Option<String> {
+    let placeholder = rmcp::model::Implementation::default().name;
+    ctx.client_info()
+        .map(|info| info.name)
+        .filter(|name| !name.is_empty() && *name != placeholder)
+        .or_else(|| {
+            let parts = ctx.extensions.get::<axum::http::request::Parts>()?;
+            let agent = parts.headers.get(axum::http::header::USER_AGENT)?;
+            agent.to_str().ok().map(str::to_owned)
+        })
+}
+
 impl Tools {
+    /// Queues `job` for the writer and waits for its outcome.
+    async fn write(&self, job: Job) -> Result<(), String> {
+        let (done, outcome) = tokio::sync::oneshot::channel();
+        self.writes
+            .try_send(Write { job, done })
+            .map_err(|e| format!("the writer is busy, try again: {e}"))?;
+        outcome
+            .await
+            .map_err(|e| format!("the writer stopped: {e}"))?
+    }
+
     /// Runs blocking store or index work off the async runtime. Errors become
     /// tool errors the agent can read and act on.
     async fn blocking(
@@ -381,5 +434,79 @@ mod tests {
             ("no issue 9".to_owned(), true)
         );
         writer.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn submit_feedback_queues_the_text_with_the_client_name() {
+        let s = server();
+        let writer = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for _ in 0..2 {
+                let w = s.writes.recv().unwrap();
+                let Job::Feedback { feedback, .. } = w.job else {
+                    panic!("expected a feedback job");
+                };
+                seen.push(feedback);
+                w.done.send(Ok(())).unwrap();
+            }
+            seen
+        });
+        let thanks = (
+            "Thanks. The feedback is stored for the person who runs Davy.".to_owned(),
+            false,
+        );
+        let mut with_meta = call(
+            "submit_feedback",
+            &json!({"tried": "sql on logs", "happened": "no such table: logs", "fix": "say logs are not in SQL"}),
+        );
+        with_meta["params"]["_meta"] = json!({
+            "io.modelcontextprotocol/clientInfo": {"name": "claude-code", "version": "2.1.0"}
+        });
+        let (status, body) = post(&s.app, "localhost", Some(SECRET), with_meta).await;
+        assert_eq!(status, 200, "{body}");
+        let reply: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(reply["result"]["content"][0]["text"], thanks.0.as_str());
+        let request = axum::http::Request::post("/mcp")
+            .header(header::HOST, "localhost")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, "application/json, text/event-stream")
+            .header(header::AUTHORIZATION, format!("Bearer {SECRET}"))
+            .header(header::USER_AGENT, "codex_cli_rs/0.80.0")
+            .body(Body::from(
+                call(
+                    "submit_feedback",
+                    &json!({"tried": "issue_context 3", "happened": "no source lines"}),
+                )
+                .to_string(),
+            ))
+            .unwrap();
+        let r = s.app.clone().oneshot(request).await.unwrap();
+        assert_eq!(r.status(), 200);
+        assert_eq!(
+            tool(
+                &s.app,
+                "submit_feedback",
+                json!({"tried": "", "happened": "x"})
+            )
+            .await,
+            ("tried is empty".to_owned(), true)
+        );
+        assert_eq!(
+            writer.join().unwrap(),
+            [
+                Feedback {
+                    client: Some("claude-code".to_owned()),
+                    tried: "sql on logs".to_owned(),
+                    happened: "no such table: logs".to_owned(),
+                    fix: Some("say logs are not in SQL".to_owned()),
+                },
+                Feedback {
+                    client: Some("codex_cli_rs/0.80.0".to_owned()),
+                    tried: "issue_context 3".to_owned(),
+                    happened: "no source lines".to_owned(),
+                    fix: None,
+                },
+            ]
+        );
     }
 }

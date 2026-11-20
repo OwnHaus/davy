@@ -19,7 +19,7 @@ This document fixes the data shapes and the order of work.
 1. Storage benchmark (done, `bench/storage`, see "Log storage" below).
 2. Errors: Sentry envelope and `/store/` ingest, grouping, issues, CLI to list them (done).
 3. Logs: Logtail endpoint (msgpack and JSON), the Sentry `log` item, OTLP/HTTP logs, full-text search (done).
-4. MCP and CLI for agents: `sql`, `schema`, `search_logs`, `issue_context`, `mark_fixed` (done).
+4. MCP and CLI for agents: `sql`, `schema`, `search_logs`, `issue_context`, `mark_fixed` (done), `submit_feedback` (milestone 7).
 5. **Source maps**: the `sentry-cli` upload endpoints and debug ID lookup (done).
 6. Uptime checks and alerts: HTTP monitors, heartbeats, webhooks, Slack and e-mail (done).
 7. **Install by prompt.** *Next.* A person pastes one prompt into a coding agent, and the agent installs Davy, connects the app and checks that errors arrive. See "Milestone 7" below.
@@ -283,6 +283,7 @@ A coding agent should get from "there is an error" to a fix without a human copy
 | `search_logs` | `query?`, `project?`, `since?`, `until?`, `level?`, `limit?` | Hits as `davy logs --json` prints them, oldest first. When more match than `limit`, the newest win. |
 | `issue_context` | `issue_id` | The issue, its latest event made compact, its recent events and releases, and the logs around the latest event. |
 | `mark_fixed` | `issue_id`, `release?` | A sentence that says which release the fix is expected in. |
+| `submit_feedback` | `tried`, `happened`, `fix?` | A sentence that says the feedback is stored. |
 
 **`sql`** opens its own read-only connection per call (`SQLITE_OPEN_READ_ONLY`, `PRAGMA query_only`), prepares exactly one statement, and runs it under an authorizer that allows only reads and function calls. `stmt.readonly()` is not enough, because SQLite counts `ATTACH` and `PRAGMA query_only=0` as read-only. At most 500 rows. A text cell over 4000 characters is cut and marked. A blob cell is `{"blob_bytes": n}`. The function `payload_json(payload)` decompresses an event payload to JSON text, so `json_extract(payload_json(payload), '$.request.url')` works. A query is interrupted after 5 s. A bad query is a tool error with SQLite's message, not a protocol error.
 
@@ -343,7 +344,7 @@ The same library functions back three commands, for agents that run shell comman
 - Unit tests with literal values: `on_event` for every row of the regression rule; `sql` returns exact rows, refuses a write, refuses two statements, cuts at 500 rows, decompresses with `payload_json`, and interrupts a runaway recursive query; compaction of the `sentry-node-10` error fixture gives the exact exception, frames and context lines.
 - A store test resolves an issue in a release and asserts that an event from an older release keeps it resolved and one from a newer release reopens it.
 - HTTP contract tests: `/mcp` is 401 without the token or with a wrong one and 403 for a `Host` it does not serve; with the right one `tools/list` and `tools/call` of `sql` and `mark_fixed` answer. Without a configured token `serve` does not merge the MCP router, so there is no route to test.
-- `e2e/run.sh` connects with the official MCP TypeScript client (`@modelcontextprotocol/sdk`) over Streamable HTTP with the bearer token, lists the five tools, calls `issue_context` on an issue the Sentry SDKs created and asserts the exception type and an in-app frame, finds a log with `search_logs`, calls `mark_fixed` and reads the status back with `sql`.
+- `e2e/run.sh` connects with the official MCP TypeScript client (`@modelcontextprotocol/sdk`) over Streamable HTTP with the bearer token, lists the six tools, calls `issue_context` on an issue the Sentry SDKs created and asserts the exception type and an in-app frame, finds a log with `search_logs`, calls `mark_fixed` and reads the status back with `sql`.
 - `scripts/check` passes.
 
 ## Milestone 5: source maps
@@ -485,7 +486,7 @@ reason: HTTP 503
 at: 2026-11-20T08:43:10Z
 ```
 
-- `type` is one of `issue.new`, `issue.regressed`, `monitor.down`, `monitor.up`, `test`.
+- `type` is one of `issue.new`, `issue.regressed`, `monitor.down`, `monitor.up`, `feedback`, `test`. A `feedback` notice goes only to channels added with `--feedback`, has `project: null` and a `feedback` object with `id`, `client`, `tried`, `happened` and `fix`. Its Slack line is `Feedback from <client>: <happened>`.
 
 ### Storage
 
@@ -553,7 +554,7 @@ The docs URL is the repository's raw `docs/` on the release tag until Davy has i
 ### Feedback from agents
 
 - MCP gets a sixth tool, `submit_feedback`. An agent calls it when a tool was missing, returned the wrong thing or needed a workaround, with what it tried, what happened and a proposed fix. Its description asks for one call per problem and no data from the errors or logs it read.
-- Feedback stays on the server: one row in a `feedback` table with the time, the client name from the MCP handshake and the text. `davy feedback --data DIR [--json]` lists it. Davy sends it nowhere by default. A channel created with `--feedback` also receives each new item, so a team can route it to Slack and act on it there.
+- Feedback stays on the server: one row in a `feedback` table with the time, the client name and the text. `/mcp` keeps no sessions, so the name comes from `io.modelcontextprotocol/clientInfo` in the request's `_meta` and otherwise from `User-Agent`. That is a hint, not an identity: the TypeScript SDK 1.x sends neither name, so `e2e/run.sh` sees `node`. Each field holds at most 4000 characters, and only the newest 1000 rows stay, so an agent in a loop cannot fill the disk. `davy feedback --data DIR [--json]` lists it. Davy sends it nowhere by default. A channel created with `--feedback` also receives each new item, so a team can route it to Slack and act on it there.
 - The agent eval reads `davy feedback` after each run. Each item becomes a fix in the docs, the CLI or a tool, or a line in this section on why not.
 
 ### Safety

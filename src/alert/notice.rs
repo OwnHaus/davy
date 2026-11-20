@@ -33,6 +33,11 @@ pub enum Notice {
     IssueRegressed(Issue),
     MonitorDown(Incident),
     MonitorUp(Incident),
+    /// What an agent reported with `submit_feedback`, row `id`.
+    Feedback {
+        id: i64,
+        feedback: crate::feedback::Feedback,
+    },
     Test,
 }
 
@@ -59,6 +64,15 @@ struct Webhook<'a> {
     monitor: Option<Monitor<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     incident: Option<IncidentBody<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    feedback: Option<FeedbackBody<'a>>,
+}
+
+#[derive(Serialize)]
+struct FeedbackBody<'a> {
+    id: i64,
+    #[serde(flatten)]
+    feedback: &'a crate::feedback::Feedback,
 }
 
 #[derive(Serialize)]
@@ -82,6 +96,7 @@ impl Notice {
             Self::IssueRegressed(_) => "issue.regressed",
             Self::MonitorDown(_) => "monitor.down",
             Self::MonitorUp(_) => "monitor.up",
+            Self::Feedback { .. } => "feedback",
             Self::Test => "test",
         }
     }
@@ -142,6 +157,16 @@ impl Notice {
                 ("incident_id", i.id.to_string()),
                 ("reason", cut(&i.reason)),
             ],
+            Self::Feedback { id, feedback } => {
+                let mut lines = vec![
+                    ("feedback_id", id.to_string()),
+                    ("client", client(feedback).to_owned()),
+                    ("tried", feedback.tried.clone()),
+                    ("happened", feedback.happened.clone()),
+                ];
+                lines.extend(feedback.fix.clone().map(|f| ("fix", f)));
+                lines
+            }
             Self::Test => Vec::new(),
         };
         lines.push(("at", time::rfc3339_ms(at)));
@@ -152,7 +177,11 @@ impl Notice {
         let (issue, incident) = match self {
             Self::IssueNew(issue) | Self::IssueRegressed(issue) => (Some(issue), None),
             Self::MonitorDown(incident) | Self::MonitorUp(incident) => (None, Some(incident)),
-            Self::Test => (None, None),
+            Self::Feedback { .. } | Self::Test => (None, None),
+        };
+        let feedback = match self {
+            Self::Feedback { id, feedback } => Some(FeedbackBody { id: *id, feedback }),
+            _ => None,
         };
         Webhook {
             id,
@@ -168,6 +197,7 @@ impl Notice {
                 id: i.id,
                 reason: &i.reason,
             }),
+            feedback,
         }
     }
 
@@ -178,6 +208,11 @@ impl Notice {
             Self::IssueRegressed(issue) => format!("Issue regressed: {}", cut(&issue.title)),
             Self::MonitorDown(i) => format!("{} is down: {}", i.name, cut(&i.reason)),
             Self::MonitorUp(i) => format!("{} is up again", i.name),
+            Self::Feedback { feedback, .. } => format!(
+                "Feedback from {}: {}",
+                client(feedback),
+                cut(&feedback.happened)
+            ),
             Self::Test => "Test notice from Davy".to_owned(),
         };
         match project {
@@ -185,6 +220,10 @@ impl Notice {
             None => text,
         }
     }
+}
+
+fn client(feedback: &crate::feedback::Feedback) -> &str {
+    feedback.client.as_deref().unwrap_or("an agent")
 }
 
 fn cut(s: &str) -> String {

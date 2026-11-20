@@ -1,6 +1,6 @@
 # Connect a coding agent
 
-Davy serves MCP at `/mcp` of the public URL. Claude Code, Codex and Cursor connect with the admin token and get five tools: `schema`, `sql`, `search_logs`, `issue_context` and `mark_fixed`.
+Davy serves MCP at `/mcp` of the public URL. Claude Code, Codex and Cursor connect with the admin token and get six tools: `schema`, `sql`, `search_logs`, `issue_context`, `mark_fixed` and `submit_feedback`.
 
 The token gives full read access to errors and logs. It goes into a file only the person can read and reaches the client through the `DAVY_TOKEN` environment variable, never into a config file or a command line.
 
@@ -43,3 +43,4 @@ To check, ask the agent: "List the unresolved issues in Davy." It calls `sql` an
 - `search_logs` searches logs by text and attributes over a time range.
 - `sql` runs one read-only query, and `schema` describes the tables.
 - `mark_fixed` resolves an issue in a release. It reopens when the error comes back in that release or a newer one.
+- `submit_feedback` reports a tool that was missing, returned the wrong thing or needed a workaround. `davy feedback --data /var/lib/davy` lists the reports. Davy sends them nowhere unless a channel was added with `--feedback`.

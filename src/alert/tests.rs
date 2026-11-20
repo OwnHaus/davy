@@ -19,6 +19,7 @@ fn channels_are_added_listed_and_removed() {
         &c,
         Some(1),
         &Destination::Webhook(url("https://hooks.example/davy")),
+        false,
         1_000,
     )
     .unwrap();
@@ -29,6 +30,7 @@ fn channels_are_added_listed_and_removed() {
         &c,
         None,
         &Destination::Slack(url("https://hooks.slack.com/services/T0/B0/x")),
+        true,
         2_000,
     )
     .unwrap();
@@ -48,6 +50,7 @@ fn channels_are_added_listed_and_removed() {
                 project: Some("shop".into()),
                 kind: Kind::Webhook,
                 to: "hooks.example".into(),
+                feedback: false,
                 unsent: 0,
                 failed: 0,
                 dropped: 0
@@ -57,6 +60,7 @@ fn channels_are_added_listed_and_removed() {
                 project: None,
                 kind: Kind::Slack,
                 to: "hooks.slack.com".into(),
+                feedback: true,
                 unsent: 0,
                 failed: 0,
                 dropped: 0
@@ -76,6 +80,7 @@ fn a_webhook_secret_is_64_hex_characters_and_new_each_time() {
             &c,
             None,
             &Destination::Webhook(url("https://hooks.example/")),
+            false,
             0,
         )
         .unwrap()
@@ -106,6 +111,7 @@ fn a_data_directory_holds_at_most_100_channels() {
         &c,
         None,
         &Destination::Slack(url("https://hooks.slack.com/")),
+        false,
         0,
     );
     assert_eq!(
@@ -234,7 +240,7 @@ fn channel(c: &rusqlite::Connection, project: Option<i64>, kind: Kind) -> i64 {
         Kind::Slack => Destination::Slack(url("https://hooks.example/x")),
         Kind::Email => Destination::Email(EmailAddress::parse("ops@example.com").unwrap()),
     };
-    store::add(c, project, &to, 0).unwrap().id
+    store::add(c, project, &to, false, 0).unwrap().id
 }
 
 fn queued(c: &rusqlite::Connection) -> Vec<(i64, i64, String, String, i64)> {

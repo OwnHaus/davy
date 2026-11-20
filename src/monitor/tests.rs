@@ -432,7 +432,14 @@ fn an_incident_queues_monitor_down_and_then_monitor_up() {
     let c = memory();
     let id = backup(&c);
     let hook = CheckUrl::parse("https://hooks.example/x").unwrap();
-    crate::alert::store::add(&c, Some(1), &crate::alert::Destination::Webhook(hook), 0).unwrap();
+    crate::alert::store::add(
+        &c,
+        Some(1),
+        &crate::alert::Destination::Webhook(hook),
+        false,
+        0,
+    )
+    .unwrap();
     for (at, failed) in [(1_000, false), (2_000, true), (3_000, true), (4_000, false)] {
         store::ping(&c, id, at, failed).unwrap();
     }

@@ -7,7 +7,7 @@ CREATE INDEX IF NOT EXISTS issues_last_seen ON issues(last_seen DESC);
 CREATE INDEX IF NOT EXISTS events_issue ON events(issue_id, id DESC);";
 /// Schema changes after the first release, applied in order. `PRAGMA
 /// user_version` counts how many ran.
-const MIGRATIONS: [&str; 3] = [
+const MIGRATIONS: [&str; 4] = [
     "CREATE TABLE releases(project_id INTEGER NOT NULL REFERENCES projects(id), version TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY(project_id, version));
 INSERT INTO releases SELECT project_id, release, min(received_at) FROM events WHERE release IS NOT NULL GROUP BY project_id, release;",
     "CREATE TABLE monitors(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), name TEXT NOT NULL, kind TEXT NOT NULL, url TEXT, expect TEXT, keyword TEXT, heartbeat_token TEXT UNIQUE, every_s INTEGER NOT NULL, timeout_s INTEGER, grace_s INTEGER, state TEXT NOT NULL, last_check_at INTEGER, last_ping_at INTEGER, created_at INTEGER NOT NULL);
@@ -18,6 +18,8 @@ CREATE INDEX incidents_open ON incidents(monitor_id) WHERE resolved_at IS NULL;"
     "CREATE TABLE channels(id INTEGER PRIMARY KEY, project_id INTEGER REFERENCES projects(id), kind TEXT NOT NULL, url TEXT NOT NULL, secret TEXT, dropped INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
 CREATE TABLE notifications(id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE, type TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_at INTEGER NOT NULL, sent_at INTEGER, failed_at INTEGER, last_error TEXT);
 CREATE INDEX notifications_pending ON notifications(channel_id, id) WHERE sent_at IS NULL AND failed_at IS NULL;",
+    "CREATE TABLE feedback(id INTEGER PRIMARY KEY, at INTEGER NOT NULL, client TEXT, tried TEXT NOT NULL, happened TEXT NOT NULL, fix TEXT);
+ALTER TABLE channels ADD COLUMN feedback INTEGER NOT NULL DEFAULT 0;",
 ];
 use crate::{
     alert,
@@ -230,6 +232,11 @@ pub enum Job {
         at: Timestamp,
         result: std::result::Result<(), String>,
     },
+    /// What an agent reported with `submit_feedback`.
+    Feedback {
+        at: Timestamp,
+        feedback: crate::feedback::Feedback,
+    },
 }
 pub type Outcome = std::result::Result<(), String>;
 pub struct Write {
@@ -276,6 +283,10 @@ fn apply(c: &Connection, job: &Job) -> Result<Outcome> {
         }
         Job::Delivery { id, at, result } => {
             alert::store::delivered(c, *id, *at, result)?;
+            Ok(Ok(()))
+        }
+        Job::Feedback { at, feedback } => {
+            crate::feedback::add(c, feedback, *at)?;
             Ok(Ok(()))
         }
     }

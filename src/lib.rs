@@ -2,6 +2,7 @@ pub mod alert;
 pub mod context;
 pub mod envelope;
 pub mod event;
+pub mod feedback;
 pub mod grouping;
 pub mod http;
 pub mod install;

@@ -104,6 +104,7 @@ echo 'logs: wrong bearer 403, Logtail JSON 202'
 STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' --data '{}' "$URL/mcp")
 [ "$STATUS" = 401 ] || { echo "MCP without token gave $STATUS"; exit 1; }
 node "$ROOT/e2e/mcp.mjs" "$URL" "$TOKEN"
+"$BIN" feedback --data "$SCRATCH/data" | grep -qx '  tried: e2e tried' || { echo 'davy feedback does not list the MCP report'; exit 1; }
 ISSUE=$("$BIN" sql --data "$SCRATCH/data" "SELECT i.id FROM issues i JOIN projects p ON p.id = i.project_id WHERE p.slug = 'sentry-node-7' AND i.title LIKE 'RangeError%'" | tail -n 1)
 "$BIN" context "$ISSUE" --data "$SCRATCH/data" > "$SCRATCH/context.json"
 "$BIN" resolve "$ISSUE" --data "$SCRATCH/data" --release e2e@2

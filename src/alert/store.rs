@@ -19,11 +19,13 @@ pub struct Added {
     pub secret: Option<Secret>,
 }
 
-/// Stores a channel for `project`, or for every project when `None`.
+/// Stores a channel for `project`, or for every project when `None`. With
+/// `feedback` it also gets what agents report with `submit_feedback`.
 pub fn add(
     c: &Connection,
     project: Option<i64>,
     to: &Destination,
+    feedback: bool,
     now: Timestamp,
 ) -> Result<Added> {
     let secret = match to {
@@ -31,13 +33,14 @@ pub fn add(
         Destination::Slack(_) | Destination::Email(_) => None,
     };
     let inserted = c.execute(
-        "INSERT INTO channels(project_id,kind,url,secret,created_at)
-         SELECT ?1,?2,?3,?4,?5 WHERE (SELECT count(*) FROM channels) < ?6",
+        "INSERT INTO channels(project_id,kind,url,secret,feedback,created_at)
+         SELECT ?1,?2,?3,?4,?5,?6 WHERE (SELECT count(*) FROM channels) < ?7",
         params![
             project,
             to.kind().as_str(),
             to.url(),
             secret.as_ref().map(Secret::as_str),
+            feedback,
             now,
             MAX_CHANNELS
         ],
@@ -61,6 +64,7 @@ pub struct Listed {
     /// The host of a webhook or Slack URL, because the whole URL of a Slack
     /// webhook is a credential, or the address of an e-mail channel.
     pub to: String,
+    pub feedback: bool,
     pub unsent: i64,
     pub failed: i64,
     pub dropped: i64,
@@ -69,7 +73,7 @@ pub struct Listed {
 /// Every channel, oldest first.
 pub fn list(c: &Connection) -> Result<Vec<Listed>> {
     let mut q = c.prepare(
-        "SELECT ch.id,p.slug,ch.kind,ch.url,
+        "SELECT ch.id,p.slug,ch.kind,ch.url,ch.feedback,
          (SELECT count(*) FROM notifications n WHERE n.channel_id=ch.id AND n.sent_at IS NULL AND n.failed_at IS NULL),
          (SELECT count(*) FROM notifications n WHERE n.channel_id=ch.id AND n.failed_at IS NOT NULL),
          ch.dropped
@@ -81,11 +85,12 @@ pub fn list(c: &Connection) -> Result<Vec<Listed>> {
             r.get::<_, Option<String>>(1)?,
             r.get::<_, String>(2)?,
             r.get::<_, String>(3)?,
-            [r.get::<_, i64>(4)?, r.get(5)?, r.get(6)?],
+            r.get::<_, bool>(4)?,
+            [r.get::<_, i64>(5)?, r.get(6)?, r.get(7)?],
         ))
     })?;
     rows.map(|row| {
-        let (id, project, kind, url, [unsent, failed, dropped]) = row?;
+        let (id, project, kind, url, feedback, [unsent, failed, dropped]) = row?;
         let kind = Kind::parse(&kind)
             .with_context(|| format!("channel {id} has unknown kind {kind:?}"))?;
         let to = match kind {
@@ -100,6 +105,7 @@ pub fn list(c: &Connection) -> Result<Vec<Listed>> {
             project,
             kind,
             to,
+            feedback,
             unsent,
             failed,
             dropped,
@@ -130,6 +136,18 @@ pub fn notify(c: &Connection, project: i64, notice: &Notice, at: Timestamp) -> R
     })?;
     for (id, kind) in channels {
         queue(c, id, &kind, Some(&slug), notice, at)?;
+    }
+    Ok(())
+}
+
+/// Queues `notice` for every channel added with `--feedback`.
+pub fn notify_feedback(c: &Connection, notice: &Notice, at: Timestamp) -> Result<()> {
+    let channels: Vec<(i64, String)> = c
+        .prepare("SELECT id,kind FROM channels WHERE feedback=1 ORDER BY id")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, kind) in channels {
+        queue(c, id, &kind, None, notice, at)?;
     }
     Ok(())
 }
