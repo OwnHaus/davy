@@ -440,7 +440,13 @@ enum Channel { Webhook { url: Url, secret: Secret }, Slack { url: Url } }
 
 ### Reaching targets
 
-HTTP checks and alert deliveries open connections to URLs a user typed. On a self-hosted server that user is the admin, so any address is allowed, `localhost` included, because watching internal services is the point. The cloud crate passes `Reach::Public`, which refuses loopback, private, link-local, shared (100.64.0.0/10), multicast, unspecified, documentation and unique local addresses, and IPv4-mapped forms of these. The check runs on every address DNS returns and on every redirect hop, and the connection goes to the address that passed, so a DNS answer cannot change between check and connect. A refused target is the outcome `NotPublic`.
+HTTP checks and alert deliveries open connections to URLs a user typed. On a self-hosted server that user is the admin, so `davy serve` passes `Reach::Any` and any address is allowed, `localhost` included, because watching internal services is the point. The cloud crate passes `Reach::Public`, which allows only public addresses:
+
+- IPv4 refuses every network the IANA special-purpose registry marks as not globally reachable: 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10 (shared), 127.0.0.0/8, 169.254.0.0/16 (link-local, cloud metadata), 172.16.0.0/12, 192.0.0.0/24, the three documentation /24s, 192.168.0.0/16 and 198.18.0.0/15 (benchmarking). It also refuses 224.0.0.0/4 (multicast) and 240.0.0.0/4 (reserved and broadcast).
+- An IPv6 address that carries an IPv4 address is judged by that IPv4 address: IPv4-mapped (::ffff:0:0/96), NAT64 (64:ff9b::/96) and 6to4 (2002::/16).
+- Any other IPv6 address must be in 2000::/3, the global unicast block, and outside 2001::/23 (protocol assignments, Teredo included), 2001:db8::/32 and 3fff::/20 (documentation) and 5f00::/16 (SRv6). That refuses loopback, unspecified, unique local, link-local and multicast addresses without listing them.
+
+A host name goes through a resolver that keeps only the public addresses DNS returns, and the connection goes to one of those, so a second DNS answer cannot swap in another address between check and connect. A name with no public address is refused. An IP address in a URL never reaches DNS, so it is checked before the request and on every redirect hop. A `Reach::Public` client uses no proxy, because a proxy would resolve the name itself. A refused check is the outcome `NotPublic`, and a refused delivery fails with `address is not public`.
 
 ### Alerts
 
@@ -488,7 +494,7 @@ Status pages, regions and remote probes, ping, TCP, DNS and TLS expiry checks, c
 
 ### Done means
 
-- Unit tests with literal values: the state machine for every pair of state and outcome; `Reach::Public` for a table of addresses, IPv4-mapped included; check outcomes against a local test server for status, keyword, keyword absence, timeout, a redirect to a refused address and a body over 1 MiB; the webhook signature of a fixed body, time and secret; the retry schedule; the outbox order per channel; the heartbeat route with a known, an unknown and a `/fail` token; the `sql` tool reading `NULL` for the three credential columns.
+- Unit tests with literal values: the state machine for every pair of state and outcome; `Reach::Public` for a table of addresses, IPv4-mapped, NAT64 and 6to4 included; check outcomes against a local test server for status, keyword, keyword absence, timeout, a redirect to a refused address and a body over 1 MiB; the webhook signature of a fixed body, time and secret; the retry schedule; the outbox order per channel; the heartbeat route with a known, an unknown and a `/fail` token; the `sql` tool reading `NULL` for the three credential columns.
 - `e2e/run.sh` adds a monitor against a local server, takes the server down and up, and asserts that a local webhook receiver got `monitor.down` then `monitor.up` with valid signatures. A new issue from `@sentry/node` produces `issue.new`. A heartbeat monitor that misses its window produces `monitor.down`.
 - `scripts/check` passes.
 

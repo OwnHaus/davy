@@ -1,10 +1,19 @@
 use super::check::{Checked, Http, check, client, run};
 use super::{CheckUrl, Expect, NewMonitor, Outcome, Reason, State, Target, store};
+use crate::net::{self, Reach};
 use axum::{Router, http::StatusCode, response::Redirect, routing::get};
 use std::time::Duration;
 
 /// A local site with one route per case.
 async fn site() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let to = |url: String| {
+        get(move || {
+            let url = url.clone();
+            async move { Redirect::to(&url) }
+        })
+    };
     let app = Router::new()
         .route("/ok", get(|| async { "all good" }))
         .route(
@@ -23,9 +32,10 @@ async fn site() -> String {
             get(|| async { format!("{}needle", "a".repeat(1024 * 1024)) }),
         )
         .route("/hop", get(|| async { Redirect::to("/ok") }))
-        .route("/loop", get(|| async { Redirect::to("/loop") }));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
+        .route("/loop", get(|| async { Redirect::to("/loop") }))
+        .route("/to-literal", to(format!("http://127.0.0.1:{port}/ok")))
+        .route("/to-name", to(format!("http://localhost:{port}/ok")));
+    let base = format!("http://127.0.0.1:{port}");
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     base
 }
@@ -41,9 +51,13 @@ fn http(url: &str, expect: Expect) -> Http {
 
 /// The outcome and status of one check, without its time.
 async fn outcome(url: &str, expect: Expect) -> (Outcome, Option<u16>) {
+    outcome_with(&client(Reach::Any).unwrap(), url, expect).await
+}
+
+async fn outcome_with(client: &net::Client, url: &str, expect: Expect) -> (Outcome, Option<u16>) {
     let Checked {
         outcome, status, ..
-    } = check(&client().unwrap(), &http(url, expect)).await;
+    } = check(client, &http(url, expect)).await;
     (outcome, status)
 }
 
@@ -104,9 +118,49 @@ async fn a_redirect_is_followed_up_to_five_times() {
 }
 
 #[tokio::test]
+async fn a_public_reach_refuses_a_local_address_by_literal_by_name_and_on_a_redirect() {
+    let site = site().await;
+    let port: u16 = site.rsplit(':').next().unwrap().parse().unwrap();
+    let local = ([127, 0, 0, 1], port).into();
+    let public = net::Client::resolving(Reach::Public, 5, "site.test", local).unwrap();
+    let stand_in = format!("http://site.test:{port}");
+    let judged = [
+        format!("{stand_in}/ok"),
+        format!("{stand_in}/to-literal"),
+        format!("{stand_in}/to-name"),
+        format!("{site}/ok"),
+        format!("http://localhost:{port}/ok"),
+        format!("http://[::ffff:127.0.0.1]:{port}/ok"),
+        format!("http://0x7f000001:{port}/ok"),
+    ];
+    let mut got = Vec::new();
+    for url in &judged {
+        got.push(outcome_with(&public, url, Expect::Status).await);
+    }
+    let refused = (Outcome::Down(Reason::NotPublic), None);
+    assert_eq!(
+        got,
+        [
+            (Outcome::Up, Some(200)),
+            refused.clone(),
+            refused.clone(),
+            refused.clone(),
+            refused.clone(),
+            refused.clone(),
+            refused,
+        ]
+    );
+    let any = client(Reach::Any).unwrap();
+    for hop in ["to-literal", "to-name"] {
+        let reached = outcome_with(&any, &format!("{site}/{hop}"), Expect::Status).await;
+        assert_eq!(reached, (Outcome::Up, Some(200)), "{hop}");
+    }
+}
+
+#[tokio::test]
 async fn a_slow_response_is_a_timeout() {
     let slow = format!("{}/slow", site().await);
-    let checked = check(&client().unwrap(), &http(&slow, Expect::Status)).await;
+    let checked = check(&client(Reach::Any).unwrap(), &http(&slow, Expect::Status)).await;
     assert_eq!(checked.outcome, Outcome::Down(Reason::Timeout));
     assert_eq!(checked.status, None);
     assert!((500..1500).contains(&checked.ms), "{}", checked.ms);
@@ -139,7 +193,7 @@ async fn the_scheduler_checks_a_new_monitor_and_stores_the_result() {
     let writer = crate::store::Writer::start(crate::store::open(&dir).unwrap(), 8);
     let scheduler = tokio::spawn(run(
         crate::store::open(&dir).unwrap(),
-        client().unwrap(),
+        client(Reach::Any).unwrap(),
         writer.sender.clone(),
         Duration::from_millis(10),
     ));

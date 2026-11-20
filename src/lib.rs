@@ -8,6 +8,8 @@ pub mod logs;
 pub mod mcp;
 pub mod monitor;
 pub mod net;
+#[cfg(test)]
+mod net_tests;
 pub mod query;
 pub mod sourcemaps;
 pub mod store;

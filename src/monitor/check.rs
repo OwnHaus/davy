@@ -33,19 +33,18 @@ pub struct Checked {
 }
 
 /// The client every check uses.
-pub fn client() -> reqwest::Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
-        .user_agent(net::USER_AGENT)
-        .build()
+pub fn client(reach: net::Reach) -> reqwest::Result<net::Client> {
+    net::Client::new(reach, MAX_REDIRECTS)
 }
 
 /// Sends `GET` to the monitor's URL and judges the answer.
-pub async fn check(client: &reqwest::Client, http: &Http) -> Checked {
+pub async fn check(client: &net::Client, http: &Http) -> Checked {
     let start = Instant::now();
     let elapsed = || i64::try_from(start.elapsed().as_millis()).unwrap_or(i64::MAX);
     let failed = |e: reqwest::Error, status| Checked {
-        outcome: Outcome::Down(if e.is_timeout() {
+        outcome: Outcome::Down(if net::not_public(&e) {
+            Reason::NotPublic
+        } else if e.is_timeout() {
             Reason::Timeout
         } else {
             Reason::Connect(net::error_text(e))
@@ -53,11 +52,14 @@ pub async fn check(client: &reqwest::Client, http: &Http) -> Checked {
         status,
         ms: elapsed(),
     };
-    let sent = client
-        .get(http.url.as_str())
-        .timeout(http.timeout)
-        .send()
-        .await;
+    let Ok(request) = client.request(reqwest::Method::GET, http.url.as_str()) else {
+        return Checked {
+            outcome: Outcome::Down(Reason::NotPublic),
+            status: None,
+            ms: elapsed(),
+        };
+    };
+    let sent = request.timeout(http.timeout).send().await;
     let mut response = match sent {
         Ok(response) => response,
         Err(e) => return failed(e, None),
@@ -98,7 +100,7 @@ pub async fn check(client: &reqwest::Client, http: &Http) -> Checked {
 /// and stores each result through `writer`. Runs until aborted.
 pub async fn run(
     c: Connection,
-    client: reqwest::Client,
+    client: net::Client,
     writer: mpsc::SyncSender<Write>,
     period: Duration,
 ) {
@@ -113,7 +115,7 @@ pub async fn run(
     .await;
 }
 
-async fn check_and_store(client: reqwest::Client, http: Http, writer: mpsc::SyncSender<Write>) {
+async fn check_and_store(client: net::Client, http: Http, writer: mpsc::SyncSender<Write>) {
     let at = time::now_ms();
     let checked = check(&client, &http).await;
     let job = Job::Check {

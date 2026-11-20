@@ -18,30 +18,32 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The client every delivery uses. A redirect is a failed send, so a
 /// receiver cannot bounce a signed body to another address.
-pub fn client() -> reqwest::Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .timeout(SEND_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent(net::USER_AGENT)
-        .build()
+pub fn client(reach: net::Reach) -> reqwest::Result<net::Client> {
+    net::Client::new(reach, 0)
 }
 
 /// Sends one notification at `now`. Any status but `2xx` is an error. An
 /// error never holds the URL, because the URL is a credential.
-pub async fn send(client: &reqwest::Client, due: &Due, now: Timestamp) -> Result<(), String> {
-    let request = match &due.to {
+pub async fn send(client: &net::Client, due: &Due, now: Timestamp) -> Result<(), String> {
+    let (url, signed) = match &due.to {
         Channel::Webhook { url, secret } => {
             let signature = secret
                 .sign(now.div_euclid(1000), &due.payload)
                 .map_err(|e| e.to_string())?;
-            client
-                .post(url)
-                .header("davy-delivery", due.id)
-                .header("davy-signature", signature)
+            (url, Some(signature))
         }
-        Channel::Slack { url } => client.post(url),
+        Channel::Slack { url } => (url, None),
     };
+    let mut request = client
+        .request(reqwest::Method::POST, url)
+        .map_err(|e| e.to_string())?;
+    if let Some(signature) = signed {
+        request = request
+            .header("davy-delivery", due.id)
+            .header("davy-signature", signature);
+    }
     let response = request
+        .timeout(SEND_TIMEOUT)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body(due.payload.clone())
         .send()
@@ -60,7 +62,7 @@ pub async fn send(client: &reqwest::Client, due: &Due, now: Timestamp) -> Result
 /// stored, so a row is not sent twice by one server. Runs until aborted.
 pub async fn run(
     c: Connection,
-    client: reqwest::Client,
+    client: net::Client,
     writer: mpsc::SyncSender<Write>,
     period: Duration,
 ) {
@@ -75,7 +77,7 @@ pub async fn run(
     .await;
 }
 
-async fn deliver(client: reqwest::Client, due: Due, writer: mpsc::SyncSender<Write>) {
+async fn deliver(client: net::Client, due: Due, writer: mpsc::SyncSender<Write>) {
     let result = send(&client, &due, time::now_ms()).await;
     let job = Job::Delivery {
         id: due.id,

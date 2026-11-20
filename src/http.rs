@@ -8,6 +8,7 @@ use crate::{
     },
     mcp,
     monitor::{self, HeartbeatToken},
+    net,
     sourcemaps::{self, symbolicate},
     store::{self, Job, Write},
     time,
@@ -536,13 +537,13 @@ pub async fn serve(
     let sweeper = tokio::spawn(store::sweep_every(writer.sender.clone(), SWEEP_EVERY));
     let checker = tokio::spawn(monitor::check::run(
         store::open(data)?,
-        monitor::check::client()?,
+        monitor::check::client(net::Reach::Any)?,
         writer.sender.clone(),
         CHECK_EVERY,
     ));
     let notifier = tokio::spawn(alert::deliver::run(
         store::open(data)?,
-        alert::deliver::client()?,
+        alert::deliver::client(net::Reach::Any)?,
         writer.sender.clone(),
         NOTIFY_EVERY,
     ));
