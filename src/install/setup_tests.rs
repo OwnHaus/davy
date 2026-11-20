@@ -1,12 +1,5 @@
 use super::*;
-
-fn dir() -> PathBuf {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
-    std::fs::create_dir_all(&root).unwrap();
-    root.canonicalize()
-        .unwrap()
-        .join(format!("test-setup-{}", uuid::Uuid::new_v4()))
-}
+use crate::test_support::scratch;
 
 fn args(data: &Path, service: Service, mail_from: Option<&str>) -> Args {
     Args {
@@ -38,7 +31,7 @@ fn mode(path: &Path) -> u32 {
 
 #[test]
 fn setup_on_an_empty_directory_writes_a_private_token_and_the_settings() {
-    let data = dir();
+    let data = scratch("setup");
     let report = setup(&args(&data, Service::None, None), exe(), Some("davy")).unwrap();
     let d = data.display();
     assert_eq!(
@@ -72,7 +65,7 @@ fn setup_on_an_empty_directory_writes_a_private_token_and_the_settings() {
 
 #[test]
 fn setup_twice_keeps_the_token_tightens_modes_and_prints_the_same_report() {
-    let data = dir();
+    let data = scratch("setup");
     let user = me();
     let a = args(&data, Service::Systemd, None);
     let first = setup(&a, exe(), Some(&user)).unwrap();
@@ -118,9 +111,9 @@ fn setup_twice_keeps_the_token_tightens_modes_and_prints_the_same_report() {
 #[cfg(unix)]
 #[test]
 fn setup_refuses_links_in_place_of_its_files() {
-    let data = dir();
+    let data = scratch("setup");
     std::fs::create_dir_all(&data).unwrap();
-    let elsewhere = dir();
+    let elsewhere = scratch("setup");
     std::fs::create_dir_all(&elsewhere).unwrap();
     let target = elsewhere.join("known-token");
     std::fs::write(&target, "0123456789abcdef0123456789abcdef\n").unwrap();
@@ -148,7 +141,7 @@ fn setup_refuses_links_in_place_of_its_files() {
 
 #[test]
 fn setup_refuses_a_short_token_a_foreign_directory_and_root() {
-    let data = dir();
+    let data = scratch("setup");
     std::fs::create_dir_all(&data).unwrap();
     std::fs::write(data.join("token"), "short\n").unwrap();
     let err = |a: &Args, user| format!("{:#}", setup(a, exe(), user).unwrap_err());
@@ -160,7 +153,7 @@ fn setup_refuses_a_short_token_a_foreign_directory_and_root() {
             data.display()
         )
     );
-    let foreign = dir();
+    let foreign = scratch("setup");
     std::fs::create_dir_all(&foreign).unwrap();
     std::fs::write(foreign.join(".profile"), "").unwrap();
     #[cfg(unix)]
@@ -174,7 +167,7 @@ fn setup_refuses_a_short_token_a_foreign_directory_and_root() {
     );
     #[cfg(unix)]
     assert_eq!(mode(&foreign), before);
-    let fresh = dir();
+    let fresh = scratch("setup");
     assert_eq!(
         err(&args(&fresh, Service::Systemd, None), Some("root")),
         "the service must not run as root. Create a user for it (docs/install.md, step 3) and run setup as that user with `runuser -u davy -- davy setup ...`"
@@ -193,7 +186,7 @@ fn setup_refuses_a_short_token_a_foreign_directory_and_root() {
 
 #[test]
 fn mail_from_and_the_smtp_file_come_together() {
-    let data = dir();
+    let data = scratch("setup");
     let with_mail = args(&data, Service::None, Some("alerts@example.com"));
     assert_eq!(
         format!("{:#}", setup(&with_mail, exe(), Some("davy")).unwrap_err()),

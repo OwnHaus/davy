@@ -4,6 +4,7 @@ use super::{
     symbolicate,
 };
 use crate::envelope::{Envelope, ItemKind};
+use crate::test_support::fixture;
 use serde_json::{Value, json};
 use sourcemap::{SourceMap, SourceView};
 use std::{io::Write, sync::Arc};
@@ -12,16 +13,8 @@ use zip::{ZipWriter, write::SimpleFileOptions};
 const BUILD: &str = "1c85f8bb-fda9-501c-b106-0fdc0d6937a8";
 const MINIFIED: &str = "/home/dev/.t3/projects/davy/.scratch/m5/work/dist/app.min.js";
 
-fn fixture(name: &str) -> Vec<u8> {
-    std::fs::read(format!(
-        "{}/e2e/fixtures/sentry-cli-3/{name}",
-        env!("CARGO_MANIFEST_DIR")
-    ))
-    .unwrap()
-}
-
 fn captured_event() -> Value {
-    let envelope = Envelope::parse(&fixture("06.body")).unwrap();
+    let envelope = Envelope::parse(&fixture("sentry-cli-3/06.body")).unwrap();
     let item = envelope
         .items
         .iter()
@@ -32,9 +25,11 @@ fn captured_event() -> Value {
 
 fn captured_build() -> Arc<Build> {
     Arc::new(Build {
-        map: SourceMap::from_slice(&fixture("app.min.js.map")).unwrap(),
+        map: SourceMap::from_slice(&fixture("sentry-cli-3/app.min.js.map")).unwrap(),
         minified: Some(SourceView::new(
-            String::from_utf8(fixture("app.min.js")).unwrap().into(),
+            String::from_utf8(fixture("sentry-cli-3/app.min.js"))
+                .unwrap()
+                .into(),
         )),
     })
 }

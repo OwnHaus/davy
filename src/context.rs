@@ -80,8 +80,7 @@ mod tests {
     use serde_json::json;
 
     fn store_with(event: Value) -> (std::path::PathBuf, Connection) {
-        let data = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(format!("target/test-context-{}", uuid::Uuid::new_v4()));
+        let data = crate::test_support::scratch("context");
         let c = store::open(&data).unwrap();
         store::create_project(&c, "api").unwrap();
         store::insert(&c, 1, &ErrorEvent::parse(event).unwrap()).unwrap();
@@ -89,11 +88,7 @@ mod tests {
     }
 
     fn fixture_event() -> Value {
-        let path = format!(
-            "{}/e2e/fixtures/sentry-node-10/4.body",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let body = std::fs::read(path).unwrap();
+        let body = crate::test_support::fixture("sentry-node-10/4.body");
         let envelope = crate::envelope::Envelope::parse(&body).unwrap();
         serde_json::from_slice(&envelope.items[0].payload).unwrap()
     }

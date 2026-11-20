@@ -115,8 +115,7 @@ async fn a_public_reach_sends_nothing_to_a_local_address() {
 
 #[tokio::test]
 async fn the_notifier_sends_a_channel_s_rows_in_order_and_marks_them_sent() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("target/test-alert-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_support::scratch("alert");
     let c = crate::store::open(&dir).unwrap();
     crate::store::create_project(&c, "shop").unwrap();
     let (url, mut seen) = receiver(StatusCode::OK).await;

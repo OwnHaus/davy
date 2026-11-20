@@ -1,4 +1,5 @@
 use super::memory;
+use crate::test_support::fixture;
 use crate::{
     http::{App, Keys, RATE, router},
     logs::{
@@ -112,14 +113,6 @@ fn otlp(content_type: &str, body: impl Into<Body>) -> Request<Body> {
         ],
         body,
     )
-}
-
-fn fixture(name: &str) -> Vec<u8> {
-    std::fs::read(format!(
-        "{}/e2e/fixtures/{name}",
-        env!("CARGO_MANIFEST_DIR")
-    ))
-    .unwrap()
 }
 
 const SESSION: &str = "{}\n{\"type\":\"session\"}\n{}";

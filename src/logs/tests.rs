@@ -1,15 +1,8 @@
 use super::store::{LogQuery, LogWriter, State, search};
 use super::*;
+use crate::test_support::{fixture, scratch};
 use crate::time::{self, now_ns};
 use serde_json::json;
-
-fn fixture(name: &str) -> Vec<u8> {
-    std::fs::read(format!(
-        "{}/e2e/fixtures/{name}",
-        env!("CARGO_MANIFEST_DIR")
-    ))
-    .unwrap()
-}
 
 fn gunzip(b: &[u8]) -> Vec<u8> {
     use std::io::Read;
@@ -439,11 +432,6 @@ fn query(since: i64, until: i64) -> LogQuery {
 
 const DAY: i64 = 86_400_000_000_000;
 
-fn scratch_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("target/test-logs-{}", uuid::Uuid::new_v4()))
-}
-
 fn day_name(ns: i64) -> String {
     time::day_of(ns).to_string()
 }
@@ -475,7 +463,7 @@ fn four_records(now: i64) -> Vec<LogRecord> {
 
 #[test]
 fn store_files_records_by_day_and_expires_old_days() {
-    let dir = scratch_dir();
+    let dir = scratch("logs");
     let now = now_ns();
     let old = now - 5 * DAY;
     write(
@@ -520,7 +508,7 @@ fn store_files_records_by_day_and_expires_old_days() {
 
 #[test]
 fn search_filters_by_project_level_text_and_limit() {
-    let dir = scratch_dir();
+    let dir = scratch("logs");
     let now = now_ns();
     write(&dir, 30, four_records(now));
     let messages = |q: LogQuery| -> Vec<String> {
@@ -582,7 +570,7 @@ fn search_filters_by_project_level_text_and_limit() {
 
 #[test]
 fn store_recovers_when_a_day_index_breaks() {
-    let dir = scratch_dir();
+    let dir = scratch("logs");
     let now = now_ns();
     let day = dir.join(day_name(now));
     let batch = move |n: usize, message: &str| -> Vec<LogRecord> {
@@ -676,7 +664,7 @@ fn the_log_queue_is_full_at_its_row_or_byte_limit() {
 
 #[test]
 fn log_retention_is_1_to_36500_days() {
-    let dir = scratch_dir();
+    let dir = scratch("logs");
     for days in [0, 36_501, u32::MAX] {
         assert!(LogWriter::start(dir.clone(), days).is_err(), "{days}");
     }

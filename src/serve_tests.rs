@@ -2,9 +2,7 @@ use super::*;
 use std::collections::HashMap;
 
 fn dir() -> PathBuf {
-    let data = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join(format!("test-serve-{}", uuid::Uuid::new_v4()));
+    let data = crate::test_support::scratch("serve");
     std::fs::create_dir_all(&data).unwrap();
     data
 }

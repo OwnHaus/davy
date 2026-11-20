@@ -145,8 +145,7 @@ mod tests {
     const CHUNK: &str = "2b57aa67728af071f6a2811f5afcac0748434df7";
 
     fn server() -> (Router, Arc<Store>) {
-        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(format!("target/test-upload-{}", uuid::Uuid::new_v4()));
+        let data = crate::test_support::scratch("upload");
         let store = Arc::new(Store::open(&data));
         let url = url::Url::parse("https://davy.example/").unwrap();
         (router(Arc::clone(&store), Token::new(SECRET), &url), store)
@@ -154,10 +153,10 @@ mod tests {
 
     /// The request `sentry-cli` sent as `n` in `e2e/fixtures/sentry-cli-3/`.
     fn captured(n: u8, token: Option<&str>) -> Request<Body> {
-        let dir = format!("{}/e2e/fixtures/sentry-cli-3", env!("CARGO_MANIFEST_DIR"));
-        let meta: Value =
-            serde_json::from_slice(&std::fs::read(format!("{dir}/{n:02}.meta.json")).unwrap())
-                .unwrap();
+        let meta: Value = serde_json::from_slice(&crate::test_support::fixture(&format!(
+            "sentry-cli-3/{n:02}.meta.json"
+        )))
+        .unwrap();
         let mut req = Request::builder()
             .method(meta["method"].as_str().unwrap())
             .uri(meta["url"].as_str().unwrap());
@@ -167,9 +166,9 @@ mod tests {
         if let Some(t) = token {
             req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
         }
-        req.body(Body::from(
-            std::fs::read(format!("{dir}/{n:02}.body")).unwrap(),
-        ))
+        req.body(Body::from(crate::test_support::fixture(&format!(
+            "sentry-cli-3/{n:02}.body"
+        ))))
         .unwrap()
     }
 

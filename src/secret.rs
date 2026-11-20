@@ -72,9 +72,7 @@ mod tests {
     }
 
     fn file(contents: &str) -> PathBuf {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("test-secret-{}", uuid::Uuid::new_v4()));
+        let path = crate::test_support::scratch("secret");
         std::fs::write(&path, contents).unwrap();
         path
     }

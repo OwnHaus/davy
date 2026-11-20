@@ -1,5 +1,6 @@
 use super::*;
 use crate::install::setup::{self, Service};
+use crate::test_support::scratch;
 use crate::token::Token;
 use axum::{
     Router,
@@ -7,14 +8,6 @@ use axum::{
 };
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef";
-
-fn dir() -> PathBuf {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
-    std::fs::create_dir_all(&root).unwrap();
-    root.canonicalize()
-        .unwrap()
-        .join(format!("test-doctor-{}", uuid::Uuid::new_v4()))
-}
 
 async fn listen(app: Router) -> Url {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -28,7 +21,7 @@ async fn listen(app: Router) -> Url {
 async fn server(token: Option<&str>) -> Url {
     let mut app = Router::new().route("/", post(|| async { "" }));
     if let Some(t) = token {
-        let data = dir();
+        let data = scratch("doctor");
         crate::store::open(&data).unwrap();
         let (writes, _) = std::sync::mpsc::sync_channel(1);
         app = app.merge(crate::mcp::router(data, writes, Token::new(t), "127.0.0.1"));
@@ -38,7 +31,7 @@ async fn server(token: Option<&str>) -> Url {
 
 /// A data directory prepared by `davy setup` with the token `TOKEN`.
 fn install(url: &Url, mail_from: Option<&str>) -> PathBuf {
-    let data = dir();
+    let data = scratch("doctor");
     std::fs::create_dir_all(&data).unwrap();
     std::fs::write(data.join("token"), format!("{TOKEN}\n")).unwrap();
     #[cfg(unix)]
@@ -247,7 +240,7 @@ async fn the_token_never_goes_out_over_plain_http() {
 
 #[tokio::test]
 async fn saved_settings_must_hold_an_address_and_their_errors_echo_nothing() {
-    let data = dir();
+    let data = scratch("doctor");
     std::fs::create_dir_all(&data).unwrap();
     let save = |public_url: &str, listen: &str| {
         let json =
@@ -295,7 +288,7 @@ fn plain_http_fails_unless_it_stays_on_this_machine() {
 #[tokio::test]
 async fn a_refused_smtp_server_fails_with_its_error() {
     let url = server(Some(TOKEN)).await;
-    let data = dir();
+    let data = scratch("doctor");
     std::fs::create_dir_all(&data).unwrap();
     let closed = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -330,7 +323,7 @@ async fn a_refused_smtp_server_fails_with_its_error() {
 #[tokio::test]
 async fn an_smtp_reply_cannot_write_control_characters_to_the_terminal() {
     let url = server(Some(TOKEN)).await;
-    let data = dir();
+    let data = scratch("doctor");
     std::fs::create_dir_all(&data).unwrap();
     let relay = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = relay.local_addr().unwrap();

@@ -95,8 +95,7 @@ fn the_mcp_path_is_joined_to_a_public_url_with_a_path() {
 
 #[test]
 fn run_reads_the_public_url_and_token_from_the_data_directory() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
-    let data = root.join(format!("test-client-{}", uuid::Uuid::new_v4()));
+    let data = crate::test_support::scratch("client");
     std::fs::create_dir_all(&data).unwrap();
     std::fs::write(
         data.join("setup.json"),

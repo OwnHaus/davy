@@ -191,8 +191,7 @@ mod tests {
     use super::*;
 
     fn store_with_one_event() -> (std::path::PathBuf, Connection) {
-        let data = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(format!("target/test-query-{}", uuid::Uuid::new_v4()));
+        let data = crate::test_support::scratch("query");
         let c = store::open(&data).unwrap();
         store::create_project(&c, "web").unwrap();
         let event = crate::event::ErrorEvent::parse(

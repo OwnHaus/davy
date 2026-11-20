@@ -1,11 +1,10 @@
-use crate::{envelope::*, event::*, grouping::*, store};
+use crate::{envelope::*, event::*, grouping::*, store, test_support::fixture};
 use serde_json::json;
 #[test]
 fn fixtures() {
     for sdk in ["sentry-node-7", "sentry-node-10"] {
         for n in 1..=4 {
-            let p = format!("{}/e2e/fixtures/{sdk}/{n}.body", env!("CARGO_MANIFEST_DIR"));
-            let e = Envelope::parse(&std::fs::read(p).unwrap()).unwrap();
+            let e = Envelope::parse(&fixture(&format!("{sdk}/{n}.body"))).unwrap();
             let kinds: Vec<_> = e.items.iter().map(|i| &i.kind).collect();
             assert_eq!(
                 kinds,
@@ -31,11 +30,7 @@ fn fixtures() {
 #[test]
 fn fixture_transactions_are_dropped() {
     for n in [5, 6] {
-        let p = format!(
-            "{}/e2e/fixtures/sentry-node-10/{n}.body",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let e = Envelope::parse(&std::fs::read(p).unwrap()).unwrap();
+        let e = Envelope::parse(&fixture(&format!("sentry-node-10/{n}.body"))).unwrap();
         assert_eq!(e.items.len(), 1);
         assert_eq!(e.items[0].kind, ItemKind::Transaction);
         assert_eq!(disposition(&e.items[0].kind), Disposition::Drop);

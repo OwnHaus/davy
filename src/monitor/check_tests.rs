@@ -203,8 +203,7 @@ async fn a_refused_connection_names_the_cause_but_not_the_address() {
 
 #[tokio::test]
 async fn the_scheduler_checks_a_new_monitor_and_stores_the_result() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("target/test-check-{}", uuid::Uuid::new_v4()));
+    let dir = crate::test_support::scratch("check");
     let c = crate::store::open(&dir).unwrap();
     crate::store::create_project(&c, "shop").unwrap();
     let target = Target::Http {

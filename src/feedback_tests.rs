@@ -149,8 +149,7 @@ fn feedback_neither_pushes_out_nor_holds_back_an_alert() {
 
 #[test]
 fn the_cli_prints_one_line_per_field_without_control_characters() {
-    let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("target/test-feedback-{}", uuid::Uuid::new_v4()));
+    let data = crate::test_support::scratch("feedback");
     let c = crate::store::open(&data).unwrap();
     let tricky = Feedback::new(
         None,

@@ -306,8 +306,7 @@ mod tests {
     }
 
     fn server() -> Server {
-        let data = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(format!("target/test-mcp-{}", uuid::Uuid::new_v4()));
+        let data = crate::test_support::scratch("mcp");
         let c = store::open(&data).unwrap();
         store::create_project(&c, "api").unwrap();
         let (tx, writes) = mpsc::sync_channel(1);
