@@ -1,4 +1,4 @@
-use super::{LogLevel, LogRecord, LogSource, hex_bytes, text};
+use super::{LogLevel, LogRecord, LogSource, hex_bytes, message};
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
     common::v1::{AnyValue, KeyValue, any_value},
@@ -107,13 +107,14 @@ pub fn parse(
                     .find(|t| *t > 0)
                     .and_then(|t| i64::try_from(t).ok())
                     .unwrap_or(observed_at);
+                let message = message(r.body.map(any), &mut attributes);
                 records.push(LogRecord {
                     project_id,
                     timestamp,
                     observed_at,
                     source: LogSource::Otlp,
                     level: LogLevel::from_severity(r.severity_number, &r.severity_text),
-                    message: r.body.map(any).map(text).unwrap_or_default(),
+                    message,
                     service: service.clone(),
                     trace_id: hex_bytes(&r.trace_id, 32),
                     span_id: hex_bytes(&r.span_id, 16),

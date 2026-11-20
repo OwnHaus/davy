@@ -50,7 +50,7 @@ fn server() -> Server {
     c.execute("UPDATE projects SET public_key='key-' || slug", [])
         .unwrap();
     let (errors, error_inbox) = mpsc::sync_channel(1);
-    let (logs, log_inbox) = LogQueue::bounded(1);
+    let (logs, log_inbox) = LogQueue::bounded(1, 1 << 20);
     let parsing = Arc::new(Semaphore::new(1));
     let app = router(App {
         parsing: Arc::clone(&parsing),

@@ -1,4 +1,4 @@
-use super::{LogLevel, LogRecord, LogSource, hex_id, settle, text};
+use super::{LogLevel, LogRecord, LogSource, hex_id, message, settle};
 use serde_json::{Map, Value};
 
 const MSGPACK_TIMESTAMP: i8 = -1;
@@ -137,7 +137,7 @@ fn record(v: Value, project_id: i64, observed_at: i64) -> Option<LogRecord> {
         return None;
     };
     let dt = attributes.remove("dt");
-    let message = attributes.remove("message").map(text).unwrap_or_default();
+    let message = message(attributes.remove("message"), &mut attributes);
     let level = LogLevel::from_value(attributes.remove("level").as_ref());
     let service = take_str(&mut attributes, "service");
     let trace_id = take_id(&mut attributes, "trace_id", 32);

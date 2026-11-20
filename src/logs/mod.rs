@@ -8,6 +8,8 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 pub const ORIGINAL_TIMESTAMP: &str = "davy.original_timestamp";
+pub const TRUNCATED: &str = "davy.truncated";
+const MAX_MESSAGE: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogRecord {
@@ -175,12 +177,19 @@ pub fn hex_bytes(b: &[u8], len: usize) -> Option<String> {
     hex_id(&s, len)
 }
 
-fn text(v: Value) -> String {
-    match v {
-        Value::String(s) => s,
-        Value::Null => String::new(),
-        other => other.to_string(),
+/// The text of a record's message, cut to 64 KiB at a character boundary.
+/// A cut sets the attribute [`TRUNCATED`].
+fn message(v: Option<Value>, attributes: &mut Map<String, Value>) -> String {
+    let mut text = match v {
+        Some(Value::String(s)) => s,
+        None | Some(Value::Null) => String::new(),
+        Some(other) => other.to_string(),
+    };
+    if text.len() > MAX_MESSAGE {
+        text.truncate(text.floor_char_boundary(MAX_MESSAGE));
+        attributes.insert(TRUNCATED.into(), Value::Bool(true));
     }
+    text
 }
 
 #[cfg(test)]

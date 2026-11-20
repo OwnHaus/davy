@@ -1,4 +1,4 @@
-use super::{LogLevel, LogRecord, LogSource, hex_id, settle, text};
+use super::{LogLevel, LogRecord, LogSource, hex_id, message, settle};
 use serde_json::{Map, Value};
 
 pub fn parse(payload: &[u8], project_id: i64, observed_at: i64) -> Result<Vec<LogRecord>, String> {
@@ -53,13 +53,14 @@ fn record(v: Value, project_id: i64, observed_at: i64) -> Option<LogRecord> {
         .and_then(Value::as_str)
         .map(str::to_owned);
     let timestamp = settle(m.remove("timestamp"), observed_at, &mut attributes);
+    let message = message(m.remove("body"), &mut attributes);
     Some(LogRecord {
         project_id,
         timestamp,
         observed_at,
         source: LogSource::Sentry,
         level,
-        message: m.remove("body").map(text).unwrap_or_default(),
+        message,
         service,
         trace_id,
         span_id,

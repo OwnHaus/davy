@@ -33,6 +33,7 @@ const IDLE_CLOSE: Duration = Duration::from_secs(600);
 const RETENTION_EVERY: Duration = Duration::from_secs(3600);
 const WRITER_HEAP: usize = 64_000_000;
 pub const QUEUE_ROWS: usize = 50_000;
+pub const QUEUE_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 struct Fields {
@@ -258,33 +259,58 @@ pub enum QueueError {
     Stopped,
 }
 
-/// Ingest side of the log queue. Bounded in rows rather than batches, because a
-/// batch can hold one record or thousands and memory follows the row count.
+/// What the log queue holds, counted in rows and in the bytes of text a
+/// sender controls. Rows bound the fixed cost of a record, bytes its strings.
+#[derive(Default)]
+struct Load {
+    rows: AtomicUsize,
+    bytes: AtomicUsize,
+}
+
+impl Load {
+    fn add(&self, rows: usize, bytes: usize) -> (usize, usize) {
+        (
+            self.rows.fetch_add(rows, SeqCst),
+            self.bytes.fetch_add(bytes, SeqCst),
+        )
+    }
+
+    fn sub(&self, rows: usize, bytes: usize) {
+        self.rows.fetch_sub(rows, SeqCst);
+        self.bytes.fetch_sub(bytes, SeqCst);
+    }
+}
+
+/// Ingest side of the log queue. Bounded in rows and bytes rather than
+/// batches, because a batch can hold one record or thousands and memory
+/// follows the records.
 #[derive(Clone)]
 pub struct LogQueue {
-    sender: mpsc::Sender<Vec<LogRecord>>,
-    queued: Arc<AtomicUsize>,
-    limit: usize,
+    sender: mpsc::Sender<(Vec<LogRecord>, usize)>,
+    load: Arc<Load>,
+    rows: usize,
+    bytes: usize,
 }
 
 pub struct LogInbox {
-    receiver: mpsc::Receiver<Vec<LogRecord>>,
-    queued: Arc<AtomicUsize>,
+    receiver: mpsc::Receiver<(Vec<LogRecord>, usize)>,
+    load: Arc<Load>,
 }
 
 impl LogQueue {
-    pub fn bounded(limit: usize) -> (Self, LogInbox) {
+    pub fn bounded(rows: usize, bytes: usize) -> (Self, LogInbox) {
         let (sender, receiver) = mpsc::channel();
-        let queued = Arc::new(AtomicUsize::new(0));
+        let load = Arc::new(Load::default());
         let inbox = LogInbox {
             receiver,
-            queued: queued.clone(),
+            load: Arc::clone(&load),
         };
         (
             Self {
                 sender,
-                queued,
-                limit,
+                load,
+                rows,
+                bytes,
             },
             inbox,
         )
@@ -296,30 +322,54 @@ impl LogQueue {
         if rows == 0 {
             return Ok(());
         }
-        let before = self.queued.fetch_add(rows, SeqCst);
-        if before > 0 && before + rows > self.limit {
-            self.queued.fetch_sub(rows, SeqCst);
+        let bytes = batch.iter().map(text_bytes).sum();
+        let (rows_before, bytes_before) = self.load.add(rows, bytes);
+        let full = rows_before + rows > self.rows || bytes_before + bytes > self.bytes;
+        if rows_before > 0 && full {
+            self.load.sub(rows, bytes);
             return Err(QueueError::Full);
         }
-        self.sender.send(batch).map_err(|mpsc::SendError(_)| {
-            self.queued.fetch_sub(rows, SeqCst);
-            QueueError::Stopped
-        })
+        self.sender
+            .send((batch, bytes))
+            .map_err(|mpsc::SendError(_)| {
+                self.load.sub(rows, bytes);
+                QueueError::Stopped
+            })
     }
 }
 
 impl LogInbox {
     pub fn recv_timeout(&self, wait: Duration) -> Result<Vec<LogRecord>, mpsc::RecvTimeoutError> {
-        let batch = self.receiver.recv_timeout(wait)?;
-        self.queued.fetch_sub(batch.len(), SeqCst);
+        let (batch, bytes) = self.receiver.recv_timeout(wait)?;
+        self.load.sub(batch.len(), bytes);
         Ok(batch)
     }
 
     pub fn try_recv(&self) -> Option<Vec<LogRecord>> {
-        let batch = self.receiver.try_recv().ok()?;
-        self.queued.fetch_sub(batch.len(), SeqCst);
+        let (batch, bytes) = self.receiver.try_recv().ok()?;
+        self.load.sub(batch.len(), bytes);
         Some(batch)
     }
+}
+
+/// The bytes of a record's strings and attribute values.
+fn text_bytes(r: &LogRecord) -> usize {
+    fn value(v: &Value) -> usize {
+        size_of::<Value>()
+            + match v {
+                Value::String(s) => s.len(),
+                Value::Array(a) => a.iter().map(value).sum(),
+                Value::Object(m) => m.iter().map(|(k, v)| k.len() + value(v)).sum(),
+                Value::Null | Value::Bool(_) | Value::Number(_) => 0,
+            }
+    }
+    let ids = [&r.service, &r.trace_id, &r.span_id];
+    r.message.len()
+        + ids.into_iter().flatten().map(String::len).sum::<usize>()
+        + r.attributes
+            .iter()
+            .map(|(k, v)| k.len() + value(v))
+            .sum::<usize>()
 }
 
 pub struct LogWriter {
@@ -331,7 +381,7 @@ impl LogWriter {
     pub fn start(root: PathBuf, retention_days: u32) -> Result<Self> {
         anyhow::ensure!(retention_days >= 1, "log retention must be at least 1 day");
         std::fs::create_dir_all(&root)?;
-        let (queue, inbox) = LogQueue::bounded(QUEUE_ROWS);
+        let (queue, inbox) = LogQueue::bounded(QUEUE_ROWS, QUEUE_BYTES);
         let mut state = State {
             root,
             fields: schema().1,
