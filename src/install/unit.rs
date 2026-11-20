@@ -19,9 +19,7 @@ pub struct Args {
 }
 
 pub fn run(out: &mut impl Write, args: &Args) -> anyhow::Result<()> {
-    let exe = std::env::current_exe()
-        .and_then(|e| e.canonicalize())
-        .context("cannot find the path of this binary")?;
+    let exe = super::exe()?;
     let data = args
         .data
         .canonicalize()

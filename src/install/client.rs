@@ -1,7 +1,7 @@
 //! `davy mcp-config` prints how to connect a coding agent to `/mcp`. The
 //! config refers to the token through `DAVY_TOKEN`, so it can be committed.
 
-use super::{Settings, TOKEN_FILE, check_public_url, loopback};
+use super::{Settings, TOKEN_FILE, check_public_url, encrypted_or_local};
 use anyhow::Context as _;
 use std::io::Write;
 use std::path::PathBuf;
@@ -66,7 +66,7 @@ pub enum Token {
 /// What to add where for `client`. `source` names where the token is kept.
 pub fn config(client: Client, url: &Url, token: &Token, source: &str) -> anyhow::Result<String> {
     anyhow::ensure!(
-        url.scheme() == "https" || loopback(url),
+        encrypted_or_local(url),
         "{url} is plain http, so the agent would send the admin token unencrypted, put Davy behind https first (docs/install.md, step 7)"
     );
     let mcp = url.join("mcp")?;

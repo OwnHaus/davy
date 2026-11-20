@@ -10,7 +10,7 @@ pub mod unit;
 
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use url::Url;
 
 /// The admin token, one line, mode 0600.
@@ -72,6 +72,19 @@ pub fn check_public_url(url: &Url) -> anyhow::Result<()> {
         "the public URL must not hold a login, a query or a fragment, give only the scheme, host and path, e.g. https://davy.example.com"
     );
     Ok(())
+}
+
+/// The path of this binary, for the service file and the printed commands.
+pub fn exe() -> anyhow::Result<PathBuf> {
+    std::env::current_exe()
+        .and_then(|e| e.canonicalize())
+        .context("cannot find the path of this binary")
+}
+
+/// Whether a token sent to `url` stays off the network in plain text:
+/// https, or plain http to a loopback address.
+pub fn encrypted_or_local(url: &Url) -> bool {
+    url.scheme() == "https" || loopback(url)
 }
 
 /// Whether `url` names this machine by a loopback address, where plain http

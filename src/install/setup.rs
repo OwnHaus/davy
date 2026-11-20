@@ -52,9 +52,7 @@ pub struct Report {
 }
 
 pub fn run(out: &mut impl Write, args: &Args) -> anyhow::Result<()> {
-    let exe = std::env::current_exe()
-        .and_then(|e| e.canonicalize())
-        .context("cannot find the path of this binary")?;
+    let exe = super::exe()?;
     let user = std::env::var("USER").ok();
     let report = setup(args, &exe, user.as_deref())?;
     serde_json::to_writer_pretty(&mut *out, &report)?;

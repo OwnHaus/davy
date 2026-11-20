@@ -1,7 +1,7 @@
 //! `davy doctor` checks a running install. Each check that is not `ok` says
 //! what fixes it. It reaches only the public URL and the SMTP server.
 
-use super::{SMTP_FILE, Settings, TOKEN_FILE, loopback, sh};
+use super::{SMTP_FILE, Settings, TOKEN_FILE, encrypted_or_local, loopback, sh};
 use crate::{
     alert::mail::Smtp,
     secret::{self, MIN_TOKEN_CHARS},
@@ -252,7 +252,7 @@ async fn server(url: &Url, token: Option<&str>, d: &str) -> Vec<Check> {
 async fn mcp(client: &reqwest::Client, url: &Url, token: &str, d: &str) -> Check {
     use reqwest::{StatusCode, header};
     let mcp = url.join("mcp").unwrap_or_else(|_| url.clone());
-    if url.scheme() != "https" && !loopback(url) {
+    if !encrypted_or_local(url) {
         return not_ok(
             "mcp",
             Status::Warn,
