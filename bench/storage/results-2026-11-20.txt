@@ -1,0 +1,52 @@
+ 9:09  up 1 day, 17:40, 2 users, load averages: 18.52 21.54 20.61
+ingest variant=sqlite-fts-word rows=2000000 secs=49.64 rows_per_s=40290 cpu_s=44.9 raw_mb=843 disk_mb=1518 disk_over_raw=1.80 max_rss_mb=406 per_million=[37469,43580]
+ingest variant=sqlite-fts-word-none rows=2000000 secs=34.30 rows_per_s=58316 cpu_s=31.7 raw_mb=843 disk_mb=1146 disk_over_raw=1.36 max_rss_mb=416 per_million=[67313,51493]
+ingest variant=tantivy1 rows=2000000 secs=51.32 rows_per_s=38971 cpu_s=77.3 raw_mb=843 disk_mb=578 disk_over_raw=0.69 max_rss_mb=513 per_million=[38800,50869]
+ingest variant=tantivy4 rows=2000000 secs=44.01 rows_per_s=45448 cpu_s=101.5 raw_mb=843 disk_mb=574 disk_over_raw=0.68 max_rss_mb=854 per_million=[95048,101541]
+ingest variant=sqlite rows=2000000 secs=3.19 rows_per_s=627763 cpu_s=3.8 raw_mb=843 disk_mb=909 disk_over_raw=1.08 max_rss_mb=418 per_million=[606457,651076]
+ingest variant=sqlite-fts-word rows=2000000 secs=29.26 rows_per_s=68358 cpu_s=27.9 raw_mb=843 disk_mb=1518 disk_over_raw=1.80 max_rss_mb=406 per_million=[73244,64096]
+ingest variant=sqlite-fts-word-none rows=2000000 secs=28.21 rows_per_s=70899 cpu_s=23.4 raw_mb=843 disk_mb=1146 disk_over_raw=1.36 max_rss_mb=408 per_million=[91240,57998]
+ingest variant=tantivy1 rows=2000000 secs=30.18 rows_per_s=66272 cpu_s=48.2 raw_mb=843 disk_mb=578 disk_over_raw=0.69 max_rss_mb=529 per_million=[70137,75496]
+ingest variant=tantivy4 rows=2000000 secs=28.55 rows_per_s=70047 cpu_s=72.4 raw_mb=843 disk_mb=575 disk_over_raw=0.68 max_rss_mb=924 per_million=[160978,138217]
+ingest variant=sqlite rows=2000000 secs=2.48 rows_per_s=806072 cpu_s=3.2 raw_mb=843 disk_mb=909 disk_over_raw=1.08 max_rss_mb=437 per_million=[780504,836127]
+ingest variant=sqlite-fts-word rows=2000000 secs=29.59 rows_per_s=67591 cpu_s=27.3 raw_mb=843 disk_mb=1518 disk_over_raw=1.80 max_rss_mb=406 per_million=[75630,61106]
+ingest variant=sqlite-fts-word-none rows=2000000 secs=19.92 rows_per_s=100400 cpu_s=20.3 raw_mb=843 disk_mb=1146 disk_over_raw=1.36 max_rss_mb=407 per_million=[105200,96088]
+ingest variant=tantivy1 rows=2000000 secs=30.35 rows_per_s=65897 cpu_s=49.5 raw_mb=843 disk_mb=578 disk_over_raw=0.69 max_rss_mb=562 per_million=[72906,77617]
+ingest variant=tantivy4 rows=2000000 secs=33.90 rows_per_s=58996 cpu_s=83.1 raw_mb=843 disk_mb=575 disk_over_raw=0.68 max_rss_mb=841 per_million=[133870,127725]
+ingest variant=sqlite rows=2000000 secs=3.27 rows_per_s=612350 cpu_s=4.0 raw_mb=843 disk_mb=909 disk_over_raw=1.08 max_rss_mb=419 per_million=[625519,599962]
+ingest variant=sqlite-fts-word rows=2000000 secs=37.26 rows_per_s=53681 cpu_s=32.2 raw_mb=843 disk_mb=1518 disk_over_raw=1.80 max_rss_mb=409 per_million=[54500,52892]
+ingest variant=sqlite-fts-word-none rows=2000000 secs=19.76 rows_per_s=101212 cpu_s=20.1 raw_mb=843 disk_mb=1146 disk_over_raw=1.36 max_rss_mb=425 per_million=[104893,97847]
+ingest variant=tantivy1 rows=2000000 secs=31.57 rows_per_s=63360 cpu_s=53.4 raw_mb=843 disk_mb=578 disk_over_raw=0.69 max_rss_mb=573 per_million=[72235,68993]
+ingest variant=tantivy4 rows=2000000 secs=38.85 rows_per_s=51478 cpu_s=88.8 raw_mb=843 disk_mb=575 disk_over_raw=0.68 max_rss_mb=849 per_million=[117675,88267]
+ingest variant=sqlite rows=2000000 secs=2.84 rows_per_s=704278 cpu_s=3.8 raw_mb=843 disk_mb=909 disk_over_raw=1.08 max_rss_mb=424 per_million=[679239,731534]
+ingest variant=sqlite-fts-word rows=2000000 secs=29.62 rows_per_s=67533 cpu_s=29.2 raw_mb=843 disk_mb=1518 disk_over_raw=1.80 max_rss_mb=412 per_million=[66192,68941]
+ingest variant=sqlite-fts-word-none rows=2000000 secs=19.43 rows_per_s=102958 cpu_s=19.8 raw_mb=843 disk_mb=1146 disk_over_raw=1.36 max_rss_mb=428 per_million=[106215,99982]
+ingest variant=tantivy1 rows=2000000 secs=28.89 rows_per_s=69240 cpu_s=47.8 raw_mb=843 disk_mb=578 disk_over_raw=0.69 max_rss_mb=587 per_million=[81581,73687]
+ingest variant=tantivy4 rows=2000000 secs=31.50 rows_per_s=63492 cpu_s=76.4 raw_mb=843 disk_mb=575 disk_over_raw=0.68 max_rss_mb=878 per_million=[134972,141994]
+ingest variant=sqlite rows=2000000 secs=2.71 rows_per_s=738642 cpu_s=3.5 raw_mb=843 disk_mb=909 disk_over_raw=1.08 max_rss_mb=422 per_million=[689850,795205]
+ingest variant=sqlite-fts-tri rows=2000000 secs=190.28 rows_per_s=10511 cpu_s=169.5 raw_mb=843 disk_mb=4602 disk_over_raw=5.46 max_rss_mb=405 per_million=[13061,8795]
+ingest variant=sqlite-fts-tri rows=2000000 secs=186.20 rows_per_s=10741 cpu_s=168.5 raw_mb=843 disk_mb=4602 disk_over_raw=5.46 max_rss_mb=405 per_million=[12022,9708]
+ 9:26  up 1 day, 17:57, 2 users, load averages: 12.56 14.34 16.42
+ingest variant=sqlite-fts-word rows=10000000 secs=190.45 rows_per_s=52506 cpu_s=170.0 raw_mb=4216 disk_mb=7588 disk_over_raw=1.80 max_rss_mb=406 per_million=[72999,65256,59052,54833,69581,50311,60193,37340,29858,66148]
+query variant=sqlite-fts-word needle=4d9484646539199b0423f12e5e40e400
+  needle_trace_id: median_ms=0.0 range=[0.0..0.5] hits=1
+  term_timeout_latest100: median_ms=0.1 range=[0.1..0.4] hits=100
+  term_timeout_count: median_ms=1.2 range=[1.2..1.2] hits=42731
+  errors_last_hour_latest100: median_ms=0.5 range=[0.5..0.8] hits=100
+  count_by_level_last_hour: median_ms=98.0 range=[93.1..108.0] hits=3
+ingest variant=tantivy1 rows=10000000 secs=172.50 rows_per_s=57971 cpu_s=340.2 raw_mb=4216 disk_mb=2841 disk_over_raw=0.67 max_rss_mb=2273 per_million=[78848,80349,70187,70182,72942,71985,68955,59266,64889,68112]
+query variant=tantivy1 needle=4d9484646539199b0423f12e5e40e400
+  segments=9
+  needle_trace_id: median_ms=0.0 range=[0.0..10.2] hits=1
+  term_timeout_latest100: median_ms=0.5 range=[0.5..6.2] hits=100
+  term_timeout_count: median_ms=0.0 range=[0.0..0.0] hits=42731
+  errors_last_hour_latest100: median_ms=1.3 range=[1.3..2.4] hits=100
+  count_by_level_last_hour: median_ms=4.2 range=[4.1..5.1] hits=3
+ingest variant=sqlite-fts-word-none rows=2000000 secs=19.73 rows_per_s=101388 cpu_s=19.9 raw_mb=843 disk_mb=1146 disk_over_raw=1.36 max_rss_mb=429 per_million=[107027,96369]
+query variant=sqlite-fts-word-none needle=f74cc1c5c0c8d4f48e46875f13193e8d
+  needle_trace_id: median_ms=0.0 range=[0.0..0.2] hits=1
+  term_timeout_latest100: median_ms=0.0 range=[0.0..0.0] hits=1
+
+thread 'main' (10495749) panicked at src/main.rs:448:58:
+called `Result::unwrap()` on an `Err` value: SqliteFailure(Error { code: Unknown, extended_code: 1 }, Some("fts5: column queries are not supported (detail=none)"))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

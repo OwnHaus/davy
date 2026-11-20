@@ -1,0 +1,13 @@
+{
+  "method": "POST",
+  "url": "/",
+  "headers": {
+    "content-type": "application/msgpack",
+    "content-encoding": "gzip",
+    "authorization": "Bearer <token>",
+    "user-agent": "logtail-js(node)",
+    "host": "127.0.0.1:60660",
+    "connection": "close",
+    "transfer-encoding": "chunked"
+  }
+}

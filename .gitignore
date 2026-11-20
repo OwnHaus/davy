@@ -1,0 +1,6 @@
+target/
+/data/
+.scratch/
+.worktrees/
+node_modules/
+.DS_Store
