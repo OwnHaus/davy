@@ -111,6 +111,12 @@ fn timestamp(v: Option<&Value>) -> Option<Timestamp> {
     }
     time::whole(ms)
 }
+/// The items of a list that SDKs send either bare or as `{"values": [...]}`.
+fn values(v: &Value) -> &[Value] {
+    v.as_array()
+        .or_else(|| v["values"].as_array())
+        .map_or(&[], Vec::as_slice)
+}
 fn string(v: &Value) -> Option<String> {
     v.as_str().map(str::to_owned)
 }
@@ -129,12 +135,10 @@ impl ErrorEvent {
         raw["event_id"] = Value::String(event_id.0.clone());
         let received_at = time::now_ms();
         let timestamp = timestamp(raw.get("timestamp")).unwrap_or(received_at);
-        let ex = &raw["exception"];
-        let exceptions = ex
-            .as_array()
-            .or_else(|| ex["values"].as_array())
-            .map(|values| values.iter().map(Exception::parse).collect())
-            .unwrap_or_default();
+        let exceptions = values(&raw["exception"])
+            .iter()
+            .map(Exception::parse)
+            .collect();
         let entry = raw
             .get("logentry")
             .or_else(|| raw.get("message").filter(|v| v.is_object()));
@@ -181,12 +185,8 @@ const MAX_BREADCRUMBS: usize = 20;
 /// Empty fields are left out.
 pub fn compact(e: &ErrorEvent) -> Value {
     let raw = &e.raw;
-    let ex = &raw["exception"];
-    let exceptions: Vec<Value> = ex
-        .as_array()
-        .or_else(|| ex["values"].as_array())
-        .into_iter()
-        .flatten()
+    let exceptions: Vec<Value> = values(&raw["exception"])
+        .iter()
         .map(|x| {
             let frames = x["stacktrace"]["frames"].as_array().map_or(&[][..], Vec::as_slice);
             json!({
@@ -198,11 +198,7 @@ pub fn compact(e: &ErrorEvent) -> Value {
             })
         })
         .collect();
-    let crumbs = &raw["breadcrumbs"];
-    let crumbs = crumbs
-        .as_array()
-        .or_else(|| crumbs["values"].as_array())
-        .map_or(&[][..], Vec::as_slice);
+    let crumbs = values(&raw["breadcrumbs"]);
     let breadcrumbs: Vec<Value> = crumbs[crumbs.len().saturating_sub(MAX_BREADCRUMBS)..]
         .iter()
         .map(|b| {

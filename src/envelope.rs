@@ -64,11 +64,14 @@ pub struct Envelope {
     pub header: EnvelopeHeader,
     pub items: Vec<Item>,
 }
-fn line(input: &mut &[u8]) -> Result<Value> {
-    let n = input
+fn line_end(input: &[u8]) -> usize {
+    input
         .iter()
         .position(|b| *b == b'\n')
-        .unwrap_or(input.len());
+        .unwrap_or(input.len())
+}
+fn line(input: &mut &[u8]) -> Result<Value> {
+    let n = line_end(input);
     let v = serde_json::from_slice(&input[..n])?;
     *input = &input[(n + 1).min(input.len())..];
     Ok(v)
@@ -123,10 +126,7 @@ impl Envelope {
                     v.as_u64()
                         .ok_or_else(|| anyhow::anyhow!("invalid length"))?,
                 )?,
-                None => input
-                    .iter()
-                    .position(|b| *b == b'\n')
-                    .unwrap_or(input.len()),
+                None => line_end(input),
             };
             if n > input.len() {
                 bail!("truncated item");
