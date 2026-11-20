@@ -560,17 +560,24 @@ The docs URL is the repository's raw `docs/` on the release tag until Davy has i
 
 ### Agent eval
 
-`e2e/eval/run.sh codex RUNS` starts a Debian container with systemd, Node 22, `sudo` and the coding agent, copies the small app in `e2e/eval/app` to `/app` and runs the agent once with the prompt in `e2e/eval/prompt.txt` and no other help. A run passes when `davy doctor` reports no failed check and a fresh MCP client, using the token in the data directory, finds the app's test error with `sql`. The results, the agent's events and `davy feedback` of each run stay in `.scratch/eval/results/`.
+`e2e/eval/run.sh codex|claude RUNS` starts a Debian container with systemd, Node 22, `sudo` and the coding agent, copies the small app in `e2e/eval/app` to `/app` and runs the agent once with the prompt in `e2e/eval/prompt.txt` and no other help. A run passes when three things hold afterwards: `davy doctor` reports no failed check, a fresh MCP client using the token in the data directory finds the test error with `sql`, and the app, started with `npm start` in an environment that holds no `SENTRY_DSN`, reports the `TypeError` that `GET /orders/42` throws. The results, the agent's events, the app's diff and `davy feedback` of each run stay in `.scratch/eval/results/`.
 
 Until 0.1.0 is released, the prompt differs from the README's in two ways. The docs are a copy of the repository at `/davy`, because the repository is private, and step 1 uses a binary built from the same commit with its `SHA256SUMS` instead of a download. The answers to the questions the docs tell the agent to ask are in the prompt, because no person watches the run: the public URL `http://127.0.0.1:8000`, no TLS proxy, no SMTP server.
 
-Codex, 2026-11-20, codex-cli 0.170.0 with its default model and a ChatGPT login: 5 of 5 runs passed, in a median of 62 s (54 to 106 s). A run read 250 to 315 thousand input tokens, 92 % of them cached, and wrote at most 2.2 thousand. Each agent followed `install.md` in order, checked the binary against `SHA256SUMS`, installed the unit with `davy systemd-unit` and connected itself, and `davy feedback` was empty after every run.
+Results of 2026-11-20, with the default model of each agent and a subscription login:
 
-The commands that failed during the runs came from the container or the agent, not from the docs, and each agent recovered on its own: `rg` is not installed, `systemctl` without `sudo` finds no D-Bus in the container, and a hand-written MCP request without `Accept: application/json, text/event-stream` got the 406 the MCP specification asks for. The slowest run spent its extra time on that request, a check the docs do not ask for.
+| Agent | Model | Passed | Median | Range |
+|---|---|---|---|---|
+| Claude Code 2.1.322 | `claude-sonnet-5-5` | 5 of 5 | 34 s | 31 to 34 s |
+| Codex 0.170.0 | its default | 3 of 3 | 91 s | 47 to 114 s |
 
-`davy mcp-config` prints the target file and the config together, so the agents cut the TOML out with `sed` or ran `codex mcp add` with the same values. It stays that way: for Claude Code and Cursor the config is merged into a JSON file that may already exist, which an append cannot do, and the output names the file in each case.
+Codex has 3 runs, not 5: the next two stopped within seconds on the ChatGPT plan's usage limit, before the agent did anything, and count as not run. A Claude Code run read about 13 thousand new and 200 thousand cached input tokens and wrote about 2.4 thousand, 0.10 USD at API prices. A Codex run read 210 to 300 thousand input tokens, over 90 % of them cached, and wrote under 2 thousand. Each agent followed `install.md` in order, checked the binary against `SHA256SUMS`, installed the unit with `davy systemd-unit` and connected itself, and `davy feedback` was empty after every run.
 
-Claude Code has no runs yet. `run.sh` wires up only Codex, and a Claude Code run needs a token from `claude setup-token` in the container.
+The first round, judged only by doctor and the test error, passed 5 of 5 for both agents, but in 2 of the 5 Claude Code runs the DSN lived only in the shell that sent the test error, so the app would have sent nothing after a restart. `docs/connect/node.md` said to put the DSN next to the app's other variables, and this app had none. It now says that such an app gets a `.env` loaded by `node --env-file-if-exists=.env` in its `start` script, and the eval starts the app to check it. In the second round all 8 runs did that.
+
+The commands that failed during the runs came from the container or the agent, not from the docs, and each agent recovered on its own: `rg` is not installed, `systemctl` without `sudo` finds no D-Bus in the container, and a hand-written MCP request without `Accept: application/json, text/event-stream` got the 406 the MCP specification asks for.
+
+`davy mcp-config` prints the target file and the config together, so Codex cut the TOML out with `sed` or ran `codex mcp add` with the same values. It stays that way: for Claude Code and Cursor the config is merged into a JSON file that may already exist, which an append cannot do, and the output names the file in each case.
 
 ### Safety
 

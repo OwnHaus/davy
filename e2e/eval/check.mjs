@@ -10,5 +10,6 @@ await client.connect(new StreamableHTTPClientTransport(new URL('mcp', public_url
 }))
 const result = await client.callTool({ name: 'sql', arguments: { query: 'SELECT title FROM issues' } })
 const titles = JSON.parse(result.content[0].text).rows.map(r => r[0])
-console.log(JSON.stringify({ titles, test_error: titles.some(t => String(t).includes('Davy test error')) }))
+const has = text => titles.some(t => String(t).includes(text))
+console.log(JSON.stringify({ titles, test_error: has('Davy test error'), app_error: has("reading 'items'") }))
 await client.close()
