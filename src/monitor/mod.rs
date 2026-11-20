@@ -217,13 +217,6 @@ impl State {
         }
     }
 
-    #[must_use]
-    pub fn parse(s: &str) -> Option<Self> {
-        [Self::Pending, Self::Up, Self::Failing, Self::Down]
-            .into_iter()
-            .find(|state| state.as_str() == s)
-    }
-
     /// One failed HTTP check only moves a monitor to `Failing`. A second in a
     /// row opens an incident, and one success closes it.
     #[must_use]

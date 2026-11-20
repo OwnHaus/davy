@@ -3,7 +3,10 @@
 use super::{Channel, Destination, Kind, Notice, Secret, retry_after};
 use crate::{event::Timestamp, net::MAX_ERROR_CHARS};
 use anyhow::{Context as _, Result};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{
+    Connection, OptionalExtension, params,
+    types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef},
+};
 use serde::Serialize;
 
 pub const MAX_CHANNELS: i64 = 100;
@@ -39,7 +42,7 @@ pub fn add(
          SELECT ?1,?2,?3,?4,?5,?6 WHERE (SELECT count(*) FROM channels) < ?7",
         params![
             project,
-            to.kind().as_str(),
+            to.kind(),
             to.url(),
             secret.as_ref().map(Secret::as_str),
             feedback,
@@ -85,7 +88,7 @@ pub fn list(c: &Connection) -> Result<Vec<Listed>> {
         Ok((
             r.get::<_, i64>(0)?,
             r.get::<_, Option<String>>(1)?,
-            r.get::<_, String>(2)?,
+            r.get::<_, Kind>(2)?,
             r.get::<_, String>(3)?,
             r.get::<_, bool>(4)?,
             [r.get::<_, i64>(5)?, r.get(6)?, r.get(7)?],
@@ -93,8 +96,6 @@ pub fn list(c: &Connection) -> Result<Vec<Listed>> {
     })?;
     rows.map(|row| {
         let (id, project, kind, url, feedback, [unsent, failed, dropped]) = row?;
-        let kind = Kind::parse(&kind)
-            .with_context(|| format!("channel {id} has unknown kind {kind:?}"))?;
         let to = match kind {
             Kind::Email => url.strip_prefix("mailto:").map(str::to_owned),
             Kind::Webhook | Kind::Slack => url::Url::parse(&url)
@@ -124,7 +125,7 @@ pub fn remove(c: &Connection, id: i64) -> Result<bool> {
 /// Queues `notice` for every channel of `project` and of all projects. Call
 /// it in the transaction that makes the change it reports.
 pub fn notify(c: &Connection, project: i64, notice: &Notice, at: Timestamp) -> Result<()> {
-    let channels: Vec<(i64, String)> = c
+    let channels: Vec<(i64, Kind)> = c
         .prepare(
             "SELECT id,kind FROM channels WHERE project_id=?1 OR project_id IS NULL ORDER BY id",
         )?
@@ -137,7 +138,7 @@ pub fn notify(c: &Connection, project: i64, notice: &Notice, at: Timestamp) -> R
         r.get(0)
     })?;
     for (id, kind) in channels {
-        queue(c, id, &kind, Some(&slug), notice, at)?;
+        queue(c, id, kind, Some(&slug), notice, at)?;
     }
     Ok(())
 }
@@ -145,7 +146,7 @@ pub fn notify(c: &Connection, project: i64, notice: &Notice, at: Timestamp) -> R
 /// Queues `notice` for every channel added with `--feedback`, or counts it
 /// as dropped when the channel already has [`MAX_UNSENT_FEEDBACK`] unsent.
 pub fn notify_feedback(c: &Connection, notice: &Notice, at: Timestamp) -> Result<()> {
-    let channels: Vec<(i64, String, i64)> = c
+    let channels: Vec<(i64, Kind, i64)> = c
         .prepare(
             "SELECT ch.id,ch.kind,(SELECT count(*) FROM notifications n WHERE n.channel_id=ch.id
                AND n.type='feedback' AND n.sent_at IS NULL AND n.failed_at IS NULL)
@@ -158,7 +159,7 @@ pub fn notify_feedback(c: &Connection, notice: &Notice, at: Timestamp) -> Result
             c.execute("UPDATE channels SET dropped=dropped+1 WHERE id=?1", [id])?;
             continue;
         }
-        queue(c, id, &kind, None, notice, at)?;
+        queue(c, id, kind, None, notice, at)?;
     }
     Ok(())
 }
@@ -169,13 +170,13 @@ pub fn test(c: &Connection, id: i64, at: Timestamp) -> Result<bool> {
         .query_row(
             "SELECT ch.kind,p.slug FROM channels ch LEFT JOIN projects p ON p.id=ch.project_id WHERE ch.id=?1",
             [id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+            |r| Ok((r.get::<_, Kind>(0)?, r.get::<_, Option<String>>(1)?)),
         )
         .optional()?
     else {
         return Ok(false);
     };
-    queue(c, id, &kind, project.as_deref(), &Notice::Test, at)?;
+    queue(c, id, kind, project.as_deref(), &Notice::Test, at)?;
     Ok(true)
 }
 
@@ -186,13 +187,11 @@ pub fn test(c: &Connection, id: i64, at: Timestamp) -> Result<bool> {
 fn queue(
     c: &Connection,
     channel: i64,
-    kind: &str,
+    kind: Kind,
     project: Option<&str>,
     notice: &Notice,
     at: Timestamp,
 ) -> Result<()> {
-    let kind = Kind::parse(kind)
-        .with_context(|| format!("channel {channel} has unknown kind {kind:?}"))?;
     let unsent: i64 = c.query_row(
         "SELECT count(*) FROM notifications WHERE channel_id=?1 AND sent_at IS NULL AND failed_at IS NULL
            AND (?2='feedback' OR type<>'feedback')",
@@ -244,7 +243,7 @@ pub fn due(c: &Connection, now: Timestamp) -> Result<Vec<Due>> {
         Ok((
             r.get::<_, i64>(0)?,
             r.get::<_, i64>(1)?,
-            r.get::<_, String>(2)?,
+            r.get::<_, Kind>(2)?,
             r.get::<_, String>(3)?,
             r.get::<_, Option<String>>(4)?,
             r.get::<_, String>(5)?,
@@ -252,20 +251,19 @@ pub fn due(c: &Connection, now: Timestamp) -> Result<Vec<Due>> {
     })?;
     rows.map(|row| {
         let (id, channel, kind, url, secret, payload) = row?;
-        let to = match (Kind::parse(&kind), secret) {
-            (Some(Kind::Webhook), Some(secret)) => Channel::Webhook {
+        let to = match (kind, secret) {
+            (Kind::Webhook, Some(secret)) => Channel::Webhook {
                 url,
                 secret: Secret::load(secret),
             },
-            (Some(Kind::Slack), _) => Channel::Slack { url },
-            (Some(Kind::Email), _) => Channel::Email {
+            (Kind::Slack, _) => Channel::Slack { url },
+            (Kind::Email, _) => Channel::Email {
                 to: url
                     .strip_prefix("mailto:")
                     .with_context(|| format!("e-mail channel {channel} has no mailto: URL"))?
                     .to_owned(),
             },
-            (Some(Kind::Webhook), None) => anyhow::bail!("webhook channel {channel} has no secret"),
-            (None, _) => anyhow::bail!("channel {channel} has unknown kind {kind:?}"),
+            (Kind::Webhook, None) => anyhow::bail!("webhook channel {channel} has no secret"),
         };
         Ok(Due {
             id,
@@ -319,4 +317,20 @@ pub fn delivered(
         )?,
     };
     Ok(())
+}
+
+impl ToSql for Kind {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
+    }
+}
+
+impl FromSql for Kind {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        let s = value.as_str()?;
+        [Self::Webhook, Self::Slack, Self::Email]
+            .into_iter()
+            .find(|kind| kind.as_str() == s)
+            .ok_or_else(|| FromSqlError::Other(format!("unknown channel kind {s:?}").into()))
+    }
 }

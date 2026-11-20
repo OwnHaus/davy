@@ -42,13 +42,6 @@ impl Kind {
             Self::Email => "email",
         }
     }
-
-    #[must_use]
-    pub fn parse(s: &str) -> Option<Self> {
-        [Self::Webhook, Self::Slack, Self::Email]
-            .into_iter()
-            .find(|kind| kind.as_str() == s)
-    }
 }
 
 /// One `user@domain` address of at most 254 bytes.

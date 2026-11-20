@@ -9,7 +9,10 @@ use crate::{
     event::Timestamp,
 };
 use anyhow::{Context as _, Result};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{
+    Connection, OptionalExtension, params,
+    types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef},
+};
 use serde::Serialize;
 
 pub const MAX_MONITORS: i64 = 1000;
@@ -224,7 +227,7 @@ fn record(
             [monitor],
             |r| {
                 Ok((
-                    r.get::<_, String>(0)?,
+                    r.get::<_, State>(0)?,
                     r.get::<_, i64>(1)?,
                     r.get::<_, String>(2)?,
                 ))
@@ -234,8 +237,6 @@ fn record(
     else {
         return Ok(false);
     };
-    let state = State::parse(&state)
-        .with_context(|| format!("monitor {monitor} has unknown state {state:?}"))?;
     let reason = match &outcome {
         Outcome::Up => None,
         Outcome::Down(reason) => Some(reason.to_string()),
@@ -247,7 +248,7 @@ fn record(
     let (next, change) = state.next(outcome);
     c.execute(
         "UPDATE monitors SET state=?2,last_check_at=?3 WHERE id=?1",
-        params![monitor, next.as_str(), at],
+        params![monitor, next, at],
     )?;
     let notice = match change {
         Some(Change::Opened(reason)) => {
@@ -314,29 +315,36 @@ pub fn list(c: &Connection) -> Result<Vec<Listed>> {
          FROM monitors m JOIN projects p ON p.id=m.project_id ORDER BY m.id",
     )?;
     let rows = q.query_map([], |r| {
-        Ok((
-            Listed {
-                id: r.get(0)?,
-                project: r.get(1)?,
-                name: r.get(2)?,
-                target: r.get(3)?,
-                state: State::Pending,
-                last_check_at: r.get(5)?,
-                open_since: r.get(6)?,
-            },
-            r.get::<_, String>(4)?,
-        ))
+        Ok(Listed {
+            id: r.get(0)?,
+            project: r.get(1)?,
+            name: r.get(2)?,
+            target: r.get(3)?,
+            state: r.get(4)?,
+            last_check_at: r.get(5)?,
+            open_since: r.get(6)?,
+        })
     })?;
-    rows.map(|row| {
-        let (listed, state) = row?;
-        let state = State::parse(&state)
-            .with_context(|| format!("monitor {} has unknown state {state:?}", listed.id))?;
-        Ok(Listed { state, ..listed })
-    })
-    .collect()
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 /// Deletes a monitor with its checks and incidents. False when there is none.
 pub fn remove(c: &Connection, id: i64) -> Result<bool> {
     Ok(c.execute("DELETE FROM monitors WHERE id=?1", [id])? == 1)
+}
+
+impl ToSql for State {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
+    }
+}
+
+impl FromSql for State {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        let s = value.as_str()?;
+        [Self::Pending, Self::Up, Self::Failing, Self::Down]
+            .into_iter()
+            .find(|state| state.as_str() == s)
+            .ok_or_else(|| FromSqlError::Other(format!("unknown monitor state {s:?}").into()))
+    }
 }
