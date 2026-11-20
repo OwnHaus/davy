@@ -1,8 +1,13 @@
-use super::{Build, DebugId, symbolicate};
+use super::{
+    Build, DebugId,
+    bundle::{self, Limit},
+    symbolicate,
+};
 use crate::envelope::{Envelope, ItemKind};
 use serde_json::{Value, json};
 use sourcemap::{SourceMap, SourceView};
-use std::sync::Arc;
+use std::{io::Write, sync::Arc};
+use zip::{ZipWriter, write::SimpleFileOptions};
 
 const BUILD: &str = "1c85f8bb-fda9-501c-b106-0fdc0d6937a8";
 const MINIFIED: &str = "/home/dev/.t3/projects/davy/.scratch/m5/work/dist/app.min.js";
@@ -109,5 +114,66 @@ fn an_event_looks_up_each_build_once_and_symbolicates_at_most_256_frames() {
     assert_eq!(
         [&frames[43]["function"], &frames[44]["function"]],
         [&json!("n"), &json!("parseOrder")]
+    );
+}
+
+fn zip(manifest: &Value, files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut zip = ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    zip.start_file("manifest.json", SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(manifest.to_string().as_bytes()).unwrap();
+    for (path, bytes) in files {
+        zip.start_file(*path, SimpleFileOptions::default()).unwrap();
+        zip.write_all(bytes).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
+fn source_map(n: usize) -> (String, Value) {
+    (
+        format!("files/{n}.map"),
+        json!({"type": "source_map", "headers": {"debug-id": format!("1c85f8bb-fda9-501c-b106-{n:012x}")}}),
+    )
+}
+
+#[test]
+fn a_bundle_listing_more_than_10000_files_is_refused() {
+    let files: serde_json::Map<String, Value> = (0..10_001).map(source_map).collect();
+    let error = bundle::unpack(&zip(&json!({ "files": files }), &[]), bundle::BUNDLE).unwrap_err();
+    assert_eq!(error.to_string(), "bundle lists more than 10000 files");
+}
+
+#[test]
+fn a_bundle_is_refused_once_it_unpacks_past_its_byte_limit() {
+    let (first, second) = (source_map(1), source_map(2));
+    let manifest = json!({"files": {&first.0: first.1, &second.0: second.1}});
+    let zip = zip(
+        &manifest,
+        &[(&first.0, b"[1,2,3]"), (&second.0, b"[1,2,3]")],
+    );
+    let size = manifest.to_string().len() + 14;
+    assert_eq!(
+        bundle::unpack(
+            &zip,
+            Limit {
+                files: 2,
+                bytes: size - 1
+            }
+        )
+        .unwrap_err()
+        .to_string(),
+        format!("bundle unpacks to more than {} bytes", size - 1)
+    );
+    assert_eq!(
+        bundle::unpack(
+            &zip,
+            Limit {
+                files: 2,
+                bytes: size
+            }
+        )
+        .unwrap()
+        .len(),
+        2
     );
 }

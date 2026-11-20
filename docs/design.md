@@ -386,7 +386,7 @@ URL or release based lookup, the legacy release-file upload, fetching scripts fr
 ### Done means
 
 - Unit tests with literal values: the captured event (`06.body`) symbolicated against the captured build gives `parseOrder` at `../src/app.js:5` with context line `  return order.items.length`, and `run` at line 11; a frame without a build, and a frame from another file, stay unchanged.
-- HTTP contract tests replay the captured `sentry-cli` requests: every route is 401 without the token or with a wrong one; the options name the public URL; assemble answers `not_found` with the missing chunk, the chunk upload stores it, assemble then answers `created` and the stored build symbolicates a frame; a chunk renamed to another SHA-1 is 400.
+- HTTP contract tests replay the captured `sentry-cli` requests: every route is 401 without the token or with a wrong one; the options name the public URL; assemble answers `not_found` with the missing chunk, the chunk upload stores it, assemble then answers `created` and the stored build symbolicates a frame; a chunk renamed to another SHA-1 is 400; a fifth part, a chunk over 8 MiB unpacked and an assemble request for 33 chunks are 400; a bundle listing 10,001 files or unpacking past its byte limit does not unpack.
 - `e2e/run.sh` runs `sentry-cli sourcemaps inject` and `upload` against the release binary, runs the bundle with `@sentry/node`, and asserts with `davy context` that the top in-app frame is `parseOrder` in `../src/app.js` at line 5.
 - `scripts/check` passes.
 
@@ -416,8 +416,10 @@ Sentry's own limits (develop.sentry.dev, Envelopes, Size Limits) are 200 MiB for
 | Log message | 64 KiB | cut at a character boundary, attribute `davy.truncated` set to `true` |
 | Log queue | 50,000 rows or 256 MiB of strings and attribute values | `429` |
 | `payload_json()` output in `sql` | 16 MiB | the query fails with an error |
-| Files in an artifact bundle | 10,000, and 1 GiB unpacked in total | `400` |
-| Parts in a chunk upload | 64 | `400` |
+| Files in an artifact bundle | 10,000, and 1 GiB unpacked in total | assemble answers `error` |
+| Parts in a chunk upload | 4, the announced `chunksPerRequest` | `400` |
+| Chunk, decompressed | 8 MiB, the announced `chunkSize` | `400` |
+| Chunks in an assemble request | 32, a 256 MiB bundle in 8 MiB chunks | `400` |
 
 ### Time and concurrency
 

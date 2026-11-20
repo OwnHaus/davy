@@ -142,7 +142,7 @@ impl Store {
                 "bundle hashes to {actual}, not {checksum}"
             )));
         }
-        let files = match bundle::unpack(&bundle) {
+        let files = match bundle::unpack(&bundle, bundle::BUNDLE) {
             Ok(files) if files.is_empty() => {
                 return Ok(Assembly::Failed(
                     "bundle has no source map or minified file with a debug ID".into(),

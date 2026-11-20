@@ -19,6 +19,8 @@ use std::sync::Arc;
 const CHUNK_SIZE: usize = 8 * 1024 * 1024;
 const CHUNKS_PER_REQUEST: usize = 4;
 const MAX_REQUEST: usize = CHUNK_SIZE * CHUNKS_PER_REQUEST;
+/// Enough chunks for a bundle of [`MAX_FILE`] bytes.
+const MAX_ASSEMBLE_CHUNKS: usize = MAX_FILE.div_ceil(CHUNK_SIZE);
 
 #[derive(Clone)]
 struct Upload {
@@ -71,6 +73,11 @@ async fn chunks(State(upload): State<Upload>, mut form: Multipart) -> Result<Jso
             Some("file_gzip") => true,
             _ => continue,
         };
+        if parts.len() == CHUNKS_PER_REQUEST {
+            return Err(bad(format!(
+                "a chunk upload holds at most {CHUNKS_PER_REQUEST} parts"
+            )));
+        }
         let name =
             ChunkId::try_from(field.file_name().unwrap_or_default().to_owned()).map_err(bad)?;
         parts.push((name, gzip, field.bytes().await.map_err(bad)?));
@@ -78,6 +85,9 @@ async fn chunks(State(upload): State<Upload>, mut form: Multipart) -> Result<Jso
     blocking(move || {
         for (name, gzip, bytes) in parts {
             let bytes = decode(&bytes, if gzip { "gzip" } else { "" })?;
+            if bytes.len() > CHUNK_SIZE {
+                return Err(bad(format!("chunk {name} is larger than 8 MiB")));
+            }
             let actual = ChunkId::of(&bytes);
             if actual != name {
                 return Err(bad(format!("chunk {name} hashes to {actual}")));
@@ -100,6 +110,11 @@ async fn assemble(
     State(upload): State<Upload>,
     Json(req): Json<AssembleRequest>,
 ) -> Result<Json<Value>, Failure> {
+    if req.chunks.len() > MAX_ASSEMBLE_CHUNKS {
+        return Err(bad(format!(
+            "an assemble request names at most {MAX_ASSEMBLE_CHUNKS} chunks"
+        )));
+    }
     let outcome = blocking(move || {
         upload
             .store
@@ -253,6 +268,89 @@ mod tests {
             (
                 StatusCode::BAD_REQUEST,
                 "chunk 0000000000000000000000000000000000000000 hashes to 2b57aa67728af071f6a2811f5afcac0748434df7"
+            )
+        );
+    }
+
+    /// A chunk upload with one `file` part per chunk, named by its SHA-1.
+    fn chunk_upload(chunks: &[Vec<u8>], gzip: bool) -> Request<Body> {
+        let mut body = Vec::new();
+        for chunk in chunks {
+            let (field, bytes) = if gzip {
+                let mut encoder =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+                std::io::Write::write_all(&mut encoder, chunk).unwrap();
+                ("file_gzip", encoder.finish().unwrap())
+            } else {
+                ("file", chunk.clone())
+            };
+            body.extend(
+                format!(
+                    "--b\r\ncontent-disposition: form-data; name=\"{field}\"; filename=\"{}\"\r\n\r\n",
+                    ChunkId::of(chunk)
+                )
+                .as_bytes(),
+            );
+            body.extend(bytes);
+            body.extend(b"\r\n");
+        }
+        body.extend(b"--b--\r\n");
+        Request::post("/api/0/organizations/davy/chunk-upload/")
+            .header(header::CONTENT_TYPE, "multipart/form-data; boundary=b")
+            .header(header::AUTHORIZATION, format!("Bearer {SECRET}"))
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_chunk_upload_holds_at_most_4_parts() {
+        let (app, _) = server();
+        let chunks: Vec<Vec<u8>> = (0..5_u8).map(|n| vec![n]).collect();
+        assert_eq!(
+            send(&app, chunk_upload(&chunks[..4], false)).await,
+            (StatusCode::OK, "{}".to_owned())
+        );
+        assert_eq!(
+            send(&app, chunk_upload(&chunks, false)).await,
+            (
+                StatusCode::BAD_REQUEST,
+                "a chunk upload holds at most 4 parts".to_owned()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chunk_over_8_mib_unpacked_is_refused() {
+        let (app, _) = server();
+        let chunk = vec![0; CHUNK_SIZE + 1];
+        assert_eq!(
+            send(&app, chunk_upload(&[chunk], true)).await,
+            (
+                StatusCode::BAD_REQUEST,
+                "chunk 466f11475dc46ef6e9cebe10afb13eebabbb06eb is larger than 8 MiB".to_owned()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn an_assemble_request_names_at_most_32_chunks() {
+        let (app, _) = server();
+        let request = |n: usize| {
+            Request::post("/api/0/organizations/davy/artifactbundle/assemble/")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {SECRET}"))
+                .body(Body::from(
+                    json!({"checksum": CHUNK, "chunks": vec![CHUNK; n], "projects": ["shop"]})
+                        .to_string(),
+                ))
+                .unwrap()
+        };
+        assert_eq!(send(&app, request(32)).await.0, StatusCode::OK);
+        assert_eq!(
+            send(&app, request(33)).await,
+            (
+                StatusCode::BAD_REQUEST,
+                "an assemble request names at most 32 chunks".to_owned()
             )
         );
     }

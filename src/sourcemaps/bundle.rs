@@ -1,7 +1,7 @@
 //! The artifact bundle `sentry-cli` uploads: a zip with a `manifest.json`.
 
 use super::{DebugId, MAX_FILE};
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
@@ -35,11 +35,28 @@ struct Entry {
     headers: BTreeMap<String, String>,
 }
 
+/// How much `unpack` reads from one bundle before it gives up.
+#[derive(Clone, Copy, Debug)]
+pub struct Limit {
+    pub files: usize,
+    pub bytes: usize,
+}
+
+pub const BUNDLE: Limit = Limit {
+    files: 10_000,
+    bytes: 1 << 30,
+};
+
 /// The source maps and minified files in a bundle that carry a debug ID.
 /// Other files are skipped.
-pub fn unpack(zip: &[u8]) -> Result<Vec<File>> {
+pub fn unpack(zip: &[u8], limit: Limit) -> Result<Vec<File>> {
     let mut archive = ZipArchive::new(Cursor::new(zip))?;
-    let manifest: Manifest = serde_json::from_slice(&read(&mut archive, "manifest.json")?)?;
+    let mut left = limit.bytes;
+    let manifest: Manifest =
+        serde_json::from_slice(&read(&mut archive, "manifest.json", &mut left, limit)?)?;
+    if manifest.files.len() > limit.files {
+        bail!("bundle lists more than {} files", limit.files);
+    }
     let mut files = Vec::new();
     for (path, entry) in manifest.files {
         let kind = match entry.kind.as_str() {
@@ -56,21 +73,31 @@ pub fn unpack(zip: &[u8]) -> Result<Vec<File>> {
             files.push(File {
                 debug_id,
                 kind,
-                bytes: read(&mut archive, &path)?,
+                bytes: read(&mut archive, &path, &mut left, limit)?,
             });
         }
     }
     Ok(files)
 }
 
-fn read(archive: &mut ZipArchive<Cursor<&[u8]>>, path: &str) -> Result<Vec<u8>> {
+/// Reads `path` and takes its size from `left`, the bytes the bundle may
+/// still unpack to.
+fn read(
+    archive: &mut ZipArchive<Cursor<&[u8]>>,
+    path: &str,
+    left: &mut usize,
+    limit: Limit,
+) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     archive
         .by_name(path)?
-        .take(MAX_FILE as u64 + 1)
+        .take(MAX_FILE.min(*left) as u64 + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() > MAX_FILE {
         bail!("{path} is larger than 256 MiB");
     }
+    *left = left
+        .checked_sub(bytes.len())
+        .with_context(|| format!("bundle unpacks to more than {} bytes", limit.bytes))?;
     Ok(bytes)
 }
