@@ -196,6 +196,12 @@ enum Channel {
         #[arg(long)]
         data: PathBuf,
     },
+    /// Queues a test notice for one channel. A running server sends it.
+    Test {
+        id: i64,
+        #[arg(long)]
+        data: PathBuf,
+    },
 }
 #[derive(clap::Args)]
 #[command(group(ArgGroup::new("scope").required(true).args(["project", "all"])))]
@@ -421,6 +427,15 @@ fn run_channel(out: &mut impl Write, command: Channel) -> anyhow::Result<()> {
                 alert::store::remove(&store::open(&data)?, id)?,
                 "no channel {id}"
             );
+        }
+        Channel::Test { id, data } => {
+            let mut c = store::open(&data)?;
+            let tx = c.transaction()?;
+            anyhow::ensure!(
+                alert::store::test(&tx, id, time::now_ms())?,
+                "no channel {id}"
+            );
+            tx.commit()?;
         }
     }
     Ok(())

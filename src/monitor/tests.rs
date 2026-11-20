@@ -426,3 +426,28 @@ fn a_sweep_deletes_up_to_1000_checks_older_than_30_days() {
     store::sweep(&c, now).unwrap();
     assert_eq!(left(&c), 2);
 }
+
+#[test]
+fn an_incident_queues_monitor_down_and_then_monitor_up() {
+    let c = memory();
+    let id = backup(&c);
+    let hook = CheckUrl::parse("https://hooks.example/x").unwrap();
+    crate::alert::store::add(&c, Some(1), crate::alert::Kind::Webhook, &hook, 0).unwrap();
+    for (at, failed) in [(1_000, false), (2_000, true), (3_000, true), (4_000, false)] {
+        store::ping(&c, id, at, failed).unwrap();
+    }
+    let payloads: Vec<String> = c
+        .prepare("SELECT payload FROM notifications ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        payloads,
+        [
+            r#"{"id":1,"type":"monitor.down","project":"shop","at":"1970-01-01T00:00:02Z","monitor":{"id":1,"name":"Backup"},"incident":{"id":1,"reason":"failure ping"}}"#,
+            r#"{"id":2,"type":"monitor.up","project":"shop","at":"1970-01-01T00:00:04Z","monitor":{"id":1,"name":"Backup"},"incident":{"id":1,"reason":"failure ping"}}"#,
+        ]
+    );
+}

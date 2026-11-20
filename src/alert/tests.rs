@@ -105,3 +105,167 @@ fn a_data_directory_holds_at_most_100_channels() {
         "a data directory holds at most 100 channels"
     );
 }
+
+fn issue(title: &str) -> Issue {
+    Issue {
+        id: 3,
+        title: title.into(),
+        culprit: Some("parseOrder(src/app.js)".into()),
+        level: "error".into(),
+        release: Some("shop@2.0.0".into()),
+    }
+}
+
+fn incident() -> Incident {
+    Incident {
+        id: 4,
+        monitor: 1,
+        name: "API".into(),
+        reason: "HTTP 503".into(),
+    }
+}
+
+#[test]
+fn a_webhook_body_carries_its_delivery_id_and_the_notice() {
+    let new = Notice::IssueNew(issue("TypeError: x is undefined"));
+    assert_eq!(
+        new.render(Kind::Webhook, 18, Some("shop"), 1_795_164_121_000)
+            .unwrap(),
+        r#"{"id":18,"type":"issue.new","project":"shop","at":"2026-11-20T08:42:01Z","issue":{"id":3,"title":"TypeError: x is undefined","culprit":"parseOrder(src/app.js)","level":"error","release":"shop@2.0.0"}}"#
+    );
+    let down = Notice::MonitorDown(incident());
+    assert_eq!(
+        down.render(Kind::Webhook, 19, Some("shop"), 1_795_164_190_000)
+            .unwrap(),
+        r#"{"id":19,"type":"monitor.down","project":"shop","at":"2026-11-20T08:43:10Z","monitor":{"id":1,"name":"API"},"incident":{"id":4,"reason":"HTTP 503"}}"#
+    );
+    assert_eq!(
+        Notice::Test.render(Kind::Webhook, 20, None, 1_000).unwrap(),
+        r#"{"id":20,"type":"test","project":null,"at":"1970-01-01T00:00:01Z"}"#
+    );
+}
+
+#[test]
+fn a_slack_message_is_one_escaped_line() {
+    let slack = |project, notice: Notice| notice.render(Kind::Slack, 1, project, 0).unwrap();
+    let cases = [
+        (
+            slack(Some("shop"), Notice::IssueNew(issue("TypeError: x"))),
+            r#"{"text":"[shop] New issue: TypeError: x"}"#,
+        ),
+        (
+            slack(Some("shop"), Notice::IssueRegressed(issue("TypeError: x"))),
+            r#"{"text":"[shop] Issue regressed: TypeError: x"}"#,
+        ),
+        (
+            slack(Some("shop"), Notice::MonitorDown(incident())),
+            r#"{"text":"[shop] API is down: HTTP 503"}"#,
+        ),
+        (
+            slack(Some("shop"), Notice::MonitorUp(incident())),
+            r#"{"text":"[shop] API is up again"}"#,
+        ),
+        (
+            slack(None, Notice::Test),
+            r#"{"text":"Test notice from Davy"}"#,
+        ),
+        (
+            slack(Some("shop"), Notice::IssueNew(issue("<!channel> & <@U1>"))),
+            r#"{"text":"[shop] New issue: &lt;!channel&gt; &amp; &lt;@U1&gt;"}"#,
+        ),
+    ];
+    for (got, want) in cases {
+        assert_eq!(got, want);
+    }
+    let long = slack(Some("shop"), Notice::IssueNew(issue(&"é".repeat(300))));
+    assert_eq!(
+        long,
+        format!(r#"{{"text":"[shop] New issue: {}"}}"#, "é".repeat(200))
+    );
+}
+
+fn channel(c: &rusqlite::Connection, project: Option<i64>, kind: Kind) -> i64 {
+    store::add(c, project, kind, &url("https://hooks.example/x"), 0)
+        .unwrap()
+        .id
+}
+
+fn queued(c: &rusqlite::Connection) -> Vec<(i64, i64, String, String, i64)> {
+    c.prepare("SELECT id,channel_id,type,payload,next_at FROM notifications ORDER BY id")
+        .unwrap()
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+#[test]
+fn a_notice_queues_one_row_for_each_channel_of_its_project() {
+    let c = memory();
+    crate::store::create_project(&c, "blog").unwrap();
+    let shop = channel(&c, Some(1), Kind::Webhook);
+    let all = channel(&c, None, Kind::Slack);
+    channel(&c, Some(2), Kind::Webhook);
+    store::notify(&c, 1, &Notice::MonitorDown(incident()), 5_000).unwrap();
+    store::notify(&c, 1, &Notice::MonitorUp(incident()), 6_000).unwrap();
+    let rows = queued(&c);
+    let summary: Vec<_> = rows
+        .iter()
+        .map(|(id, ch, kind, _, next_at)| (*id, *ch, kind.as_str(), *next_at))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            (1, shop, "monitor.down", 5_000),
+            (2, all, "monitor.down", 5_000),
+            (3, shop, "monitor.up", 6_000),
+            (4, all, "monitor.up", 6_000),
+        ]
+    );
+    assert_eq!(
+        rows[2].3,
+        r#"{"id":3,"type":"monitor.up","project":"shop","at":"1970-01-01T00:00:06Z","monitor":{"id":1,"name":"API"},"incident":{"id":4,"reason":"HTTP 503"}}"#
+    );
+    assert_eq!(rows[3].3, r#"{"text":"[shop] API is up again"}"#);
+}
+
+#[test]
+fn a_channel_with_100_unsent_notices_drops_the_next_and_counts_it() {
+    let c = memory();
+    let id = channel(&c, Some(1), Kind::Slack);
+    for at in 0..101 {
+        store::notify(&c, 1, &Notice::Test, at).unwrap();
+    }
+    let listed = store::list(&c).unwrap();
+    assert_eq!((listed[0].unsent, listed[0].dropped), (100, 1));
+    c.execute("UPDATE notifications SET sent_at=1 WHERE id=1", [])
+        .unwrap();
+    store::notify(&c, 1, &Notice::Test, 200).unwrap();
+    let listed = store::list(&c).unwrap();
+    assert_eq!(
+        (listed[0].id, listed[0].unsent, listed[0].dropped),
+        (id, 100, 1)
+    );
+}
+
+#[test]
+fn a_test_notice_goes_to_the_one_channel_it_names() {
+    let c = memory();
+    channel(&c, Some(1), Kind::Slack);
+    let all = channel(&c, None, Kind::Webhook);
+    assert!(store::test(&c, all, 7_000).unwrap());
+    assert!(!store::test(&c, 9, 7_000).unwrap());
+    let rows = queued(&c);
+    assert_eq!(
+        rows,
+        [(
+            1,
+            all,
+            "test".into(),
+            r#"{"id":1,"type":"test","project":null,"at":"1970-01-01T00:00:07Z"}"#.into(),
+            7_000
+        )]
+    );
+}

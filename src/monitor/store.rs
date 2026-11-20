@@ -1,7 +1,10 @@
 //! Monitor rows. The tables are created by the migrations in `crate::store`.
 
 use super::{Change, Expect, HeartbeatToken, NewMonitor, Outcome, Reason, State, Target};
-use crate::event::Timestamp;
+use crate::{
+    alert::{self, Incident, Notice},
+    event::Timestamp,
+};
 use anyhow::{Context as _, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
@@ -144,12 +147,20 @@ pub fn sweep(c: &Connection, at: Timestamp) -> Result<()> {
 }
 
 /// Stores one check row, moves the monitor to its next state and opens or
-/// closes its incident. False when the monitor is gone.
+/// closes its incident with a notice. False when the monitor is gone.
 fn record(c: &Connection, monitor: i64, at: Timestamp, outcome: Outcome) -> Result<bool> {
-    let Some(state) = c
-        .query_row("SELECT state FROM monitors WHERE id=?1", [monitor], |r| {
-            r.get::<_, String>(0)
-        })
+    let Some((state, project, name)) = c
+        .query_row(
+            "SELECT state,project_id,name FROM monitors WHERE id=?1",
+            [monitor],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            },
+        )
         .optional()?
     else {
         return Ok(false);
@@ -169,17 +180,47 @@ fn record(c: &Connection, monitor: i64, at: Timestamp, outcome: Outcome) -> Resu
         "UPDATE monitors SET state=?2,last_check_at=?3 WHERE id=?1",
         params![monitor, next.as_str(), at],
     )?;
-    match change {
-        Some(Change::Opened(reason)) => c.execute(
-            "INSERT INTO incidents(monitor_id,started_at,reason) VALUES (?1,?2,?3)",
-            params![monitor, at, reason.to_string()],
-        )?,
-        Some(Change::Resolved) => c.execute(
-            "UPDATE incidents SET resolved_at=?2 WHERE monitor_id=?1 AND resolved_at IS NULL",
-            params![monitor, at],
-        )?,
-        None => 0,
+    let notice = match change {
+        Some(Change::Opened(reason)) => {
+            let reason = reason.to_string();
+            c.execute(
+                "INSERT INTO incidents(monitor_id,started_at,reason) VALUES (?1,?2,?3)",
+                params![monitor, at, reason],
+            )?;
+            let id = c.last_insert_rowid();
+            Some(Notice::MonitorDown(Incident {
+                id,
+                monitor,
+                name,
+                reason,
+            }))
+        }
+        Some(Change::Resolved) => {
+            let open = c
+                .query_row(
+                    "SELECT id,reason FROM incidents WHERE monitor_id=?1 AND resolved_at IS NULL",
+                    [monitor],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            c.execute(
+                "UPDATE incidents SET resolved_at=?2 WHERE monitor_id=?1 AND resolved_at IS NULL",
+                params![monitor, at],
+            )?;
+            open.map(|(id, reason)| {
+                Notice::MonitorUp(Incident {
+                    id,
+                    monitor,
+                    name,
+                    reason,
+                })
+            })
+        }
+        None => None,
     };
+    if let Some(notice) = notice {
+        alert::store::notify(c, project, &notice, at)?;
+    }
     Ok(true)
 }
 

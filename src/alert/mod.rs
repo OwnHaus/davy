@@ -1,8 +1,11 @@
 //! Alert channels: where notices about issues and incidents go.
 
+mod notice;
 pub mod store;
 #[cfg(test)]
 mod tests;
+
+pub use notice::{Incident, Issue, Notice};
 
 use anyhow::anyhow;
 

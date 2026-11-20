@@ -417,7 +417,10 @@ enum Reason { Timeout, Connect(String), Status(u16), KeywordMissing, KeywordFoun
 enum State { Pending, Up, Failing, Down }          // State::next(self, Outcome) -> (State, Option<Change>)
 enum Change { Opened(Reason), Resolved }
 
-enum Notice { IssueNew { issue: i64 }, IssueRegressed { issue: i64 }, MonitorDown { incident: i64 }, MonitorUp { incident: i64 }, Test }
+// Holds what the body shows, read in the transaction of the change it reports.
+enum Notice { IssueNew(Issue), IssueRegressed(Issue), MonitorDown(Incident), MonitorUp(Incident), Test }
+struct Issue { id: i64, title: String, culprit: Option<String>, level: String, release: Option<String> }
+struct Incident { id: i64, monitor: i64, name: String, reason: String }
 enum Channel { Webhook { url: Url, secret: Secret }, Slack { url: Url } }
 ```
 
@@ -441,7 +444,7 @@ HTTP checks and alert deliveries open connections to URLs a user typed. On a sel
 ### Alerts
 
 - A channel belongs to one project or to all projects and receives every notice kind for them. Channels are a webhook or a Slack incoming webhook URL. Email over SMTP comes after these two, inside this milestone.
-- **Outbox.** When the writer opens a new issue, regresses one, opens or closes an incident, it inserts one `notifications` row per matching channel in the same transaction. A crash cannot lose a notice or send one for a change that did not commit.
+- **Outbox.** When the writer opens a new issue, regresses one, opens or closes an incident, it inserts one `notifications` row per matching channel in the same transaction. A crash cannot lose a notice or send one for a change that did not commit. The body is rendered when the row is stored, so delivery only signs and sends it. A new issue is noticed once, by the event that created it, and a regression once, by the event that reopened it.
 - **Delivery.** One notifier task sends due rows, the oldest first per channel, one at a time per channel, so `monitor.down` never arrives after its `monitor.up`. A send has 10 s. A `2xx` marks the row sent. Anything else retries after 30 s, 1, 2, 4 and 8 min, then the row is marked failed and the channel moves on. Delivery is at least once. Each payload carries its `id` so a receiver can drop a repeat.
 - **Bounds.** At most 100 unsent rows per channel. Over that a notice is not stored and the channel's `dropped` counter grows, which `davy channel list` shows.
 - **Webhook.** `POST` with `content-type: application/json` and the headers `Davy-Delivery: <id>` and `Davy-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<body>" with the channel secret>`. The secret is 32 random bytes as hex, printed once by `davy channel add`. The scheme matches Stripe's, so receivers can reuse their verification code.
@@ -453,7 +456,7 @@ HTTP checks and alert deliveries open connections to URLs a user typed. On a sel
  "monitor": {"id": 1, "name": "API"}, "incident": {"id": 4, "reason": "HTTP 503"}}
 ```
 
-- **Slack.** `POST {"text": "<line>"}` to the incoming webhook URL, for example `[shop] API is down: HTTP 503`. Titles are cut to 200 characters.
+- **Slack.** `POST {"text": "<line>"}` to the incoming webhook URL, for example `[shop] API is down: HTTP 503`. The lines are `New issue: <title>`, `Issue regressed: <title>`, `<monitor> is down: <reason>`, `<monitor> is up again` and `Test notice from Davy`, after `[<project>]` when the notice has one. Titles and reasons are cut to 200 characters. `&`, `<` and `>` are escaped, so an event title cannot mention `@channel` or hide a link. A Slack line carries no `id`, because Slack cannot drop a repeat.
 - `type` is one of `issue.new`, `issue.regressed`, `monitor.down`, `monitor.up`, `test`.
 
 ### Storage
@@ -474,7 +477,7 @@ At most 1,000 monitors and 100 channels per data directory. The `sql` tool reads
 - `davy monitor add <project> <name> --heartbeat [--every 1h] [--grace 5m]` prints the ping path `/api/heartbeat/<token>`.
 - `davy monitor list` shows each monitor with its state, last check and open incident. `davy monitor remove <id>`.
 - `davy channel add webhook <url> (--project <slug> | --all)` prints the channel ID and the signing secret, once. `davy channel add slack <url> (--project <slug> | --all)` prints the ID. The project is a flag because clap cannot read an optional positional before two required ones.
-- `davy channel list` shows each channel with its unsent, failed and dropped counts, and only the host of its URL, because a Slack webhook URL is a credential. `davy channel remove <id>`. `davy channel test <id>` queues a `test` notice.
+- `davy channel list` shows each channel with its unsent, failed and dropped counts, and only the host of its URL, because a Slack webhook URL is a credential. `davy channel remove <id>`. `davy channel test <id>` queues a `test` notice for that channel alone. Its `project` is `null` on a channel of every project.
 
 Monitors and channels are added from the CLI only. No MCP tool creates them, so an agent cannot point the server at an address.
 

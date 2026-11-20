@@ -20,6 +20,7 @@ CREATE TABLE notifications(id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL R
 CREATE INDEX notifications_pending ON notifications(channel_id, id) WHERE sent_at IS NULL AND failed_at IS NULL;",
 ];
 use crate::{
+    alert,
     event::{ErrorEvent, Timestamp},
     grouping::group,
     time,
@@ -135,8 +136,8 @@ pub fn insert(c: &Connection, project: i64, e: &ErrorEvent) -> Result<()> {
         return Ok(());
     }
     let g = group(e);
-    c.execute("INSERT INTO issues(project_id,grouping_version,fingerprint,title,culprit,level,status,first_seen,last_seen,event_count) VALUES (?1,?2,?3,?4,?5,?6,'unresolved',?7,?7,0) ON CONFLICT(project_id,grouping_version,fingerprint) DO NOTHING", params![project,g.version,g.fingerprint,g.title,g.culprit,e.level.as_str(),e.timestamp])?;
-    let (id,count,status,release,at): (i64,i64,String,Option<String>,Option<i64>) = c.query_row("SELECT id,event_count,status,resolved_in_release,resolved_at FROM issues WHERE project_id=?1 AND grouping_version=?2 AND fingerprint=?3", params![project,g.version,g.fingerprint], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
+    let created = c.execute("INSERT INTO issues(project_id,grouping_version,fingerprint,title,culprit,level,status,first_seen,last_seen,event_count) VALUES (?1,?2,?3,?4,?5,?6,'unresolved',?7,?7,0) ON CONFLICT(project_id,grouping_version,fingerprint) DO NOTHING", params![project,g.version,g.fingerprint,g.title,g.culprit,e.level.as_str(),e.timestamp])? == 1;
+    let (id,count,status,release,at,title,culprit): (i64,i64,String,Option<String>,Option<i64>,String,Option<String>) = c.query_row("SELECT id,event_count,status,resolved_in_release,resolved_at,title,culprit FROM issues WHERE project_id=?1 AND grouping_version=?2 AND fingerprint=?3", params![project,g.version,g.fingerprint], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)))?;
     let mut status = IssueStatus::load(&status, release, at);
     let seen = match &e.release {
         Some(version) => {
@@ -166,6 +167,21 @@ pub fn insert(c: &Connection, project: i64, e: &ErrorEvent) -> Result<()> {
     c.execute("INSERT INTO events(project_id,issue_id,event_id,timestamp,received_at,level,release,environment,trace_id,user_id,payload) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",params![project,id,e.event_id.0,e.timestamp,e.received_at,e.level.as_str(),e.release,e.environment,e.trace_id,e.user_id,payload])?;
     c.execute("UPDATE issues SET event_count=event_count+1,first_seen=min(first_seen,?2),last_seen=max(last_seen,?2),status=?3,regressed_at=coalesce(?4,regressed_at),resolved_at=CASE WHEN ?4 IS NOT NULL THEN NULL ELSE resolved_at END,resolved_in_release=CASE WHEN ?4 IS NOT NULL THEN NULL ELSE resolved_in_release END WHERE id=?1",params![id,e.timestamp,status,regressed])?;
     c.execute("INSERT INTO issue_hourly(issue_id,hour,count) VALUES (?1,?2,1) ON CONFLICT(issue_id,hour) DO UPDATE SET count=count+1", params![id,e.timestamp.div_euclid(3_600_000)*3_600_000])?;
+    if created || regressed.is_some() {
+        let issue = alert::Issue {
+            id,
+            title,
+            culprit,
+            level: e.level.as_str().to_owned(),
+            release: e.release.clone(),
+        };
+        let notice = if created {
+            alert::Notice::IssueNew(issue)
+        } else {
+            alert::Notice::IssueRegressed(issue)
+        };
+        alert::store::notify(c, project, &notice, e.received_at)?;
+    }
     Ok(())
 }
 /// Marks an issue fixed in `release`, or in the next release Davy sees when

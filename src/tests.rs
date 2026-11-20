@@ -182,6 +182,36 @@ fn resolving_waits_for_the_next_release() {
     assert!(!store::resolve(&c, 99, None, 0).unwrap());
 }
 #[test]
+fn a_new_and_a_regressed_issue_each_queue_one_notice() {
+    let c = memory();
+    store::create_project(&c, "shop").unwrap();
+    let hook = crate::monitor::CheckUrl::parse("https://hooks.example/x").unwrap();
+    crate::alert::store::add(&c, None, crate::alert::Kind::Slack, &hook, 0).unwrap();
+    let in_release = |release: &str, received_at| ErrorEvent {
+        received_at,
+        ..event(json!({"message":"boom","release":release}))
+    };
+    store::insert(&c, 1, &in_release("v1", 1000)).unwrap();
+    store::insert(&c, 1, &in_release("v1", 1500)).unwrap();
+    assert!(store::resolve(&c, 1, Some("v1"), 2000).unwrap());
+    store::insert(&c, 1, &in_release("v2", 3000)).unwrap();
+    store::insert(&c, 1, &in_release("v2", 4000)).unwrap();
+    let payloads: Vec<String> = c
+        .prepare("SELECT payload FROM notifications ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        payloads,
+        [
+            r#"{"text":"[shop] New issue: boom"}"#,
+            r#"{"text":"[shop] Issue regressed: boom"}"#,
+        ]
+    );
+}
+#[test]
 fn migration_backfills_releases_from_old_events() {
     let mut c = memory();
     store::create_project(&c, "old").unwrap();
