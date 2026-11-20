@@ -14,38 +14,23 @@ concurrency:
   group: fuzz
   cancel-in-progress: true
 
+# One job builds the targets once and runs them all at once, so a night
+# costs one build and five minutes of runner time.
 jobs:
   fuzz:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - envelope
-          - event
-          - sentry_log
-          - logtail_json
-          - logtail_msgpack
-          - otlp_protobuf
-          - otlp_json
-          - artifact_bundle
-          - sourcemap
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: rustup toolchain install nightly --profile minimal
       - run: cargo install --locked cargo-fuzz@0.13.2
-      - run: python3 fuzz/seed
-      - run: cargo +nightly fuzz run "$TARGET" -- -max_total_time=300 -rss_limit_mb=2048 -timeout=10
-        working-directory: fuzz
-        env:
-          TARGET: ${{ matrix.target }}
+      - run: fuzz/run 300
       # The input that crashed, to turn into a fixture and a unit test.
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: crash-${{ matrix.target }}
-          path: fuzz/artifacts/${{ matrix.target }}
+          name: crashes
+          path: fuzz/artifacts
           if-no-files-found: ignore

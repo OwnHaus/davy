@@ -17,9 +17,7 @@ One `cargo fuzz` target per parser that reads untrusted bytes, as `SECURITY.md` 
 
 ## Running
 
-`fuzz/docker SECONDS [TARGET...]` runs the targets at once in `rust:bookworm` with nightly, so it works on macOS. `FUZZ_CPUS` caps the cores it takes (default 6). A run before a release takes 3600 seconds per target. CI runs each target for five minutes every night (`.github/workflows/fuzz.yml`).
-
-With nightly and `cargo-fuzz` installed, `cargo +nightly fuzz run TARGET` in this directory runs one target directly.
+`fuzz/run SECONDS [TARGET...]` runs the targets at once, all of them when none is named. It needs nightly and `cargo-fuzz`. `fuzz/docker` takes the same arguments and runs it in `rust:bookworm`, so it works on macOS without either. `FUZZ_CPUS` caps the cores the container takes (default 6). A run before a release takes 3600 seconds per target. CI runs `fuzz/run 300` every night (`.github/workflows/fuzz.yml`).
 
 ## A crash
 

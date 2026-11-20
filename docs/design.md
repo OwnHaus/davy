@@ -605,6 +605,24 @@ The first version someone can download, verify and run without building it. `REL
 - The owner's commits and the release tag are signed and show as verified on GitHub.
 - The e2e suite passes against the downloaded release binary and the container image.
 
+### Results
+
+Fuzzing, measured on 2026-11-20 with `FUZZ_CPUS=5 fuzz/docker 3600` on an M-series laptop: all nine targets ran for 3,601 seconds at once, without a crash, a timeout or a memory limit hit.
+
+| Target | Runs | Coverage | Peak RSS |
+|---|---|---|---|
+| `artifact_bundle` | 11,757,240 | 2,219 | 558 MB |
+| `envelope` | 8,242,563 | 7,846 | 592 MB |
+| `event` | 11,363,176 | 7,286 | 594 MB |
+| `logtail_json` | 13,764,929 | 3,080 | 611 MB |
+| `logtail_msgpack` | 7,392,232 | 2,057 | 1,651 MB |
+| `otlp_json` | 14,558,134 | 4,147 | 599 MB |
+| `otlp_protobuf` | 13,705,341 | 1,800 | 644 MB |
+| `sentry_log` | 13,956,866 | 2,499 | 657 MB |
+| `sourcemap` | 14,367,734 | 4,191 | 600 MB |
+
+The peak of `logtail_msgpack` is libFuzzer's whole process, not one input: a further 90 seconds with `-malloc_limit_mb=128` found no single allocation over 128 MB.
+
 ## Hardening
 
 A security review of `16f413c` showed that a client without a key could make the server allocate 4.4 GB with one 194 KB request (measured with a release build on a developer laptop: a gzip body that inflates to 190 MiB of `[0,0,...]` sent to `/store/`). The rules below close that class. Each has a test that a request over the limit is refused.

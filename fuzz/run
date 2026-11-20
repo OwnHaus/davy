@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Runs fuzz targets for SECONDS each, all at once. Without targets it runs all
+# of them. Needs nightly and cargo-fuzz; fuzz/docker brings both. A crash
+# lands in fuzz/artifacts/<target>/ and the run exits non-zero.
+# Usage: fuzz/run SECONDS [TARGET...]
+set -euo pipefail
+cd "$(dirname "$0")"
+seconds=${1:?usage: fuzz/run SECONDS [TARGET...]}
+shift
+targets=("$@")
+[ ${#targets[@]} -gt 0 ] || mapfile -t targets < <(cargo +nightly fuzz list)
+python3 seed >/dev/null
+logs=${FUZZ_LOGS:-target/logs}
+mkdir -p "$logs"
+for t in "${targets[@]}"; do cargo +nightly fuzz build "$t"; done
+pids=()
+for t in "${targets[@]}"; do
+  nice -n 19 cargo +nightly fuzz run "$t" -- -max_total_time="$seconds" \
+    -rss_limit_mb=2048 -timeout=10 -print_final_stats=1 >"$logs/$t.log" 2>&1 &
+  pids+=("$!")
+done
+failed=()
+for i in "${!targets[@]}"; do
+  wait "${pids[$i]}" || failed+=("${targets[$i]}")
+done
+for t in "${targets[@]}"; do
+  printf '%s: %s\n' "$t" "$(grep -E '^stat::number_of_executed_units|^Done|^==.*ERROR|deadly signal' "$logs/$t.log" | tr '\n' ' ')"
+done
+for t in ${failed[@]+"${failed[@]}"}; do
+  printf '\n%s failed:\n' "$t"
+  tail -40 "$logs/$t.log"
+done
+[ ${#failed[@]} -eq 0 ]
