@@ -390,6 +390,101 @@ URL or release based lookup, the legacy release-file upload, fetching scripts fr
 - `e2e/run.sh` runs `sentry-cli sourcemaps inject` and `upload` against the release binary, runs the bundle with `@sentry/node`, and asserts with `davy context` that the top in-app frame is `parseOrder` in `../src/app.js` at line 5.
 - `scripts/check` passes.
 
+## Milestone 6: uptime checks and alerts
+
+Davy checks that a team's sites answer, notices when a cron job stops pinging, and tells the team when a monitor goes down or comes back and when an issue is new or regressed. Checks run from the one machine Davy runs on. Probes in more regions are a cloud feature.
+
+Better Stack's uptime product is the reference (docs: Monitor types, Create a new monitor, Cron and heartbeat monitor): HTTP status, keyword and keyword absence, heartbeat with a grace period, a confirmation step before an incident opens. Sentry's issue alerts are the reference for issues (docs: Issue alert configuration): alert on a state change of an issue, never on every event.
+
+### Data shapes
+
+The organizing structures are a state machine per monitor and an outbox table that the writer fills in the same transaction as the change it reports.
+
+```rust
+struct Monitor { id: i64, project_id: i64, name: String, kind: Kind, every: Duration, timeout: Duration }
+
+enum Kind {
+    Http { url: CheckUrl, expect: Expect },    // CheckUrl: http or https, no user info
+    Heartbeat { token: HeartbeatToken, grace: Duration },
+}
+enum Expect { Status, Keyword(String), NoKeyword(String) }
+
+enum Outcome { Up { status: u16, ms: u32 }, Down(Reason) }
+enum Reason { Timeout, Connect(String), Status(u16), KeywordMissing, KeywordFound, NotPublic, Late, Failed }
+
+enum State { Pending, Up, Failing, Down { incident: i64 } }   // fn next(State, Outcome) -> (State, Option<Change>)
+enum Change { Opened(Reason), Resolved }
+
+enum Notice { IssueNew { issue: i64 }, IssueRegressed { issue: i64 }, MonitorDown { incident: i64 }, MonitorUp { incident: i64 }, Test }
+enum Channel { Webhook { url: Url, secret: Secret }, Slack { url: Url } }
+```
+
+### Monitors
+
+- An HTTP monitor sends `GET` to its URL every `every` (30 s to 24 h, default 60 s) with a `timeout` (1 to 60 s, default 10 s, shorter than `every`). It follows up to 5 redirects. It is up when the final status is below 400 and, with a keyword, when the first 1 MiB of the body contains the keyword (or, for `NoKeyword`, does not). Matching is case-sensitive, on the body as UTF-8 with invalid bytes replaced.
+- A heartbeat monitor is up while pings arrive. It is down when no ping came within `every` plus `grace` (grace 0 to 24 h, default 5 min) of the last one, or when a ping goes to `/fail`. It is `Pending` until the first ping.
+- **Confirmation.** One failed HTTP check moves `Up` to `Failing` and schedules the next check after 10 s instead of `every`. A second failure in a row opens an incident (`Down`). One success closes it. A heartbeat opens its incident on the first late check or `/fail`, because the grace period is its confirmation.
+- One scheduler task in `davy serve` runs the checks, at most 16 at a time. It reloads the monitor table every 10 s, so `davy monitor add` in another process takes effect without a restart.
+- Check results, incident changes and pings go to the writer queue. The writer keeps a row per check for 30 days and deletes older rows once an hour, 10,000 at a time.
+
+### Heartbeat route
+
+`GET`, `HEAD` or `POST /api/heartbeat/{token}` records a ping. `/api/heartbeat/{token}/fail` records a failure. The token is 32 lowercase hex characters made by `davy monitor add --heartbeat` and is the credential. An unknown token is `404`. The body is not read, so its limit is 64 KiB. A full writer queue is `429` with `Retry-After: 1`. The answer is `200` with body `ok`.
+
+### Reaching targets
+
+HTTP checks and alert deliveries open connections to URLs a user typed. On a self-hosted server that user is the admin, so any address is allowed, `localhost` included, because watching internal services is the point. The cloud crate passes `Reach::Public`, which refuses loopback, private, link-local, shared (100.64.0.0/10), multicast, unspecified, documentation and unique local addresses, and IPv4-mapped forms of these. The check runs on every address DNS returns and on every redirect hop, and the connection goes to the address that passed, so a DNS answer cannot change between check and connect. A refused target is the outcome `NotPublic`.
+
+### Alerts
+
+- A channel belongs to one project or to all projects and receives every notice kind for them. Channels are a webhook or a Slack incoming webhook URL. Email over SMTP comes after these two, inside this milestone.
+- **Outbox.** When the writer opens a new issue, regresses one, opens or closes an incident, it inserts one `notifications` row per matching channel in the same transaction. A crash cannot lose a notice or send one for a change that did not commit.
+- **Delivery.** One notifier task sends due rows, the oldest first per channel, one at a time per channel, so `monitor.down` never arrives after its `monitor.up`. A send has 10 s. A `2xx` marks the row sent. Anything else retries after 30 s, 1, 2, 4 and 8 min, then the row is marked failed and the channel moves on. Delivery is at least once. Each payload carries its `id` so a receiver can drop a repeat.
+- **Bounds.** At most 100 unsent rows per channel. Over that a notice is not stored and the channel's `dropped` counter grows, which `davy channel list` shows.
+- **Webhook.** `POST` with `content-type: application/json` and the headers `Davy-Delivery: <id>` and `Davy-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<body>" with the channel secret>`. The secret is 32 random bytes as hex, printed once by `davy channel add`. The scheme matches Stripe's, so receivers can reuse their verification code.
+
+```json
+{"id": 18, "type": "issue.new", "project": "shop", "at": "2026-11-20T08:42:01Z",
+ "issue": {"id": 3, "title": "TypeError: x is undefined", "culprit": "parseOrder(src/app.js)", "level": "error", "release": "shop@2.0.0"}}
+{"id": 19, "type": "monitor.down", "project": "shop", "at": "2026-11-20T08:43:10Z",
+ "monitor": {"id": 1, "name": "API"}, "incident": {"id": 4, "reason": "HTTP 503"}}
+```
+
+- **Slack.** `POST {"text": "<line>"}` to the incoming webhook URL, for example `[shop] API is down: HTTP 503`. Titles are cut to 200 characters.
+- `type` is one of `issue.new`, `issue.regressed`, `monitor.down`, `monitor.up`, `test`.
+
+### Storage
+
+New tables, added by migration, so existing data directories keep opening:
+
+- `monitors(id, project_id, name, kind, url, expect, keyword, heartbeat_token UNIQUE, every_s, timeout_s, grace_s, state, failures, last_check_at, last_ping_at, created_at)`
+- `checks(monitor_id, at, ok, status, ms, reason)` with an index on `(monitor_id, at)`
+- `incidents(id, monitor_id, started_at, resolved_at, reason)`
+- `channels(id, project_id NULL for all, kind, url, secret, dropped, created_at)`
+- `notifications(id, channel_id, type, payload, created_at, attempts, next_at, sent_at, failed_at, last_error)` with an index on `(channel_id, id) WHERE sent_at IS NULL AND failed_at IS NULL`
+
+At most 1,000 monitors and 100 channels per data directory. The `sql` tool reads `monitors.heartbeat_token`, `channels.url` and `channels.secret` as `NULL`, because an agent has no use for a credential and a prompt-injected agent could leak it.
+
+### CLI
+
+- `davy monitor add <project> <name> --url <url> [--keyword <text> | --no-keyword <text>] [--every 60s] [--timeout 10s]`
+- `davy monitor add <project> <name> --heartbeat [--every 1h] [--grace 5m]` prints the ping path `/api/heartbeat/<token>`.
+- `davy monitor list` shows each monitor with its state, last check and open incident. `davy monitor remove <id>`.
+- `davy channel add <project|--all> webhook <url>` prints the signing secret once. `davy channel add <project|--all> slack <url>`.
+- `davy channel list` shows each channel with its unsent, failed and dropped counts. `davy channel remove <id>`. `davy channel test <id>` queues a `test` notice.
+
+Monitors and channels are added from the CLI only. No MCP tool creates them, so an agent cannot point the server at an address.
+
+### Not in this milestone
+
+Status pages, regions and remote probes, ping, TCP, DNS and TLS expiry checks, custom request headers and bodies, escalation policies, on-call schedules, SMS and calls, alerts on escalating issues and on log queries, silences and maintenance windows.
+
+### Done means
+
+- Unit tests with literal values: the state machine for every pair of state and outcome; `Reach::Public` for a table of addresses, IPv4-mapped included; check outcomes against a local test server for status, keyword, keyword absence, timeout, a redirect to a refused address and a body over 1 MiB; the webhook signature of a fixed body, time and secret; the retry schedule; the outbox order per channel; the heartbeat route with a known, an unknown and a `/fail` token; the `sql` tool reading `NULL` for the three credential columns.
+- `e2e/run.sh` adds a monitor against a local server, takes the server down and up, and asserts that a local webhook receiver got `monitor.down` then `monitor.up` with valid signatures. A new issue from `@sentry/node` produces `issue.new`. A heartbeat monitor that misses its window produces `monitor.down`.
+- `scripts/check` passes.
+
 ## Hardening
 
 A security review of `16f413c` showed that a client without a key could make the server allocate 4.4 GB with one 194 KB request (measured with a release build on a developer laptop: a gzip body that inflates to 190 MiB of `[0,0,...]` sent to `/store/`). The rules below close that class. Each has a test that a request over the limit is refused.
