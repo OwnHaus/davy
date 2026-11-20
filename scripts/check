@@ -1,0 +1,47 @@
+#!/bin/sh
+# The one gate every change passes: the pre-commit hook, the agent Stop hook and
+# CI all run this script. Fix the code, never this script, to make it pass.
+set -eu
+cd "$(dirname "$0")/.."
+
+fail=0
+problem() {
+    printf 'check: %s\n' "$1" >&2
+    fail=1
+}
+
+cargo fmt --check || problem 'run cargo fmt'
+cargo clippy --all-targets --locked --quiet -- -D warnings || problem 'clippy has findings'
+cargo test --locked --quiet || problem 'tests fail'
+
+if command -v cargo-deny >/dev/null 2>&1; then
+    cargo deny --log-level error check || problem 'cargo deny has findings'
+else
+    printf 'check: cargo-deny is not installed, skipping (brew install cargo-deny)\n' >&2
+fi
+
+# Prose and code are written without the long dash. Captured fixtures stay as
+# the client sent them.
+dash=$(printf '\342\200\224')
+if git grep --untracked -nI -e "$dash" -- . ':!e2e/fixtures' ':!*.lock' ':!*pnpm-lock.yaml'; then
+    problem 'long dash in the lines above, rewrite the sentence'
+fi
+
+# A deferred task needs an issue link, or it is never done.
+if git grep --untracked -nIwE 'TODO|FIXME|XXX|HACK' -- src examples e2e/*.mjs e2e/*.sh bench ':!scripts/check' | grep -v 'https://'; then
+    problem 'TODO without a link in the lines above'
+fi
+
+# Big files are where agents pile up unrelated code. Split by responsibility.
+max_lines=700
+for f in $(git ls-files --cached --others --exclude-standard 'src/*.rs' 'src/**/*.rs'); do
+    n=$(wc -l <"$f")
+    if [ "$n" -gt "$max_lines" ]; then
+        problem "$f has $n lines, the limit is $max_lines"
+    fi
+done
+
+if [ "$fail" -ne 0 ]; then
+    exit 1
+fi
+printf 'check: ok\n'
