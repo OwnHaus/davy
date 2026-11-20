@@ -24,7 +24,7 @@ use tower::ServiceExt;
 struct Server {
     app: Router,
     errors: mpsc::SyncSender<store::Write>,
-    _error_inbox: mpsc::Receiver<store::Write>,
+    error_inbox: mpsc::Receiver<store::Write>,
     logs: LogInbox,
     parsing: Arc<Semaphore>,
 }
@@ -64,7 +64,7 @@ fn server() -> Server {
     Server {
         app,
         errors,
-        _error_inbox: error_inbox,
+        error_inbox,
         logs: log_inbox,
         parsing,
     }
@@ -426,6 +426,28 @@ async fn items_over_one_mib_are_dropped_before_parsing() {
         "no event was queued"
     );
     assert!(s.logs.try_recv().is_none(), "no log was queued");
+}
+
+#[tokio::test]
+async fn an_envelope_stores_only_its_first_event() {
+    let s = server();
+    let body = "{}\n{\"type\":\"event\"}\n{\"message\":\"first\"}\n{\"type\":\"event\"}\n{\"message\":\"second\"}\n";
+    let queued = async {
+        loop {
+            if let Ok(write) = s.error_inbox.try_recv() {
+                let store::Job::Ingest { events, .. } = write.job else {
+                    return Vec::new();
+                };
+                return events.into_iter().map(|e| e.message).collect::<Vec<_>>();
+            }
+            tokio::task::yield_now().await;
+        }
+    };
+    let (_, messages) = tokio::join!(
+        s.send(post("/api/1/envelope/?sentry_key=key-a", &[], body)),
+        queued
+    );
+    assert_eq!(messages, [Some("first".to_owned())]);
 }
 
 #[tokio::test]

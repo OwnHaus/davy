@@ -411,6 +411,7 @@ Sentry's own limits (develop.sentry.dev, Envelopes, Size Limits) are 200 MiB for
 | Request body, decompressed | 200 MiB | `413` |
 | Event item, and a `/store/` body | 1 MiB | the item is dropped, like any dropped item type |
 | Log item in an envelope | 1 MiB | the item is dropped |
+| Event items per envelope | 1 (develop.sentry.dev, Envelope Items) | later event items are dropped |
 | Frames symbolicated per event | 256, from the frame that threw outward | older frames stay minified |
 | Log message | 64 KiB | cut at a character boundary, attribute `davy.truncated` set to `true` |
 | Log queue | 50,000 rows or 256 MiB of message and attribute text | `429` |

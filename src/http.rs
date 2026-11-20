@@ -274,7 +274,8 @@ fn authorize(keys: &Keys, project: i64, key: Option<&str>) -> Result<(), Failure
 }
 struct Parsed {
     id: Option<EventId>,
-    events: Vec<ErrorEvent>,
+    /// Sentry allows one event per envelope. Later event items are dropped.
+    event: Option<ErrorEvent>,
     logs: Vec<LogRecord>,
 }
 fn parse_sentry(
@@ -292,10 +293,10 @@ fn parse_sentry(
     if legacy {
         return Ok(Parsed {
             id: None,
-            events: if bytes.len() > MAX_ITEM {
-                Vec::new()
+            event: if bytes.len() > MAX_ITEM {
+                None
             } else {
-                vec![event(bytes)?]
+                Some(event(bytes)?)
             },
             logs: Vec::new(),
         });
@@ -304,7 +305,7 @@ fn parse_sentry(
     let observed_at = time::now_ns();
     let mut parsed = Parsed {
         id: envelope.header.event_id,
-        events: Vec::new(),
+        event: None,
         logs: Vec::new(),
     };
     for item in envelope
@@ -313,13 +314,15 @@ fn parse_sentry(
         .filter(|i| i.payload.len() <= MAX_ITEM)
     {
         match disposition(&item.kind) {
-            Disposition::StoreError => parsed.events.push(event(&item.payload)?),
+            Disposition::StoreError if parsed.event.is_none() => {
+                parsed.event = Some(event(&item.payload)?);
+            }
+            Disposition::StoreError | Disposition::Drop(_) => {}
             Disposition::StoreLogs => {
                 if let Ok(records) = logs::sentry::parse(&item.payload, project, observed_at) {
                     parsed.logs.extend(records);
                 }
             }
-            Disposition::Drop(_) => {}
         }
     }
     Ok(parsed)
@@ -354,19 +357,19 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
     .await?;
     let id = parsed
         .id
-        .or_else(|| parsed.events.first().map(|e| e.event_id.clone()))
+        .or_else(|| parsed.event.as_ref().map(|e| e.event_id.clone()))
         .unwrap_or_else(EventId::fresh);
     if !parsed.logs.is_empty() {
         queue_logs(&app.logs, parsed.logs)?;
     }
-    if !parsed.events.is_empty() {
+    if let Some(event) = parsed.event {
         let (done, rx) = tokio::sync::oneshot::channel();
         queue(
             &app.sender,
             Write {
                 job: Job::Ingest {
                     project,
-                    events: parsed.events,
+                    events: vec![event],
                 },
                 done,
             },
