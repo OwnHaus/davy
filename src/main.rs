@@ -22,6 +22,8 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Runs the ingest server. With DAVY_TOKEN set (32 characters or more) it
+    /// also serves MCP at /mcp and takes source map uploads.
     Serve(Serve),
     Project {
         #[command(subcommand)]
@@ -79,9 +81,6 @@ struct Serve {
     public_url: url::Url,
     #[arg(long, default_value_t = 30)]
     log_retention_days: u32,
-    /// Turns on the MCP server at /mcp. Agents send it as a Bearer token.
-    #[arg(long, env = "DAVY_TOKEN", hide_env_values = true)]
-    token: Option<String>,
 }
 #[derive(clap::Args)]
 struct Logs {
@@ -188,15 +187,17 @@ async fn serve(args: Serve) -> anyhow::Result<()> {
         args.log_retention_days >= 1,
         "--log-retention-days must be at least 1"
     );
-    if let Some(t) = &args.token {
-        anyhow::ensure!(t.len() >= 32, "--token must be at least 32 characters");
+    // Read from the environment only, so the token never shows up in `ps` or shell history.
+    let token = std::env::var("DAVY_TOKEN").ok().filter(|t| !t.is_empty());
+    if let Some(t) = &token {
+        anyhow::ensure!(t.len() >= 32, "DAVY_TOKEN must be at least 32 characters");
     }
     http::serve(
         &args.data,
         &args.listen,
         &args.public_url,
         args.log_retention_days,
-        args.token.as_deref().map(Token::new),
+        token.as_deref().map(Token::new),
     )
     .await
 }
@@ -315,6 +316,17 @@ fn safe(s: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_admin_token_is_not_a_command_line_flag() {
+        let serve = |extra: &[&str]| {
+            let base = ["davy", "serve", "--data", "d", "--listen", "127.0.0.1:0"];
+            let url = ["--public-url", "http://127.0.0.1/"];
+            Cli::try_parse_from(base.iter().chain(&url).chain(extra)).is_ok()
+        };
+        assert!(serve(&[]));
+        assert!(!serve(&["--token", "0123456789abcdef0123456789abcdef"]));
+    }
 
     #[test]
     fn text_output_replaces_control_characters() {

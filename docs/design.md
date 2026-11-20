@@ -264,7 +264,7 @@ A coding agent should get from "there is an error" to a fix without a human copy
 ### Transport and auth
 
 - MCP over Streamable HTTP at `/mcp` inside `davy serve`, stateless, JSON responses (rmcp `legacy_session_mode = false`, `json_response = true`). In-process, so `mark_fixed` goes through the writer thread and log search never races segment cleanup. One port for ingest and agents. No stdio server: an agent on the same machine connects to `127.0.0.1`.
-- `davy serve --token <secret>` or `DAVY_TOKEN`. `/mcp` takes `Authorization: Bearer <secret>`. Without a configured token `/mcp` is not mounted and answers 404. A project's ingest key is never accepted on `/mcp`, because it ships inside browser bundles.
+- `DAVY_TOKEN=<secret> davy serve`, at least 32 characters. There is no command line flag, because arguments show up in `ps` and shell history. `/mcp` takes `Authorization: Bearer <secret>`. Without a configured token `/mcp` is not mounted and answers 404. A project's ingest key is never accepted on `/mcp`, because it ships inside browser bundles.
 - The token is compared as a blake3 hash, so the comparison takes the same time for every wrong token.
 - Allowed `Host` values are loopback and the host of `--public-url`, against DNS rebinding.
 
