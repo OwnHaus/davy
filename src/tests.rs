@@ -188,7 +188,7 @@ fn migration_backfills_releases_from_old_events() {
     let e = event(json!({"message":"boom","release":"v1"}));
     store::insert(&c, 1, &e).unwrap();
     c.execute_batch(
-        "DROP TABLE releases; DROP TABLE checks; DROP TABLE incidents; DROP TABLE monitors; PRAGMA user_version=0;",
+        "DROP TABLE releases; DROP TABLE checks; DROP TABLE incidents; DROP TABLE monitors; DROP TABLE notifications; DROP TABLE channels; PRAGMA user_version=0;",
     )
     .unwrap();
     store::init(&mut c).unwrap();
@@ -203,10 +203,14 @@ fn migration_backfills_releases_from_old_events() {
         .query_row("SELECT count(*) FROM monitors", [], |r| r.get(0))
         .unwrap();
     assert_eq!(monitors, 0);
+    let channels: i64 = c
+        .query_row("SELECT count(*) FROM channels", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(channels, 0);
     let version: i64 = c
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
 }
 #[test]
 fn storage_regression_duplicates_sampling_and_ignored() {

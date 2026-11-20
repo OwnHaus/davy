@@ -1,6 +1,6 @@
-use clap::{ArgGroup, Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use davy::{
-    context, http,
+    alert, context, http,
     logs::{
         LogLevel,
         store::{LogHit, LogQuery, search},
@@ -35,6 +35,11 @@ enum Command {
     Monitor {
         #[command(subcommand)]
         command: Monitor,
+    },
+    /// Where alerts about issues and monitors go.
+    Channel {
+        #[command(subcommand)]
+        command: Channel,
     },
     Issues {
         #[arg(long)]
@@ -172,6 +177,44 @@ struct MonitorAdd {
     #[arg(long, value_parser = duration, conflicts_with = "url")]
     grace: Option<Duration>,
 }
+#[derive(Subcommand)]
+enum Channel {
+    /// Adds a webhook or a Slack incoming webhook for --project or --all.
+    /// Prints the channel's ID, and for a webhook its signing secret, shown
+    /// only this once.
+    Add(ChannelAdd),
+    /// Prints each channel with its unsent, failed and dropped notices.
+    List {
+        #[arg(long)]
+        data: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Deletes a channel with its notices.
+    Remove {
+        id: i64,
+        #[arg(long)]
+        data: PathBuf,
+    },
+}
+#[derive(clap::Args)]
+#[command(group(ArgGroup::new("scope").required(true).args(["project", "all"])))]
+struct ChannelAdd {
+    kind: ChannelKind,
+    url: String,
+    #[arg(long)]
+    project: Option<String>,
+    /// Alerts for every project, including ones created later.
+    #[arg(long)]
+    all: bool,
+    #[arg(long)]
+    data: PathBuf,
+}
+#[derive(Clone, Copy, ValueEnum)]
+enum ChannelKind {
+    Webhook,
+    Slack,
+}
 fn duration(s: &str) -> Result<Duration, String> {
     time::duration(s).ok_or_else(|| format!("expected 30s, 15m, 1h or 2d, got {s:?}"))
 }
@@ -196,6 +239,7 @@ async fn main() -> anyhow::Result<()> {
                 },
         } => writeln!(out, "{}", create_project(&data, &slug, public_url)?)?,
         Command::Monitor { command } => run_monitor(&mut out.lock(), command)?,
+        Command::Channel { command } => run_channel(&mut out.lock(), command)?,
         Command::Issues {
             data,
             project,
@@ -330,6 +374,57 @@ fn run_monitor(out: &mut impl Write, command: Monitor) -> anyhow::Result<()> {
     }
     Ok(())
 }
+fn run_channel(out: &mut impl Write, command: Channel) -> anyhow::Result<()> {
+    match command {
+        Channel::Add(args) => {
+            let c = store::open(&args.data)?;
+            let project = match &args.project {
+                Some(slug) => Some(
+                    store::project_id(&c, slug)?
+                        .ok_or_else(|| anyhow::anyhow!("unknown project {slug:?}"))?,
+                ),
+                None => None,
+            };
+            let kind = match args.kind {
+                ChannelKind::Webhook => alert::Kind::Webhook,
+                ChannelKind::Slack => alert::Kind::Slack,
+            };
+            let url = CheckUrl::parse(&args.url).map_err(anyhow::Error::msg)?;
+            let added = alert::store::add(&c, project, kind, &url, time::now_ms())?;
+            match added.secret {
+                Some(secret) => writeln!(out, "{}\t{}", added.id, secret.as_str())?,
+                None => writeln!(out, "{}", added.id)?,
+            }
+        }
+        Channel::List { data, json } => {
+            let channels = alert::store::list(&store::open(&data)?)?;
+            if json {
+                writeln!(out, "{}", serde_json::to_string(&channels)?)?;
+                return Ok(());
+            }
+            for ch in channels {
+                writeln!(
+                    out,
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    ch.id,
+                    ch.project.as_deref().map_or(Cow::Borrowed("*"), safe),
+                    ch.kind.as_str(),
+                    safe(&ch.host),
+                    ch.unsent,
+                    ch.failed,
+                    ch.dropped
+                )?;
+            }
+        }
+        Channel::Remove { id, data } => {
+            anyhow::ensure!(
+                alert::store::remove(&store::open(&data)?, id)?,
+                "no channel {id}"
+            );
+        }
+    }
+    Ok(())
+}
 /// Creates the project and returns its DSN.
 fn create_project(data: &Path, slug: &str, mut public_url: url::Url) -> anyhow::Result<url::Url> {
     validate_url(&public_url)?;
@@ -459,6 +554,34 @@ mod tests {
                 "--no-keyword",
                 "b",
             ],
+        ] {
+            assert!(!add(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn channel_add_takes_a_project_or_all() {
+        let add = |extra: &[&str]| {
+            let base = ["davy", "channel", "add", "--data", "d"];
+            Cli::try_parse_from(base.iter().chain(extra)).is_ok()
+        };
+        assert!(add(&[
+            "webhook",
+            "https://hooks.example/",
+            "--project",
+            "shop"
+        ]));
+        assert!(add(&["slack", "https://hooks.slack.com/", "--all"]));
+        for bad in [
+            &["webhook", "https://hooks.example/"][..],
+            &[
+                "webhook",
+                "https://hooks.example/",
+                "--project",
+                "shop",
+                "--all",
+            ],
+            &["email", "https://hooks.example/", "--all"],
         ] {
             assert!(!add(bad), "{bad:?}");
         }

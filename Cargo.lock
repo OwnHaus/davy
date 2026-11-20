@@ -599,6 +599,7 @@ dependencies = [
  "clap",
  "flate2",
  "futures",
+ "getrandom 0.4.3",
  "jiff",
  "opentelemetry-proto",
  "prost",

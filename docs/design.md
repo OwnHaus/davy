@@ -473,8 +473,8 @@ At most 1,000 monitors and 100 channels per data directory. The `sql` tool reads
 - `davy monitor add <project> <name> --url <url> [--keyword <text> | --no-keyword <text>] [--every 60s] [--timeout 10s]`
 - `davy monitor add <project> <name> --heartbeat [--every 1h] [--grace 5m]` prints the ping path `/api/heartbeat/<token>`.
 - `davy monitor list` shows each monitor with its state, last check and open incident. `davy monitor remove <id>`.
-- `davy channel add <project|--all> webhook <url>` prints the signing secret once. `davy channel add <project|--all> slack <url>`.
-- `davy channel list` shows each channel with its unsent, failed and dropped counts. `davy channel remove <id>`. `davy channel test <id>` queues a `test` notice.
+- `davy channel add webhook <url> (--project <slug> | --all)` prints the channel ID and the signing secret, once. `davy channel add slack <url> (--project <slug> | --all)` prints the ID. The project is a flag because clap cannot read an optional positional before two required ones.
+- `davy channel list` shows each channel with its unsent, failed and dropped counts, and only the host of its URL, because a Slack webhook URL is a credential. `davy channel remove <id>`. `davy channel test <id>` queues a `test` notice.
 
 Monitors and channels are added from the CLI only. No MCP tool creates them, so an agent cannot point the server at an address.
 
