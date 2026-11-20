@@ -15,9 +15,12 @@ if [ "${1:-}" = --unsigned ]; then signed=false; shift; fi
 tag=${1:?usage: scripts/verify-release [--unsigned] TAG [DIR]}
 version=${tag#v}
 repo=${GITHUB_REPOSITORY:-dominikzabcik/davy}
-image=ghcr.io/${repo,,}:$version
+image=ghcr.io/$(printf %s "$repo" | tr "[:upper:]" "[:lower:]"):$version
 identity="^https://github.com/$repo/.github/workflows/release.yml@refs/tags/$tag\$"
 issuer=https://token.actions.githubusercontent.com
+# The advisories deny.toml ignores, each with its reason there.
+ignored=()
+for id in $(grep -o 'RUSTSEC-[0-9]*-[0-9]*' deny.toml); do ignored+=(--ignore "$id"); done
 
 if [ -n "${2:-}" ]; then
     cd "$2"
@@ -28,7 +31,7 @@ else
     cd "$dir"
 fi
 if command -v sha256sum >/dev/null; then sha256sum -c SHA256SUMS; else shasum -a 256 -c SHA256SUMS; fi
-cargo audit bin --deny warnings davy-x86_64-unknown-linux-musl
+cargo audit --deny warnings ${ignored[@]+"${ignored[@]}"} bin davy-x86_64-unknown-linux-musl
 if [ "$signed" = true ]; then
     for f in davy-*; do
         gh attestation verify "$f" --repo "$repo" >/dev/null
