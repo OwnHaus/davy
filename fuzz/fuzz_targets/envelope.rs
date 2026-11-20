@@ -9,7 +9,7 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     for item in envelope.items {
-        if let Ok(value) = serde_json::from_slice(&item.payload) {
+        if let Ok(value) = serde_json::from_slice(item.payload) {
             if let Ok(event) = ErrorEvent::parse(value) {
                 grouping::group(&event);
             }

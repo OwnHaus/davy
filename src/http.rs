@@ -337,11 +337,11 @@ fn parse_sentry(
     {
         match disposition(&item.kind) {
             Disposition::StoreError if parsed.event.is_none() => {
-                parsed.event = Some(event(&item.payload)?);
+                parsed.event = Some(event(item.payload)?);
             }
             Disposition::StoreError | Disposition::Drop => {}
             Disposition::StoreLogs => {
-                if let Ok(records) = logs::sentry::parse(&item.payload, project, observed_at) {
+                if let Ok(records) = logs::sentry::parse(item.payload, project, observed_at) {
                     parsed.logs.extend(records);
                 }
             }

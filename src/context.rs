@@ -90,7 +90,7 @@ mod tests {
     fn fixture_event() -> Value {
         let body = crate::test_support::fixture("sentry-node-10/4.body");
         let envelope = crate::envelope::Envelope::parse(&body).unwrap();
-        serde_json::from_slice(&envelope.items[0].payload).unwrap()
+        serde_json::from_slice(envelope.items[0].payload).unwrap()
     }
 
     #[test]

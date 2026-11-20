@@ -14,13 +14,14 @@ const BUILD: &str = "1c85f8bb-fda9-501c-b106-0fdc0d6937a8";
 const MINIFIED: &str = "/home/dev/.t3/projects/davy/.scratch/m5/work/dist/app.min.js";
 
 fn captured_event() -> Value {
-    let envelope = Envelope::parse(&fixture("sentry-cli-3/06.body")).unwrap();
+    let body = fixture("sentry-cli-3/06.body");
+    let envelope = Envelope::parse(&body).unwrap();
     let item = envelope
         .items
         .iter()
         .find(|i| i.kind == ItemKind::Event)
         .unwrap();
-    serde_json::from_slice(&item.payload).unwrap()
+    serde_json::from_slice(item.payload).unwrap()
 }
 
 fn captured_build() -> Arc<Build> {

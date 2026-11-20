@@ -40,7 +40,7 @@ Captured from real SDKs in `e2e/fixtures/` (`@sentry/node` 7.107.0 and 10.78.0, 
 - `OPTIONS` on both for browser CORS. Allow any origin and the headers `content-type`, `x-sentry-auth`, `sentry-trace`, `baggage`.
 - The public key comes from, in order: the `X-Sentry-Auth` header (`Sentry sentry_key=..., sentry_version=7, ...`), the `sentry_key` query parameter (what `@sentry/node` uses, see the fixtures), or the `dsn` field of the envelope header.
 - `Content-Encoding` may be `gzip`, `deflate`, `br` or `zstd`. Cap the compressed body at 20 MiB and the decompressed body at 200 MiB.
-- Envelope format: a header JSON line, then for each item a header JSON line and a payload. If the item header has `length`, read exactly that many bytes, then skip one optional `\n`. Without `length`, the payload runs to the next `\n` or the end. A trailing newline is optional.
+- Envelope format: a header JSON line, then for each item a header JSON line and a payload. If the item header has `length`, read exactly that many bytes, then skip one optional `\n`. Without `length`, the payload runs to the next `\n` or the end. A trailing newline is optional. Both header lines must be JSON objects. Davy reads `event_id` and `dsn` from the envelope header and `type` and `length` from an item header, and skips other fields without building them.
 
 ### Responses
 
@@ -56,12 +56,12 @@ The organizing structure is a policy table from item type to what we do with it,
 
 ```rust
 // boundary: parsed from bytes, never re-validated after this
-struct Envelope { header: EnvelopeHeader, items: Vec<Item> }
+struct Envelope<'a> { header: EnvelopeHeader, items: Vec<Item<'a>> }
 struct EnvelopeHeader { event_id: Option<EventId>, dsn: Option<String> }
-struct Item { kind: ItemKind, payload: Bytes }
+struct Item<'a> { kind: ItemKind, payload: &'a [u8] }   // borrows the decoded body
 
 enum ItemKind { Event, Transaction, Span, Session, Sessions, ClientReport, Attachment, Log,
-                ReplayEvent, ReplayRecording, Profile, ProfileChunk, CheckIn, Other(String) }
+                ReplayEvent, ReplayRecording, Profile, ProfileChunk, CheckIn, Other }
 
 enum Disposition { StoreError, StoreLogs, Drop }   // one table: fn disposition(&ItemKind) -> Disposition
 ```
@@ -650,6 +650,7 @@ Sentry's own limits (develop.sentry.dev, Envelopes, Size Limits) are 200 MiB for
 | Request body, decompressed | 200 MiB | `413` |
 | Event item, and a `/store/` body | 1 MiB | the item is dropped, like any dropped item type |
 | Log item in an envelope | 1 MiB | the item is dropped |
+| Items per envelope | 1,000 | `400` |
 | Event items per envelope | 1 (develop.sentry.dev, Envelope Items) | later event items are dropped |
 | Frames symbolicated per event | 256, from the frame that threw outward | older frames stay minified |
 | Log message | 64 KiB | cut at a character boundary, attribute `davy.truncated` set to `true` |

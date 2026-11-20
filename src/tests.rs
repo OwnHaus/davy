@@ -4,7 +4,8 @@ use serde_json::json;
 fn fixtures() {
     for sdk in ["sentry-node-7", "sentry-node-10"] {
         for n in 1..=4 {
-            let e = Envelope::parse(&fixture(&format!("{sdk}/{n}.body"))).unwrap();
+            let body = fixture(&format!("{sdk}/{n}.body"));
+            let e = Envelope::parse(&body).unwrap();
             let kinds: Vec<_> = e.items.iter().map(|i| &i.kind).collect();
             assert_eq!(
                 kinds,
@@ -15,8 +16,8 @@ fn fixtures() {
                 }
             );
             if n == 4 {
-                let event = ErrorEvent::parse(serde_json::from_slice(&e.items[0].payload).unwrap())
-                    .unwrap();
+                let event =
+                    ErrorEvent::parse(serde_json::from_slice(e.items[0].payload).unwrap()).unwrap();
                 assert_eq!(event.exceptions.len(), 1);
                 assert_eq!(event.exceptions[0].ty, "SyntaxError");
                 assert_eq!(
@@ -30,7 +31,8 @@ fn fixtures() {
 #[test]
 fn fixture_transactions_are_dropped() {
     for n in [5, 6] {
-        let e = Envelope::parse(&fixture(&format!("sentry-node-10/{n}.body"))).unwrap();
+        let body = fixture(&format!("sentry-node-10/{n}.body"));
+        let e = Envelope::parse(&body).unwrap();
         assert_eq!(e.items.len(), 1);
         assert_eq!(e.items[0].kind, ItemKind::Transaction);
         assert_eq!(disposition(&e.items[0].kind), Disposition::Drop);
@@ -72,13 +74,38 @@ fn grouping_rules() {
     assert_eq!(group(&a).fingerprint, group(&b).fingerprint);
 }
 #[test]
+fn an_envelope_holds_at_most_1000_items() {
+    let envelope = |n: usize| format!("{{}}\n{}", "{\"type\":\"session\"}\n{}\n".repeat(n));
+    let most = envelope(MAX_ITEMS);
+    assert_eq!(Envelope::parse(most.as_bytes()).unwrap().items.len(), 1000);
+    let over = envelope(MAX_ITEMS + 1);
+    let e = Envelope::parse(over.as_bytes()).err().unwrap();
+    assert_eq!(e.to_string(), "more than 1000 items");
+}
+#[test]
+fn envelope_and_item_headers_are_objects() {
+    for body in [&b"[]\n"[..], b"\"x\"\n", b"{}\n[\"event\", 2]\n{}"] {
+        assert!(Envelope::parse(body).is_err(), "{body:?}");
+    }
+    let long = format!(
+        "{{\"sdk\":[{}{{}}],\"dsn\":\"d\"}}\n",
+        "{},".repeat(100_000)
+    );
+    let header = EnvelopeHeader::parse(long.as_bytes()).unwrap();
+    assert_eq!(
+        header.dsn.as_deref(),
+        Some("d"),
+        "fields Davy does not read are skipped"
+    );
+}
+#[test]
 fn envelope_binary_and_policy() {
     let e = Envelope::parse(
         b"{}\n{\"type\":\"attachment\",\"length\":3}\na\nb\n{\"type\":\"future\"}\nx",
     )
     .unwrap();
-    assert_eq!(e.items[0].payload.as_ref(), b"a\nb");
-    assert_eq!(e.items[1].kind, ItemKind::Other("future".into()));
+    assert_eq!(e.items[0].payload, b"a\nb");
+    assert_eq!(e.items[1].kind, ItemKind::Other);
     assert_eq!(disposition(&e.items[1].kind), Disposition::Drop);
     assert!(Envelope::parse(b"{}\n{\"type\":\"event\",\"length\":100}\nx").is_err());
     let e = Envelope::parse(b"{}\n\n{\"type\":\"session\"}\n{}\r\n\n{\"type\":\"event\"}\n{}\n\n")

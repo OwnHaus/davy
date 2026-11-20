@@ -179,11 +179,11 @@ fn msgpack_timestamp_ext() {
 
 #[test]
 fn sentry_log_fixture() {
-    let envelope =
-        crate::envelope::Envelope::parse(&fixture("sentry-node-10-logs/1.body")).unwrap();
+    let body = fixture("sentry-node-10-logs/1.body");
+    let envelope = crate::envelope::Envelope::parse(&body).unwrap();
     assert_eq!(envelope.items.len(), 1);
     assert_eq!(envelope.items[0].kind, crate::envelope::ItemKind::Log);
-    let records = sentry::parse(&envelope.items[0].payload, 2, 7).unwrap();
+    let records = sentry::parse(envelope.items[0].payload, 2, 7).unwrap();
     let summary: Vec<_> = records
         .iter()
         .map(|r| (r.level, r.message.as_str(), r.timestamp))
