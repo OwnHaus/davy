@@ -41,8 +41,20 @@ fn ok(name: &'static str, detail: impl Into<String>) -> Check {
     Check {
         name,
         status: Status::Ok,
-        detail: detail.into(),
+        detail: printable(detail.into()),
         fix: None,
+    }
+}
+
+/// An SMTP server or a path can put control characters into a check, and
+/// they would move the cursor or retitle the terminal that prints it.
+fn printable(s: String) -> String {
+    if s.chars().any(char::is_control) {
+        s.chars()
+            .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+            .collect()
+    } else {
+        s
     }
 }
 
@@ -55,8 +67,8 @@ fn not_ok(
     Check {
         name,
         status,
-        detail: detail.into(),
-        fix: Some(fix.into()),
+        detail: printable(detail.into()),
+        fix: Some(printable(fix.into())),
     }
 }
 

@@ -275,6 +275,39 @@ async fn a_refused_smtp_server_fails_with_its_error() {
     );
 }
 
+#[tokio::test]
+async fn an_smtp_reply_cannot_write_control_characters_to_the_terminal() {
+    let url = server(Some(TOKEN)).await;
+    let data = dir();
+    std::fs::create_dir_all(&data).unwrap();
+    let relay = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = relay.local_addr().unwrap();
+    std::thread::spawn(move || {
+        use std::io::Write as _;
+        let (mut conn, _) = relay.accept().unwrap();
+        conn.write_all(b"554 no \x1b]0;owned\x07 mail here\r\n")
+            .unwrap();
+    });
+    std::fs::write(data.join("smtp-url"), format!("smtp://{addr}\n")).unwrap();
+    let args = setup::Args {
+        data: data.clone(),
+        public_url: url.clone(),
+        listen: "127.0.0.1:8000".to_owned(),
+        mail_from: Some("alerts@example.com".to_owned()),
+        service: Service::None,
+    };
+    setup::setup(&args, Path::new("/usr/local/bin/davy"), Some("davy")).unwrap();
+    let checks = run(&data).await;
+    let smtp = find(&checks, "smtp");
+    assert_eq!(smtp.status, Status::Fail);
+    assert!(
+        smtp.detail
+            .contains("no \u{fffd}]0;owned\u{fffd} mail here"),
+        "{}",
+        smtp.detail
+    );
+}
+
 #[test]
 fn free_disk_space_warns_below_5_gib_and_fails_below_1_gib() {
     let data = Path::new("/var/lib/davy");
