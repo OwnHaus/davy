@@ -285,7 +285,7 @@ A coding agent should get from "there is an error" to a fix without a human copy
 | `mark_fixed` | `issue_id`, `release?` | A sentence that says which release the fix is expected in. |
 | `submit_feedback` | `tried`, `happened`, `fix?` | A sentence that says the feedback is stored. |
 
-**`sql`** opens its own read-only connection per call (`SQLITE_OPEN_READ_ONLY`, `PRAGMA query_only`), prepares exactly one statement, and runs it under an authorizer that allows only reads and function calls. `stmt.readonly()` is not enough, because SQLite counts `ATTACH` and `PRAGMA query_only=0` as read-only. At most 500 rows. A text cell over 4000 characters is cut and marked. A blob cell is `{"blob_bytes": n}`. The function `payload_json(payload)` decompresses an event payload to JSON text, so `json_extract(payload_json(payload), '$.request.url')` works. A query is interrupted after 5 s. A bad query is a tool error with SQLite's message, not a protocol error.
+**`sql`** opens its own read-only connection per call (`SQLITE_OPEN_READ_ONLY`, `PRAGMA query_only`), prepares exactly one statement, and runs it under an authorizer that allows only reads and function calls. `stmt.readonly()` is not enough, because SQLite counts `ATTACH` and `PRAGMA query_only=0` as read-only. At most 500 rows. A text cell over 4000 characters is cut and ends in `…[cut]`. A string or blob over 16 MiB is an error, so one query cannot take a gigabyte. A blob cell is `{"blob_bytes": n}`. The function `payload_json(payload)` decompresses an event payload to JSON text, so `json_extract(payload_json(payload), '$.request.url')` works. A query is interrupted after 5 s. A bad query is a tool error with SQLite's message, not a protocol error.
 
 **`issue_context`** returns:
 
@@ -498,7 +498,7 @@ New tables, added by migration, so existing data directories keep opening:
 - `channels(id, project_id NULL for all, kind, url, secret, dropped, created_at)`
 - `notifications(id, channel_id, type, payload, created_at, attempts, next_at, sent_at, failed_at, last_error)` with an index on `(channel_id, id) WHERE sent_at IS NULL AND failed_at IS NULL`
 
-At most 1,000 monitors and 100 channels per data directory. The `sql` tool reads `monitors.heartbeat_token`, `channels.url` and `channels.secret` as `NULL`, because an agent has no use for a credential and a prompt-injected agent could leak it.
+At most 1,000 monitors and 100 channels per data directory. The `sql` tool reads `monitors.heartbeat_token`, `monitors.url`, `channels.url` and `channels.secret` as `NULL`, because an agent has no use for a credential and a prompt-injected agent could leak it. A monitor URL counts, because its query string often holds a token.
 
 ### CLI
 

@@ -6,6 +6,7 @@ use rusqlite::{
     Connection, OpenFlags,
     functions::FunctionFlags,
     hooks::{AuthAction, AuthContext, Authorization},
+    limits::Limit,
     types::ValueRef,
 };
 use serde::Serialize;
@@ -14,6 +15,11 @@ use std::{io::Read as _, path::Path, sync::mpsc, thread, time::Duration};
 
 pub const MAX_ROWS: usize = 500;
 const MAX_TEXT_CHARS: usize = 4000;
+/// The longest string or blob a query may build, in bytes.
+const MAX_LENGTH: i32 = 16 * 1024 * 1024;
+/// Ends a text cell cut at [`MAX_TEXT_CHARS`], so an agent does not take it
+/// for the whole value.
+const CUT: &str = "…[cut]";
 const TIMEOUT: Duration = Duration::from_secs(5);
 /// A stored payload is at most 1 MiB of JSON, so this only stops a crafted blob.
 const MAX_PAYLOAD: u64 = 16 * 1024 * 1024;
@@ -23,7 +29,7 @@ const NOTES: &str = "Notes:
 - Times in projects, issues, events and releases are unix milliseconds. issue_hourly.hour is unix hours.
 - events.payload is the compressed Sentry event, kept for a sample of events. payload_json(payload) returns it as JSON text, so json_extract(payload_json(payload), '$.exception.values[0].type') works.
 - issues.status is unresolved, resolved or ignored. A resolved issue reopens when an event arrives without a release, in the release it was resolved in, or in a release first seen after resolved_at.
-- monitors.state is pending, up, failing or down. Times in monitors, checks and incidents are unix milliseconds. An incident with no resolved_at is open. monitors.heartbeat_token, channels.url and channels.secret read as NULL.
+- monitors.state is pending, up, failing or down. Times in monitors, checks and incidents are unix milliseconds. An incident with no resolved_at is open. monitors.heartbeat_token, monitors.url, channels.url and channels.secret read as NULL.
 - Results stop at 500 rows, text at 4000 characters, payload_json at 16 MiB, and a query at 5 seconds.";
 
 #[derive(Debug, Serialize)]
@@ -43,6 +49,9 @@ pub fn open(data: &Path) -> Result<Connection> {
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     c.busy_timeout(Duration::from_secs(5))?;
+    // SQLite's default of 1 GB lets one `hex(zeroblob(..))` take that much
+    // memory, and the timeout cannot stop a single allocation.
+    c.set_limit(Limit::SQLITE_LIMIT_LENGTH, MAX_LENGTH)?;
     c.pragma_update(None, "query_only", true)?;
     c.authorizer(Some(only_reads))?;
     c.create_scalar_function(
@@ -73,9 +82,11 @@ pub fn open(data: &Path) -> Result<Connection> {
 }
 
 /// Columns that hold a credential. An agent has no use for one, and a
-/// prompt-injected agent could leak it, so they read as NULL.
-const CREDENTIALS: [(&str, &str); 3] = [
+/// prompt-injected agent could leak it, so they read as NULL. A monitor URL
+/// often carries a token in its query string.
+const CREDENTIALS: [(&str, &str); 4] = [
     ("monitors", "heartbeat_token"),
+    ("monitors", "url"),
     ("channels", "url"),
     ("channels", "secret"),
 ];
@@ -163,11 +174,14 @@ fn value(v: ValueRef<'_>) -> Value {
         ValueRef::Null => Value::Null,
         ValueRef::Integer(n) => n.into(),
         ValueRef::Real(x) => serde_json::Number::from_f64(x).map_or(Value::Null, Value::Number),
-        ValueRef::Text(t) => String::from_utf8_lossy(t)
-            .chars()
-            .take(MAX_TEXT_CHARS)
-            .collect::<String>()
-            .into(),
+        ValueRef::Text(t) => {
+            let text = String::from_utf8_lossy(t);
+            let mut cell: String = text.chars().take(MAX_TEXT_CHARS).collect();
+            if cell.len() < text.len() {
+                cell.push_str(CUT);
+            }
+            cell.into()
+        }
         ValueRef::Blob(b) => json!({ "blob_bytes": b.len() }),
     }
 }
@@ -200,7 +214,16 @@ mod tests {
         assert_eq!(r.columns, ["ty", "stored", "long"]);
         assert_eq!(r.rows[0][0], "TypeError");
         assert_eq!(r.rows[0][1], 1);
-        assert_eq!(r.rows[0][2].as_str().unwrap().len(), 4000);
+        assert_eq!(
+            r.rows[0][2].as_str().unwrap(),
+            format!("{}…[cut]", "x".repeat(4000))
+        );
+        let whole = run(&c, "SELECT printf('%.4000c', 'y')").unwrap();
+        assert_eq!(
+            whole.rows[0][0],
+            "y".repeat(4000),
+            "a cell at the cap is whole"
+        );
         assert!(!r.truncated);
         let blob = run(&c, "SELECT payload FROM events").unwrap();
         assert!(blob.rows[0][0]["blob_bytes"].as_u64().unwrap() > 0);
@@ -249,6 +272,27 @@ mod tests {
             r.rows,
             [vec![json!("webhook"), Value::Null, Value::Null, json!(1)]]
         );
+        let site = crate::monitor::NewMonitor::new(
+            "Site",
+            crate::monitor::Target::Http {
+                url: crate::monitor::CheckUrl::parse("https://shop.example/health?token=x")
+                    .unwrap(),
+                expect: crate::monitor::Expect::Status,
+                timeout: Duration::from_secs(5),
+            },
+            None,
+        )
+        .unwrap();
+        crate::monitor::store::add(&store::open(&data).unwrap(), 1, &site, 0).unwrap();
+        let r = run(&c, "SELECT name, url FROM monitors WHERE kind = 'http'").unwrap();
+        assert_eq!(r.rows, [vec![json!("Site"), Value::Null]]);
+    }
+
+    #[test]
+    fn a_value_over_16_mib_is_refused() {
+        let (_data, c) = store_with_one_event();
+        let e = run(&c, "SELECT length(hex(zeroblob(400000000)))").unwrap_err();
+        assert!(format!("{e:#}").contains("too big"), "{e:#}");
     }
 
     #[test]
