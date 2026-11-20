@@ -37,6 +37,18 @@ CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::se
 - `src/logs/store.rs` owns the Tantivy schema, the log writer thread, retention and search.
 - `src/tests.rs` and `src/logs/tests.rs` hold the unit and contract tests. `e2e/` runs real SDKs against the built binary. `bench/` and `examples/load_logs.rs` are benchmarks, not tests.
 
+## Trust boundaries
+
+Three kinds of caller reach the server. Each route belongs to exactly one.
+
+| Caller | Credential | Routes | May do |
+|---|---|---|---|
+| SDK or log shipper | Project ingest key, public | `/api/{project}/envelope/`, `/api/{project}/store/`, `/`, `/v1/logs` | Write events and logs into the one project the key names |
+| Coding agent | Admin token, secret | `/mcp` | Read everything, mark issues fixed |
+| `sentry-cli` | Admin token, secret | `/api/0/organizations/{org}/chunk-upload/`, `.../artifactbundle/assemble/` | Write source map builds |
+
+The CLI is a fourth caller. It runs on the host with file access to the data directory and needs no credential. The cloud service adds tenants above projects. A cloud feature must not let one tenant's key or token reach another tenant's data, so every query the cloud runs carries the tenant in its type, not in a string filter.
+
 ## Invariants
 
 - **Parsers are pure.** Everything that turns wire bytes into domain types takes bytes and returns a value or an error. No I/O, no clock reads except a passed-in `observed_at`, no global state. Each is tested on fixtures captured from real clients.

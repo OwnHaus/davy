@@ -53,6 +53,15 @@ Mechanical rules live in `Cargo.toml` `[lints]`, `clippy.toml`, `deny.toml` and 
 - One logical change per commit. Formatting, refactors and behavior changes go in separate commits.
 - Never commit generated data, `data/`, `target/` or secrets.
 - Never force-push `main`.
+- The repo owner is the only author. No AI attribution in commits or PRs: no `Co-Authored-By` trailer for a model, no "Generated with" line.
+
+## Security
+
+- Every network input is hostile. Each one has a size cap, a count cap and a time cap before it reaches a parser. Decompression has its own cap.
+- Authenticate before you spend. A route checks its credential before it decompresses, parses or stores a body larger than a header.
+- A new route names its caller and credential in the trust boundaries table in `docs/architecture.md` and gets a test that a wrong or missing credential is refused.
+- Nothing from a request becomes a file path, an SQL fragment or a shell argument except through a parsed type that cannot hold a separator.
+- Never log or return a token, a key or an event body in an error message.
 
 ## Open core
 
