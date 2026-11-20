@@ -366,7 +366,8 @@ fn print_rows(out: &mut impl Write, rows: &query::Rows, json: bool) -> anyhow::R
         writeln!(out, "{}", serde_json::to_string(rows)?)?;
         return Ok(());
     }
-    writeln!(out, "{}", safe(&rows.columns.join("\t")))?;
+    let columns: Vec<_> = rows.columns.iter().map(|c| safe(c)).collect();
+    writeln!(out, "{}", columns.join("\t"))?;
     for row in &rows.rows {
         let cells: Vec<String> = row
             .iter()
@@ -461,6 +462,21 @@ mod tests {
         ] {
             assert!(!add(bad), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn sql_text_output_separates_columns_with_tabs() {
+        let mut out = Vec::new();
+        let rows = query::Rows {
+            columns: vec!["id".into(), "na\u{1b}me".into()],
+            rows: vec![vec![serde_json::json!(1), serde_json::json!("API\t")]],
+            truncated: false,
+        };
+        print_rows(&mut out, &rows, false).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "id\tna\u{fffd}me\n1\tAPI\u{fffd}\n"
+        );
     }
 
     #[test]
