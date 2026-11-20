@@ -2,7 +2,7 @@
 //! assembly. `http::serve` mounts it behind the admin token.
 
 use crate::{
-    http::{Failure, bad, blocking, decode, internal},
+    http::{Failure, bad, blocking, body::inflate, internal},
     sourcemaps::{Assembly, ChunkId, MAX_FILE, Store},
     token::{self, Token},
 };
@@ -84,7 +84,7 @@ async fn chunks(State(upload): State<Upload>, mut form: Multipart) -> Result<Jso
     }
     blocking(move || {
         for (name, gzip, bytes) in parts {
-            let bytes = decode(&bytes, if gzip { "gzip" } else { "" })?;
+            let bytes = inflate(&bytes, if gzip { "gzip" } else { "" }, CHUNK_SIZE + 1)?;
             if bytes.len() > CHUNK_SIZE {
                 return Err(bad(format!("chunk {name} is larger than 8 MiB")));
             }

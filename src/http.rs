@@ -1,7 +1,8 @@
 use crate::{
     alert,
-    envelope::{Disposition, Envelope, EnvelopeHeader, disposition},
+    envelope::{Disposition, Envelope, disposition},
     event::{ErrorEvent, EventId},
+    heap,
     logs::{
         self, LogRecord, logtail, otlp,
         store::{LogQueue, LogWriter, QueueError},
@@ -17,28 +18,28 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    body::{Bytes, to_bytes},
+    body::Body,
     extract::{Path, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use body::Held;
 use serde_json::json;
 use std::{
     collections::HashMap,
-    io::{BufRead, BufReader, Cursor, Read},
     sync::{Arc, Mutex, RwLock, mpsc},
     time::Duration,
 };
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-const COMPRESSED: usize = 20 * 1024 * 1024;
-const DECOMPRESSED: usize = 200 * 1024 * 1024;
-const MAX_HEADER_LINE: usize = 64 * 1024;
-const PARSING_SLOTS: usize = 8;
+
+pub(crate) mod body;
+
 /// Sentry's limit for one event or log item, so a client that works with Sentry fits.
 const MAX_ITEM: usize = 1024 * 1024;
-const BODY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Log records one request may send. Memory is paid for already, so this
+/// keeps one client from taking the whole log queue at once.
+const MAX_RECORDS: usize = 10_000;
 /// How late a missed heartbeat can be noticed.
 const SWEEP_EVERY: Duration = Duration::from_secs(10);
 /// How late a due notification can be sent.
@@ -92,8 +93,8 @@ pub struct App {
     pub sender: mpsc::SyncSender<Write>,
     pub logs: LogQueue,
     pub sourcemaps: Arc<sourcemaps::Store>,
-    /// Bounds how many request bodies are decompressed and parsed at once.
-    pub parsing: Arc<Semaphore>,
+    /// The memory request bodies may hold while they are read and parsed.
+    pub budget: body::Budget,
 }
 pub fn router(app: App) -> Router {
     let preflight = || async { StatusCode::NO_CONTENT };
@@ -174,80 +175,12 @@ impl From<QueueError> for Failure {
         }
     }
 }
-fn decoder<'a>(bytes: &'a [u8], encoding: &str) -> Result<impl BufRead + 'a, Failure> {
-    let source = Cursor::new(bytes);
-    let reader: Box<dyn Read + 'a> = match encoding {
-        "" | "identity" => Box::new(source),
-        "gzip" => Box::new(flate2::read::GzDecoder::new(source)),
-        "deflate" => Box::new(flate2::read::ZlibDecoder::new(source)),
-        "br" => Box::new(brotli::Decompressor::new(source, 4096)),
-        "zstd" => Box::new(zstd::stream::read::Decoder::new(source).map_err(bad)?),
-        _ => return Err(bad("unsupported content encoding")),
-    };
-    Ok(BufReader::new(reader.take(DECOMPRESSED as u64 + 1)))
-}
-fn finish(mut reader: impl Read, out: &mut Vec<u8>) -> Result<(), Failure> {
-    reader.read_to_end(out).map_err(bad)?;
-    if out.len() > DECOMPRESSED {
-        return Err((
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "decompressed body too large".into(),
-        ));
-    }
-    Ok(())
-}
-pub(crate) fn decode(bytes: &[u8], encoding: &str) -> Result<Vec<u8>, Failure> {
-    let mut out = Vec::new();
-    finish(decoder(bytes, encoding)?, &mut out)?;
-    Ok(out)
-}
-/// Decompresses the envelope header line, passes it to `admit`, and decompresses
-/// the rest only if `admit` succeeds. A refused request costs one line.
-fn decode_envelope(
-    bytes: &[u8],
-    encoding: &str,
-    admit: impl FnOnce(&EnvelopeHeader) -> Result<(), Failure>,
-) -> Result<Vec<u8>, Failure> {
-    let mut reader = decoder(bytes, encoding)?;
-    let mut out = Vec::new();
-    (&mut reader)
-        .take(MAX_HEADER_LINE as u64)
-        .read_until(b'\n', &mut out)
-        .map_err(bad)?;
-    if out.last() != Some(&b'\n') && out.len() == MAX_HEADER_LINE {
-        return Err(bad("envelope header line too long"));
-    }
-    admit(&EnvelopeHeader::parse(&out).map_err(bad)?)?;
-    finish(reader, &mut out)?;
-    Ok(out)
-}
 fn header_str(headers: &HeaderMap, name: header::HeaderName) -> &str {
     headers
         .get(name)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .trim()
-}
-async fn compressed(body: axum::body::Body) -> Result<Bytes, Failure> {
-    tokio::time::timeout(BODY_TIMEOUT, to_bytes(body, COMPRESSED))
-        .await
-        .map_err(|e| (StatusCode::REQUEST_TIMEOUT, format!("body not read: {e}")))?
-        .map_err(|e| {
-            (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!("body too large: {e}"),
-            )
-        })
-}
-/// Takes one parsing slot. The caller holds it until the body is parsed, so at
-/// most `PARSING_SLOTS` decompressed bodies are in memory at once.
-fn slot(app: &App) -> Result<OwnedSemaphorePermit, Failure> {
-    Arc::clone(&app.parsing).try_acquire_owned().map_err(|e| {
-        (
-            StatusCode::TOO_MANY_REQUESTS,
-            format!("too many bodies in flight: {e}"),
-        )
-    })
 }
 fn encoding(headers: &HeaderMap) -> String {
     header_str(headers, header::CONTENT_ENCODING).to_ascii_lowercase()
@@ -300,25 +233,34 @@ struct Parsed {
     event: Option<ErrorEvent>,
     logs: Vec<LogRecord>,
 }
+fn too_many_records() -> Failure {
+    (
+        StatusCode::PAYLOAD_TOO_LARGE,
+        format!("more than {MAX_RECORDS} log records in one request"),
+    )
+}
+fn event(json: &[u8], maps: &sourcemaps::Store, held: &mut Held) -> Result<ErrorEvent, Failure> {
+    // The tree, and the event built from it.
+    held.take(2 * heap::json(json, 0).map_err(bad)?)?;
+    let mut value = serde_json::from_slice(json).map_err(bad)?;
+    // A stored map that no longer reads leaves frames minified. The event still counts.
+    symbolicate(&mut value, |id| maps.build(id).ok().flatten());
+    ErrorEvent::parse(value).map_err(bad)
+}
 fn parse_sentry(
     bytes: &[u8],
     project: i64,
     legacy: bool,
     maps: &sourcemaps::Store,
+    held: &mut Held,
 ) -> Result<Parsed, Failure> {
-    let event = |json: &[u8]| {
-        let mut value = serde_json::from_slice(json).map_err(bad)?;
-        // A stored map that no longer reads leaves frames minified. The event still counts.
-        symbolicate(&mut value, |id| maps.build(id).ok().flatten());
-        ErrorEvent::parse(value).map_err(bad)
-    };
     if legacy {
         return Ok(Parsed {
             id: None,
             event: if bytes.len() > MAX_ITEM {
                 None
             } else {
-                Some(event(bytes)?)
+                Some(event(bytes, maps, held)?)
             },
             logs: Vec::new(),
         });
@@ -337,13 +279,24 @@ fn parse_sentry(
     {
         match disposition(&item.kind) {
             Disposition::StoreError if parsed.event.is_none() => {
-                parsed.event = Some(event(item.payload)?);
+                parsed.event = Some(event(item.payload, maps, held)?);
             }
             Disposition::StoreError | Disposition::Drop => {}
             Disposition::StoreLogs => {
-                if let Ok(records) = logs::sentry::parse(item.payload, project, observed_at) {
-                    parsed.logs.extend(records);
+                // An item that does not parse is dropped, as Sentry drops it.
+                let Ok(cost) = logs::sentry::cost(item.payload) else {
+                    continue;
+                };
+                held.take(cost)?;
+                let records =
+                    logs::sentry::parse(item.payload, project, observed_at).unwrap_or_default();
+                if parsed.logs.len() + records.len() > MAX_RECORDS {
+                    return Err(too_many_records());
                 }
+                // The tree is gone, and only the records stay.
+                let kept = records.iter().map(heap::of_record).sum::<usize>();
+                held.release(cost.saturating_sub(kept));
+                parsed.logs.extend(records);
             }
         }
     }
@@ -352,29 +305,31 @@ fn parse_sentry(
 async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Response, Failure> {
     let (parts, raw) = req.into_parts();
     let presented = key(&parts.headers, parts.uri.query(), None);
-    // Only an envelope can carry its key in the body, in the DSN of its header line.
-    let key_in_header = presented.is_none() && !legacy;
-    if !key_in_header {
-        authorize(&app.keys, project, presented.as_deref())?;
-    }
-    let bytes = compressed(raw).await?;
-    let slot = slot(&app)?;
     let encoding = encoding(&parts.headers);
-    let (keys, maps) = (Arc::clone(&app.keys), Arc::clone(&app.sourcemaps));
-    let parsed = blocking(move || {
-        let _slot = slot;
-        let body = if key_in_header {
-            decode_envelope(&bytes, &encoding, |header| {
-                authorize(
-                    &keys,
-                    project,
-                    key(&HeaderMap::new(), None, header.dsn.as_deref()).as_deref(),
-                )
-            })?
-        } else {
-            decode(&bytes, &encoding)?
-        };
-        parse_sentry(&body, project, legacy, &maps)
+    let mut held = app.budget.hold();
+    // Only an envelope can carry its key in the body, in the DSN of its header line.
+    let bytes = if presented.is_none() && !legacy {
+        body::read_envelope(raw, &mut held, &encoding, |header| {
+            let dsn = header.dsn.as_deref();
+            authorize(
+                &app.keys,
+                project,
+                key(&HeaderMap::new(), None, dsn).as_deref(),
+            )
+        })
+        .await?
+    } else {
+        authorize(&app.keys, project, presented.as_deref())?;
+        body::read(raw, &mut held).await?
+    };
+    let maps = Arc::clone(&app.sourcemaps);
+    let (parsed, _held) = blocking(move || {
+        let body = body::decode(bytes, &encoding, &mut held)?;
+        let parsed = parse_sentry(&body, project, legacy, &maps, &mut held)?;
+        let capacity = body.capacity();
+        drop(body);
+        held.release(capacity);
+        Ok((parsed, held))
     })
     .await?;
     let id = parsed
@@ -419,20 +374,26 @@ async fn heartbeat(app: &App, token: &str, failed: bool) -> Result<&'static str,
     .await?;
     Ok("ok")
 }
+/// Reads, decompresses and parses a log body, which `parse` pays for, and
+/// queues its records.
 async fn ingest_logs(
     app: &App,
     headers: &HeaderMap,
-    raw: axum::body::Body,
-    parse: impl FnOnce(&[u8]) -> Result<Vec<LogRecord>, Failure> + Send + 'static,
+    raw: Body,
+    parse: impl FnOnce(&[u8], &mut Held) -> Result<Vec<LogRecord>, Failure> + Send + 'static,
 ) -> Result<(), Failure> {
-    let bytes = compressed(raw).await?;
-    let slot = slot(app)?;
+    let mut held = app.budget.hold();
+    let bytes = body::read(raw, &mut held).await?;
     let encoding = encoding(headers);
-    let records = blocking(move || {
-        let _slot = slot;
-        parse(&decode(&bytes, &encoding)?)
+    let (records, _held) = blocking(move || {
+        let body = body::decode(bytes, &encoding, &mut held)?;
+        let records = parse(&body, &mut held)?;
+        Ok((records, held))
     })
     .await?;
+    if records.len() > MAX_RECORDS {
+        return Err(too_many_records());
+    }
     if !records.is_empty() {
         app.logs.push(records)?;
     }
@@ -443,9 +404,10 @@ async fn logtail_ingest(State(app): State<App>, req: Request) -> Response {
         let (parts, raw) = req.into_parts();
         let project = app.keys.authenticate(bearer(&parts.headers))?;
         let content_type = header_str(&parts.headers, header::CONTENT_TYPE).to_owned();
-        ingest_logs(&app, &parts.headers, raw, move |body| {
-            logtail::parse(body, &content_type, project, time::now_ns())
-                .map_err(|e| (StatusCode::NOT_ACCEPTABLE, e))
+        ingest_logs(&app, &parts.headers, raw, move |body, held| {
+            let refused = |e| (StatusCode::NOT_ACCEPTABLE, e);
+            held.take(logtail::cost(body, &content_type).map_err(refused)?)?;
+            logtail::parse(body, &content_type, project, time::now_ns()).map_err(refused)
         })
         .await?;
         Ok::<_, Failure>(StatusCode::ACCEPTED.into_response())
@@ -464,8 +426,10 @@ async fn otlp_ingest(State(app): State<App>, req: Request) -> Response {
                 "expected application/x-protobuf or application/json".to_owned(),
             )
         })?;
-        ingest_logs(&app, &parts.headers, raw, move |body| {
-            otlp::parse(body, encoding, project, time::now_ns()).map_err(bad)
+        ingest_logs(&app, &parts.headers, raw, move |body, held| {
+            held.take(otlp::cost(body, encoding).map_err(bad)?)?;
+            let request = otlp::decode(body, encoding).map_err(bad)?;
+            otlp::convert(request, project, time::now_ns(), |bytes| held.take(bytes))
         })
         .await?;
         Ok::<_, Failure>(encoding)
@@ -502,7 +466,7 @@ pub async fn serve(
         sender: writer.sender.clone(),
         logs: log_writer.queue.clone(),
         sourcemaps: Arc::new(sourcemaps::Store::open(data)),
-        parsing: Arc::new(Semaphore::new(PARSING_SLOTS)),
+        budget: body::Budget::new(body::MEMORY),
     };
     let maps = Arc::clone(&app.sourcemaps);
     let mut routes = router(app);
@@ -576,33 +540,6 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    #[test]
-    fn compression_formats() {
-        let payload = b"{}\n{\"type\":\"event\"}\n{\"message\":\"test\"}";
-        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        gzip.write_all(payload).unwrap();
-        let mut deflate =
-            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-        deflate.write_all(payload).unwrap();
-        let mut br = Vec::new();
-        {
-            let mut writer = brotli::CompressorWriter::new(&mut br, 4096, 3, 20);
-            writer.write_all(payload).unwrap();
-        }
-        for (encoding, bytes) in [
-            ("gzip", gzip.finish().unwrap()),
-            ("deflate", deflate.finish().unwrap()),
-            ("br", br),
-            (
-                "zstd",
-                zstd::stream::encode_all(payload.as_slice(), 1).unwrap(),
-            ),
-        ] {
-            assert_eq!(decode(&bytes, encoding).unwrap(), payload);
-            assert!(decode(b"invalid compressed stream", encoding).is_err());
-        }
-    }
     #[test]
     fn authentication_precedence() {
         let mut headers = HeaderMap::new();

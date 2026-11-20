@@ -45,12 +45,13 @@ fn inside(v: &Value) -> usize {
         Value::String(s) => text(s.len()),
         Value::Array(a) if a.is_empty() => 0,
         Value::Array(a) => ARRAY + a.iter().map(of_value).sum::<usize>(),
-        Value::Object(m) => map(m),
+        Value::Object(m) => of_map(m),
         Value::Null | Value::Bool(_) | Value::Number(_) => 0,
     }
 }
 
-fn map(m: &Map<String, Value>) -> usize {
+/// The heap of a JSON object's entries, by the same prices.
+pub fn of_map(m: &Map<String, Value>) -> usize {
     if m.is_empty() {
         return 0;
     }
@@ -70,7 +71,7 @@ pub fn of_record(r: &LogRecord) -> usize {
             .flatten()
             .map(|s| text(s.len()))
             .sum::<usize>()
-        + map(&r.attributes)
+        + of_map(&r.attributes)
 }
 
 /// What parsing the JSON text `bytes` into a [`Value`] takes, plus

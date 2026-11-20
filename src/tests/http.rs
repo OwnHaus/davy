@@ -1,7 +1,7 @@
 use super::memory;
 use crate::test_support::fixture;
 use crate::{
-    http::{App, Keys, RATE, router},
+    http::{App, Keys, RATE, body::Budget, router},
     logs::{
         LogLevel,
         store::{LogInbox, LogQueue},
@@ -17,21 +17,22 @@ use std::{
     sync::{Arc, mpsc},
     time::Duration,
 };
-use tokio::sync::Semaphore;
 use tower::ServiceExt;
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
 /// The router with projects `a` (id 1, key `key-a`) and `b` (id 2, key `key-b`),
 /// a heartbeat monitor (id 1, token [`TOKEN`]) in `a`, both ingest queues one
-/// slot deep and one parsing slot.
+/// slot deep and [`BUDGET`] for bodies.
 struct Server {
     app: Router,
     errors: mpsc::SyncSender<store::Write>,
     error_inbox: mpsc::Receiver<store::Write>,
     logs: LogInbox,
-    parsing: Arc<Semaphore>,
+    budget: Budget,
 }
+
+const BUDGET: usize = 32 << 20;
 
 struct Reply {
     status: u16,
@@ -63,9 +64,9 @@ fn server() -> Server {
     .unwrap();
     let (errors, error_inbox) = mpsc::sync_channel(1);
     let (logs, log_inbox) = LogQueue::bounded(3, 1 << 20);
-    let parsing = Arc::new(Semaphore::new(1));
+    let budget = Budget::new(BUDGET);
     let app = router(App {
-        parsing: Arc::clone(&parsing),
+        budget: budget.clone(),
         keys: Arc::new(Keys::new(c)),
         sender: errors.clone(),
         logs,
@@ -78,7 +79,7 @@ fn server() -> Server {
         errors,
         error_inbox,
         logs: log_inbox,
-        parsing,
+        budget,
     }
 }
 
@@ -192,9 +193,10 @@ async fn an_anonymous_body_is_not_decompressed() {
 }
 
 #[tokio::test]
-async fn every_ingest_route_is_429_while_the_parsing_slots_are_taken() {
+async fn every_ingest_route_is_429_while_the_budget_is_spent() {
     let s = server();
-    let _taken = Arc::clone(&s.parsing).try_acquire_owned().unwrap();
+    let mut taken = s.budget.hold();
+    taken.take(BUDGET).unwrap();
     for req in [
         post("/api/1/store/?sentry_key=key-a", &[], "{}"),
         post("/api/1/envelope/?sentry_key=key-a", &[], SESSION),
@@ -224,7 +226,119 @@ async fn a_body_that_stalls_is_408() {
     let r = s
         .send(post("/api/1/envelope/?sentry_key=key-a", &[], SESSION))
         .await;
-    assert_eq!(r.status, 200, "stalled bodies hold no parsing slot");
+    assert_eq!(r.status, 200, "a stalled body gives back what it held");
+}
+
+#[tokio::test]
+async fn a_refused_envelope_is_not_read_past_its_header_line() {
+    use futures::StreamExt as _;
+    let chunks = futures::stream::iter(0..2).map(|i| {
+        assert_eq!(i, 0, "the body was read past the refused header line");
+        Ok::<_, std::io::Error>(
+            b"{\"dsn\":\"http://wrong@h/1\"}\n{\"type\":\"session\"}\n".to_vec(),
+        )
+    });
+    let r = server()
+        .send(post("/api/1/envelope/", &[], Body::from_stream(chunks)))
+        .await;
+    assert_eq!(r.status, 403);
+}
+
+fn gzip(body: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(body).unwrap();
+    gz.finish().unwrap()
+}
+
+const TOO_MUCH: &str = "the body needs more memory than one request may use";
+
+#[tokio::test]
+async fn a_small_body_of_many_values_is_413_before_it_is_parsed() {
+    let objects = format!("[{}{{}}]", "{},".repeat(100_000));
+    let body = gzip(objects.as_bytes());
+    assert!(body.len() < 4096, "{} bytes", body.len());
+    let r = server()
+        .send(post(
+            "/",
+            &[
+                ("authorization", "Bearer key-a"),
+                ("content-type", "application/json"),
+                ("content-encoding", "gzip"),
+            ],
+            body,
+        ))
+        .await;
+    assert_eq!(
+        (r.status, String::from_utf8(r.body).unwrap()),
+        (413, TOO_MUCH.into())
+    );
+}
+
+#[tokio::test]
+async fn records_that_copy_a_large_resource_are_413() {
+    use opentelemetry_proto::tonic::{
+        collector::logs::v1::ExportLogsServiceRequest,
+        common::v1::{AnyValue, KeyValue, any_value::Value},
+        logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
+        resource::v1::Resource,
+    };
+    use prost::Message as _;
+    let attributes = (0..200)
+        .map(|i| KeyValue {
+            key: format!("attribute.{i}"),
+            value: Some(AnyValue {
+                value: Some(Value::StringValue("value".into())),
+            }),
+            ..KeyValue::default()
+        })
+        .collect();
+    let request = ExportLogsServiceRequest {
+        resource_logs: vec![ResourceLogs {
+            resource: Some(Resource {
+                attributes,
+                ..Resource::default()
+            }),
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![LogRecord::default(); 5_000],
+                ..ScopeLogs::default()
+            }],
+            ..ResourceLogs::default()
+        }],
+    };
+    let r = server()
+        .send(otlp("application/x-protobuf", request.encode_to_vec()))
+        .await;
+    assert_eq!(r.status, 413);
+    assert!(
+        r.body
+            .windows(TOO_MUCH.len())
+            .any(|w| w == TOO_MUCH.as_bytes()),
+        "the status says why"
+    );
+}
+
+#[tokio::test]
+async fn a_request_of_more_than_10000_records_is_413() {
+    let s = server();
+    let send = |n: usize| {
+        let objects = format!("[{}{{}}]", "{},".repeat(n - 1));
+        post("/", &[("authorization", "Bearer key-a")], objects)
+    };
+    let r = s.send(send(10_001)).await;
+    assert_eq!(
+        (r.status, String::from_utf8(r.body).unwrap()),
+        (413, "more than 10000 log records in one request".into())
+    );
+    let r = s.send(send(10_000)).await;
+    assert_eq!(
+        (r.status, String::from_utf8(r.body).unwrap()),
+        (
+            413,
+            "log batch is larger than the whole ingest queue".into()
+        ),
+        "10000 records pass the count and reach the queue"
+    );
 }
 
 #[tokio::test]

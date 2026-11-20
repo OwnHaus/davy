@@ -10,7 +10,7 @@ This document fixes the data shapes and the order of work.
 - **One process, one data directory.** SQLite holds metadata. Bulk data (event payloads, logs) sits behind a store interface, so the engine can change without touching the API.
 - **Parse at the boundary.** HTTP handlers turn bytes into typed values (`Envelope`, `ErrorEvent`). Grouping and storage take typed values only and never see raw JSON shapes they have to guess at.
 - **Lenient on fields, strict on framing.** A broken envelope or an invalid `event_id` is a 400. A field with an unexpected type or value (`level: "warn"`, a timestamp without a zone, a negative `lineno`) falls back to a default instead, because rejecting it would lose a customer's error.
-- **Check the key before the work.** A request without a valid key costs Davy at most one header line of decompression. See Hardening.
+- **Check the key before the work.** A request without a valid key costs Davy at most 128 KiB of body and one header line of decompression. See Hardening.
 - **Agent-first operation.** One binary with no database server, so a coding agent can install, connect and debug Davy from one prompt. Self-hosted Sentry runs 53 services and needs about 14 GB of RAM. Every step an operator takes is a non-interactive command with `--json` output and an error that names the next step. The docs are plain markdown an agent can fetch and follow, and their commands are tested.
 - **Never fall over under a burst.** Ingest gets a bounded queue. When it fills, Davy answers 429 and the SDKs back off. One writer thread writes in batches.
 
@@ -39,7 +39,7 @@ Captured from real SDKs in `e2e/fixtures/` (`@sentry/node` 7.107.0 and 10.78.0, 
 - `POST /api/{project_id}/store/` with a single event JSON body (old SDKs such as `@sentry/react` 6).
 - `OPTIONS` on both for browser CORS. Allow any origin and the headers `content-type`, `x-sentry-auth`, `sentry-trace`, `baggage`.
 - The public key comes from, in order: the `X-Sentry-Auth` header (`Sentry sentry_key=..., sentry_version=7, ...`), the `sentry_key` query parameter (what `@sentry/node` uses, see the fixtures), or the `dsn` field of the envelope header.
-- `Content-Encoding` may be `gzip`, `deflate`, `br` or `zstd`. Cap the compressed body at 20 MiB and the decompressed body at 200 MiB.
+- `Content-Encoding` may be `gzip`, `deflate`, `br` or `zstd`. Cap the compressed body at 20 MiB and the decompressed body at 64 MiB.
 - Envelope format: a header JSON line, then for each item a header JSON line and a payload. If the item header has `length`, read exactly that many bytes, then skip one optional `\n`. Without `length`, the payload runs to the next `\n` or the end. A trailing newline is optional. Both header lines must be JSON objects. Davy reads `event_id` and `dsn` from the envelope header and `type` and `length` from an item header, and skips other fields without building them.
 
 ### Responses
@@ -168,7 +168,7 @@ Three wire formats come in. One `LogRecord` shape goes out to one store. Each so
 | Sentry `log` item | the existing envelope route | the existing Sentry key rules | `{"items":[...]}` inside an envelope | the existing `200 {"id":...}` |
 
 - The bearer token is the project's `public_key`, so one DSN key also works as a Logtail source token and an OTLP header (`OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <key>`). The token alone picks the project.
-- All three use the existing `Content-Encoding` handling and the 20 MiB / 200 MiB caps. The token is checked before decompression.
+- All three use the existing `Content-Encoding` handling and the 20 MiB / 64 MiB caps and the memory budget. The token is checked before decompression.
 - Errors. `401` missing token, `403` unknown token, `413` too large, `429` with `Retry-After: 1` when the log queue is full. An undecodable Logtail body is `406` (what Better Stack answers). An undecodable OTLP body is `400` with a `google.rpc.Status` in the request's encoding. An OTLP content type other than protobuf or JSON is `415`.
 - Lenient on fields here too. A record that is not an object is skipped. A field of the wrong type falls back to a default. A batch never fails because of one record.
 
@@ -637,17 +637,19 @@ A security review of `16f413c` showed that a client without a key could make the
 
 - A Sentry request with the key in `X-Sentry-Auth` or `?sentry_key=` is checked before the body is read.
 - `/store/` has no envelope header, so a `/store/` request without a header or query key is a `401` before the body is read.
-- An envelope without a header or query key is decompressed only up to the end of its first line, at most 64 KiB. Davy parses that line as the envelope header and checks the key in its `dsn` against the project in the path. Only then does it decompress the rest. A header line over 64 KiB is a `400`.
+- An envelope without a header or query key is read only until its first line decompresses: at most 128 KiB of the body, plus the frame that crosses that mark. Davy decompresses at most 64 KiB of that line, parses it as the envelope header and checks the key in its `dsn` against the project in the path. Only then does it read the rest. A header line over 64 KiB, or none in the first 128 KiB, is a `400`. Each try decompresses from the start, so a new try waits until the body has doubled, and a body sent a byte at a time costs a few tries, not one per byte.
 - Logtail and OTLP check the bearer token before reading the body, as before.
 
 ### Sizes and counts
 
-Sentry's own limits (develop.sentry.dev, Envelopes, Size Limits) are 200 MiB for a decompressed envelope and 1 MiB for an event or log item. Davy uses the same numbers, so an SDK that works with Sentry works with Davy.
+Sentry's own limits (develop.sentry.dev, Envelopes, Size Limits) are 200 MiB for a decompressed envelope and 1 MiB for an event or log item. Davy keeps the 1 MiB item limit, so an item that Sentry accepts fits. It caps a decompressed body at 64 MiB, because it keeps events and logs and drops attachments, the items that need Sentry's room.
 
 | Input | Limit | Over the limit |
 |---|---|---|
 | Request body, compressed | 20 MiB | `413` |
-| Request body, decompressed | 200 MiB | `413` |
+| Request body, decompressed | 64 MiB | `413` |
+| Memory one request holds while it is read and parsed | 256 MiB, shared by all requests | `413` when one request needs more, `429` when others hold it |
+| Log records per request | 10,000 | `413` |
 | Event item, and a `/store/` body | 1 MiB | the item is dropped, like any dropped item type |
 | Log item in an envelope | 1 MiB | the item is dropped |
 | Items per envelope | 1,000 | `400` |
@@ -663,7 +665,8 @@ Sentry's own limits (develop.sentry.dev, Envelopes, Size Limits) are 200 MiB for
 
 ### Time and concurrency
 
-- At most 8 requests decode and parse a body at the same time. One more is a `429` with `Retry-After: 1`, so a burst of large bodies cannot hold more than 8 decoded bodies in memory.
+- Requests pay for the memory of their bodies from one budget of 256 MiB before they use it: the bytes received, the room the decompressed body grows into, the tree a parse builds, and each log record. A tree is priced from the body before it is built (`src/heap.rs`), because memory follows the values, not the bytes: `[{},{},...]` costs over a hundred heap bytes for every three bytes of input, and an OTLP record copies the attributes of its resource. A request that needs more than the whole budget gets `413`. One that finds the budget held by others gets `429` with `Retry-After: 1`. The 0.1.0 pentest found that the 8 parsing slots this replaces did not bound what each body parsed into. The test `a_small_body_of_many_values_is_413_before_it_is_parsed` sends a gzip body under 4 KB that would parse into 100,000 records.
+- A slow client holds what it has sent until it finishes or times out. Clients with a key can hold the budget with slow bodies, and others get `429` for up to 30 seconds. Limits per client address are the reverse proxy's job.
 - Reading a request body has 30 seconds. A slower client gets `408`. Slow headers are the reverse proxy's job, because SECURITY.md already requires one for TLS.
 
 ### Other inputs

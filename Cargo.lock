@@ -669,6 +669,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "hmac",
+ "http-body-util",
  "jiff",
  "lettre",
  "nix",

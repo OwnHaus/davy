@@ -1,5 +1,12 @@
 use super::{LogLevel, LogRecord, LogSource, hex_id, message, settle};
+use crate::heap::{self, RECORD};
 use serde_json::{Map, Value};
+
+/// The heap [`parse`] takes, found without parsing: the tree of the item,
+/// and as much again for the records built from it.
+pub fn cost(payload: &[u8]) -> Result<usize, String> {
+    Ok(2 * heap::json(payload, RECORD).map_err(|e| e.to_string())?)
+}
 
 pub fn parse(payload: &[u8], project_id: i64, observed_at: i64) -> Result<Vec<LogRecord>, String> {
     let v: Value = serde_json::from_slice(payload).map_err(|e| e.to_string())?;

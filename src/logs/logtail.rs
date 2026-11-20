@@ -1,7 +1,43 @@
 use super::{LogLevel, LogRecord, LogSource, binary, hex_id, message, mime, settle};
+use crate::heap::{self, RECORD};
 use serde_json::{Map, Value};
 
 const MSGPACK_TIMESTAMP: i8 = -1;
+
+enum Format {
+    Msgpack,
+    Ndjson,
+    /// One JSON value, or NDJSON when the body is not one value.
+    Json,
+}
+
+impl Format {
+    fn of(body: &[u8], content_type: &str) -> Self {
+        match mime(content_type).as_str() {
+            "application/msgpack" | "application/x-msgpack" => Self::Msgpack,
+            "application/x-ndjson" | "application/ndjson" => Self::Ndjson,
+            "application/json" => Self::Json,
+            _ => match body.iter().find(|b| !b.is_ascii_whitespace()) {
+                Some(b'[' | b'{') => Self::Json,
+                _ => Self::Msgpack,
+            },
+        }
+    }
+}
+
+/// The heap [`parse`] takes, found without parsing: the tree of the body,
+/// and as much again for the records built from it. Errors where `parse`
+/// would.
+pub fn cost(body: &[u8], content_type: &str) -> Result<usize, String> {
+    let tree = match Format::of(body, content_type) {
+        Format::Msgpack => heap::msgpack(body, RECORD).ok_or("invalid msgpack")?,
+        Format::Ndjson => heap::ndjson(body, RECORD).map_err(|e| e.to_string())?,
+        Format::Json => heap::json(body, RECORD).or_else(|e| {
+            heap::ndjson(body, RECORD).map_err(|line| format!("{e} (as ndjson: {line})"))
+        })?,
+    };
+    Ok(2 * tree)
+}
 
 pub fn parse(
     body: &[u8],
@@ -9,14 +45,10 @@ pub fn parse(
     project_id: i64,
     observed_at: i64,
 ) -> Result<Vec<LogRecord>, String> {
-    let values = match mime(content_type).as_str() {
-        "application/msgpack" | "application/x-msgpack" => vec![msgpack(body)?],
-        "application/x-ndjson" | "application/ndjson" => ndjson(body)?,
-        "application/json" => json(body)?,
-        _ => match body.iter().find(|b| !b.is_ascii_whitespace()) {
-            Some(b'[' | b'{') => json(body)?,
-            _ => vec![msgpack(body)?],
-        },
+    let values = match Format::of(body, content_type) {
+        Format::Msgpack => vec![msgpack(body)?],
+        Format::Ndjson => ndjson(body)?,
+        Format::Json => json(body)?,
     };
     let mut records = Vec::new();
     for value in values {
