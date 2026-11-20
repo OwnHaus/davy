@@ -112,9 +112,11 @@ impl Notice {
     ) -> serde_json::Result<String> {
         match kind {
             Kind::Webhook => serde_json::to_string(&self.webhook(id, project, at)),
-            Kind::Slack => {
-                serde_json::to_string(&serde_json::json!({ "text": slack(&self.line(project)) }))
-            }
+            Kind::Slack => serde_json::to_string(&serde_json::json!({
+                "text": slack(&self.line(project)),
+                "unfurl_links": false,
+                "unfurl_media": false,
+            })),
             Kind::Email => serde_json::to_string(&self.mail(id, project, at)),
         }
     }

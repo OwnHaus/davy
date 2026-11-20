@@ -216,8 +216,8 @@ fn a_new_and_a_regressed_issue_each_queue_one_notice() {
     assert_eq!(
         payloads,
         [
-            r#"{"text":"[shop] New issue: boom"}"#,
-            r#"{"text":"[shop] Issue regressed: boom"}"#,
+            r#"{"text":"[shop] New issue: boom","unfurl_links":false,"unfurl_media":false}"#,
+            r#"{"text":"[shop] Issue regressed: boom","unfurl_links":false,"unfurl_media":false}"#,
         ]
     );
 }

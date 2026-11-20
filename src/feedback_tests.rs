@@ -103,7 +103,7 @@ fn only_channels_added_with_feedback_get_a_notice() {
             (
                 slack,
                 feedback.clone(),
-                r#"{"text":"Feedback from claude-code: unknown duration \"yesterday\""}"#.to_owned()
+                r#"{"text":"Feedback from claude-code: unknown duration \"yesterday\"","unfurl_links":false,"unfurl_media":false}"#.to_owned()
             ),
             (
                 email,
@@ -112,6 +112,20 @@ fn only_channels_added_with_feedback_get_a_notice() {
             ),
         ]
     );
+}
+
+#[test]
+fn unsent_feedback_takes_at_most_five_places_in_a_channel() {
+    let c = memory();
+    let hook = CheckUrl::parse("https://hooks.example/x").unwrap();
+    let id = alert::store::add(&c, None, &Destination::Webhook(hook), true, 0)
+        .unwrap()
+        .id;
+    for at in 0..8 {
+        add(&c, &item(None), at).unwrap();
+    }
+    let listed = &alert::store::list(&c).unwrap()[0];
+    assert_eq!((listed.id, listed.unsent, listed.dropped), (id, 5, 3));
 }
 
 #[test]

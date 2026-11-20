@@ -10,6 +10,9 @@ pub const MAX_CHANNELS: i64 = 100;
 /// A channel that is down for a day fills up, and its oldest notices are the
 /// ones a team needs, so new ones are counted and dropped.
 const MAX_UNSENT: i64 = 100;
+/// Feedback may take only a few of those places, so a flood of it cannot
+/// push out the alerts.
+const MAX_UNSENT_FEEDBACK: i64 = 5;
 const MAX_ERROR_CHARS: usize = 200;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -140,13 +143,22 @@ pub fn notify(c: &Connection, project: i64, notice: &Notice, at: Timestamp) -> R
     Ok(())
 }
 
-/// Queues `notice` for every channel added with `--feedback`.
+/// Queues `notice` for every channel added with `--feedback`, or counts it
+/// as dropped when the channel already has [`MAX_UNSENT_FEEDBACK`] unsent.
 pub fn notify_feedback(c: &Connection, notice: &Notice, at: Timestamp) -> Result<()> {
-    let channels: Vec<(i64, String)> = c
-        .prepare("SELECT id,kind FROM channels WHERE feedback=1 ORDER BY id")?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+    let channels: Vec<(i64, String, i64)> = c
+        .prepare(
+            "SELECT ch.id,ch.kind,(SELECT count(*) FROM notifications n WHERE n.channel_id=ch.id
+               AND n.type='feedback' AND n.sent_at IS NULL AND n.failed_at IS NULL)
+             FROM channels ch WHERE ch.feedback=1 ORDER BY ch.id",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    for (id, kind) in channels {
+    for (id, kind, unsent) in channels {
+        if unsent >= MAX_UNSENT_FEEDBACK {
+            c.execute("UPDATE channels SET dropped=dropped+1 WHERE id=?1", [id])?;
+            continue;
+        }
         queue(c, id, &kind, None, notice, at)?;
     }
     Ok(())

@@ -19,7 +19,7 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 - The systemd unit waits until the server listens (`Type=notify`), so `systemctl restart davy` returns only when Davy answers.
 - `davy doctor` checks a running install: permissions of the data directory and token, TLS, that the server answers and that its MCP endpoint takes the token, the SMTP server and free disk space. Every check that is not ok prints the command that fixes it, and `--json` gives the same for an agent.
 - `davy mcp-config --client claude-code|codex|cursor` prints the MCP config for that client. It reads the token from `DAVY_TOKEN`, so the file can be committed, and refuses a plain `http` URL that leaves the machine.
-- The MCP tool `submit_feedback` lets an agent report a tool that was missing, wrong or needed a workaround. `davy feedback` lists the reports, and a channel added with `--feedback` receives each one. Davy sends them nowhere else.
+- The MCP tool `submit_feedback` lets an agent report a tool that was missing, wrong or needed a workaround. `davy feedback` lists the reports, and a channel added with `--feedback` receives each one. Davy sends them nowhere else, and at most 5 wait unsent per channel, so they cannot crowd out alerts.
 - `davy project create` takes the public URL from `davy setup` and prints the existing DSN when the project is already there, so it can run again safely.
 - An install guide for coding agents in `docs/install.md`, one page per SDK in `docs/connect/` and an index in `llms.txt`.
 - The CLI commands `project`, `issues`, `event`, `logs`, `sql`, `context`, `resolve`, `monitor` and `channel`.

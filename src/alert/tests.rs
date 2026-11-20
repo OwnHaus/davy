@@ -165,27 +165,27 @@ fn a_slack_message_is_one_escaped_line() {
     let cases = [
         (
             slack(Some("shop"), Notice::IssueNew(issue("TypeError: x"))),
-            r#"{"text":"[shop] New issue: TypeError: x"}"#,
+            r#"{"text":"[shop] New issue: TypeError: x","unfurl_links":false,"unfurl_media":false}"#,
         ),
         (
             slack(Some("shop"), Notice::IssueRegressed(issue("TypeError: x"))),
-            r#"{"text":"[shop] Issue regressed: TypeError: x"}"#,
+            r#"{"text":"[shop] Issue regressed: TypeError: x","unfurl_links":false,"unfurl_media":false}"#,
         ),
         (
             slack(Some("shop"), Notice::MonitorDown(incident())),
-            r#"{"text":"[shop] API is down: HTTP 503"}"#,
+            r#"{"text":"[shop] API is down: HTTP 503","unfurl_links":false,"unfurl_media":false}"#,
         ),
         (
             slack(Some("shop"), Notice::MonitorUp(incident())),
-            r#"{"text":"[shop] API is up again"}"#,
+            r#"{"text":"[shop] API is up again","unfurl_links":false,"unfurl_media":false}"#,
         ),
         (
             slack(None, Notice::Test),
-            r#"{"text":"Test notice from Davy"}"#,
+            r#"{"text":"Test notice from Davy","unfurl_links":false,"unfurl_media":false}"#,
         ),
         (
             slack(Some("shop"), Notice::IssueNew(issue("<!channel> & <@U1>"))),
-            r#"{"text":"[shop] New issue: &lt;!channel&gt; &amp; &lt;@U1&gt;"}"#,
+            r#"{"text":"[shop] New issue: &lt;!channel&gt; &amp; &lt;@U1&gt;","unfurl_links":false,"unfurl_media":false}"#,
         ),
     ];
     for (got, want) in cases {
@@ -194,7 +194,10 @@ fn a_slack_message_is_one_escaped_line() {
     let long = slack(Some("shop"), Notice::IssueNew(issue(&"é".repeat(300))));
     assert_eq!(
         long,
-        format!(r#"{{"text":"[shop] New issue: {}"}}"#, "é".repeat(200))
+        format!(
+            r#"{{"text":"[shop] New issue: {}","unfurl_links":false,"unfurl_media":false}}"#,
+            "é".repeat(200)
+        )
     );
 }
 
@@ -281,7 +284,10 @@ fn a_notice_queues_one_row_for_each_channel_of_its_project() {
         rows[2].3,
         r#"{"id":3,"type":"monitor.up","project":"shop","at":"1970-01-01T00:00:06Z","monitor":{"id":1,"name":"API"},"incident":{"id":4,"reason":"HTTP 503"}}"#
     );
-    assert_eq!(rows[3].3, r#"{"text":"[shop] API is up again"}"#);
+    assert_eq!(
+        rows[3].3,
+        r#"{"text":"[shop] API is up again","unfurl_links":false,"unfurl_media":false}"#
+    );
 }
 
 #[test]
