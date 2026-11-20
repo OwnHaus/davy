@@ -1,7 +1,12 @@
 use super::check::{Checked, Http, check, client, run};
 use super::{CheckUrl, Expect, NewMonitor, Outcome, Reason, State, Target, store};
 use crate::net::{self, Reach};
-use axum::{Router, http::StatusCode, response::Redirect, routing::get};
+use axum::{
+    Router,
+    http::{HeaderMap, StatusCode, header::REFERER},
+    response::Redirect,
+    routing::get,
+};
 use std::time::Duration;
 
 /// A local site with one route per case.
@@ -32,6 +37,14 @@ async fn site() -> String {
             get(|| async { format!("{}needle", "a".repeat(1024 * 1024)) }),
         )
         .route("/hop", get(|| async { Redirect::to("/ok") }))
+        .route(
+            "/referer",
+            get(|headers: HeaderMap| async move {
+                let from = headers.get(REFERER).and_then(|v| v.to_str().ok());
+                format!("referer={}", from.unwrap_or("none"))
+            }),
+        )
+        .route("/to-referer", get(|| async { Redirect::to("/referer") }))
         .route("/loop", get(|| async { Redirect::to("/loop") }))
         .route("/to-literal", to(format!("http://127.0.0.1:{port}/ok")))
         .route("/to-name", to(format!("http://localhost:{port}/ok")));
@@ -115,6 +128,17 @@ async fn a_redirect_is_followed_up_to_five_times() {
         panic!("a redirect loop is a connection failure, got {looped:?}");
     };
     assert!(e.contains("redirect"), "{e}");
+}
+
+#[tokio::test]
+async fn a_redirect_does_not_send_the_url_it_came_from() {
+    let site = site().await;
+    let hop = outcome(
+        &format!("{site}/to-referer?token=x"),
+        keyword("referer=none"),
+    )
+    .await;
+    assert_eq!(hop, (Outcome::Up, Some(200)));
 }
 
 #[tokio::test]

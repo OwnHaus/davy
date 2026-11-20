@@ -183,6 +183,9 @@ impl Client {
         };
         let mut builder = reqwest::Client::builder()
             .user_agent(USER_AGENT)
+            // A redirect target must not learn the URL it came from, which
+            // can hold a token.
+            .referer(false)
             .redirect(policy);
         if reach == Reach::Public {
             // A proxy would resolve the name itself, past the check.
