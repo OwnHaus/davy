@@ -67,10 +67,34 @@ Rejected:
 - FTS5 with `detail=none`. Without column scoping and phrases, there is no `service:api` or exact-message search.
 - Unindexed zstd segments. Smallest on disk (0.18×), but every search scans everything. Worth revisiting later as cold storage behind the Tantivy index.
 
+## Logs ingest (milestone 3)
+
+Measured on 2026-11-20 with `bench/load-logs.sh 1000000 1000 4`. It starts `davy serve` and sends 1M synthetic pino-shaped rows (`examples/load_logs.rs`, 260 bytes of NDJSON per row) over the Logtail route as gzip msgpack batches of 1000 from 4 connections. A `429` is retried after 50 ms. It then waits until `davy logs` sees every row, and measures disk with `du`. The shared dev Mac had a load average of 6 to 11 throughout.
+
+| Run | Accepted in | Committed after the last 202 | Sustained | `429`s | Max RSS | Disk / raw |
+|---|---|---|---|---|---|---|
+| queue of 256 batches | 4.64 s | 4.83 s | 106k rows/s | 268 | 828 MB | 0.48× |
+| queue of 50k rows, run 1 | 6.19 s | 2.63 s | 113k rows/s | 378 | 426 MB | 0.48× |
+| queue of 50k rows, run 2 | 6.45 s | 3.46 s | 101k rows/s | 391 | 381 MB | 0.48× |
+| 50k rows, under `taskpolicy -b` | 58.8 s | 7.02 s | 15k rows/s | 917 | 654 MB | 0.55× |
+
+Sustained means 1M rows over accept time plus commit time. Disk is 125 MB for 260 MB of raw NDJSON.
+
+- **The limit is the indexing thread, as in the storage benchmark.** The server used 15 to 16 s of CPU for 1M rows, 15 µs per row, over about 9.5 s of wall time, so about 1.6 cores (measured). One indexing thread plus the merge threads fits that, the same 1.7 cores Tantivy used above (inferred). The rows here are 260 bytes against 394 there, which fits 100k rows/s here against 58k to 66k there (inferred).
+- **A 100k-row run does not measure indexing.** Three runs of 100k rows reported 110k to 259k rows/s accepted, because the old 256-batch queue held all 100 batches and the server indexed them after the client was done. Only the 1M run reaches a steady state.
+- **The row-bounded queue halved peak memory at the same throughput.** 256 batches of 1000 rows let up to 256k parsed records wait in memory. 50k rows cut max RSS from 828 MB to 381 to 426 MB. What remains is the 64 MB writer heap, up to 50k queued records, and mapped segment files (inferred, not broken down).
+- **Background QoS is 7× slower.** Under `taskpolicy -b` macOS keeps the process on the efficiency cores, so that run measured the scheduler, not Davy. Run the benchmark at normal priority.
+- **The JSON attributes field stays.** 0.48× the raw size at 1M rows, against 0.67× to 0.69× for the flat text field in the storage benchmark. The rows differ (260 against 394 bytes), so this is not a like-for-like comparison, but both are under the 1.0× bar.
+- Queries over the 1M rows took 87 to 139 ms each through `davy logs` including process start, measured during the `taskpolicy -b` run: the latest 100 rows, `timeout`, and `attributes.req.method:post AND attributes.res.statusCode:500`.
+
+**A bug found by this benchmark.** In the first 100k run the server accepted every batch, but nothing was ever committed, and the process ignored SIGTERM. A stack sample showed the log writer blocked in `IndexWriter::add_document`, with no Tantivy indexing thread left. When a Tantivy indexing worker fails, `prepare_commit` returns the error before it starts a new worker, and `add_document` then blocks on the full channel. The writer now drops a failing `IndexWriter` and opens a new one, and `store_recovers_when_a_day_index_breaks` reproduces the failure by deleting the day directory under an open writer. Without the fix that test hangs. What made the worker fail in that run is unknown, because its server log was lost. None of the eight later runs hit it.
+
 ## Rerun
 
 ```sh
 cd bench/storage
 cargo build --release
 ./run.sh > results.txt 2>&1      # about 45 minutes; data goes to ../../.scratch/bench-data
+cd ../..
+bash bench/load-logs.sh 1000000 1000 4   # logs ingest through the server, about 1 minute
 ```

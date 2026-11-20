@@ -195,7 +195,7 @@ One level table for every source (`LogLevel::parse`). Logs default to `Info`, un
 | OTLP `severity_number` 0 | parse `severity_text`, else Info |
 | anything else | Info |
 
-One timestamp function for every source. A number below 1e11 is seconds (fractions allowed), below 1e14 milliseconds, below 1e17 microseconds, else nanoseconds. A string is RFC 3339, with a naive `YYYY-MM-DDTHH:MM:SS[.f]` read as UTC. A msgpack timestamp extension (type -1, 4, 8 or 12 bytes) is decoded per the msgpack spec, because `@logtail/node` sends `dt` as a `Date`. Anything else, or a time older than the retention window or more than 24 h in the future, becomes `observed_at`, and the original value is kept in the attribute `davy.original_timestamp`.
+One timestamp function for every source. A number below 1e11 is seconds (fractions allowed), below 1e14 milliseconds, below 1e17 microseconds, else nanoseconds. Fractional numbers are rounded to the microsecond, because an f64 holds about 16 significant digits and the nanosecond digits of a seconds value are noise. A string is RFC 3339, with a naive `YYYY-MM-DDTHH:MM:SS[.f]` read as UTC. A msgpack timestamp extension (type -1, 4, 8 or 12 bytes) is decoded per the msgpack spec. `@logtail/pino` sends `dt` as an RFC 3339 string (captured fixture), but other msgpack shippers may encode a date natively. Anything else, or a time older than the retention window or more than 24 h in the future, becomes `observed_at`, and the original value is kept in the attribute `davy.original_timestamp`.
 
 ### Adapters
 
@@ -208,15 +208,16 @@ One timestamp function for every source. A number below 1e11 is seconds (fractio
 - a string `body` is the message. Any other body is written as compact JSON.
 - `AnyValue` converts to JSON as string, bool, integer, float, array, object (from a kvlist), and base64 string (from bytes).
 
-**Sentry `log` item.** `ItemKind::Log` moves from `Drop` to a new `Disposition::StoreLogs`. The payload is `{"items":[{"timestamp": <float seconds>, "trace_id", "span_id"?, "level", "body", "severity_number"?, "attributes": {"<key>": {"value": ..., "type": ...}}}]}`. Attributes are flattened to `<key>: value`. `service.name`, when present, becomes `service`. An envelope with only log items still answers `200 {"id": ...}`.
+**Sentry `log` item.** `ItemKind::Log` moves from `Drop` to a new `Disposition::StoreLogs`. The item header has `item_count` and `content_type: application/vnd.sentry.items.log+json` but no `length`, so the payload runs to the end of its line. The payload is `{"version":2,"items":[{"timestamp": <float seconds>, "trace_id", "span_id"?, "level", "body", "severity_number"?, "attributes": {"<key>": {"value": ..., "type": ...}}}]}`. Attributes are flattened to `<key>: value`. `service.name`, when present, becomes `service`. An envelope with only log items still answers `200 {"id": ...}`. A log item that does not parse is skipped and the rest of the envelope is stored, as with other unknown items.
 
 ### Storage (Tantivy, one index per UTC day)
 
 - `data/logs/YYYY-MM-DD/` is one Tantivy index for the UTC day of `timestamp`. Docstore compressed with zstd, as in the benchmark.
 - Fields: `project` u64 indexed and fast. `ts` i64 indexed, fast and stored. `observed` i64 stored. `level` u64 indexed, fast and stored, so `--level warn` is a range query. `source` u64 stored. `service`, `trace_id` and `span_id` raw strings, indexed and stored. `message` text, stored. `attributes` a JSON field, indexed with the default tokenizer and stored, so `attributes.user_id:42` works.
-- The benchmark measured attributes as one flat text field. A JSON field may cost more disk. Measure both on 1M synthetic rows before committing to it, and keep the flat text field if the JSON field goes over 1.0× the raw size.
-- One log writer thread owns the open `IndexWriter`s (at most 3 days open, least recently written one closed first, a day idle for 10 minutes closed). It reads batches of `LogRecord` from a bounded channel of 256 batches. A full channel is the `429`. Each writer uses 1 indexing thread and a 64 MB heap (1 thread was faster in the benchmark).
+- The JSON field stays. On 1M synthetic rows it took 0.48× the raw NDJSON size, under the 1.0× bar set before measuring, so the flat text variant was not measured. Numbers in `docs/storage-benchmark.md`, section "Logs ingest".
+- One log writer thread owns the open `IndexWriter`s (at most 3 days open, least recently written one closed first, a day idle for 10 minutes closed). It reads batches of `LogRecord` from a queue bounded at 50k rows, counted in rows rather than batches because one batch holds one record or thousands and memory follows the rows. An empty queue takes any batch, so one oversized batch is never refused forever. A full queue is the `429`. A bound of 256 batches let 1M rows in batches of 1000 push RSS to 828 MB (measured). Each writer uses 1 indexing thread and a 64 MB heap (1 thread was faster in the benchmark).
 - The writer commits every second when anything changed, and at once when 100k documents are uncommitted. It commits everything on shutdown.
+- A failed `add_document` or commit drops that day's `IndexWriter`, and the next write opens a fresh one. Tantivy does not restart its indexing worker after a failed commit, so the next 10k documents would block the writer thread forever and ingest would answer `429` from then on (reproduced in `store_recovers_when_a_day_index_breaks`). The cost is that the uncommitted documents of that day, at most about one second, are lost and logged.
 - The HTTP handler answers once the batch is queued, not once it is committed. Error events wait for their commit because they are few and each matters. Logs come in bulk and the shippers retry on failure only. The cost is that a crash loses at most about one second of accepted logs, and a log shows up in search within about one second.
 - Retention: `davy serve --log-retention-days <n>`, default 30. Once an hour the writer renames day directories older than that into `data/logs/.trash/` and removes them. It touches only names that parse as `YYYY-MM-DD`.
 
@@ -236,7 +237,7 @@ pub fn search(data: &Path, q: &LogQuery) -> anyhow::Result<Vec<LogHit>>   // new
 
 `davy logs --data <dir> [--project <slug>] [--since 1h|30m|2d|<RFC 3339>] [--until ...] [--level warn] [--limit 100] [--json] [query]`
 
-- Defaults: `--since 1h`, `--limit 100`.
+- Defaults: `--since 24h`, `--limit 100`.
 - Text output prints the newest `limit` hits oldest first, like `tail`: `2026-11-20T10:00:00.123Z WARN api message key=value ...`.
 - `--json` prints one JSON object per line.
 
@@ -244,7 +245,7 @@ pub fn search(data: &Path, q: &LogQuery) -> anyhow::Result<Vec<LogHit>>   // new
 
 Logs make the two load follow-ups from milestone 2 hot, so both land now.
 
-- Project keys live in memory (`HashMap<public_key, project_id>` behind an `RwLock`), loaded at start and reloaded from SQLite on a miss at most once per second. It replaces the `Mutex<Connection>` in `App`. The Sentry routes use it too.
+- Project keys live in memory (`HashMap<public_key, project_id>` behind an `RwLock`) as a cache of known keys. A miss is one indexed SQLite lookup, and a hit is cached. A miss is not rate-limited, because a project created a moment ago must work at once and an unknown key costs one primary-key lookup. The Sentry routes use it too.
 - Decompression and parsing run in `spawn_blocking` for every ingest route.
 
 ### Done means
@@ -252,7 +253,7 @@ Logs make the two load follow-ups from milestone 2 hot, so both land now.
 - Fixtures captured from real clients with synthetic data into `e2e/fixtures/`, by extending `e2e/capture.mjs`. They are `logtail-pino` (`@logtail/pino`), `sentry-node-10-logs` (`@sentry/node` 10 with `enableLogs: true` and `Sentry.logger.*`), `otlp-proto` and `otlp-json` (the OpenTelemetry JS log exporters).
 - Unit tests assert literal values. Each adapter parses its fixture into exact records. Every row of the level table and every timestamp form gets a case, the msgpack timestamp extension included. A Logtail batch with one bad record keeps the others.
 - A store test writes three days of synthetic records and asserts exact hits and order for each of project, level, text, attribute query and time range. Retention then removes the oldest day.
-- `e2e/run.sh` also sends logs through `@logtail/pino`, Sentry `logger.*` and both OTLP exporters, waits 1.5 s, and asserts with `davy logs --json` the exact message, level, service and one attribute per source, plus a trace id where the client sets one. A wrong bearer token gets 403.
+- `e2e/run.sh` also sends logs through `@logtail/pino`, Sentry `logger.*` and both OTLP exporters, polls `davy logs` until all 10 records are searchable, and asserts with `davy logs --json` the exact message, level, service and one attribute per source, plus a trace id where the client sets one. A wrong bearer token gets 403.
 - A load script sends 1M synthetic Logtail records in msgpack batches of 1000. Report rows per second and disk over raw size, with what limits them. It is a number to explain, not a gate.
 - `cargo test` passes and `cargo clippy --all-targets -- -D warnings` is clean.
 
