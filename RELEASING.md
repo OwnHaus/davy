@@ -17,7 +17,7 @@ No version has been released yet. `0.1.0` in `Cargo.toml` is unreleased. The mil
 ## Steps
 
 1. `main` is clean, pushed and green in CI.
-2. `scripts/release X.Y.Z` (planned) runs the gate and e2e, sets the version in `Cargo.toml` and `Cargo.lock`, turns `## Unreleased` into `## X.Y.Z (YYYY-MM-DD)` with an empty `## Unreleased` above it, commits `Release X.Y.Z` and creates the signed tag `vX.Y.Z`. The tag message is the changelog section.
+2. `scripts/release X.Y.Z` (planned) runs the gate and e2e, sets the version in `Cargo.toml` and `Cargo.lock`, turns `## Unreleased` into `## X.Y.Z (YYYY-MM-DD)` with an empty `## Unreleased` above it, commits `chore(release): release X.Y.Z` and creates the signed tag `vX.Y.Z`. The tag message is the changelog section.
 3. `git push origin main vX.Y.Z`. The tag starts the release workflow.
 4. The release workflow (planned) builds and publishes a draft release, below.
 5. The owner downloads one artifact, verifies it as a user would (below), runs it against the e2e suite and publishes the draft.
@@ -40,7 +40,7 @@ No version has been released yet. `0.1.0` in `Cargo.toml` is unreleased. The mil
 ## Tools
 
 - The release workflow is generated with `dist` (cargo-dist) if its output passes `zizmor`, pins every action to a SHA and needs no write token outside the release job. Otherwise it is written by hand. The milestone decides with a dry run on a test tag.
-- `release-plz` and `git-cliff` are not used. They write the changelog from commit subjects, and the changelog here is written for operators.
+- `release-plz` and `git-cliff` do not write the changelog. They would copy commit subjects, and the changelog here is written for operators. `scripts/release` may print the `feat`, `fix` and `perf` commits since the last tag as a checklist.
 - Reproducible builds are the goal after 0.1.0: two builds of one tag give the same bytes, checked in CI.
 
 ## Supported versions

@@ -46,7 +46,7 @@ Mechanical rules live in `Cargo.toml` `[lints]`, `clippy.toml`, `deny.toml` and 
 ## Prose
 
 - Docs, comments and commit messages use short declarative sentences. No long dash character, `scripts/check` rejects it. No filler ("robust", "seamless", "leverage").
-- Commit messages say what changed and why, in the imperative.
+- Commit messages are `type(scope): description` (`CONTRIBUTING.md`) and say what changed and why, in the imperative.
 
 ## Git
 

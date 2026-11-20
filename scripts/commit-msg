@@ -1,7 +1,18 @@
 #!/bin/sh
 # Checks one commit message file against the rules in CONTRIBUTING.md. The
 # commit-msg hook runs it on every commit, CI on every pushed commit.
+# `scripts/commit-msg --scopes` prints the scopes, one per line.
 set -eu
+
+types='feat fix perf refactor test docs build ci chore revert'
+# Each scope is explained in CONTRIBUTING.md. scripts/test-commit-msg fails
+# when one is missing there.
+scopes='http errors logs sourcemaps mcp monitor alert core net cli ui e2e bench deps release security repo'
+
+if [ "$1" = --scopes ]; then
+    printf '%s\n' $scopes
+    exit 0
+fi
 
 # git hands the hook the message before it strips comments and the diff
 # below the scissors line of `git commit -v`.
@@ -19,21 +30,41 @@ problem() {
 length=$(printf '%s' "$subject" | LC_ALL=C tr -d '\200-\277' | wc -c | tr -d ' ')
 max=72
 
-case $subject in
-'') problem 'the subject line is empty' ;;
-[A-Z]*) ;;
-*) problem 'the subject starts with a capital letter' ;;
-esac
+shape='^[a-z]+\([a-z0-9-]+\)!?: .'
+if [ -z "$subject" ]; then
+    problem 'the subject line is empty'
+elif ! printf '%s\n' "$subject" | grep -qE "$shape"; then
+    problem 'the subject is type(scope): description, e.g. feat(alert): send alerts by e-mail'
+else
+    type=${subject%%(*}
+    scope=${subject#*(}
+    scope=${scope%%)*}
+    description=${subject#*: }
+    case " $types " in
+    *" $type "*) ;;
+    *) problem "\"$type\" is not a type, use one of: $types" ;;
+    esac
+    case " $scopes " in
+    *" $scope "*) ;;
+    *) problem "\"$scope\" is not a scope, use one of: $scopes" ;;
+    esac
+    case $description in
+    [a-z]*) ;;
+    *) problem 'the description starts with a lowercase verb' ;;
+    esac
+    case ${description%% *} in
+    added | adds | adding | fixed | fixes | fixing | updated | updates | updating | removed | removes | removing | changed | changes | changing)
+        problem "the description is imperative: \"${description%% *}\" reads as a report, write what the commit does (add, fix, update)" ;;
+    esac
+    case $description in
+    *.) problem 'the subject ends without a period' ;;
+    esac
+fi
 if [ "$length" -gt "$max" ]; then
     problem "the subject has $length characters, the limit is $max"
 fi
 case $subject in
-*.) problem 'the subject ends without a period' ;;
-esac
-case ${subject%% *} in
-Added | Adds | Adding | Fixed | Fixes | Fixing | Updated | Updates | Updating | Removed | Removes | Removing | Changed | Changes | Changing)
-    problem "the subject is imperative: \"${subject%% *}\" reads as a report, write what the commit does (Add, Fix, Update)" ;;
-fixup! | squash! | amend! | WIP | WIP:)
+fixup!* | squash!* | amend!* | WIP*)
     problem 'a fixup or WIP commit does not land, fold it into the commit it fixes' ;;
 esac
 if [ -n "$second" ]; then
