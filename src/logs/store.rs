@@ -458,6 +458,7 @@ pub struct LogHit {
     pub attributes: Map<String, Value>,
 }
 
+/// The newest `q.limit` hits, oldest first.
 pub fn search(root: &Path, q: &LogQuery) -> Result<Vec<LogHit>> {
     search_once(root, q).or_else(|e| {
         let missing = format!("{e:#}");
@@ -538,6 +539,7 @@ fn search_once(root: &Path, q: &LogQuery) -> Result<Vec<LogHit>> {
             hits.push(hit(&index.schema(), &f, &doc)?);
         }
     }
+    hits.reverse();
     Ok(hits)
 }
 

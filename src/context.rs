@@ -63,8 +63,7 @@ pub fn issue_context(c: &Connection, data: &Path, id: i64) -> Result<Option<Issu
             },
         ),
     };
-    let mut logs = search(&data.join("logs"), &query)?;
-    logs.reverse();
+    let logs = search(&crate::logs::dir(data), &query)?;
     Ok(Some(IssueContext {
         latest_event: latest.as_ref().map(event::compact),
         recent_events: store::recent_events(c, id)?,

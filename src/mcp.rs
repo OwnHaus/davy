@@ -5,7 +5,7 @@ use crate::{
     context,
     feedback::Feedback,
     logs::{
-        LogLevel,
+        self, LogLevel,
         store::{LogQuery, search},
     },
     query,
@@ -159,20 +159,17 @@ impl Tools {
                 time::instant(s.unwrap_or(default), now).map_err(anyhow::Error::msg)
             };
             let project = match &req.project {
-                Some(slug) => Some(
-                    store::project_id(&store::open(data)?, slug)?
-                        .ok_or_else(|| anyhow::anyhow!("unknown project {slug:?}"))?,
-                ),
+                Some(slug) => Some(store::project_by_slug(&query::open(data)?, slug)?),
                 None => None,
             };
-            let min_level = match &req.level {
-                Some(s) => {
-                    Some(LogLevel::parse(s).ok_or_else(|| anyhow::anyhow!("unknown level {s:?}"))?)
-                }
-                None => None,
-            };
-            let mut hits = search(
-                &data.join("logs"),
+            let min_level = req
+                .level
+                .as_deref()
+                .map(LogLevel::named)
+                .transpose()
+                .map_err(anyhow::Error::msg)?;
+            let hits = search(
+                &logs::dir(data),
                 &LogQuery {
                     project,
                     since: instant(req.since.as_deref(), "24h")?,
@@ -182,7 +179,6 @@ impl Tools {
                     limit: req.limit.unwrap_or(100).min(MAX_LOGS),
                 },
             )?;
-            hits.reverse();
             json(&hits)
         })
         .await

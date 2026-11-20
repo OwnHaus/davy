@@ -2,7 +2,7 @@ use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use davy::{
     alert, context, feedback, install,
     logs::{
-        LogLevel,
+        self, LogLevel,
         store::{LogHit, LogQuery, search},
     },
     monitor::{self, CheckUrl, Expect, NewMonitor, Target},
@@ -123,7 +123,7 @@ fn instant(s: &str) -> Result<i64, String> {
     time::instant(s, now_ns())
 }
 fn level(s: &str) -> Result<LogLevel, String> {
-    LogLevel::parse(s).ok_or_else(|| format!("unknown level {s:?}"))
+    LogLevel::named(s)
 }
 #[derive(Subcommand)]
 enum Project {
@@ -308,14 +308,11 @@ async fn main() -> anyhow::Result<()> {
 }
 fn logs(out: &mut impl Write, args: Logs) -> anyhow::Result<()> {
     let project = match args.project {
-        Some(slug) => Some(
-            store::project_id(&store::open(&args.data)?, &slug)?
-                .ok_or_else(|| anyhow::anyhow!("unknown project {slug:?}"))?,
-        ),
+        Some(slug) => Some(store::project_by_slug(&store::open(&args.data)?, &slug)?),
         None => None,
     };
     let hits = search(
-        &args.data.join("logs"),
+        &logs::dir(&args.data),
         &LogQuery {
             project,
             since: args.since,
@@ -331,8 +328,7 @@ fn run_monitor(out: &mut impl Write, command: Monitor) -> anyhow::Result<()> {
     match command {
         Monitor::Add(args) => {
             let c = store::open(&args.data)?;
-            let project = store::project_id(&c, &args.project)?
-                .ok_or_else(|| anyhow::anyhow!("unknown project {:?}", args.project))?;
+            let project = store::project_by_slug(&c, &args.project)?;
             let target = match args.url {
                 Some(url) => Target::Http {
                     url: CheckUrl::parse(&url).map_err(anyhow::Error::msg)?,
@@ -386,10 +382,7 @@ fn run_channel(out: &mut impl Write, command: Channel) -> anyhow::Result<()> {
         Channel::Add(args) => {
             let c = store::open(&args.data)?;
             let project = match &args.project {
-                Some(slug) => Some(
-                    store::project_id(&c, slug)?
-                        .ok_or_else(|| anyhow::anyhow!("unknown project {slug:?}"))?,
-                ),
+                Some(slug) => Some(store::project_by_slug(&c, slug)?),
                 None => None,
             };
             let to = match args.kind {
@@ -497,9 +490,8 @@ fn print_rows(out: &mut impl Write, rows: &query::Rows, json: bool) -> anyhow::R
     }
     Ok(())
 }
-/// Prints hits oldest first, one per line.
-fn print_logs(out: &mut impl Write, mut hits: Vec<LogHit>, json: bool) -> anyhow::Result<()> {
-    hits.reverse();
+/// Prints hits one per line.
+fn print_logs(out: &mut impl Write, hits: Vec<LogHit>, json: bool) -> anyhow::Result<()> {
     for hit in hits {
         if json {
             writeln!(out, "{}", serde_json::to_string(&hit)?)?;
@@ -637,7 +629,7 @@ mod tests {
             timestamp: "2026-11-20T10:00:00Z".into(),
             timestamp_ns: 0,
             project_id: 1,
-            source: davy::logs::LogSource::Logtail,
+            source: logs::LogSource::Logtail,
             level: LogLevel::Info,
             service: Some("api\r".into()),
             message: "line\n\u{1b}[2Jgone".into(),

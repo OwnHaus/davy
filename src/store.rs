@@ -128,6 +128,10 @@ pub fn project_for_key(c: &Connection, key: &str) -> Result<Option<i64>> {
     )
     .optional()?)
 }
+/// The id of the project `slug`, or an error that names it.
+pub fn project_by_slug(c: &Connection, slug: &str) -> Result<i64> {
+    project_id(c, slug)?.ok_or_else(|| anyhow::anyhow!("unknown project {slug:?}"))
+}
 pub fn project_id(c: &Connection, slug: &str) -> Result<Option<i64>> {
     Ok(c.query_row(
         "SELECT id FROM projects WHERE slug=?1",

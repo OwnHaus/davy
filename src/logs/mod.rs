@@ -62,7 +62,17 @@ pub enum LogLevel {
     Fatal = 6,
 }
 
+/// Where the log indexes of the data directory `data` live.
+pub fn dir(data: &std::path::Path) -> std::path::PathBuf {
+    data.join("logs")
+}
+
 impl LogLevel {
+    /// [`LogLevel::parse`] for a level a person or an agent typed.
+    pub fn named(s: &str) -> Result<Self, String> {
+        Self::parse(s).ok_or_else(|| format!("unknown level {s:?}"))
+    }
+
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s.trim().to_ascii_lowercase().as_str() {
             "trace" => Self::Trace,

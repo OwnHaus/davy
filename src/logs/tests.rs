@@ -500,20 +500,21 @@ fn store_files_records_by_day_and_expires_old_days() {
     assert_eq!(
         messages,
         [
-            "clock skew",
-            "other project",
+            "yesterday checkout ok",
             "payment provider timed out",
-            "yesterday checkout ok"
-        ]
+            "other project",
+            "clock skew"
+        ],
+        "oldest first"
     );
     assert_eq!(
-        all[0].timestamp_ns, now,
+        all[3].timestamp_ns, now,
         "a future timestamp falls back to observed"
     );
-    assert_eq!(all[0].attributes[ORIGINAL_TIMESTAMP], now - 40 * DAY);
-    assert_eq!(all[2].level, LogLevel::Error);
-    assert_eq!(all[2].service.as_deref(), Some("api"));
-    assert_eq!(all[2].attributes["http"]["status"], 502);
+    assert_eq!(all[3].attributes[ORIGINAL_TIMESTAMP], now - 40 * DAY);
+    assert_eq!(all[1].level, LogLevel::Error);
+    assert_eq!(all[1].service.as_deref(), Some("api"));
+    assert_eq!(all[1].attributes["http"]["status"], 502);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -543,7 +544,7 @@ fn search_filters_by_project_level_text_and_limit() {
                 min_level: Some(LogLevel::Warn),
                 ..window.clone()
             },
-            &["other project", "payment provider timed out"],
+            &["payment provider timed out", "other project"],
         ),
         (
             LogQuery {
