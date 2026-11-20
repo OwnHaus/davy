@@ -33,7 +33,7 @@ use std::{
     time::Duration,
 };
 
-pub(crate) mod body;
+pub mod body;
 
 /// Sentry's limit for one event or log item, so a client that works with Sentry fits.
 const MAX_ITEM: usize = 1024 * 1024;

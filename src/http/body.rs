@@ -9,6 +9,7 @@
 use super::{Failure, bad};
 use crate::envelope::EnvelopeHeader;
 use axum::{body::Body, http::StatusCode};
+use brotli_decompressor::BrotliDecoderParameter;
 use http_body_util::BodyExt;
 use std::{
     io::{BufRead, BufReader, Cursor, Read},
@@ -27,10 +28,14 @@ pub const DECOMPRESSED: usize = 64 * 1024 * 1024;
 pub const MAX_HEADER_LINE: usize = 64 * 1024;
 /// How much of an envelope is read before its key is known.
 pub const BEFORE_AUTH: usize = 128 * 1024;
+/// A zstd frame may ask its decoder for a window of up to 8 MiB, the most
+/// RFC 9659 requires of an HTTP decoder. zstd's own limit is 128 MiB.
+const ZSTD_WINDOW_LOG: u32 = 23;
 pub const TIMEOUT: Duration = Duration::from_secs(30);
 /// What all requests together may hold while they are read and parsed.
 pub const MEMORY: usize = 256 * 1024 * 1024;
 const KIB: usize = 1024;
+const MIB: usize = 1024 * KIB;
 /// The first room of a buffer that grows.
 const FIRST_ROOM: usize = 64 * KIB;
 
@@ -205,8 +210,15 @@ pub async fn read_envelope(
             continue;
         }
         tried = len;
-        if let Some(line) = header_line(&incoming.bytes, encoding, !more)? {
-            admit(&EnvelopeHeader::parse(&line).map_err(bad)?)?;
+        // The line, and the header's two fields that come from it.
+        let paid = decoder_memory(&incoming.bytes, encoding) + 2 * MAX_HEADER_LINE;
+        held.take(paid)?;
+        let header = header_line(&incoming.bytes, encoding, !more)?
+            .map(|line| EnvelopeHeader::parse(&line).map_err(bad))
+            .transpose();
+        held.release(paid);
+        if let Some(header) = header? {
+            admit(&header)?;
             break;
         }
         if len >= BEFORE_AUTH {
@@ -238,14 +250,57 @@ fn header_line(bytes: &[u8], encoding: &str, whole: bool) -> Result<Option<Vec<u
     Ok(None)
 }
 
-fn decoder<'a>(bytes: &'a [u8], encoding: &str) -> Result<impl BufRead + 'a, Failure> {
+/// What a decoder for `encoding` allocates at most while it reads the body
+/// `bytes`.
+pub fn decoder_memory(bytes: &[u8], encoding: &str) -> usize {
+    match encoding {
+        "gzip" | "deflate" => 128 * KIB,
+        "zstd" => (1 << ZSTD_WINDOW_LOG) + MIB,
+        "br" => brotli_window(bytes) + BROTLI_TABLES,
+        _ => 0,
+    }
+}
+
+/// The Huffman tables of a brotli stream. At most 256 trees in each of its
+/// three groups take about 2.6 MiB, which the decoder may hold one and a
+/// half times over, and it holds one group's old tables while they grow.
+const BROTLI_TABLES: usize = 6 * MIB;
+
+/// The window a brotli stream asks for in its first bits (RFC 7932, 9.1).
+fn brotli_window(bytes: &[u8]) -> usize {
+    let first = bytes.first().copied().unwrap_or(0);
+    let log = match (first & 1, (first >> 1) & 7, (first >> 4) & 7) {
+        (0, _, _) => 16,
+        (_, n @ 1.., _) => 17 + n,
+        (_, 0, n @ 1..) => 8 + n,
+        _ => 17,
+    };
+    1 << log
+}
+
+/// A reader of the body `bytes` decompressed. It allocates no more than
+/// [`decoder_memory`].
+pub fn decoder<'a>(bytes: &'a [u8], encoding: &str) -> Result<impl BufRead + 'a, Failure> {
     let source = Cursor::new(bytes);
     let reader: Box<dyn Read + 'a> = match encoding {
         "" | "identity" => Box::new(source),
         "gzip" => Box::new(flate2::read::GzDecoder::new(source)),
         "deflate" => Box::new(flate2::read::ZlibDecoder::new(source)),
-        "br" => Box::new(brotli::Decompressor::new(source, 4096)),
-        "zstd" => Box::new(zstd::stream::read::Decoder::new(source).map_err(bad)?),
+        "br" => {
+            let mut d = brotli_decompressor::Decompressor::new(source, 4096);
+            // Large-window brotli is an extension that HTTP's brotli (RFC
+            // 7932) does not have, and its window can be 1 GiB.
+            d.set_parameter(BrotliDecoderParameter::BROTLI_DECODER_PARAM_LARGE_WINDOW, 0);
+            // The whole window at once. Grown by doubling, it would hold one
+            // and a half windows while it grows.
+            d.set_initial_ring_buffer_size(u32::MAX);
+            Box::new(d)
+        }
+        "zstd" => {
+            let mut d = zstd::stream::read::Decoder::new(source).map_err(bad)?;
+            d.window_log_max(ZSTD_WINDOW_LOG).map_err(bad)?;
+            Box::new(d)
+        }
         _ => return Err(bad("unsupported content encoding")),
     };
     Ok(BufReader::new(reader))
@@ -273,6 +328,8 @@ pub fn decode(bytes: Vec<u8>, encoding: &str, held: &mut Held) -> Result<Vec<u8>
         held.keep(bytes.capacity());
         return Ok(bytes);
     }
+    // Paid back below, when only `out` is still in use.
+    held.take(decoder_memory(&bytes, encoding))?;
     let mut out = Vec::new();
     {
         let mut reader = decoder(&bytes, encoding)?;

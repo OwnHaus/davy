@@ -3,6 +3,7 @@
 
 use davy::{
     heap,
+    http::body,
     logs::{logtail, otlp, sentry},
 };
 use opentelemetry_proto::tonic::{
@@ -14,6 +15,7 @@ use opentelemetry_proto::tonic::{
 use peak_alloc::PeakAlloc;
 use prost::Message;
 use serde_json::Value;
+use std::io::Write;
 
 #[global_allocator]
 static ALLOC: PeakAlloc = PeakAlloc;
@@ -200,5 +202,111 @@ fn otlp_costs_bound_the_peak_heap_of_decoding_and_converting() {
             })
         });
         assert!(used <= paid, "{name} records: used {used}, paid {paid}");
+    }
+}
+
+/// Text that compresses about as well as JSON does.
+fn wordy(len: usize) -> Vec<u8> {
+    let words = [
+        "\"message\":",
+        "\"level\":\"error\",",
+        "frame",
+        "123",
+        "{",
+        "}",
+        "at ",
+        "\n",
+    ];
+    let mut x: u32 = 7;
+    let mut out = Vec::with_capacity(len);
+    while out.len() < len {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        out.extend_from_slice(words[x as usize % words.len()].as_bytes());
+        out.extend_from_slice(&x.to_le_bytes()[..1]);
+    }
+    out
+}
+
+/// `payload` twice, in two metablocks, so the decoder cannot size its
+/// window to a stream of one.
+fn brotli(payload: &[u8], quality: u32, lgwin: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut w = brotli::CompressorWriter::new(&mut out, 4096, quality, lgwin);
+    w.write_all(payload).expect("brotli writes");
+    w.flush().expect("brotli flushes");
+    w.write_all(payload).expect("brotli writes");
+    drop(w);
+    out
+}
+
+fn zstd(payload: &[u8], level: i32, window_log: u32) -> Vec<u8> {
+    let mut e = zstd::stream::write::Encoder::new(Vec::new(), level).expect("zstd encoder");
+    e.window_log(window_log).expect("window log");
+    e.include_contentsize(false).expect("no content size");
+    e.write_all(payload).expect("zstd writes");
+    e.finish().expect("zstd finishes")
+}
+
+/// What zstd's own context holds after it decodes `body`. zstd allocates
+/// with C's `malloc`, which the measuring allocator does not see.
+fn zstd_context(body: &[u8]) -> usize {
+    use zstd::zstd_safe::{DCtx, DParameter, InBuffer, OutBuffer};
+    let mut dctx = DCtx::create();
+    dctx.set_parameter(DParameter::WindowLogMax(23))
+        .expect("window log max");
+    let mut out = vec![0; 1 << 16];
+    let mut input = InBuffer::around(body);
+    loop {
+        let mut output = OutBuffer::around(&mut out[..]);
+        let more = dctx
+            .decompress_stream(&mut output, &mut input)
+            .expect("zstd decodes");
+        if more == 0 && input.pos() == body.len() {
+            return dctx.sizeof();
+        }
+    }
+}
+
+#[test]
+fn a_decoder_allocates_no_more_than_its_price() {
+    let _alone = alone();
+    let text = wordy(256 << 10);
+    let mut bodies = vec![
+        ("gzip", {
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+            e.write_all(&text).unwrap();
+            e.finish().unwrap()
+        }),
+        ("deflate", {
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+            e.write_all(&text).unwrap();
+            e.finish().unwrap()
+        }),
+        ("br", brotli(&text, 11, 22)),
+        ("zstd", zstd(&text, 19, 23)),
+    ];
+    for log in 10..=24 {
+        bodies.push(("br", brotli(&text[..4096], 5, log)));
+    }
+    let zeros = vec![0; 16 << 20];
+    for log in [10, 17, 20, 23] {
+        bodies.push(("zstd", zstd(&zeros[..2 << log], 1, log)));
+    }
+    for (encoding, body) in bodies {
+        let price = body::decoder_memory(&body, encoding);
+        let mut used = peak(|| {
+            let mut reader = body::decoder(&body, encoding).unwrap();
+            std::io::copy(&mut reader, &mut std::io::sink()).unwrap()
+        });
+        if encoding == "zstd" {
+            used += zstd_context(&body);
+        }
+        assert!(
+            used <= price,
+            "{encoding} of {}: used {used}, priced {price}",
+            body.len()
+        );
     }
 }
