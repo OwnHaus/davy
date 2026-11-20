@@ -144,3 +144,21 @@ fn run_refuses_a_url_that_is_not_http() {
         "the public URL must start with https:// or http:// and name a host, e.g. https://davy.example.com"
     );
 }
+
+#[test]
+fn the_token_goes_out_over_https_or_to_this_machine_only() {
+    let config = |url: &str| {
+        config(
+            Client::Codex,
+            &Url::parse(url).unwrap(),
+            &Token::Env,
+            "token",
+        )
+    };
+    assert!(config("http://127.0.0.1:8000/").is_ok());
+    assert!(config("http://localhost:8000/").is_ok());
+    assert_eq!(
+        config("http://davy.example.com/").unwrap_err().to_string(),
+        "http://davy.example.com/ is plain http, so the agent would send the admin token unencrypted, put Davy behind https first (docs/install.md, step 7)"
+    );
+}

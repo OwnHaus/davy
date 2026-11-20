@@ -1,13 +1,13 @@
 //! `davy doctor` checks a running install. Each check that is not `ok` says
 //! what fixes it. It reaches only the public URL and the SMTP server.
 
-use super::{SMTP_FILE, Settings, TOKEN_FILE, sh};
+use super::{SMTP_FILE, Settings, TOKEN_FILE, loopback, sh};
 use crate::{alert::mail::Smtp, secret::MIN_TOKEN_CHARS};
 use serde::Serialize;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use url::{Host, Url};
+use url::Url;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 const GIB: u64 = 1 << 30;
@@ -174,13 +174,7 @@ fn tls(url: &Url, listen: &str, d: &str) -> Check {
     if url.scheme() == "https" {
         return ok("tls", format!("{url} uses https"));
     }
-    let loopback = match url.host() {
-        Some(Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(Host::Ipv6(ip)) => ip.is_loopback(),
-        Some(Host::Domain(name)) => name == "localhost" || name.ends_with(".localhost"),
-        None => false,
-    };
-    if loopback {
+    if loopback(url) {
         return ok("tls", format!("{url} is plain http on this machine only"));
     }
     not_ok(
@@ -193,18 +187,23 @@ fn tls(url: &Url, listen: &str, d: &str) -> Check {
     )
 }
 
-/// Whether the server answers at `url`, and whether it was started with the
-/// token in the data directory: `/mcp` answers 401 to another token and 404
-/// when the server runs without one.
+/// The `initialize` request an MCP client sends first.
+const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"davy-doctor","version":"1"}}}"#;
+
+/// Whether the server answers at `url`, and whether its `/mcp` is Davy's,
+/// started with the token in the data directory. The token is sent only over
+/// https or to this machine.
 async fn server(url: &Url, token: Option<&str>, d: &str) -> Vec<Check> {
     let start = format!(
         "start the server (davy setup --data {d} printed how) and read its log; behind a proxy, check that the proxy forwards to it"
     );
-    let client = match reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .timeout(TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-    {
+        .redirect(reqwest::redirect::Policy::none());
+    if loopback(url) {
+        builder = builder.no_proxy();
+    }
+    let client = match builder.build() {
         Ok(client) => client,
         Err(e) => {
             return vec![not_ok(
@@ -232,30 +231,79 @@ async fn server(url: &Url, token: Option<&str>, d: &str) -> Vec<Check> {
     let Some(token) = token else {
         return vec![answered];
     };
+    vec![answered, mcp(&client, url, token, d).await]
+}
+
+async fn mcp(client: &reqwest::Client, url: &Url, token: &str, d: &str) -> Check {
+    use reqwest::{StatusCode, header};
     let mcp = url.join("mcp").unwrap_or_else(|_| url.clone());
-    let restart = "restart the server so it reads DAVY_TOKEN_FILE again";
-    let check = match client
-        .get(mcp.clone())
+    if url.scheme() != "https" && !loopback(url) {
+        return not_ok(
+            "mcp",
+            Status::Warn,
+            format!("{mcp} was not checked, so the token does not cross the network unencrypted"),
+            "serve Davy over https, see the tls check",
+        );
+    }
+    let restart = format!("restart the server, it reads {d}/token when it starts");
+    let post = || {
+        client
+            .post(mcp.clone())
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, "application/json, text/event-stream")
+            .body(INITIALIZE)
+    };
+    match post().send().await {
+        Ok(r) if r.status() == StatusCode::UNAUTHORIZED => {}
+        Ok(r) if r.status() == StatusCode::NOT_FOUND => {
+            return not_ok(
+                "mcp",
+                Status::Fail,
+                format!("{mcp} is not served, so the server runs without an admin token"),
+                restart,
+            );
+        }
+        Ok(r) => {
+            return not_ok(
+                "mcp",
+                Status::Fail,
+                format!(
+                    "{mcp} answers HTTP {} without a token, so something other than Davy serves it",
+                    r.status().as_u16()
+                ),
+                "check that the proxy forwards /mcp to Davy unchanged",
+            );
+        }
+        Err(e) => return not_ok("mcp", Status::Fail, crate::net::error_text(e), restart),
+    }
+    let reply = match post()
         .bearer_auth(token.trim_end_matches(['\n', '\r']))
         .send()
         .await
     {
-        Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED => not_ok(
+        Ok(r) => (r.status(), r.text().await.unwrap_or_default()),
+        Err(e) => return not_ok("mcp", Status::Fail, crate::net::error_text(e), restart),
+    };
+    match reply {
+        (StatusCode::OK, body) if body.contains("\"serverInfo\"") => {
+            ok("mcp", format!("{mcp} accepts the token"))
+        }
+        (StatusCode::UNAUTHORIZED, _) => not_ok(
             "mcp",
             Status::Fail,
             format!("{mcp} refuses the token in {d}/token, so the server runs with another one"),
             restart,
         ),
-        Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => not_ok(
+        (status, _) => not_ok(
             "mcp",
             Status::Fail,
-            format!("{mcp} is not served, so the server runs without an admin token"),
-            format!("set DAVY_TOKEN_FILE={d}/token in the server's environment and restart it"),
+            format!(
+                "{mcp} answers HTTP {} to the token without an MCP reply",
+                status.as_u16()
+            ),
+            "check that the proxy forwards /mcp to Davy unchanged, then read the server log",
         ),
-        Ok(_) => ok("mcp", format!("{mcp} accepts the token")),
-        Err(e) => not_ok("mcp", Status::Fail, crate::net::error_text(e), restart),
-    };
-    vec![answered, check]
+    }
 }
 
 async fn smtp(data: &Path, settings: &Settings, d: &str) -> Check {

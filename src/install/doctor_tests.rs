@@ -1,11 +1,10 @@
 use super::*;
 use crate::install::setup::{self, Service};
-use crate::token::{self, Token};
+use crate::token::Token;
 use axum::{
-    Router, middleware,
-    routing::{get, post},
+    Router,
+    routing::{any, post},
 };
-use std::sync::Arc;
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
@@ -17,20 +16,24 @@ fn dir() -> PathBuf {
         .join(format!("test-doctor-{}", uuid::Uuid::new_v4()))
 }
 
-/// A server that answers like Davy: `/` takes only POST, `/mcp` is there
-/// with `token` and checks it.
-async fn server(token: Option<&str>) -> Url {
-    let mut app = Router::new().route("/", post(|| async { "" }));
-    if let Some(t) = token {
-        let mcp = Router::new().route("/mcp", get(|| async { "mcp" })).layer(
-            middleware::from_fn_with_state(Arc::new(Token::new(t)), token::require),
-        );
-        app = app.merge(mcp);
-    }
+async fn listen(app: Router) -> Url {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     Url::parse(&format!("http://{addr}/")).unwrap()
+}
+
+/// A server that answers like Davy: `/` takes only POST, and Davy's own
+/// `/mcp` is there with `token`.
+async fn server(token: Option<&str>) -> Url {
+    let mut app = Router::new().route("/", post(|| async { "" }));
+    if let Some(t) = token {
+        let data = dir();
+        crate::store::open(&data).unwrap();
+        let (writes, _) = std::sync::mpsc::sync_channel(1);
+        app = app.merge(crate::mcp::router(data, writes, Token::new(t), "127.0.0.1"));
+    }
+    listen(app).await
 }
 
 /// A data directory prepared by `davy setup` with the token `TOKEN`.
@@ -142,7 +145,7 @@ async fn a_short_token_fails_and_the_server_refuses_it() {
             "mcp",
             Status::Fail,
             format!("{url}mcp refuses the token in {d}/token, so the server runs with another one"),
-            "restart the server so it reads DAVY_TOKEN_FILE again"
+            format!("restart the server, it reads {d}/token when it starts")
         )
     );
 }
@@ -180,7 +183,39 @@ async fn a_server_that_is_down_or_runs_without_a_token_fails() {
             "mcp",
             Status::Fail,
             format!("{tokenless}mcp is not served, so the server runs without an admin token"),
-            format!("set DAVY_TOKEN_FILE={d}/token in the server's environment and restart it")
+            format!("restart the server, it reads {d}/token when it starts")
+        )
+    );
+}
+
+#[tokio::test]
+async fn an_mcp_that_answers_without_the_token_is_not_davy() {
+    let open = listen(Router::new().route("/mcp", any(|| async { "{}" }))).await;
+    let data = install(&open, None);
+    assert_eq!(
+        find(&run(&data).await, "mcp"),
+        &not_ok(
+            "mcp",
+            Status::Fail,
+            format!(
+                "{open}mcp answers HTTP 200 without a token, so something other than Davy serves it"
+            ),
+            "check that the proxy forwards /mcp to Davy unchanged"
+        )
+    );
+}
+
+#[tokio::test]
+async fn the_token_never_goes_out_over_plain_http() {
+    let client = reqwest::Client::new();
+    let url = Url::parse("http://davy.example.com/").unwrap();
+    assert_eq!(
+        mcp(&client, &url, TOKEN, "/var/lib/davy").await,
+        not_ok(
+            "mcp",
+            Status::Warn,
+            "http://davy.example.com/mcp was not checked, so the token does not cross the network unencrypted",
+            "serve Davy over https, see the tls check"
         )
     );
 }

@@ -17,8 +17,8 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 - `davy systemd-unit --data DIR --user USER` prints a hardened systemd unit for `sudo tee`. It holds nothing from the data directory, so the service user cannot change what root installs.
 - `davy serve --data DIR` takes the address, the public URL and the sender from `DIR/setup.json`, and the admin token and SMTP URL from `DIR/token` and `DIR/smtp-url`, when they are not given.
 - The systemd unit waits until the server listens (`Type=notify`), so `systemctl restart davy` returns only when Davy answers.
-- `davy doctor` checks a running install: permissions of the data directory and token, TLS, that the server answers and runs with the token, the SMTP server and free disk space. Every check that is not ok prints the command that fixes it, and `--json` gives the same for an agent.
-- `davy mcp-config --client claude-code|codex|cursor` prints the MCP config for that client. It reads the token from `DAVY_TOKEN`, so the file can be committed.
+- `davy doctor` checks a running install: permissions of the data directory and token, TLS, that the server answers and that its MCP endpoint takes the token, the SMTP server and free disk space. Every check that is not ok prints the command that fixes it, and `--json` gives the same for an agent.
+- `davy mcp-config --client claude-code|codex|cursor` prints the MCP config for that client. It reads the token from `DAVY_TOKEN`, so the file can be committed, and refuses a plain `http` URL that leaves the machine.
 - The MCP tool `submit_feedback` lets an agent report a tool that was missing, wrong or needed a workaround. `davy feedback` lists the reports, and a channel added with `--feedback` receives each one. Davy sends them nowhere else.
 - `davy project create` takes the public URL from `davy setup` and prints the existing DSN when the project is already there, so it can run again safely.
 - An install guide for coding agents in `docs/install.md`, one page per SDK in `docs/connect/` and an index in `llms.txt`.
