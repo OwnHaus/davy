@@ -219,7 +219,7 @@ One timestamp function for every source. A number below 1e11 is seconds (fractio
 - The writer commits every second when anything changed, and at once when 100k documents are uncommitted. It commits everything on shutdown.
 - A failed `add_document` or commit drops that day's `IndexWriter`, and the next write opens a fresh one. Tantivy does not restart its indexing worker after a failed commit, so the next 10k documents would block the writer thread forever and ingest would answer `429` from then on (reproduced in `store_recovers_when_a_day_index_breaks`). The cost is that the uncommitted documents of that day, at most about one second, are lost and logged.
 - The HTTP handler answers once the batch is queued, not once it is committed. Error events wait for their commit because they are few and each matters. Logs come in bulk and the shippers retry on failure only. The cost is that a crash loses at most about one second of accepted logs, and a log shows up in search within about one second.
-- Retention: `davy serve --log-retention-days <n>`, default 30. Once an hour the writer renames day directories older than that into `data/logs/.trash/` and removes them. It touches only names that parse as `YYYY-MM-DD`.
+- Retention: `davy serve --log-retention-days <n>`, default 30, from 1 to 36,500 (100 years, past that the nanosecond cutoff overflows). Once an hour the writer renames day directories older than that into `data/logs/.trash/` and removes them. It touches only names that parse as `YYYY-MM-DD`.
 
 ### Search
 

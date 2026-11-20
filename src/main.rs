@@ -183,10 +183,6 @@ async fn main() -> anyhow::Result<()> {
 }
 async fn serve(args: Serve) -> anyhow::Result<()> {
     validate_url(&args.public_url)?;
-    anyhow::ensure!(
-        args.log_retention_days >= 1,
-        "--log-retention-days must be at least 1"
-    );
     // Read from the environment only, so the token never shows up in `ps` or shell history.
     let token = std::env::var("DAVY_TOKEN").ok().filter(|t| !t.is_empty());
     if let Some(t) = &token {

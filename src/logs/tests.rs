@@ -625,3 +625,14 @@ fn the_log_queue_is_full_at_its_row_or_byte_limit() {
     assert!(queue.push(small()).is_ok());
     assert!(matches!(queue.push(small()), Err(QueueError::Full)));
 }
+
+#[test]
+fn log_retention_is_1_to_36500_days() {
+    let dir = scratch_dir();
+    for days in [0, 36_501, u32::MAX] {
+        assert!(LogWriter::start(dir.clone(), days).is_err(), "{days}");
+    }
+    let writer = LogWriter::start(dir, 36_500).unwrap();
+    drop(writer.queue);
+    writer.thread.join().unwrap();
+}

@@ -34,6 +34,8 @@ const RETENTION_EVERY: Duration = Duration::from_secs(3600);
 const WRITER_HEAP: usize = 64_000_000;
 pub const QUEUE_ROWS: usize = 50_000;
 pub const QUEUE_BYTES: usize = 256 * 1024 * 1024;
+/// 100 years. A longer window would overflow the nanosecond cutoff.
+pub const MAX_RETENTION_DAYS: u32 = 36_500;
 
 #[derive(Clone, Copy)]
 struct Fields {
@@ -379,7 +381,10 @@ pub struct LogWriter {
 
 impl LogWriter {
     pub fn start(root: PathBuf, retention_days: u32) -> Result<Self> {
-        anyhow::ensure!(retention_days >= 1, "log retention must be at least 1 day");
+        anyhow::ensure!(
+            (1..=MAX_RETENTION_DAYS).contains(&retention_days),
+            "log retention must be 1 to {MAX_RETENTION_DAYS} days"
+        );
         std::fs::create_dir_all(&root)?;
         let (queue, inbox) = LogQueue::bounded(QUEUE_ROWS, QUEUE_BYTES);
         let mut state = State {
