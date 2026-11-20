@@ -1,6 +1,9 @@
 //! Uptime monitors: what a monitor watches, the state it is in and how a
 //! check result moves it.
 
+pub mod check;
+#[cfg(test)]
+mod check_tests;
 pub mod store;
 #[cfg(test)]
 mod tests;

@@ -451,3 +451,54 @@ fn an_incident_queues_monitor_down_and_then_monitor_up() {
         ]
     );
 }
+
+#[test]
+fn an_http_monitor_is_due_each_interval_and_10_s_after_a_failure() {
+    use super::check::{Checked, Http};
+    let c = memory();
+    let m = NewMonitor::new("API", http("http://a.test/", Expect::Status), None).unwrap();
+    let id = store::add(&c, 1, &m, 0).unwrap().id;
+    backup(&c);
+    let due = |now| -> Vec<i64> { store::due(&c, now).unwrap().iter().map(|h| h.id).collect() };
+    assert_eq!(
+        store::due(&c, 0).unwrap(),
+        [Http {
+            id,
+            url: CheckUrl::parse("http://a.test/").unwrap(),
+            expect: Expect::Status,
+            timeout: Duration::from_secs(10),
+        }]
+    );
+    let up = Checked {
+        outcome: Outcome::Up,
+        status: Some(200),
+        ms: 12,
+    };
+    assert!(store::checked(&c, id, 1000, &up).unwrap());
+    assert_eq!(due(60_999), [] as [i64; 0]);
+    assert_eq!(due(61_000), [id]);
+    let down = Checked {
+        outcome: Outcome::Down(Reason::Status(503)),
+        status: Some(503),
+        ms: 40,
+    };
+    assert!(store::checked(&c, id, 61_000, &down).unwrap());
+    assert_eq!(status(&c, id).0, State::Failing);
+    assert_eq!(due(70_999), [] as [i64; 0]);
+    assert_eq!(due(71_000), [id]);
+    let rows: Vec<(i64, bool, Option<i64>, Option<i64>)> = c
+        .prepare("SELECT at,ok,status,ms FROM checks WHERE monitor_id=?1 ORDER BY at")
+        .unwrap()
+        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        [
+            (1000, true, Some(200), Some(12)),
+            (61_000, false, Some(503), Some(40))
+        ]
+    );
+    assert!(!store::checked(&c, 99, 1000, &up).unwrap());
+}

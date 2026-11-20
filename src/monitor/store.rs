@@ -1,6 +1,9 @@
 //! Monitor rows. The tables are created by the migrations in `crate::store`.
 
-use super::{Change, Expect, HeartbeatToken, NewMonitor, Outcome, Reason, State, Target};
+use super::{
+    Change, CheckUrl, Expect, HeartbeatToken, NewMonitor, Outcome, Reason, State, Target,
+    check::{Checked, Http},
+};
 use crate::{
     alert::{self, Incident, Notice},
     event::Timestamp,
@@ -14,6 +17,8 @@ const KEEP_CHECKS_MS: Timestamp = 30 * 24 * 60 * 60 * 1000;
 /// Small enough that a sweep holds the writer for milliseconds, large enough
 /// to delete faster than 1,000 monitors checking every 30 s add rows.
 const PRUNE_BATCH: i64 = 1000;
+/// A failed HTTP check is confirmed this soon instead of after `every`.
+const CONFIRM_AFTER_MS: Timestamp = 10_000;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Added {
@@ -112,7 +117,7 @@ pub fn ping(c: &Connection, monitor: i64, at: Timestamp, failed: bool) -> Result
     } else {
         Outcome::Up
     };
-    let found = record(c, monitor, at, outcome)?;
+    let found = record(c, monitor, at, outcome, None, None)?;
     if found {
         c.execute(
             "UPDATE monitors SET last_ping_at=?2 WHERE id=?1",
@@ -134,7 +139,7 @@ pub fn sweep(c: &Connection, at: Timestamp) -> Result<()> {
         .query_map([at], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     for monitor in late {
-        record(c, monitor, at, Outcome::Down(Reason::Late))?;
+        record(c, monitor, at, Outcome::Down(Reason::Late), None, None)?;
     }
     // CROSS JOIN keeps monitors as the outer loop, so each monitor's old rows
     // are a range of checks_monitor_at instead of a scan of every check.
@@ -146,9 +151,73 @@ pub fn sweep(c: &Connection, at: Timestamp) -> Result<()> {
     Ok(())
 }
 
+/// The HTTP monitors due for a check at `now`, the longest waiting first. A
+/// monitor is due `every` after its last check, or 10 s after it while it is
+/// `Failing`, and at once when it was never checked.
+pub fn due(c: &Connection, now: Timestamp) -> Result<Vec<Http>> {
+    let mut q = c.prepare(
+        "SELECT id,url,expect,keyword,timeout_s FROM monitors WHERE kind='http' AND (last_check_at IS NULL
+         OR last_check_at+CASE state WHEN 'failing' THEN ?2 ELSE every_s*1000 END<=?1)
+         ORDER BY coalesce(last_check_at,0),id",
+    )?;
+    let rows = q.query_map(params![now, CONFIRM_AFTER_MS], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, Option<String>>(2)?,
+            r.get::<_, Option<String>>(3)?,
+            r.get::<_, Option<i64>>(4)?,
+        ))
+    })?;
+    rows.map(|row| {
+        let (id, url, expect, keyword, timeout) = row?;
+        let url = url
+            .as_deref()
+            .map(CheckUrl::parse)
+            .with_context(|| format!("HTTP monitor {id} has no URL"))?
+            .map_err(|e| anyhow::anyhow!("HTTP monitor {id}: {e}"))?;
+        let expect = match (expect.as_deref(), keyword) {
+            (Some("status"), _) => Expect::Status,
+            (Some("keyword"), Some(k)) => Expect::Keyword(k),
+            (Some("no_keyword"), Some(k)) => Expect::NoKeyword(k),
+            (expect, _) => anyhow::bail!("HTTP monitor {id} has unknown expect {expect:?}"),
+        };
+        let timeout = timeout
+            .and_then(|s| u64::try_from(s).ok())
+            .with_context(|| format!("HTTP monitor {id} has no timeout"))?;
+        Ok(Http {
+            id,
+            url,
+            expect,
+            timeout: std::time::Duration::from_secs(timeout),
+        })
+    })
+    .collect()
+}
+
+/// Stores the result of an HTTP check that started at `at`. False when the
+/// monitor is gone.
+pub fn checked(c: &Connection, monitor: i64, at: Timestamp, checked: &Checked) -> Result<bool> {
+    record(
+        c,
+        monitor,
+        at,
+        checked.outcome.clone(),
+        checked.status,
+        Some(checked.ms),
+    )
+}
+
 /// Stores one check row, moves the monitor to its next state and opens or
 /// closes its incident with a notice. False when the monitor is gone.
-fn record(c: &Connection, monitor: i64, at: Timestamp, outcome: Outcome) -> Result<bool> {
+fn record(
+    c: &Connection,
+    monitor: i64,
+    at: Timestamp,
+    outcome: Outcome,
+    status: Option<u16>,
+    ms: Option<i64>,
+) -> Result<bool> {
     let Some((state, project, name)) = c
         .query_row(
             "SELECT state,project_id,name FROM monitors WHERE id=?1",
@@ -172,8 +241,8 @@ fn record(c: &Connection, monitor: i64, at: Timestamp, outcome: Outcome) -> Resu
         Outcome::Down(reason) => Some(reason.to_string()),
     };
     c.execute(
-        "INSERT INTO checks(monitor_id,at,ok,reason) VALUES (?1,?2,?3,?4)",
-        params![monitor, at, reason.is_none(), reason],
+        "INSERT INTO checks(monitor_id,at,ok,status,ms,reason) VALUES (?1,?2,?3,?4,?5,?6)",
+        params![monitor, at, reason.is_none(), status, ms, reason],
     )?;
     let (next, change) = state.next(outcome);
     c.execute(

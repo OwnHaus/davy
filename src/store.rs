@@ -212,6 +212,12 @@ pub enum Job {
     Sweep {
         at: Timestamp,
     },
+    /// The result of one HTTP check that started at `at`.
+    Check {
+        monitor: i64,
+        at: Timestamp,
+        checked: crate::monitor::check::Checked,
+    },
     /// The result of one attempt to send a notification.
     Delivery {
         id: i64,
@@ -252,6 +258,14 @@ fn apply(c: &Connection, job: &Job) -> Result<Outcome> {
         }
         Job::Sweep { at } => {
             crate::monitor::store::sweep(c, *at)?;
+            Ok(Ok(()))
+        }
+        Job::Check {
+            monitor,
+            at,
+            checked,
+        } => {
+            crate::monitor::store::checked(c, *monitor, *at, checked)?;
             Ok(Ok(()))
         }
         Job::Delivery { id, at, result } => {

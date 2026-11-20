@@ -7,6 +7,7 @@ use super::{
 };
 use crate::{
     event::Timestamp,
+    net,
     store::{Job, Write},
     tasks, time,
 };
@@ -21,7 +22,7 @@ pub fn client() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
         .timeout(SEND_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
-        .user_agent(concat!("Davy/", env!("CARGO_PKG_VERSION")))
+        .user_agent(net::USER_AGENT)
         .build()
 }
 
@@ -45,21 +46,13 @@ pub async fn send(client: &reqwest::Client, due: &Due, now: Timestamp) -> Result
         .body(due.payload.clone())
         .send()
         .await
-        .map_err(|e| causes(&e.without_url()))?;
+        .map_err(net::error_text)?;
     let status = response.status();
     if status.is_success() {
         Ok(())
     } else {
         Err(format!("HTTP {}", status.as_u16()))
     }
-}
-
-/// An error with its causes, which say why a connection failed.
-fn causes(e: &(dyn std::error::Error + 'static)) -> String {
-    std::iter::successors(Some(e), |e| e.source())
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(": ")
 }
 
 /// Every `period`, sends the due rows from `c`, one at a time per channel,

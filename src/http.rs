@@ -42,6 +42,8 @@ const BODY_TIMEOUT: Duration = Duration::from_secs(30);
 const SWEEP_EVERY: Duration = Duration::from_secs(10);
 /// How late a due notification can be sent.
 const NOTIFY_EVERY: Duration = Duration::from_secs(1);
+/// How late a due HTTP check can start.
+const CHECK_EVERY: Duration = Duration::from_secs(1);
 pub const RATE: &str = "86400:transaction;span;replay;profile;profile_chunk:organization";
 
 pub struct Keys {
@@ -532,6 +534,12 @@ pub async fn serve(
     }
     let listener = tokio::net::TcpListener::bind(listen).await?;
     let sweeper = tokio::spawn(store::sweep_every(writer.sender.clone(), SWEEP_EVERY));
+    let checker = tokio::spawn(monitor::check::run(
+        store::open(data)?,
+        monitor::check::client()?,
+        writer.sender.clone(),
+        CHECK_EVERY,
+    ));
     let notifier = tokio::spawn(alert::deliver::run(
         store::open(data)?,
         alert::deliver::client()?,
@@ -550,10 +558,13 @@ pub async fn serve(
             }
         })
         .await;
-    // The sweeper and the notifier hold senders, and the writer thread ends
-    // only when every sender is gone. A notice in flight is sent again on the
-    // next start.
-    for (name, task) in [("sweeper", sweeper), ("notifier", notifier)] {
+    // These tasks hold senders, and the writer thread ends only when every
+    // sender is gone. A notice in flight is sent again on the next start.
+    for (name, task) in [
+        ("sweeper", sweeper),
+        ("checker", checker),
+        ("notifier", notifier),
+    ] {
         task.abort();
         if let Err(e) = task.await
             && e.is_panic()
