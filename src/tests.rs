@@ -285,15 +285,17 @@ mod http {
         http::{HeaderMap, Request, header},
     };
     use std::sync::{Arc, mpsc};
+    use tokio::sync::Semaphore;
     use tower::ServiceExt;
 
-    /// The router with projects `a` (id 1, key `key-a`) and `b` (id 2, key `key-b`)
-    /// and both ingest queues one slot deep.
+    /// The router with projects `a` (id 1, key `key-a`) and `b` (id 2, key `key-b`),
+    /// both ingest queues one slot deep and one parsing slot.
     struct Server {
         app: Router,
         errors: mpsc::SyncSender<store::Write>,
         _error_inbox: mpsc::Receiver<store::Write>,
         logs: LogInbox,
+        parsing: Arc<Semaphore>,
     }
 
     struct Reply {
@@ -318,7 +320,9 @@ mod http {
             .unwrap();
         let (errors, error_inbox) = mpsc::sync_channel(1);
         let (logs, log_inbox) = LogQueue::bounded(1);
+        let parsing = Arc::new(Semaphore::new(1));
         let app = router(App {
+            parsing: Arc::clone(&parsing),
             keys: Arc::new(Keys::new(c)),
             sender: errors.clone(),
             logs,
@@ -331,6 +335,7 @@ mod http {
             errors,
             _error_inbox: error_inbox,
             logs: log_inbox,
+            parsing,
         }
     }
 
@@ -449,6 +454,42 @@ mod http {
             ))
             .await;
         assert_eq!(r.status, 401, "/store/ has no header to carry a key");
+    }
+
+    #[tokio::test]
+    async fn every_ingest_route_is_429_while_the_parsing_slots_are_taken() {
+        let s = server();
+        let _taken = Arc::clone(&s.parsing).try_acquire_owned().unwrap();
+        for req in [
+            post("/api/1/store/?sentry_key=key-a", &[], "{}"),
+            post("/api/1/envelope/?sentry_key=key-a", &[], SESSION),
+            post("/", &[("authorization", "Bearer key-a")], "[]"),
+            otlp("application/json", "{}"),
+        ] {
+            let uri = req.uri().to_string();
+            let r = s.send(req).await;
+            assert_eq!(r.status, 429, "{uri}");
+            assert_eq!(r.headers["retry-after"], "1", "{uri}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_body_that_stalls_is_408() {
+        let stalled =
+            || Body::from_stream(futures::stream::pending::<Result<Vec<u8>, std::io::Error>>());
+        let s = server();
+        for req in [
+            post("/api/1/envelope/?sentry_key=key-a", &[], stalled()),
+            post("/", &[("authorization", "Bearer key-a")], stalled()),
+            otlp("application/json", stalled()),
+        ] {
+            let uri = req.uri().to_string();
+            assert_eq!(s.send(req).await.status, 408, "{uri}");
+        }
+        let r = s
+            .send(post("/api/1/envelope/?sentry_key=key-a", &[], SESSION))
+            .await;
+        assert_eq!(r.status, 200, "stalled bodies hold no parsing slot");
     }
 
     #[tokio::test]

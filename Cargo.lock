@@ -598,6 +598,7 @@ dependencies = [
  "brotli",
  "clap",
  "flate2",
+ "futures",
  "jiff",
  "opentelemetry-proto",
  "prost",

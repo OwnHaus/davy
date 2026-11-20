@@ -32,6 +32,8 @@ zip = { version = "9.8.1", default-features = false, features = ["deflate-flate2
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+tokio = { version = "1", features = ["test-util"] }
+futures = "0.3"
 
 # Mechanical rules live here, not in AGENTS.md. Never loosen a lint to get a
 # change through; fix the code or use #[expect(lint, reason = "...")].

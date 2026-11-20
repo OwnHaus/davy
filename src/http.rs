@@ -26,10 +26,14 @@ use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Cursor, Read},
     sync::{Arc, Mutex, RwLock, mpsc},
+    time::Duration,
 };
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 const COMPRESSED: usize = 20 * 1024 * 1024;
 const DECOMPRESSED: usize = 200 * 1024 * 1024;
 const MAX_HEADER_LINE: usize = 64 * 1024;
+const PARSING_SLOTS: usize = 8;
+const BODY_TIMEOUT: Duration = Duration::from_secs(30);
 pub const RATE: &str = "86400:transaction;span;replay;profile;profile_chunk:organization";
 
 pub struct Keys {
@@ -71,6 +75,8 @@ pub struct App {
     pub sender: mpsc::SyncSender<Write>,
     pub logs: LogQueue,
     pub sourcemaps: Arc<sourcemaps::Store>,
+    /// Bounds how many request bodies are decompressed and parsed at once.
+    pub parsing: Arc<Semaphore>,
 }
 pub fn router(app: App) -> Router {
     let preflight = || async { StatusCode::NO_CONTENT };
@@ -191,20 +197,28 @@ fn header_str(headers: &HeaderMap, name: header::HeaderName) -> &str {
         .trim()
 }
 async fn compressed(body: axum::body::Body) -> Result<Bytes, Failure> {
-    to_bytes(body, COMPRESSED).await.map_err(|e| {
+    tokio::time::timeout(BODY_TIMEOUT, to_bytes(body, COMPRESSED))
+        .await
+        .map_err(|e| (StatusCode::REQUEST_TIMEOUT, format!("body not read: {e}")))?
+        .map_err(|e| {
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("body too large: {e}"),
+            )
+        })
+}
+/// Takes one parsing slot. The caller holds it until the body is parsed, so at
+/// most `PARSING_SLOTS` decompressed bodies are in memory at once.
+fn slot(app: &App) -> Result<OwnedSemaphorePermit, Failure> {
+    Arc::clone(&app.parsing).try_acquire_owned().map_err(|e| {
         (
-            StatusCode::PAYLOAD_TOO_LARGE,
-            format!("body too large: {e}"),
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("too many bodies in flight: {e}"),
         )
     })
 }
 fn encoding(headers: &HeaderMap) -> String {
     header_str(headers, header::CONTENT_ENCODING).to_ascii_lowercase()
-}
-async fn body(headers: &HeaderMap, body: axum::body::Body) -> Result<Vec<u8>, Failure> {
-    let bytes = compressed(body).await?;
-    let encoding = encoding(headers);
-    blocking(move || decode(&bytes, &encoding)).await
 }
 fn bearer(headers: &HeaderMap) -> Option<&str> {
     let value = header_str(headers, header::AUTHORIZATION);
@@ -309,9 +323,11 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
         authorize(&app.keys, project, presented.as_deref())?;
     }
     let bytes = compressed(raw).await?;
+    let slot = slot(&app)?;
     let encoding = encoding(&parts.headers);
     let (keys, maps) = (Arc::clone(&app.keys), Arc::clone(&app.sourcemaps));
     let parsed = blocking(move || {
+        let _slot = slot;
         let body = if key_in_header {
             decode_envelope(&bytes, &encoding, |header| {
                 authorize(
@@ -355,11 +371,19 @@ async fn logtail_ingest(State(app): State<App>, req: Request) -> Response {
     let run = async {
         let (parts, raw) = req.into_parts();
         let project = app.keys.authenticate(bearer(&parts.headers))?;
-        let bytes = body(&parts.headers, raw).await?;
+        let bytes = compressed(raw).await?;
+        let slot = slot(&app)?;
+        let encoding = encoding(&parts.headers);
         let content_type = header_str(&parts.headers, header::CONTENT_TYPE).to_owned();
         let records = blocking(move || {
-            logtail::parse(&bytes, &content_type, project, time::now_ns())
-                .map_err(|e| (StatusCode::NOT_ACCEPTABLE, e))
+            let _slot = slot;
+            logtail::parse(
+                &decode(&bytes, &encoding)?,
+                &content_type,
+                project,
+                time::now_ns(),
+            )
+            .map_err(|e| (StatusCode::NOT_ACCEPTABLE, e))
         })
         .await?;
         if !records.is_empty() {
@@ -381,10 +405,20 @@ async fn otlp_ingest(State(app): State<App>, req: Request) -> Response {
                 "expected application/x-protobuf or application/json".to_owned(),
             )
         })?;
-        let bytes = body(&parts.headers, raw).await?;
-        let records =
-            blocking(move || otlp::parse(&bytes, encoding, project, time::now_ns()).map_err(bad))
-                .await?;
+        let bytes = compressed(raw).await?;
+        let slot = slot(&app)?;
+        let content_encoding = self::encoding(&parts.headers);
+        let records = blocking(move || {
+            let _slot = slot;
+            otlp::parse(
+                &decode(&bytes, &content_encoding)?,
+                encoding,
+                project,
+                time::now_ns(),
+            )
+            .map_err(bad)
+        })
+        .await?;
         if !records.is_empty() {
             queue_logs(&app.logs, records)?;
         }
@@ -421,6 +455,7 @@ pub async fn serve(
         sender: writer.sender.clone(),
         logs: log_writer.queue.clone(),
         sourcemaps: Arc::new(sourcemaps::Store::open(data)),
+        parsing: Arc::new(Semaphore::new(PARSING_SLOTS)),
     };
     let maps = Arc::clone(&app.sourcemaps);
     let mut routes = router(app);
