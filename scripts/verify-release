@@ -4,12 +4,15 @@
 # binary, and the signature and SBOM of the image, which must run and print
 # the version. It downloads the files of the release, which may be a draft,
 # or checks the ones already in DIR. Needs gh, cosign, cargo-audit and Docker
-# logged in to ghcr.io.
-# Usage: scripts/verify-release TAG [DIR]
+# logged in to ghcr.io. --unsigned leaves out the provenance and signatures,
+# which a test tag in a private repository does not have.
+# Usage: scripts/verify-release [--unsigned] TAG [DIR]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-tag=${1:?usage: scripts/verify-release TAG [DIR]}
+signed=true
+if [ "${1:-}" = --unsigned ]; then signed=false; shift; fi
+tag=${1:?usage: scripts/verify-release [--unsigned] TAG [DIR]}
 version=${tag#v}
 repo=${GITHUB_REPOSITORY:-dominikzabcik/davy}
 image=ghcr.io/${repo,,}:$version
@@ -25,20 +28,24 @@ else
     cd "$dir"
 fi
 if command -v sha256sum >/dev/null; then sha256sum -c SHA256SUMS; else shasum -a 256 -c SHA256SUMS; fi
-for f in davy-*; do
-    gh attestation verify "$f" --repo "$repo" >/dev/null
-    printf 'verify-release: %s has build provenance from %s\n' "$f" "$repo"
-done
 cargo audit bin --deny warnings davy-x86_64-unknown-linux-musl
-cosign verify --certificate-identity-regexp "$identity" --certificate-oidc-issuer "$issuer" "$image" >/dev/null
-# Each platform's manifest carries the SBOM of its binary.
-for arch in amd64 arm64; do
-    digest=$(docker buildx imagetools inspect --raw "$image" |
-        jq -r --arg a "$arch" '.manifests[] | select(.platform.architecture == $a) | .digest')
-    cosign verify-attestation --type cyclonedx --certificate-identity-regexp "$identity" \
-        --certificate-oidc-issuer "$issuer" "${image%:*}@$digest" >/dev/null
-    printf 'verify-release: the %s image is signed and has its SBOM\n' "$arch"
-done
+if [ "$signed" = true ]; then
+    for f in davy-*; do
+        gh attestation verify "$f" --repo "$repo" >/dev/null
+        printf 'verify-release: %s has build provenance from %s\n' "$f" "$repo"
+    done
+    cosign verify --certificate-identity-regexp "$identity" --certificate-oidc-issuer "$issuer" "$image" >/dev/null
+    # Each platform's manifest carries the SBOM of its binary.
+    for arch in amd64 arm64; do
+        digest=$(docker buildx imagetools inspect --raw "$image" |
+            jq -r --arg a "$arch" '.manifests[] | select(.platform.architecture == $a) | .digest')
+        cosign verify-attestation --type cyclonedx --certificate-identity-regexp "$identity" \
+            --certificate-oidc-issuer "$issuer" "${image%:*}@$digest" >/dev/null
+        printf 'verify-release: the %s image is signed and has its SBOM\n' "$arch"
+    done
+else
+    printf 'verify-release: --unsigned, provenance and signatures not checked\n' >&2
+fi
 got=$(docker run --rm "$image" --version)
 [ "$got" = "davy ${version%%-*}" ] || { printf 'verify-release: the image prints %s\n' "$got" >&2; exit 1; }
 printf 'verify-release: %s and %s verify\n' "$tag" "$image"

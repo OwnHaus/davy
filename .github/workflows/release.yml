@@ -79,10 +79,15 @@ jobs:
           path: dist
           merge-multiple: true
       - run: cd dist && sha256sum davy-* > SHA256SUMS && cat SHA256SUMS
-      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      # GitHub keeps attestations only for public repositories, and Sigstore
+      # logs every signature in public, which would name a private repository.
+      # A test tag in a private repository is therefore unsigned.
+      - if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/davy-*
-      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+      - if: ${{ !github.event.repository.private }}
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cosign
       - id: image
@@ -100,6 +105,8 @@ jobs:
           docker buildx build --platform linux/amd64,linux/arm64 --provenance=false \
             --metadata-file meta.json "${tags[@]}" --push .
           digest=$(jq -r '."containerimage.digest"' meta.json)
+          echo "image=$repo:$version" >> "$GITHUB_OUTPUT"
+          [ "$PRIVATE" = false ] || exit 0
           cosign sign --yes "$repo@$digest"
           for arch in amd64 arm64; do
             case $arch in amd64) target=x86_64-unknown-linux-musl ;; arm64) target=aarch64-unknown-linux-musl ;; esac
@@ -107,9 +114,9 @@ jobs:
               jq -r --arg a "$arch" '.manifests[] | select(.platform.architecture == $a) | .digest')
             cosign attest --yes --type cyclonedx --predicate "dist/davy-$target.cdx.json" "$repo@$platform"
           done
-          echo "image=$repo:$version" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ github.token }}
+          PRIVATE: ${{ github.event.repository.private }}
       - name: Draft release
         run: |
           version=${GITHUB_REF_NAME#v}
@@ -117,6 +124,9 @@ jobs:
           section() { awk -v h="$1" '/^## / { if (on) exit; on = (index($0, h) == 1); next } on' CHANGELOG.md; }
           section "## $base (" > notes.md
           flags=(--draft)
+          [ "$PRIVATE" = false ] || case $version in *-*) ;; *)
+            echo "::error::a release needs a public repository, for its attestations and signatures"; exit 1
+          ;; esac
           case $version in *-*)
             flags+=(--prerelease)
             [ -s notes.md ] || section "## Unreleased" > notes.md
@@ -126,6 +136,7 @@ jobs:
             --title "Davy $version" --notes-file notes.md dist/davy-* dist/SHA256SUMS
         env:
           GH_TOKEN: ${{ github.token }}
+          PRIVATE: ${{ github.event.repository.private }}
       # The verify job cannot see a draft without write access, so it gets
       # the same files this way.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -159,9 +170,12 @@ jobs:
           path: release
       - run: |
           printf '%s\n' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          scripts/verify-release "$GITHUB_REF_NAME" release
+          flags=()
+          [ "$PRIVATE" = false ] || flags=(--unsigned)
+          scripts/verify-release "${flags[@]}" "$GITHUB_REF_NAME" release
         env:
           GH_TOKEN: ${{ github.token }}
+          PRIVATE: ${{ github.event.repository.private }}
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 11
