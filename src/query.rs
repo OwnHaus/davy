@@ -10,18 +10,20 @@ use rusqlite::{
 };
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::{path::Path, sync::mpsc, thread, time::Duration};
+use std::{io::Read as _, path::Path, sync::mpsc, thread, time::Duration};
 
 pub const MAX_ROWS: usize = 500;
 const MAX_TEXT_CHARS: usize = 4000;
 const TIMEOUT: Duration = Duration::from_secs(5);
+/// A stored payload is at most 1 MiB of JSON, so this only stops a crafted blob.
+const MAX_PAYLOAD: u64 = 16 * 1024 * 1024;
 
 /// What an agent needs to write a query, beyond the table definitions.
 const NOTES: &str = "Notes:
 - Times in projects, issues, events and releases are unix milliseconds. issue_hourly.hour is unix hours.
 - events.payload is the compressed Sentry event, kept for a sample of events. payload_json(payload) returns it as JSON text, so json_extract(payload_json(payload), '$.exception.values[0].type') works.
 - issues.status is unresolved, resolved or ignored. A resolved issue reopens when an event arrives without a release, in the release it was resolved in, or in a release first seen after resolved_at.
-- Results stop at 500 rows, text at 4000 characters, and a query at 5 seconds.";
+- Results stop at 500 rows, text at 4000 characters, payload_json at 16 MiB, and a query at 5 seconds.";
 
 #[derive(Debug, Serialize)]
 pub struct Rows {
@@ -50,11 +52,20 @@ pub fn open(data: &Path) -> Result<Connection> {
             let Some(blob) = ctx.get::<Option<Vec<u8>>>(0)? else {
                 return Ok(None);
             };
-            let json = zstd::stream::decode_all(blob.as_slice())
-                .map_err(|e| rusqlite::Error::UserFunctionError(e.into()))?;
+            let failed =
+                |e: Box<dyn std::error::Error + Send + Sync>| rusqlite::Error::UserFunctionError(e);
+            let mut json = Vec::new();
+            zstd::stream::Decoder::new(blob.as_slice())
+                .map_err(|e| failed(e.into()))?
+                .take(MAX_PAYLOAD + 1)
+                .read_to_end(&mut json)
+                .map_err(|e| failed(e.into()))?;
+            if json.len() as u64 > MAX_PAYLOAD {
+                return Err(failed("payload is larger than 16 MiB".into()));
+            }
             String::from_utf8(json)
                 .map(Some)
-                .map_err(|e| rusqlite::Error::UserFunctionError(e.into()))
+                .map_err(|e| failed(e.into()))
         },
     )?;
     Ok(c)
@@ -222,6 +233,25 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(e.to_string(), "query stopped after 5 seconds");
+    }
+
+    #[test]
+    fn payload_json_refuses_output_over_16_mib() {
+        let (_data, c) = store_with_one_event();
+        let sql = |bytes: usize| {
+            let blob = zstd::encode_all(vec![b' '; bytes].as_slice(), 19).unwrap();
+            let hex = blob.iter().fold(String::new(), |mut hex, b| {
+                std::fmt::Write::write_fmt(&mut hex, format_args!("{b:02x}")).unwrap();
+                hex
+            });
+            format!("SELECT length(payload_json(x'{hex}'))")
+        };
+        assert_eq!(run(&c, &sql(1 << 20)).unwrap().rows[0][0], 1 << 20);
+        let e = run(&c, &sql((16 << 20) + 1)).unwrap_err();
+        assert!(
+            e.to_string().contains("payload is larger than 16 MiB"),
+            "{e}"
+        );
     }
 
     #[test]
