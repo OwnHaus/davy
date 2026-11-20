@@ -1,17 +1,23 @@
-pub(crate) const SCHEMA: &str = "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
+const SCHEMA: &str = "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY, slug TEXT UNIQUE NOT NULL, public_key TEXT UNIQUE NOT NULL, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS issues(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), grouping_version INTEGER NOT NULL, fingerprint TEXT NOT NULL, title TEXT NOT NULL, culprit TEXT, level TEXT NOT NULL, status TEXT NOT NULL, resolved_in_release TEXT, resolved_at INTEGER, regressed_at INTEGER, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, event_count INTEGER NOT NULL, UNIQUE(project_id, grouping_version, fingerprint));
 CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), issue_id INTEGER NOT NULL REFERENCES issues(id), event_id TEXT NOT NULL, timestamp INTEGER NOT NULL, received_at INTEGER NOT NULL, level TEXT NOT NULL, release TEXT, environment TEXT, trace_id TEXT, user_id TEXT, payload BLOB, UNIQUE(project_id, event_id));
 CREATE TABLE IF NOT EXISTS issue_hourly(issue_id INTEGER NOT NULL REFERENCES issues(id), hour INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(issue_id, hour));
 CREATE INDEX IF NOT EXISTS issues_last_seen ON issues(last_seen DESC);
 CREATE INDEX IF NOT EXISTS events_issue ON events(issue_id, id DESC);";
+/// Schema changes after the first release, applied in order. `PRAGMA
+/// user_version` counts how many ran.
+const MIGRATIONS: [&str; 1] = [
+    "CREATE TABLE releases(project_id INTEGER NOT NULL REFERENCES projects(id), version TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY(project_id, version));
+INSERT INTO releases SELECT project_id, release, min(received_at) FROM events WHERE release IS NOT NULL GROUP BY project_id, release;",
+];
 use crate::{
     event::{ErrorEvent, Timestamp},
     grouping::group,
     time,
 };
 use anyhow::Result;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Serialize;
 use std::{path::Path, sync::mpsc, thread};
 use tokio::sync::oneshot;
@@ -26,22 +32,66 @@ pub enum IssueStatus {
     Ignored,
 }
 impl IssueStatus {
-    pub fn on_event(&mut self, at: Timestamp) -> Option<Timestamp> {
+    /// Applies a new event and returns `at` when the event reopens a resolved
+    /// issue. `release` is the event's release and when Davy first saw it.
+    pub fn on_event(
+        &mut self,
+        release: Option<(&str, Timestamp)>,
+        at: Timestamp,
+    ) -> Option<Timestamp> {
+        let Self::Resolved {
+            in_release,
+            at: resolved_at,
+        } = self
+        else {
+            return None;
+        };
+        let reopens = release.is_none_or(|(version, first_seen)| {
+            in_release.as_deref() == Some(version) || first_seen > *resolved_at
+        });
+        reopens.then(|| {
+            *self = Self::Unresolved;
+            at
+        })
+    }
+    fn load(status: &str, in_release: Option<String>, at: Option<Timestamp>) -> Self {
+        match status {
+            "resolved" => Self::Resolved {
+                in_release,
+                at: at.unwrap_or(0),
+            },
+            "ignored" => Self::Ignored,
+            _ => Self::Unresolved,
+        }
+    }
+    fn as_str(&self) -> &'static str {
         match self {
-            Self::Resolved { .. } => {
-                *self = Self::Unresolved;
-                Some(at)
-            }
-            _ => None,
+            Self::Unresolved => "unresolved",
+            Self::Resolved { .. } => "resolved",
+            Self::Ignored => "ignored",
         }
     }
 }
 pub fn open(data: &Path) -> Result<Connection> {
     std::fs::create_dir_all(data)?;
-    let c = Connection::open(data.join("davy.sqlite"))?;
+    let mut c = Connection::open(data.join("davy.sqlite"))?;
     c.busy_timeout(std::time::Duration::from_secs(5))?;
-    c.execute_batch(SCHEMA)?;
+    init(&mut c)?;
     Ok(c)
+}
+/// Creates the schema and runs pending migrations. The server and a CLI
+/// process may open the same directory at once, so the version is read inside
+/// a write transaction.
+pub fn init(c: &mut Connection) -> Result<()> {
+    c.execute_batch(SCHEMA)?;
+    let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let done: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    for (version, sql) in (1_u32..).zip(MIGRATIONS).filter(|(v, _)| *v > done) {
+        tx.execute_batch(sql)?;
+        tx.pragma_update(None, "user_version", version)?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 pub fn create_project(c: &Connection, slug: &str) -> Result<(i64, String)> {
     let key = uuid::Uuid::new_v4().simple().to_string();
@@ -79,20 +129,24 @@ pub fn insert(c: &Connection, project: i64, e: &ErrorEvent) -> Result<()> {
     let g = group(e);
     c.execute("INSERT INTO issues(project_id,grouping_version,fingerprint,title,culprit,level,status,first_seen,last_seen,event_count) VALUES (?1,?2,?3,?4,?5,?6,'unresolved',?7,?7,0) ON CONFLICT(project_id,grouping_version,fingerprint) DO NOTHING", params![project,g.version,g.fingerprint,g.title,g.culprit,e.level.as_str(),e.timestamp])?;
     let (id,count,status,release,at): (i64,i64,String,Option<String>,Option<i64>) = c.query_row("SELECT id,event_count,status,resolved_in_release,resolved_at FROM issues WHERE project_id=?1 AND grouping_version=?2 AND fingerprint=?3", params![project,g.version,g.fingerprint], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
-    let mut status = match status.as_str() {
-        "resolved" => IssueStatus::Resolved {
-            in_release: release,
-            at: at.unwrap_or(0),
-        },
-        "ignored" => IssueStatus::Ignored,
-        _ => IssueStatus::Unresolved,
+    let mut status = IssueStatus::load(&status, release, at);
+    let seen = match &e.release {
+        Some(version) => {
+            c.execute(
+                "INSERT INTO releases(project_id,version,first_seen) VALUES (?1,?2,?3) ON CONFLICT DO NOTHING",
+                params![project, version, e.received_at],
+            )?;
+            let first_seen: Timestamp = c.query_row(
+                "SELECT first_seen FROM releases WHERE project_id=?1 AND version=?2",
+                params![project, version],
+                |r| r.get(0),
+            )?;
+            Some((version.as_str(), first_seen))
+        }
+        None => None,
     };
-    let regressed = status.on_event(e.received_at);
-    let status = match status {
-        IssueStatus::Unresolved => "unresolved",
-        IssueStatus::Resolved { .. } => "resolved",
-        IssueStatus::Ignored => "ignored",
-    };
+    let regressed = status.on_event(seen, e.received_at);
+    let status = status.as_str();
     let payload = if count < 50 || (count + 1) % 100 == 0 {
         Some(zstd::stream::encode_all(
             serde_json::to_vec(&e.raw)?.as_slice(),
@@ -106,39 +160,75 @@ pub fn insert(c: &Connection, project: i64, e: &ErrorEvent) -> Result<()> {
     c.execute("INSERT INTO issue_hourly(issue_id,hour,count) VALUES (?1,?2,1) ON CONFLICT(issue_id,hour) DO UPDATE SET count=count+1", params![id,e.timestamp.div_euclid(3_600_000)*3_600_000])?;
     Ok(())
 }
-pub struct Ingest {
-    pub project: i64,
-    pub events: Vec<ErrorEvent>,
-    pub done: oneshot::Sender<std::result::Result<(), String>>,
+/// Marks an issue fixed in `release`, or in the next release Davy sees when
+/// `release` is `None`. Returns false when there is no such issue.
+pub fn resolve(c: &Connection, issue: i64, release: Option<&str>, at: Timestamp) -> Result<bool> {
+    let changed = c.execute(
+        "UPDATE issues SET status='resolved',resolved_in_release=?2,resolved_at=?3 WHERE id=?1",
+        params![issue, release, at],
+    )?;
+    Ok(changed == 1)
+}
+pub enum Job {
+    Ingest {
+        project: i64,
+        events: Vec<ErrorEvent>,
+    },
+    Resolve {
+        issue: i64,
+        release: Option<String>,
+    },
+}
+pub type Outcome = std::result::Result<(), String>;
+pub struct Write {
+    pub job: Job,
+    pub done: oneshot::Sender<Outcome>,
+}
+/// Runs one job. The outer error is a database failure that aborts the batch,
+/// the inner one a problem with this job alone.
+fn apply(c: &Connection, job: &Job) -> Result<Outcome> {
+    match job {
+        Job::Ingest { project, events } => {
+            for e in events {
+                insert(c, *project, e)?;
+            }
+            Ok(Ok(()))
+        }
+        Job::Resolve { issue, release } => {
+            let found = resolve(c, *issue, release.as_deref(), time::now_ms())?;
+            Ok(found
+                .then_some(())
+                .ok_or_else(|| format!("no issue {issue}")))
+        }
+    }
 }
 pub struct Writer {
-    pub sender: mpsc::SyncSender<Ingest>,
+    pub sender: mpsc::SyncSender<Write>,
     pub thread: thread::JoinHandle<()>,
 }
 impl Writer {
     pub fn start(mut c: Connection, capacity: usize) -> Self {
-        let (sender, receiver) = mpsc::sync_channel::<Ingest>(capacity);
+        let (sender, receiver) = mpsc::sync_channel::<Write>(capacity);
         let thread = thread::spawn(move || {
             while let Ok(first) = receiver.recv() {
                 let mut batch = vec![first];
                 batch.extend(receiver.try_iter().take(63));
-                let result = (|| -> Result<()> {
+                let outcomes = (|| -> Result<Vec<Outcome>> {
                     let tx = c.transaction()?;
-                    for request in &batch {
-                        for e in &request.events {
-                            insert(&tx, request.project, e)?;
-                        }
-                    }
+                    let outcomes = batch
+                        .iter()
+                        .map(|w| apply(&tx, &w.job))
+                        .collect::<Result<_>>()?;
                     tx.commit()?;
-                    Ok(())
+                    Ok(outcomes)
                 })()
-                .map_err(|e| e.to_string());
-                for request in batch {
+                .unwrap_or_else(|e| vec![Err(e.to_string()); batch.len()]);
+                for (write, outcome) in batch.into_iter().zip(outcomes) {
                     #[expect(
                         clippy::let_underscore_must_use,
                         reason = "a closed receiver means the client hung up, and the batch is written either way"
                     )]
-                    let _ = request.done.send(result.clone());
+                    let _ = write.done.send(outcome);
                 }
             }
         });
@@ -166,9 +256,105 @@ pub fn issues(c: &Connection, project: Option<&str>) -> Result<Vec<Issue>> {
     })?
     .collect::<rusqlite::Result<_>>()?)
 }
-pub fn payload(c: &Connection, issue: i64) -> Result<serde_json::Value> {
-    let b: Vec<u8> = c.query_row("SELECT payload FROM events WHERE issue_id=?1 AND payload IS NOT NULL ORDER BY id DESC LIMIT 1",[issue],|r|r.get(0))?;
-    Ok(serde_json::from_slice(&zstd::stream::decode_all(
+/// The newest stored event of an issue. Only a sample of events keep a payload.
+pub fn payload(c: &Connection, issue: i64) -> Result<Option<serde_json::Value>> {
+    let Some(b) = c
+        .query_row(
+            "SELECT payload FROM events WHERE issue_id=?1 AND payload IS NOT NULL ORDER BY id DESC LIMIT 1",
+            [issue],
+            |r| r.get::<_, Vec<u8>>(0),
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(serde_json::from_slice(&zstd::stream::decode_all(
         b.as_slice(),
-    )?)?)
+    )?)?))
+}
+#[derive(Debug, Serialize)]
+pub struct IssueDetail {
+    pub id: i64,
+    pub project_id: i64,
+    pub project: String,
+    pub title: String,
+    pub culprit: Option<String>,
+    pub level: String,
+    pub status: String,
+    pub resolved_in_release: Option<String>,
+    pub resolved_at: Option<String>,
+    pub regressed_at: Option<String>,
+    pub first_seen: String,
+    pub last_seen: String,
+    #[serde(skip)]
+    pub last_seen_ms: Timestamp,
+    pub event_count: i64,
+}
+pub fn issue(c: &Connection, id: i64) -> Result<Option<IssueDetail>> {
+    let ts = |ms: Option<Timestamp>| ms.map(time::rfc3339_ms);
+    Ok(c.query_row(
+        "SELECT i.id,i.project_id,p.slug,i.title,i.culprit,i.level,i.status,i.resolved_in_release,i.resolved_at,i.regressed_at,i.first_seen,i.last_seen,i.event_count FROM issues i JOIN projects p ON p.id=i.project_id WHERE i.id=?1",
+        [id],
+        |r| {
+            Ok(IssueDetail {
+                id: r.get(0)?,
+                project_id: r.get(1)?,
+                project: r.get(2)?,
+                title: r.get(3)?,
+                culprit: r.get(4)?,
+                level: r.get(5)?,
+                status: r.get(6)?,
+                resolved_in_release: r.get(7)?,
+                resolved_at: ts(r.get(8)?),
+                regressed_at: ts(r.get(9)?),
+                first_seen: time::rfc3339_ms(r.get(10)?),
+                last_seen: time::rfc3339_ms(r.get(11)?),
+                last_seen_ms: r.get(11)?,
+                event_count: r.get(12)?,
+            })
+        },
+    )
+    .optional()?)
+}
+#[derive(Debug, Serialize)]
+pub struct EventRow {
+    pub event_id: String,
+    pub timestamp: String,
+    pub release: Option<String>,
+    pub environment: Option<String>,
+    pub trace_id: Option<String>,
+    pub user_id: Option<String>,
+}
+/// The newest 10 events of an issue.
+pub fn recent_events(c: &Connection, issue: i64) -> Result<Vec<EventRow>> {
+    let mut q = c.prepare("SELECT event_id,timestamp,release,environment,trace_id,user_id FROM events WHERE issue_id=?1 ORDER BY id DESC LIMIT 10")?;
+    Ok(q.query_map([issue], |r| {
+        Ok(EventRow {
+            event_id: r.get(0)?,
+            timestamp: time::rfc3339_ms(r.get(1)?),
+            release: r.get(2)?,
+            environment: r.get(3)?,
+            trace_id: r.get(4)?,
+            user_id: r.get(5)?,
+        })
+    })?
+    .collect::<rusqlite::Result<_>>()?)
+}
+#[derive(Debug, Serialize)]
+pub struct ReleaseCount {
+    pub release: String,
+    pub events: i64,
+    pub last_seen: String,
+}
+/// The releases an issue's events came from, most recent first.
+pub fn issue_releases(c: &Connection, issue: i64) -> Result<Vec<ReleaseCount>> {
+    let mut q = c.prepare("SELECT release,count(*),max(timestamp) FROM events WHERE issue_id=?1 AND release IS NOT NULL GROUP BY release ORDER BY max(timestamp) DESC LIMIT 20")?;
+    Ok(q.query_map([issue], |r| {
+        Ok(ReleaseCount {
+            release: r.get(0)?,
+            events: r.get(1)?,
+            last_seen: time::rfc3339_ms(r.get(2)?),
+        })
+    })?
+    .collect::<rusqlite::Result<_>>()?)
 }

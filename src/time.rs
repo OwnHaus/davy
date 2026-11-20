@@ -37,6 +37,31 @@ pub fn rfc3339(ns: i64) -> String {
     from_nanos(ns).to_string()
 }
 
+/// `rfc3339` for unix milliseconds, the unit of error events.
+pub fn rfc3339_ms(ms: i64) -> String {
+    rfc3339(ms.saturating_mul(1_000_000))
+}
+
+/// A point in time from a CLI flag or a tool argument: an RFC 3339 timestamp,
+/// or a duration back from `now_ns` such as `30s`, `15m`, `1h` or `2d`.
+pub fn instant(s: &str, now_ns: i64) -> Result<i64, String> {
+    const EXPECTED: &str = "expected 30m, 1h, 2d or an RFC 3339 timestamp";
+    if let Some(t) = parse(s) {
+        return nanos(t).ok_or_else(|| format!("{s:?} is out of range"));
+    }
+    let (count, unit_secs) = [('s', 1), ('m', 60), ('h', 3600), ('d', 86_400)]
+        .into_iter()
+        .find_map(|(suffix, secs)| Some((s.strip_suffix(suffix)?, secs)))
+        .ok_or_else(|| format!("{EXPECTED}, got {s:?}"))?;
+    let count: i64 = count
+        .parse()
+        .map_err(|e| format!("{EXPECTED}, got {s:?} ({e})"))?;
+    count
+        .checked_mul(unit_secs * 1_000_000_000)
+        .and_then(|back| now_ns.checked_sub(back))
+        .ok_or_else(|| format!("{s:?} is out of range"))
+}
+
 /// The integer part of `n`, or `None` when `n` is not finite or does not fit an `i64`.
 #[expect(
     clippy::cast_possible_truncation,
@@ -50,6 +75,17 @@ pub fn whole(n: f64) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn instant_reads_a_timestamp_or_a_duration_back_from_now() {
+        let now = 1_795_164_121_054_000_000;
+        assert_eq!(instant("90s", now), Ok(now - 90_000_000_000));
+        assert_eq!(instant("2d", now), Ok(now - 172_800_000_000_000));
+        assert_eq!(instant("2026-11-20", now), Ok(1_795_132_800_000_000_000));
+        for bad in ["", "h", "1w", "-", "99999999999d"] {
+            assert!(instant(bad, now).is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn parse_reads_offsets_and_treats_a_missing_zone_as_utc() {

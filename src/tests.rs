@@ -121,9 +121,67 @@ fn event_boundary() {
     assert!(e.timestamp > 1_577_836_800_000);
 }
 fn memory() -> rusqlite::Connection {
-    let c = rusqlite::Connection::open_in_memory().unwrap();
-    c.execute_batch(store::SCHEMA).unwrap();
+    let mut c = rusqlite::Connection::open_in_memory().unwrap();
+    store::init(&mut c).unwrap();
     c
+}
+#[test]
+fn a_resolved_issue_reopens_only_for_a_release_that_can_contain_the_bug() {
+    use store::IssueStatus::{Ignored, Resolved, Unresolved};
+    let fixed_in = |release: Option<&str>| Resolved {
+        in_release: release.map(str::to_owned),
+        at: 100,
+    };
+    let cases = [
+        (fixed_in(Some("v1")), None, Some(500)),
+        (fixed_in(Some("v1")), Some(("v1", 50)), Some(500)),
+        (fixed_in(Some("v1")), Some(("v0", 50)), None),
+        (fixed_in(Some("v1")), Some(("v2", 150)), Some(500)),
+        (fixed_in(None), Some(("v0", 50)), None),
+        (fixed_in(None), Some(("v2", 150)), Some(500)),
+        (Unresolved, None, None),
+        (Ignored, Some(("v2", 150)), None),
+    ];
+    for (mut status, release, reopened) in cases {
+        assert_eq!(status.on_event(release, 500), reopened, "{release:?}");
+    }
+}
+#[test]
+fn resolving_waits_for_the_next_release() {
+    let c = memory();
+    store::create_project(&c, "releases").unwrap();
+    let in_release = |release: &str, received_at| ErrorEvent {
+        received_at,
+        ..event(json!({"message":"boom","release":release}))
+    };
+    let status = || {
+        c.query_row("SELECT status FROM issues", [], |r| r.get::<_, String>(0))
+            .unwrap()
+    };
+    store::insert(&c, 1, &in_release("v1", 1000)).unwrap();
+    assert!(store::resolve(&c, 1, None, 2000).unwrap());
+    store::insert(&c, 1, &in_release("v1", 3000)).unwrap();
+    assert_eq!(status(), "resolved");
+    store::insert(&c, 1, &in_release("v2", 3000)).unwrap();
+    assert_eq!(status(), "unresolved");
+    assert!(!store::resolve(&c, 99, None, 0).unwrap());
+}
+#[test]
+fn migration_backfills_releases_from_old_events() {
+    let mut c = memory();
+    store::create_project(&c, "old").unwrap();
+    let e = event(json!({"message":"boom","release":"v1"}));
+    store::insert(&c, 1, &e).unwrap();
+    c.execute_batch("DROP TABLE releases; PRAGMA user_version=0;")
+        .unwrap();
+    store::init(&mut c).unwrap();
+    store::init(&mut c).unwrap();
+    let row: (String, i64) = c
+        .query_row("SELECT version,first_seen FROM releases", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(row, ("v1".into(), e.received_at));
 }
 #[test]
 fn storage_regression_duplicates_sampling_and_ignored() {
@@ -180,7 +238,10 @@ fn storage_regression_duplicates_sampling_and_ignored() {
             .unwrap(),
         101
     );
-    assert_eq!(store::payload(&c, 1).unwrap()["message"], "failure 3");
+    assert_eq!(
+        store::payload(&c, 1).unwrap().unwrap()["message"],
+        "failure 3"
+    );
 }
 #[test]
 fn grouping_frame_selection_and_bundle_names() {
@@ -230,8 +291,8 @@ mod http {
     /// and both ingest queues one slot deep.
     struct Server {
         app: Router,
-        errors: mpsc::SyncSender<store::Ingest>,
-        _error_inbox: mpsc::Receiver<store::Ingest>,
+        errors: mpsc::SyncSender<store::Write>,
+        _error_inbox: mpsc::Receiver<store::Write>,
         logs: LogInbox,
     }
 
@@ -354,9 +415,11 @@ mod http {
         let s = server();
         let (done, _) = tokio::sync::oneshot::channel();
         s.errors
-            .try_send(store::Ingest {
-                project: 1,
-                events: vec![],
+            .try_send(store::Write {
+                job: store::Job::Ingest {
+                    project: 1,
+                    events: vec![],
+                },
                 done,
             })
             .unwrap();

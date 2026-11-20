@@ -70,20 +70,7 @@ enum Command {
     },
 }
 fn instant(s: &str) -> Result<i64, String> {
-    if let Some(t) = time::parse(s) {
-        return time::nanos(t).ok_or_else(|| "timestamp out of range".into());
-    }
-    let unit = match s.chars().last() {
-        Some('s') => 1,
-        Some('m') => 60,
-        Some('h') => 3600,
-        Some('d') => 86_400,
-        _ => return Err("expected 30m, 1h, 2d or an RFC 3339 timestamp".into()),
-    };
-    let n: i64 = s[..s.len() - 1]
-        .parse()
-        .map_err(|e| format!("expected 30m, 1h, 2d or an RFC 3339 timestamp ({e})"))?;
-    Ok(now_ns() - n * unit * 1_000_000_000)
+    time::instant(s, now_ns())
 }
 fn level(s: &str) -> Result<LogLevel, String> {
     LogLevel::parse(s).ok_or_else(|| format!("unknown level {s:?}"))
@@ -138,11 +125,11 @@ async fn main() -> anyhow::Result<()> {
             let issues = store::issues(&store::open(&data)?, project.as_deref())?;
             print_issues(&mut out.lock(), issues, json)?;
         }
-        Command::Event { issue_id, data } => writeln!(
-            out,
-            "{}",
-            serde_json::to_string_pretty(&store::payload(&store::open(&data)?, issue_id)?)?
-        )?,
+        Command::Event { issue_id, data } => {
+            let payload = store::payload(&store::open(&data)?, issue_id)?
+                .ok_or_else(|| anyhow::anyhow!("no stored event for issue {issue_id}"))?;
+            writeln!(out, "{}", serde_json::to_string_pretty(&payload)?)?;
+        }
         Command::Logs {
             query,
             data,

@@ -5,7 +5,7 @@ use crate::{
         self, LogRecord, logtail, otlp,
         store::{LogQueue, LogWriter, QueueError},
     },
-    store::{self, Ingest},
+    store::{self, Job, Write},
     time,
 };
 use axum::{
@@ -63,7 +63,7 @@ impl Keys {
 #[derive(Clone)]
 pub struct App {
     pub keys: Arc<Keys>,
-    pub sender: mpsc::SyncSender<Ingest>,
+    pub sender: mpsc::SyncSender<Write>,
     pub logs: LogQueue,
 }
 pub fn router(app: App) -> Router {
@@ -286,9 +286,11 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
         let (done, rx) = tokio::sync::oneshot::channel();
         queue(
             &app.sender,
-            Ingest {
-                project,
-                events: parsed.events,
+            Write {
+                job: Job::Ingest {
+                    project,
+                    events: parsed.events,
+                },
                 done,
             },
         )?;
