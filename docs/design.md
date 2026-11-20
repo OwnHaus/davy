@@ -10,7 +10,7 @@ This document fixes the data shapes and the order of work.
 - **One process, one data directory.** SQLite holds metadata. Bulk data (event payloads, logs) sits behind a store interface, so the engine can change without touching the API.
 - **Parse at the boundary.** HTTP handlers turn bytes into typed values (`Envelope`, `ErrorEvent`). Grouping and storage take typed values only and never see raw JSON shapes they have to guess at.
 - **Lenient on fields, strict on framing.** A broken envelope or an invalid `event_id` is a 400. A field with an unexpected type or value (`level: "warn"`, a timestamp without a zone, a negative `lineno`) falls back to a default instead, because rejecting it would lose a customer's error.
-- **Check the key before the work.** When the key is in the header or the query, it is checked before the body is decompressed, so an anonymous client cannot make Davy inflate 200 MiB.
+- **Check the key before the work.** A request without a valid key costs Davy at most one header line of decompression. See Hardening.
 - **Never fall over under a burst.** Ingest gets a bounded queue. When it fills, Davy answers 429 and the SDKs back off. One writer thread writes in batches.
 
 ## Milestone order
@@ -389,6 +389,54 @@ URL or release based lookup, the legacy release-file upload, fetching scripts fr
 - HTTP contract tests replay the captured `sentry-cli` requests: every route is 401 without the token or with a wrong one; the options name the public URL; assemble answers `not_found` with the missing chunk, the chunk upload stores it, assemble then answers `created` and the stored build symbolicates a frame; a chunk renamed to another SHA-1 is 400.
 - `e2e/run.sh` runs `sentry-cli sourcemaps inject` and `upload` against the release binary, runs the bundle with `@sentry/node`, and asserts with `davy context` that the top in-app frame is `parseOrder` in `../src/app.js` at line 5.
 - `scripts/check` passes.
+
+## Hardening
+
+A security review of `16f413c` showed that a client without a key could make the server allocate 4.4 GB with one 194 KB request (measured with a release build on a developer laptop: a gzip body that inflates to 190 MiB of `[0,0,...]` sent to `/store/`). The rules below close that class. Each has a test that a request over the limit is refused.
+
+### Authentication before work
+
+- A Sentry request with the key in `X-Sentry-Auth` or `?sentry_key=` is checked before the body is read.
+- `/store/` has no envelope header, so a `/store/` request without a header or query key is a `401` before the body is read.
+- An envelope without a header or query key is decompressed only up to the end of its first line, at most 64 KiB. Davy parses that line as the envelope header and checks the key in its `dsn` against the project in the path. Only then does it decompress the rest. A header line over 64 KiB is a `400`.
+- Logtail and OTLP check the bearer token before reading the body, as before.
+
+### Sizes and counts
+
+Sentry's own limits (develop.sentry.dev, Envelopes, Size Limits) are 200 MiB for a decompressed envelope and 1 MiB for an event or log item. Davy uses the same numbers, so an SDK that works with Sentry works with Davy.
+
+| Input | Limit | Over the limit |
+|---|---|---|
+| Request body, compressed | 20 MiB | `413` |
+| Request body, decompressed | 200 MiB | `413` |
+| Event item, and a `/store/` body | 1 MiB | the item is dropped, like any dropped item type |
+| Log item in an envelope | 1 MiB | the item is dropped |
+| Frames symbolicated per event | 256 | the rest stay minified |
+| Log message | 64 KiB | cut at a character boundary, attribute `davy.truncated` set to `true` |
+| Log queue | 50,000 rows or 256 MiB of message and attribute text | `429` |
+| `payload_json()` output in `sql` | 16 MiB | the query fails with an error |
+| Files in an artifact bundle | 10,000, and 1 GiB unpacked in total | `400` |
+| Parts in a chunk upload | 64 | `400` |
+
+### Time and concurrency
+
+- At most 8 requests decode and parse a body at the same time. One more is a `429` with `Retry-After: 1`, so a burst of large bodies cannot hold more than 8 decoded bodies in memory.
+- Reading a request body has 30 seconds. A slower client gets `408`. Slow headers are the reverse proxy's job, because SECURITY.md already requires one for TLS.
+
+### Other inputs
+
+- A `trace_id` that is not 32 hex characters is ignored, so it cannot break the log query in `issue_context`.
+- The CLI replaces control characters other than newline and tab in titles, messages and attributes with `U+FFFD` before printing to a terminal. `--json` output is unchanged, because JSON already escapes them.
+- The admin token is read only from `DAVY_TOKEN`. A token on the command line shows up in `ps` and shell history.
+
+### Before the cloud launch
+
+These are fine for one team on its own server and must change before tenants share one:
+
+- **Source maps per tenant.** Builds are stored by debug ID only. One tenant could upload a map under another tenant's public debug ID and rewrite its stack traces. The store key and the lookup gain the project.
+- **Retention for errors.** Events, issues and hourly counts are kept forever. A sender with a key can open a new issue per event. A retention sweep by age and a cap on new issues per project per hour come with the cloud quotas.
+- **Abandoned chunks.** Chunks of an upload that never assembles stay in `data/chunks/`. A sweep removes chunks older than an hour.
+- **Tenant scope in agent tools.** `sql` and `mark_fixed` see every project in the database.
 
 ## License and open core
 
