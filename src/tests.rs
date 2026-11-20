@@ -74,6 +74,19 @@ fn grouping_rules() {
     assert_eq!(group(&a).fingerprint, group(&b).fingerprint);
 }
 #[test]
+fn a_repeated_default_in_a_fingerprint_counts_once() {
+    let mut e = event(json!({"message": "x".repeat(100_000)}));
+    let fingerprint = |defaults: usize| {
+        let mut parts = vec!["{{ default }}".to_owned(); defaults];
+        parts.push("checkout".into());
+        Some(parts)
+    };
+    e.fingerprint = fingerprint(1);
+    let once = group(&e).fingerprint;
+    e.fingerprint = fingerprint(1_000);
+    assert_eq!(group(&e).fingerprint, once);
+}
+#[test]
 fn an_envelope_holds_at_most_1000_items() {
     let envelope = |n: usize| format!("{{}}\n{}", "{\"type\":\"session\"}\n{}\n".repeat(n));
     let most = envelope(MAX_ITEMS);

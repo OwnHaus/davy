@@ -101,7 +101,7 @@ fn group(e: &ErrorEvent) -> Grouping
 
 Version 1 rules:
 
-1. If the event has a `fingerprint`, hash its entries. An entry `{{ default }}` expands to the default components below.
+1. If the event has a `fingerprint`, hash its entries. An entry `{{ default }}` expands to the default components below, once, because a repeat adds nothing and would cost the fingerprint's length times the default's size.
 2. Otherwise, with exceptions, for each exception in the chain take the type, plus the in-app frames (all frames if none is in-app). A frame contributes `module` (or the normalized filename) and `function`. Line and column numbers never contribute, so a deploy does not split issues. Take at most the 10 frames nearest the crash.
 3. If an exception has no frames, use its type plus the normalized value.
 4. Without exceptions, use `message_template`, else the normalized `message`.

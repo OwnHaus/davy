@@ -68,20 +68,25 @@ pub fn group(e: &ErrorEvent) -> Grouping {
             default.push(f.function.clone().unwrap_or_default());
         }
     }
-    let components = match &e.fingerprint {
-        None => default,
-        Some(entries) => entries
-            .iter()
-            .flat_map(|s| {
-                if s == "{{ default }}" {
-                    default.clone()
-                } else {
-                    vec![s.clone()]
+    // A repeated default adds nothing, and expanding each one would cost
+    // the product of the fingerprint's length and the default's size.
+    let mut components: Vec<&str> = Vec::new();
+    match &e.fingerprint {
+        None => components.extend(default.iter().map(String::as_str)),
+        Some(entries) => {
+            let mut expanded = false;
+            for entry in entries {
+                if entry != "{{ default }}" {
+                    components.push(entry);
+                } else if !std::mem::replace(&mut expanded, true) {
+                    components.extend(default.iter().map(String::as_str));
                 }
-            })
-            .collect(),
-    };
-    let hash = blake3::hash(&serde_json::to_vec(&components).expect("strings always serialize"));
+            }
+        }
+    }
+    let mut hasher = blake3::Hasher::new();
+    serde_json::to_writer(&mut hasher, &components).expect("strings always serialize");
+    let hash = hasher.finalize();
     let title = e
         .exceptions
         .last()
