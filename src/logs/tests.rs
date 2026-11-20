@@ -1,5 +1,6 @@
 use super::store::{LogQuery, LogWriter, search};
 use super::*;
+use crate::time::{self, now_ns};
 use serde_json::json;
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -106,7 +107,8 @@ fn msgpack_timestamp_ext() {
         logtail::msgpack_timestamp(&1_795_161_600u32.to_be_bytes()),
         Some(1_795_161_600_000_000_000)
     );
-    let packed: u64 = (500u64 << 34) | 1_795_161_600;
+    let secs: u64 = 1_795_161_600;
+    let packed = (500 << 34) | secs;
     assert_eq!(
         logtail::msgpack_timestamp(&packed.to_be_bytes()),
         Some(1_795_161_600_000_000_500)
@@ -388,11 +390,45 @@ fn query(since: i64, until: i64) -> LogQuery {
     }
 }
 
+const DAY: i64 = 86_400_000_000_000;
+
+fn scratch_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("target/test-logs-{}", uuid::Uuid::new_v4()))
+}
+
+fn day_name(ns: i64) -> String {
+    time::day_of(ns).to_string()
+}
+
+fn day_dirs(dir: &std::path::Path) -> Vec<String> {
+    let mut days: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|name| !name.starts_with('.'))
+        .collect();
+    days.sort();
+    days
+}
+
+fn four_records(now: i64) -> Vec<LogRecord> {
+    vec![
+        record(1, now - DAY, now, LogLevel::Info, "yesterday checkout ok"),
+        record(
+            1,
+            now - 2,
+            now,
+            LogLevel::Error,
+            "payment provider timed out",
+        ),
+        record(2, now - 1, now, LogLevel::Warn, "other project"),
+        record(1, now - 40 * DAY, now, LogLevel::Debug, "clock skew"),
+    ]
+}
+
 #[test]
-fn store_writes_days_searches_and_expires() {
-    const DAY: i64 = 86_400_000_000_000;
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("target/test-logs-{}", uuid::Uuid::new_v4()));
+fn store_files_records_by_day_and_expires_old_days() {
+    let dir = scratch_dir();
     let now = now_ns();
     let old = now - 5 * DAY;
     write(
@@ -400,54 +436,16 @@ fn store_writes_days_searches_and_expires() {
         30,
         vec![record(1, old, old, LogLevel::Info, "ancient")],
     );
-    let mut days: Vec<_> = std::fs::read_dir(&dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().into_string().unwrap())
-        .collect();
-    assert_eq!(
-        days,
-        [DateTime::from_timestamp_nanos(old)
-            .format("%Y-%m-%d")
-            .to_string()]
-    );
+    assert_eq!(day_dirs(&dir), [day_name(old)]);
 
-    write(
-        &dir,
-        2,
-        vec![
-            record(1, now - DAY, now, LogLevel::Info, "yesterday checkout ok"),
-            record(
-                1,
-                now - 2,
-                now,
-                LogLevel::Error,
-                "payment provider timed out",
-            ),
-            record(2, now - 1, now, LogLevel::Warn, "other project"),
-            record(1, now - 40 * DAY, now, LogLevel::Debug, "clock skew"),
-        ],
+    write(&dir, 2, four_records(now));
+    let mut expected = vec![day_name(now - DAY), day_name(now)];
+    expected.dedup();
+    assert_eq!(
+        day_dirs(&dir),
+        expected,
+        "old day expired, two live days remain"
     );
-    days = std::fs::read_dir(&dir)
-        .unwrap()
-        .filter_map(|e| {
-            let name = e.unwrap().file_name().into_string().unwrap();
-            (!name.starts_with('.')).then_some(name)
-        })
-        .collect();
-    days.sort();
-    let expected: Vec<String> = {
-        let mut d: Vec<_> = [now - DAY, now]
-            .iter()
-            .map(|t| {
-                DateTime::from_timestamp_nanos(*t)
-                    .format("%Y-%m-%d")
-                    .to_string()
-            })
-            .collect();
-        d.dedup();
-        d
-    };
-    assert_eq!(days, expected, "old day expired, two live days remain");
     assert_eq!(std::fs::read_dir(dir.join(".trash")).unwrap().count(), 0);
 
     let all = search(&dir, &query(now - 3 * DAY, now + 1)).unwrap();
@@ -461,80 +459,95 @@ fn store_writes_days_searches_and_expires() {
             "yesterday checkout ok"
         ]
     );
-    assert_eq!(all[0].timestamp_ns, now);
+    assert_eq!(
+        all[0].timestamp_ns, now,
+        "a future timestamp falls back to observed"
+    );
     assert_eq!(all[0].attributes[ORIGINAL_TIMESTAMP], now - 40 * DAY);
     assert_eq!(all[2].level, LogLevel::Error);
     assert_eq!(all[2].service.as_deref(), Some("api"));
     assert_eq!(all[2].attributes["http"]["status"], 502);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
 
-    let only = |q: LogQuery| -> Vec<String> {
+#[test]
+fn search_filters_by_project_level_text_and_limit() {
+    let dir = scratch_dir();
+    let now = now_ns();
+    write(&dir, 30, four_records(now));
+    let messages = |q: LogQuery| -> Vec<String> {
         search(&dir, &q)
             .unwrap()
             .into_iter()
             .map(|h| h.message)
             .collect()
     };
+    let window = query(now - 3 * DAY, now + 1);
+    let cases: [(LogQuery, &[&str]); 6] = [
+        (
+            LogQuery {
+                project: Some(2),
+                ..window.clone()
+            },
+            &["other project"],
+        ),
+        (
+            LogQuery {
+                min_level: Some(LogLevel::Warn),
+                ..window.clone()
+            },
+            &["other project", "payment provider timed out"],
+        ),
+        (
+            LogQuery {
+                text: Some("timed".into()),
+                ..window.clone()
+            },
+            &["payment provider timed out"],
+        ),
+        (
+            LogQuery {
+                text: Some("attributes.provider:acme".into()),
+                project: Some(2),
+                ..window.clone()
+            },
+            &["other project"],
+        ),
+        (
+            LogQuery {
+                limit: 1,
+                ..window.clone()
+            },
+            &["clock skew"],
+        ),
+        (query(now - 3 * DAY, now - DAY - 1), &[]),
+    ];
+    for (q, expected) in cases {
+        assert_eq!(messages(q.clone()), expected, "{q:?}");
+    }
     assert_eq!(
-        only(LogQuery {
-            project: Some(2),
-            ..query(now - 3 * DAY, now)
-        }),
-        ["other project"]
-    );
-    assert_eq!(
-        only(LogQuery {
-            min_level: Some(LogLevel::Warn),
-            ..query(now - 3 * DAY, now)
-        }),
-        ["other project", "payment provider timed out"]
-    );
-    assert_eq!(
-        only(LogQuery {
-            text: Some("timed".into()),
-            ..query(now - 3 * DAY, now)
-        }),
-        ["payment provider timed out"]
-    );
-    assert_eq!(
-        only(LogQuery {
-            text: Some("attributes.provider:acme".into()),
-            project: Some(2),
-            ..query(now - 3 * DAY, now)
-        }),
-        ["other project"]
-    );
-    assert_eq!(
-        only(LogQuery {
-            limit: 1,
-            ..query(now - 3 * DAY, now + 1)
-        }),
-        ["clock skew"]
-    );
-    assert_eq!(
-        only(query(now - 3 * DAY, now - DAY - 1)),
-        Vec::<String>::new()
-    );
-    assert!(
-        search(&dir.join("missing"), &query(0, now))
-            .unwrap()
-            .is_empty()
+        search(&dir.join("missing"), &query(0, now)).unwrap().len(),
+        0
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
 fn store_recovers_when_a_day_index_breaks() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("target/test-logs-{}", uuid::Uuid::new_v4()));
+    let dir = scratch_dir();
     let now = now_ns();
-    let day = dir.join(
-        DateTime::from_timestamp_nanos(now)
-            .format("%Y-%m-%d")
-            .to_string(),
-    );
+    let day = dir.join(day_name(now));
     let batch = |n: usize, message: &str| -> Vec<LogRecord> {
         (0..n)
-            .map(|i| record(1, now - i as i64, now, LogLevel::Info, message))
+            .map(|i| {
+                record(
+                    1,
+                    now - i64::try_from(i).unwrap(),
+                    now,
+                    LogLevel::Info,
+                    message,
+                )
+            })
             .collect()
     };
     let writer = LogWriter::start(dir.clone(), 30).unwrap();

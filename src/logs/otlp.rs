@@ -126,7 +126,7 @@ pub fn parse(
 }
 
 fn pair(kv: KeyValue) -> (String, Value) {
-    (kv.key, kv.value.map(any).unwrap_or(Value::Null))
+    (kv.key, kv.value.map_or(Value::Null, any))
 }
 
 fn any(v: AnyValue) -> Value {

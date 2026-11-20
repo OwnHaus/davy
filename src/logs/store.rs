@@ -1,6 +1,7 @@
-use super::{LogLevel, LogRecord, LogSource, ORIGINAL_TIMESTAMP, now_ns};
+use super::{LogLevel, LogRecord, LogSource, ORIGINAL_TIMESTAMP};
+use crate::time::{day_of, now_ns, rfc3339};
 use anyhow::{Context, Result, anyhow};
-use chrono::{DateTime, NaiveDate, SecondsFormat};
+use jiff::civil::Date;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::{
@@ -64,18 +65,12 @@ fn schema() -> (Schema, Fields) {
     (b.build(), f)
 }
 
-fn day_of(ts: i64) -> NaiveDate {
-    DateTime::from_timestamp_nanos(ts).date_naive()
+fn parse_day(name: &str) -> Option<Date> {
+    (name.len() == 10).then(|| name.parse().ok()).flatten()
 }
 
-fn parse_day(name: &str) -> Option<NaiveDate> {
-    (name.len() == 10)
-        .then(|| NaiveDate::parse_from_str(name, "%Y-%m-%d").ok())
-        .flatten()
-}
-
-fn open_index(root: &Path, day: NaiveDate) -> Result<Index> {
-    let dir = root.join(day.format("%Y-%m-%d").to_string());
+fn open_index(root: &Path, day: Date) -> Result<Index> {
+    let dir = root.join(day.to_string());
     if dir.join("meta.json").exists() {
         return Ok(Index::open_in_dir(&dir)?);
     }
@@ -91,7 +86,7 @@ fn open_index(root: &Path, day: NaiveDate) -> Result<Index> {
 
 fn document(f: &Fields, r: LogRecord) -> TantivyDocument {
     let mut d = TantivyDocument::default();
-    d.add_u64(f.project, r.project_id as u64);
+    d.add_u64(f.project, r.project_id.cast_unsigned());
     d.add_i64(f.ts, r.timestamp);
     d.add_i64(f.observed, r.observed_at);
     d.add_u64(f.level, r.level as u64);
@@ -126,7 +121,7 @@ struct State {
     root: PathBuf,
     fields: Fields,
     retention_days: u32,
-    open: HashMap<NaiveDate, OpenDay>,
+    open: HashMap<Date, OpenDay>,
     uncommitted: usize,
 }
 
@@ -140,7 +135,7 @@ impl State {
         }
     }
 
-    fn writer(&mut self, day: NaiveDate) -> Result<&mut OpenDay> {
+    fn writer(&mut self, day: Date) -> Result<&mut OpenDay> {
         if !self.open.contains_key(&day) {
             if self.open.len() >= MAX_OPEN_DAYS
                 && let Some(oldest) = self
@@ -203,11 +198,11 @@ impl State {
 
     // A failed commit leaves tantivy's IndexWriter without indexing workers, so the
     // next add_document would block forever. Drop it and reopen on the next write.
-    fn discard(&mut self, day: NaiveDate) {
+    fn discard(&mut self, day: Date) {
         self.open.remove(&day);
     }
 
-    fn close(&mut self, day: NaiveDate) -> Result<()> {
+    fn close(&mut self, day: Date) -> Result<()> {
         if let Some(mut open) = self.open.remove(&day) {
             open.writer.commit()?;
             open.writer.wait_merging_threads()?;
@@ -306,7 +301,7 @@ impl LogQueue {
             self.queued.fetch_sub(rows, SeqCst);
             return Err(QueueError::Full);
         }
-        self.sender.send(batch).map_err(|_| {
+        self.sender.send(batch).map_err(|mpsc::SendError(_)| {
             self.queued.fetch_sub(rows, SeqCst);
             QueueError::Stopped
         })
@@ -345,6 +340,10 @@ impl LogWriter {
             uncommitted: 0,
         };
         let thread = thread::spawn(move || {
+            #[expect(
+                clippy::print_stderr,
+                reason = "the server has no logger yet, stderr is its log"
+            )]
             let report = |what: &str, r: Result<()>| {
                 if let Err(e) = r {
                     eprintln!("log writer: {what}: {e:#}");
@@ -413,7 +412,7 @@ pub fn search(root: &Path, q: &LogQuery) -> Result<Vec<LogHit>> {
 
 fn search_once(root: &Path, q: &LogQuery) -> Result<Vec<LogHit>> {
     let (first, last) = (day_of(q.since), day_of(q.until));
-    let mut days: Vec<NaiveDate> = match std::fs::read_dir(root) {
+    let mut days: Vec<Date> = match std::fs::read_dir(root) {
         Ok(entries) => entries
             .filter_map(|e| parse_day(&e.ok()?.file_name().to_string_lossy()))
             .filter(|d| (first..=last).contains(d))
@@ -428,7 +427,7 @@ fn search_once(root: &Path, q: &LogQuery) -> Result<Vec<LogHit>> {
         if hits.len() >= q.limit {
             break;
         }
-        let dir = root.join(day.format("%Y-%m-%d").to_string());
+        let dir = root.join(day.to_string());
         if !dir.join("meta.json").exists() {
             continue;
         }
@@ -449,7 +448,7 @@ fn search_once(root: &Path, q: &LogQuery) -> Result<Vec<LogHit>> {
             clauses.push((
                 Occur::Must,
                 Box::new(TermQuery::new(
-                    Term::from_field_u64(f.project, p as u64),
+                    Term::from_field_u64(f.project, p.cast_unsigned()),
                     IndexRecordOption::Basic,
                 )),
             ));
@@ -491,14 +490,15 @@ fn hit(schema: &Schema, f: &Fields, doc: &TantivyDocument) -> Result<LogHit> {
             .cloned()
     };
     let int = |field: Field| first(field).and_then(|v| v.as_i64()).unwrap_or(0);
+    let uint = |field: Field| first(field).and_then(|v| v.as_u64()).unwrap_or(0);
     let string = |field: Field| first(field).and_then(|v| v.as_str().map(str::to_owned));
     let ts = int(f.ts);
     Ok(LogHit {
-        timestamp: DateTime::from_timestamp_nanos(ts).to_rfc3339_opts(SecondsFormat::AutoSi, true),
+        timestamp: rfc3339(ts),
         timestamp_ns: ts,
-        project_id: int(f.project),
-        source: LogSource::from_code(int(f.source) as u64),
-        level: LogLevel::from_code(int(f.level) as u64),
+        project_id: uint(f.project).cast_signed(),
+        source: LogSource::from_code(uint(f.source)),
+        level: LogLevel::from_code(uint(f.level)),
         service: string(f.service),
         message: string(f.message).unwrap_or_default(),
         trace_id: string(f.trace_id),

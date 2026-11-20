@@ -42,7 +42,7 @@ pub fn parse(
 fn json(body: &[u8]) -> Result<Vec<Value>, String> {
     match serde_json::from_slice(body) {
         Ok(v) => Ok(vec![v]),
-        Err(e) => ndjson(body).map_err(|_| e.to_string()),
+        Err(e) => ndjson(body).map_err(|line_err| format!("{e} (as ndjson: {line_err})")),
     }
 }
 
@@ -61,16 +61,15 @@ fn msgpack(mut body: &[u8]) -> Result<Value, String> {
 fn to_json(v: rmpv::Value) -> Value {
     use rmpv::Value as M;
     match v {
-        M::Nil => Value::Null,
         M::Boolean(b) => b.into(),
         M::Integer(i) => i
             .as_i64()
             .map(Value::from)
             .or_else(|| i.as_u64().map(Value::from))
             .unwrap_or(Value::Null),
-        M::F32(f) => Value::from(f as f64),
+        M::F32(f) => Value::from(f64::from(f)),
         M::F64(f) => Value::from(f),
-        M::String(s) => s.into_str().map(Value::from).unwrap_or(Value::Null),
+        M::String(s) => s.into_str().map_or(Value::Null, Value::from),
         M::Binary(b) => {
             use base64::Engine;
             base64::engine::general_purpose::STANDARD.encode(b).into()
@@ -88,20 +87,23 @@ fn to_json(v: rmpv::Value) -> Value {
                 .collect(),
         ),
         M::Ext(MSGPACK_TIMESTAMP, b) => msgpack_timestamp(&b).map_or(Value::Null, Value::from),
-        M::Ext(..) => Value::Null,
+        M::Nil | M::Ext(..) => Value::Null,
     }
 }
 
 pub fn msgpack_timestamp(b: &[u8]) -> Option<i64> {
     let (secs, nanos) = match b.len() {
-        4 => (u32::from_be_bytes(b.try_into().ok()?) as i64, 0),
+        4 => (i64::from(u32::from_be_bytes(b.try_into().ok()?)), 0),
         8 => {
             let v = u64::from_be_bytes(b.try_into().ok()?);
-            ((v & 0x3_ffff_ffff) as i64, (v >> 34) as i64)
+            (
+                i64::try_from(v & 0x3_ffff_ffff).ok()?,
+                i64::try_from(v >> 34).ok()?,
+            )
         }
         12 => (
             i64::from_be_bytes(b[4..].try_into().ok()?),
-            u32::from_be_bytes(b[..4].try_into().ok()?) as i64,
+            i64::from(u32::from_be_bytes(b[..4].try_into().ok()?)),
         ),
         _ => return None,
     };

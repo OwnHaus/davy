@@ -20,7 +20,7 @@ pub fn normalize(s: &str) -> String {
             (r"\d+(?:\.\d+)?", "<number>"),
         ]
         .into_iter()
-        .map(|(r, s)| (Regex::new(r).unwrap(), s))
+        .map(|(r, s)| (Regex::new(r).expect("rule patterns are valid"), s))
         .collect()
     });
     RULES.iter().fold(s.to_owned(), |s, (r, replacement)| {
@@ -29,7 +29,7 @@ pub fn normalize(s: &str) -> String {
 }
 fn filename(s: &str) -> String {
     static HASH: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?i)\.[0-9a-f]{8,}(\.[a-z]+)$").unwrap());
+        LazyLock::new(|| Regex::new(r"(?i)\.[0-9a-f]{8,}(\.[a-z]+)$").expect("pattern is valid"));
     normalize(&HASH.replace(s.split('?').next().unwrap_or(s), "$1"))
 }
 fn selected(frames: &[Frame]) -> Vec<&Frame> {
@@ -48,7 +48,7 @@ pub fn group(e: &ErrorEvent) -> Grouping {
             e.message_template
                 .clone()
                 .unwrap_or_else(|| normalize(e.message.as_deref().unwrap_or(""))),
-        )
+        );
     }
     for ex in &e.exceptions {
         default.push(ex.ty.clone());
@@ -81,7 +81,7 @@ pub fn group(e: &ErrorEvent) -> Grouping {
             })
             .collect(),
     };
-    let hash = blake3::hash(&serde_json::to_vec(&components).unwrap());
+    let hash = blake3::hash(&serde_json::to_vec(&components).expect("strings always serialize"));
     let title = e
         .exceptions
         .last()

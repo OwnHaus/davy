@@ -6,12 +6,13 @@ use crate::{
         store::{LogQueue, LogWriter, QueueError},
     },
     store::{self, Ingest},
+    time,
 };
 use axum::{
     Json, Router,
     body::{Bytes, to_bytes},
     extract::{Path, Request, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::post,
@@ -42,7 +43,7 @@ impl Keys {
             return Ok(Some(id));
         }
         let found = {
-            let db = self.db.lock().map_err(|_| internal("database lock"))?;
+            let db = self.db.lock().map_err(internal)?;
             store::project_for_key(&db, key).map_err(internal)?
         };
         if let (Some(id), Ok(mut known)) = (found, self.known.write()) {
@@ -82,25 +83,25 @@ async fn headers(req: Request, next: Next) -> Response {
     let mut response = next.run(req).await;
     let throttled = response.status() == StatusCode::TOO_MANY_REQUESTS;
     let h = response.headers_mut();
-    h.insert("x-sentry-rate-limits", RATE.parse().unwrap());
-    if throttled {
-        h.insert(header::RETRY_AFTER, "1".parse().unwrap());
+    let fixed = [
+        ("x-sentry-rate-limits", RATE),
+        ("access-control-allow-origin", "*"),
+        ("access-control-allow-methods", "POST, OPTIONS"),
+        (
+            "access-control-allow-headers",
+            "authorization, content-type, content-encoding, x-sentry-auth, sentry-trace, baggage",
+        ),
+        (
+            "access-control-expose-headers",
+            "X-Sentry-Rate-Limits, Retry-After",
+        ),
+    ];
+    for (name, value) in fixed {
+        h.insert(name, HeaderValue::from_static(value));
     }
-    h.insert("access-control-allow-origin", "*".parse().unwrap());
-    h.insert(
-        "access-control-allow-methods",
-        "POST, OPTIONS".parse().unwrap(),
-    );
-    h.insert(
-        "access-control-allow-headers",
-        "authorization, content-type, content-encoding, x-sentry-auth, sentry-trace, baggage"
-            .parse()
-            .unwrap(),
-    );
-    h.insert(
-        "access-control-expose-headers",
-        "X-Sentry-Rate-Limits, Retry-After".parse().unwrap(),
-    );
+    if throttled {
+        h.insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    }
     response
 }
 type Failure = (StatusCode, String);
@@ -113,9 +114,7 @@ fn internal(e: impl std::fmt::Display) -> Failure {
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, Failure> + Send + 'static,
 ) -> Result<T, Failure> {
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|_| internal("worker panicked"))?
+    tokio::task::spawn_blocking(f).await.map_err(internal)?
 }
 fn queue<T>(sender: &mpsc::SyncSender<T>, value: T) -> Result<(), Failure> {
     sender.try_send(value).map_err(|e| match e {
@@ -162,9 +161,12 @@ fn header_str(headers: &HeaderMap, name: header::HeaderName) -> &str {
         .trim()
 }
 async fn body(headers: &HeaderMap, body: axum::body::Body) -> Result<Vec<u8>, Failure> {
-    let bytes: Bytes = to_bytes(body, COMPRESSED)
-        .await
-        .map_err(|_| (StatusCode::PAYLOAD_TOO_LARGE, "body too large".into()))?;
+    let bytes: Bytes = to_bytes(body, COMPRESSED).await.map_err(|e| {
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("body too large: {e}"),
+        )
+    })?;
     let encoding = header_str(headers, header::CONTENT_ENCODING).to_ascii_lowercase();
     blocking(move || decode(&bytes, &encoding)).await
 }
@@ -235,7 +237,7 @@ fn parse_sentry(bytes: &[u8], project: i64, legacy: bool) -> Result<Parsed, Fail
         });
     }
     let envelope = Envelope::parse(bytes).map_err(bad)?;
-    let observed_at = logs::now_ns();
+    let observed_at = time::now_ns();
     let mut parsed = Parsed {
         id: envelope.header.event_id,
         dsn: envelope.header.dsn,
@@ -291,7 +293,7 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
             },
         )?;
         rx.await
-            .map_err(|_| internal("writer stopped"))?
+            .map_err(|e| internal(format!("writer stopped: {e}")))?
             .map_err(internal)?;
     }
     Ok(Json(json!({"id":id.0})).into_response())
@@ -303,7 +305,7 @@ async fn logtail_ingest(State(app): State<App>, req: Request) -> Response {
         let bytes = body(&parts.headers, raw).await?;
         let content_type = header_str(&parts.headers, header::CONTENT_TYPE).to_owned();
         let records = blocking(move || {
-            logtail::parse(&bytes, &content_type, project, logs::now_ns())
+            logtail::parse(&bytes, &content_type, project, time::now_ns())
                 .map_err(|e| (StatusCode::NOT_ACCEPTABLE, e))
         })
         .await?;
@@ -328,7 +330,7 @@ async fn otlp_ingest(State(app): State<App>, req: Request) -> Response {
         })?;
         let bytes = body(&parts.headers, raw).await?;
         let records =
-            blocking(move || otlp::parse(&bytes, encoding, project, logs::now_ns()).map_err(bad))
+            blocking(move || otlp::parse(&bytes, encoding, project, time::now_ns()).map_err(bad))
                 .await?;
         if !records.is_empty() {
             queue_logs(&app.logs, records)?;
@@ -363,31 +365,30 @@ pub async fn serve(
         logs: log_writer.queue.clone(),
     };
     let listener = tokio::net::TcpListener::bind(listen).await?;
+    #[cfg(unix)]
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = axum::serve(listener, router(app))
-        .with_graceful_shutdown(async {
+        .with_graceful_shutdown(async move {
             #[cfg(unix)]
-            {
-                let mut term =
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                        .unwrap();
-                tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
-            }
+            tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
             #[cfg(not(unix))]
-            {
-                let _ = tokio::signal::ctrl_c().await;
+            if tokio::signal::ctrl_c().await.is_err() {
+                std::future::pending::<()>().await;
             }
         })
         .await;
     drop(writer.sender);
     drop(log_writer.queue);
-    writer
-        .thread
-        .join()
-        .map_err(|_| anyhow::anyhow!("writer panicked"))?;
-    log_writer
-        .thread
-        .join()
-        .map_err(|_| anyhow::anyhow!("log writer panicked"))?;
+    for (name, thread) in [("writer", writer.thread), ("log writer", log_writer.thread)] {
+        thread.join().map_err(|panic| {
+            let why = panic
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("no message");
+            anyhow::anyhow!("{name} panicked: {why}")
+        })?;
+    }
     result?;
     Ok(())
 }

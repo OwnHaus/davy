@@ -3,6 +3,7 @@
 //!
 //! cargo run --release --example load_logs -- 127.0.0.1:PORT KEY 1000000 1000 4
 
+use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::{
     io::{Read, Write},
@@ -25,9 +26,13 @@ impl Rng {
     fn below(&mut self, n: u64) -> u64 {
         self.next() % n
     }
+    fn pick<T: Copy>(&mut self, items: &[T]) -> T {
+        let i = self.next() % items.len() as u64;
+        items[usize::try_from(i).expect("an index below a slice length fits usize")]
+    }
     fn hex(&mut self, len: usize) -> String {
         (0..len)
-            .map(|_| char::from(b"0123456789abcdef"[self.below(16) as usize]))
+            .map(|_| char::from(self.pick(b"0123456789abcdef")))
             .collect()
     }
 }
@@ -42,21 +47,22 @@ const ROUTES: [&str; 6] = [
 ];
 const SERVICES: [&str; 4] = ["api", "worker", "checkout", "search"];
 
-fn row(rng: &mut Rng, i: usize, start_ms: i64) -> Value {
-    let dt = chrono::DateTime::from_timestamp_millis(start_ms + i as i64 / 50)
-        .unwrap()
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+fn row(rng: &mut Rng, i: i64, start_ms: i64) -> Result<Value> {
+    let dt = format!(
+        "{:.3}",
+        jiff::Timestamp::from_millisecond(start_ms + i / 50).context("timestamp out of range")?
+    );
     let mut m = json!({
         "dt": dt,
         "pid": 4000 + rng.below(8),
         "hostname": format!("api-7d9f-{}", rng.hex(4)),
-        "service": SERVICES[rng.below(4) as usize],
+        "service": rng.pick(&SERVICES),
     });
     let roll = rng.below(100);
     let extra = if roll < 70 {
-        let route = ROUTES[rng.below(6) as usize];
-        let status = [200, 200, 200, 201, 204, 304, 404, 500][rng.below(8) as usize];
-        let method = ["GET", "POST"][rng.below(2) as usize];
+        let route = rng.pick(&ROUTES);
+        let status = rng.pick(&[200, 200, 200, 201, 204, 304, 404, 500]);
+        let method = rng.pick(&["GET", "POST"]);
         json!({
             "level": "info",
             "message": "request completed",
@@ -80,7 +86,7 @@ fn row(rng: &mut Rng, i: usize, start_ms: i64) -> Value {
     if let (Value::Object(m), Value::Object(extra)) = (&mut m, extra) {
         m.extend(extra);
     }
-    m
+    Ok(m)
 }
 
 fn msgpack(v: &Value) -> rmpv::Value {
@@ -90,8 +96,7 @@ fn msgpack(v: &Value) -> rmpv::Value {
         Value::Bool(b) => M::Boolean(*b),
         Value::Number(n) => n
             .as_i64()
-            .map(M::from)
-            .unwrap_or_else(|| M::F64(n.as_f64().unwrap_or(0.0))),
+            .map_or_else(|| M::F64(n.as_f64().unwrap_or(0.0)), M::from),
         Value::String(s) => M::from(s.as_str()),
         Value::Array(a) => M::Array(a.iter().map(msgpack).collect()),
         Value::Object(o) => M::Map(
@@ -119,62 +124,83 @@ fn post(addr: &str, key: &str, body: &[u8]) -> std::io::Result<u16> {
         .unwrap_or(0))
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let addr = args[0].clone();
-    let key = args[1].clone();
-    let total: usize = args[2].parse().unwrap();
-    let batch: usize = args[3].parse().unwrap();
-    let workers: usize = args[4].parse().unwrap();
+struct Args {
+    addr: String,
+    key: String,
+    total: usize,
+    batch: usize,
+    workers: usize,
+}
 
-    let started = Instant::now();
-    let start_ms = chrono::Utc::now().timestamp_millis() - (total as i64 / 50);
+fn args() -> Result<Args> {
+    let usage = "usage: load_logs ADDR KEY TOTAL BATCH WORKERS";
+    let mut args = std::env::args().skip(1);
+    let mut next = || args.next().context(usage);
+    Ok(Args {
+        addr: next()?,
+        key: next()?,
+        total: next()?.parse().context(usage)?,
+        batch: next()?.parse().context(usage)?,
+        workers: next()?.parse().context(usage)?,
+    })
+}
+
+struct Bodies {
+    gzipped: Vec<Vec<u8>>,
+    raw_ndjson: usize,
+    raw_msgpack: usize,
+}
+
+fn generate(total: usize, batch: usize) -> Result<Bodies> {
+    let total_rows = i64::try_from(total)?;
+    let start_ms = jiff::Timestamp::now().as_millisecond() - total_rows / 50;
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
-    let (mut raw_ndjson, mut raw_msgpack) = (0usize, 0usize);
-    let mut bodies = Vec::new();
+    let mut out = Bodies {
+        gzipped: Vec::new(),
+        raw_ndjson: 0,
+        raw_msgpack: 0,
+    };
     for b in 0..total.div_ceil(batch) {
         let mut rows = Vec::with_capacity(batch);
         for i in b * batch..((b + 1) * batch).min(total) {
-            let r = row(&mut rng, i, start_ms);
-            raw_ndjson += serde_json::to_vec(&r).unwrap().len() + 1;
+            let r = row(&mut rng, i64::try_from(i)?, start_ms)?;
+            out.raw_ndjson += serde_json::to_vec(&r)?.len() + 1;
             let r = msgpack(&r);
             let mut buf = Vec::new();
-            rmpv::encode::write_value(&mut buf, &r).unwrap();
-            raw_msgpack += buf.len();
+            rmpv::encode::write_value(&mut buf, &r)?;
+            out.raw_msgpack += buf.len();
             rows.push(r);
         }
         let mut packed = Vec::new();
-        rmpv::encode::write_value(&mut packed, &rmpv::Value::Array(rows)).unwrap();
+        rmpv::encode::write_value(&mut packed, &rmpv::Value::Array(rows))?;
         let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        gz.write_all(&packed).unwrap();
-        bodies.push(gz.finish().unwrap());
+        gz.write_all(&packed)?;
+        out.gzipped.push(gz.finish()?);
     }
-    let gzipped: usize = bodies.iter().map(Vec::len).sum();
-    eprintln!(
-        "generated {total} rows in {:.1}s: ndjson {raw_ndjson} B ({} B/row), msgpack {raw_msgpack} B, gzip {gzipped} B",
-        started.elapsed().as_secs_f64(),
-        raw_ndjson / total
-    );
+    Ok(out)
+}
 
+struct Outcome {
+    throttled: usize,
+    failures: Vec<String>,
+}
+
+fn send_all(args: &Args, bodies: Vec<Vec<u8>>) -> Result<Outcome> {
     let bodies = Arc::new(bodies);
     let next = Arc::new(AtomicUsize::new(0));
     let throttled = Arc::new(AtomicUsize::new(0));
     let failures = Arc::new(Mutex::new(Vec::new()));
-    let sending = Instant::now();
-    let threads: Vec<_> = (0..workers)
+    let threads: Vec<_> = (0..args.workers)
         .map(|_| {
-            let (bodies, next, throttled, failures, addr, key) = (
+            let (bodies, next, throttled, failures) = (
                 bodies.clone(),
                 next.clone(),
                 throttled.clone(),
                 failures.clone(),
-                addr.clone(),
-                key.clone(),
             );
+            let (addr, key) = (args.addr.clone(), args.key.clone());
             std::thread::spawn(move || {
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(body) = bodies.get(i) else { break };
+                while let Some(body) = bodies.get(next.fetch_add(1, Ordering::Relaxed)) {
                     loop {
                         match post(&addr, &key, body) {
                             Ok(202) => break,
@@ -183,7 +209,10 @@ fn main() {
                                 std::thread::sleep(Duration::from_millis(50));
                             }
                             other => {
-                                failures.lock().unwrap().push(format!("{other:?}"));
+                                failures
+                                    .lock()
+                                    .expect("no sender panics while holding the lock")
+                                    .push(format!("{other:?}"));
                                 break;
                             }
                         }
@@ -193,16 +222,56 @@ fn main() {
         })
         .collect();
     for t in threads {
-        t.join().unwrap();
+        t.join()
+            .map_err(|_panic| anyhow::anyhow!("a sender thread panicked"))?;
     }
-    let secs = sending.elapsed().as_secs_f64();
-    let failures = failures.lock().unwrap();
-    println!(
-        "accepted {total} rows in {secs:.2}s = {:.0} rows/s, {} responses 429, {} failures {:?}",
-        total as f64 / secs,
-        throttled.load(Ordering::Relaxed),
-        failures.len(),
-        failures.iter().take(3).collect::<Vec<_>>()
+    let failures = std::mem::take(
+        &mut *failures
+            .lock()
+            .map_err(|e| anyhow::anyhow!("failure list poisoned: {e}"))?,
     );
-    println!("raw_ndjson_bytes={raw_ndjson}");
+    Ok(Outcome {
+        throttled: throttled.load(Ordering::Relaxed),
+        failures,
+    })
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a rate for a report, not an exact count"
+)]
+fn per_second(rows: usize, secs: f64) -> f64 {
+    rows as f64 / secs
+}
+
+fn main() -> Result<()> {
+    let args = args()?;
+    let generating = Instant::now();
+    let bodies = generate(args.total, args.batch)?;
+    let gzipped: usize = bodies.gzipped.iter().map(Vec::len).sum();
+    writeln!(
+        std::io::stderr(),
+        "generated {} rows in {:.1}s: ndjson {} B ({} B/row), msgpack {} B, gzip {gzipped} B",
+        args.total,
+        generating.elapsed().as_secs_f64(),
+        bodies.raw_ndjson,
+        bodies.raw_ndjson / args.total,
+        bodies.raw_msgpack,
+    )?;
+
+    let sending = Instant::now();
+    let outcome = send_all(&args, bodies.gzipped)?;
+    let secs = sending.elapsed().as_secs_f64();
+    let mut out = std::io::stdout();
+    writeln!(
+        out,
+        "accepted {} rows in {secs:.2}s = {:.0} rows/s, {} responses 429, {} failures {:?}",
+        args.total,
+        per_second(args.total, secs),
+        outcome.throttled,
+        outcome.failures.len(),
+        outcome.failures.iter().take(3).collect::<Vec<_>>()
+    )?;
+    writeln!(out, "raw_ndjson_bytes={}", bodies.raw_ndjson)?;
+    Ok(())
 }

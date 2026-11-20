@@ -103,7 +103,7 @@ fn event_boundary() {
         json!({"event_id":"550E8400-E29B-41D4-A716-446655440000","timestamp":"2020-01-01T00:00:00Z","message":{"formatted":"hi","message":"template"},"exception":[{"type":"Error"}]}),
     );
     assert_eq!(e.event_id.0, "550e8400e29b41d4a716446655440000");
-    assert_eq!(e.timestamp, 1577836800000);
+    assert_eq!(e.timestamp, 1_577_836_800_000);
     assert_eq!(e.message.as_deref(), Some("hi"));
     assert_eq!(e.message_template.as_deref(), Some("template"));
     assert!(ErrorEvent::parse(json!({"event_id":"bad"})).is_err());
@@ -111,14 +111,14 @@ fn event_boundary() {
         json!({"level":"warn","timestamp":"2020-01-01T00:00:00","fingerprint":["a",1,null],"exception":{"values":[{"type":"E","value":7,"stacktrace":{"frames":[{"function":"f","lineno":-1}]}}]}}),
     );
     assert_eq!(e.level, Level::Warning);
-    assert_eq!(e.timestamp, 1577836800000);
+    assert_eq!(e.timestamp, 1_577_836_800_000);
     assert_eq!(e.fingerprint, Some(vec!["a".to_owned(), "1".to_owned()]));
     assert_eq!(e.exceptions[0].value, None);
     assert_eq!(e.exceptions[0].frames[0].function.as_deref(), Some("f"));
     assert_eq!(e.exceptions[0].frames[0].lineno, None);
     let e = event(json!({"timestamp":"yesterday","level":7}));
     assert_eq!(e.level, Level::Error);
-    assert!(e.timestamp > 1577836800000);
+    assert!(e.timestamp > 1_577_836_800_000);
 }
 fn memory() -> rusqlite::Connection {
     let c = rusqlite::Connection::open_in_memory().unwrap();
@@ -182,101 +182,6 @@ fn storage_regression_duplicates_sampling_and_ignored() {
     );
     assert_eq!(store::payload(&c, 1).unwrap()["message"], "failure 3");
 }
-#[tokio::test]
-async fn http_contract() {
-    use axum::{
-        body::{Body, to_bytes},
-        http::Request,
-    };
-    use std::sync::{Arc, mpsc};
-    use tower::ServiceExt;
-    let c = memory();
-    store::create_project(&c, "test").unwrap();
-    c.execute("UPDATE projects SET public_key='key'", [])
-        .unwrap();
-    let (sender, rx) = mpsc::sync_channel(1);
-    let (logs, _logs_rx) = crate::logs::store::LogQueue::bounded(1);
-    let app = crate::http::router(crate::http::App {
-        keys: Arc::new(crate::http::Keys::new(c)),
-        sender: sender.clone(),
-        logs,
-    });
-    for (key, status) in [("", 401), ("?sentry_key=wrong", 403)] {
-        let r = app
-            .clone()
-            .oneshot(
-                Request::post(format!("/api/1/envelope/{key}"))
-                    .body(Body::from("{}\n{\"type\":\"session\"}\n{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(r.status().as_u16(), status);
-        assert_eq!(r.headers()["x-sentry-rate-limits"], crate::http::RATE);
-    }
-    let r = app
-        .clone()
-        .oneshot(
-            Request::post("/api/1/envelope/?sentry_key=wrong")
-                .header("content-encoding", "gzip")
-                .body(Body::from("not gzip"))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 403, "key is checked before the body is decoded");
-    let r = app
-        .clone()
-        .oneshot(
-            Request::post("/api/1/envelope/?sentry_key=key")
-                .body(Body::from("{}\n{\"type\":\"future\"}\n{}"))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 200);
-    let body = to_bytes(r.into_body(), 1000).await.unwrap();
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["id"]
-            .as_str()
-            .unwrap()
-            .len(),
-        32
-    );
-    let (done, _) = tokio::sync::oneshot::channel();
-    sender
-        .try_send(store::Ingest {
-            project: 1,
-            events: vec![],
-            done,
-        })
-        .unwrap();
-    let r = app
-        .clone()
-        .oneshot(
-            Request::post("/api/1/store/?sentry_key=key")
-                .body(Body::from("{\"message\":\"test\"}"))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 429);
-    assert_eq!(r.headers()["retry-after"], "1");
-    drop(rx);
-    let r = app
-        .oneshot(
-            Request::builder()
-                .method("OPTIONS")
-                .uri("/api/1/store/")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(r.status(), 204);
-    assert_eq!(r.headers()["access-control-allow-origin"], "*");
-}
-
 #[test]
 fn grouping_frame_selection_and_bundle_names() {
     let make = |filename: &str, function: &str, in_app: bool| json!({"filename":filename,"function":function,"in_app":in_app});
@@ -303,179 +208,312 @@ fn grouping_frame_selection_and_bundle_names() {
     assert_ne!(a.fingerprint, group(&with_frames(&frames)).fingerprint);
 }
 
-#[tokio::test]
-async fn http_log_routes() {
+mod http {
+    use super::memory;
+    use crate::{
+        http::{App, Keys, RATE, router},
+        logs::{
+            LogLevel,
+            store::{LogInbox, LogQueue},
+        },
+        store,
+    };
     use axum::{
+        Router,
         body::{Body, to_bytes},
-        http::Request,
+        http::{HeaderMap, Request, header},
     };
     use std::sync::{Arc, mpsc};
     use tower::ServiceExt;
-    let c = memory();
-    store::create_project(&c, "a").unwrap();
-    store::create_project(&c, "b").unwrap();
-    c.execute("UPDATE projects SET public_key='key-' || slug", [])
-        .unwrap();
-    let (sender, _rx) = mpsc::sync_channel(1);
-    let (logs, logs_rx) = crate::logs::store::LogQueue::bounded(1);
-    let app = crate::http::router(crate::http::App {
-        keys: Arc::new(crate::http::Keys::new(c)),
-        sender,
-        logs,
-    });
-    let fixture = |name: &str| {
+
+    /// The router with projects `a` (id 1, key `key-a`) and `b` (id 2, key `key-b`)
+    /// and both ingest queues one slot deep.
+    struct Server {
+        app: Router,
+        errors: mpsc::SyncSender<store::Ingest>,
+        _error_inbox: mpsc::Receiver<store::Ingest>,
+        logs: LogInbox,
+    }
+
+    struct Reply {
+        status: u16,
+        headers: HeaderMap,
+        body: Vec<u8>,
+    }
+
+    impl Reply {
+        fn content_type(&self) -> &str {
+            self.headers
+                .get(header::CONTENT_TYPE)
+                .map_or("", |v| v.to_str().unwrap())
+        }
+    }
+
+    fn server() -> Server {
+        let c = memory();
+        store::create_project(&c, "a").unwrap();
+        store::create_project(&c, "b").unwrap();
+        c.execute("UPDATE projects SET public_key='key-' || slug", [])
+            .unwrap();
+        let (errors, error_inbox) = mpsc::sync_channel(1);
+        let (logs, log_inbox) = LogQueue::bounded(1);
+        let app = router(App {
+            keys: Arc::new(Keys::new(c)),
+            sender: errors.clone(),
+            logs,
+        });
+        Server {
+            app,
+            errors,
+            _error_inbox: error_inbox,
+            logs: log_inbox,
+        }
+    }
+
+    impl Server {
+        async fn send(&self, req: Request<Body>) -> Reply {
+            let r = self.app.clone().oneshot(req).await.unwrap();
+            let status = r.status().as_u16();
+            let headers = r.headers().clone();
+            let body = to_bytes(r.into_body(), 10_000).await.unwrap().to_vec();
+            Reply {
+                status,
+                headers,
+                body,
+            }
+        }
+    }
+
+    fn post(uri: &str, headers: &[(&str, &str)], body: impl Into<Body>) -> Request<Body> {
+        headers
+            .iter()
+            .fold(Request::post(uri), |r, (k, v)| r.header(*k, *v))
+            .body(body.into())
+            .unwrap()
+    }
+
+    fn otlp(content_type: &str, body: impl Into<Body>) -> Request<Body> {
+        post(
+            "/v1/logs",
+            &[
+                ("authorization", "Bearer key-a"),
+                ("content-type", content_type),
+            ],
+            body,
+        )
+    }
+
+    fn fixture(name: &str) -> Vec<u8> {
         std::fs::read(format!(
             "{}/e2e/fixtures/{name}",
             env!("CARGO_MANIFEST_DIR")
         ))
         .unwrap()
-    };
-    let send = |req: Request<Body>| {
-        let app = app.clone();
-        async move {
-            let r = app.oneshot(req).await.unwrap();
-            let status = r.status().as_u16();
-            let ty = r
-                .headers()
-                .get("content-type")
-                .map(|v| v.to_str().unwrap().to_owned());
-            let body = to_bytes(r.into_body(), 10_000).await.unwrap().to_vec();
-            (status, ty, body)
+    }
+
+    const SESSION: &str = "{}\n{\"type\":\"session\"}\n{}";
+
+    #[tokio::test]
+    async fn envelope_needs_the_project_key() {
+        let s = server();
+        for (uri, status) in [
+            ("/api/1/envelope/", 401),
+            ("/api/1/envelope/?sentry_key=wrong", 403),
+            ("/api/2/envelope/?sentry_key=key-a", 403),
+        ] {
+            let r = s.send(post(uri, &[], SESSION)).await;
+            assert_eq!(r.status, status, "{uri}");
+            assert_eq!(r.headers["x-sentry-rate-limits"], RATE);
         }
-    };
+        let r = s
+            .send(post(
+                "/api/1/envelope/?sentry_key=wrong",
+                &[("content-encoding", "gzip")],
+                "not gzip",
+            ))
+            .await;
+        assert_eq!(r.status, 403, "key is checked before the body is decoded");
+    }
 
-    let logtail = |auth: &str| {
-        Request::post("/")
-            .header("authorization", auth)
-            .header("content-type", "application/msgpack")
-            .header("content-encoding", "gzip")
-            .body(Body::from(fixture("logtail-pino/1.body")))
-            .unwrap()
-    };
-    assert_eq!(send(logtail("Bearer key-b")).await.0, 202);
-    let batch = logs_rx.try_recv().unwrap();
-    assert_eq!(batch.len(), 3);
-    assert_eq!(
-        (batch[0].project_id, batch[0].message.as_str()),
-        (2, "request completed")
-    );
-    assert_eq!(send(logtail("Bearer nope")).await.0, 403);
-    assert_eq!(send(logtail("Basic key-b")).await.0, 401);
-    let (status, _, _) = send(
-        Request::post("/")
-            .header("authorization", "Bearer key-a")
-            .header("content-type", "application/json")
-            .body(Body::from("\"text\""))
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(status, 406);
+    #[tokio::test]
+    async fn envelope_accepts_unknown_item_types() {
+        let r = server()
+            .send(post(
+                "/api/1/envelope/?sentry_key=key-a",
+                &[],
+                "{}\n{\"type\":\"future\"}\n{}",
+            ))
+            .await;
+        assert_eq!(r.status, 200);
+        let reply: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(reply["id"].as_str().unwrap().len(), 32);
+    }
 
-    let otlp = |ty: &str, body: Vec<u8>| {
-        Request::post("/v1/logs")
-            .header("authorization", "Bearer key-a")
-            .header("content-type", ty)
-            .body(Body::from(body))
-            .unwrap()
-    };
-    let (status, ty, body) =
-        send(otlp("application/x-protobuf", fixture("otlp-proto/1.body"))).await;
-    assert_eq!(
-        (status, ty.as_deref(), body.as_slice()),
-        (200, Some("application/x-protobuf"), &b""[..])
-    );
-    let batch = logs_rx.try_recv().unwrap();
-    assert_eq!(
-        (batch[0].project_id, batch[0].message.as_str()),
-        (1, "GET /cart 200")
-    );
-    let (status, ty, body) = send(otlp("application/json", fixture("otlp-json/2.body"))).await;
-    assert_eq!(
-        (status, ty.as_deref(), body.as_slice()),
-        (200, Some("application/json"), &b"{}"[..])
-    );
-    assert_eq!(
-        logs_rx.try_recv().unwrap()[0].level,
-        crate::logs::LogLevel::Error
-    );
+    #[tokio::test]
+    async fn full_error_queue_is_429() {
+        let s = server();
+        let (done, _) = tokio::sync::oneshot::channel();
+        s.errors
+            .try_send(store::Ingest {
+                project: 1,
+                events: vec![],
+                done,
+            })
+            .unwrap();
+        let r = s
+            .send(post(
+                "/api/1/store/?sentry_key=key-a",
+                &[],
+                "{\"message\":\"test\"}",
+            ))
+            .await;
+        assert_eq!(r.status, 429);
+        assert_eq!(r.headers["retry-after"], "1");
+    }
 
-    let (status, ty, body) = send(otlp("application/json", b"{\"resourceLogs\":7}".to_vec())).await;
-    assert_eq!((status, ty.as_deref()), (400, Some("application/json")));
-    let status_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(status_body["code"], 3);
-    assert_eq!(send(otlp("text/plain", b"x".to_vec())).await.0, 415);
-    let (status, ty, body) = send(
-        Request::post("/v1/logs")
-            .header("authorization", "Bearer wrong")
-            .header("content-type", "application/x-protobuf")
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(
-        (status, ty.as_deref()),
-        (403, Some("application/x-protobuf"))
-    );
-    assert_eq!(&body[..2], b"\x08\x03");
+    #[tokio::test]
+    async fn preflight_allows_browser_sdks() {
+        let s = server();
+        for uri in ["/api/1/store/", "/v1/logs"] {
+            let r = s
+                .send(
+                    Request::builder()
+                        .method("OPTIONS")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await;
+            assert_eq!(r.status, 204, "{uri}");
+            assert_eq!(r.headers["access-control-allow-origin"], "*");
+            assert!(
+                r.headers["access-control-allow-headers"]
+                    .to_str()
+                    .unwrap()
+                    .contains("authorization")
+            );
+        }
+    }
 
-    let (status, _, _) = send(
-        Request::post("/api/1/envelope/?sentry_key=key-a")
-            .body(Body::from(fixture("sentry-node-10-logs/1.body")))
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(status, 200);
-    let batch = logs_rx.try_recv().unwrap();
-    let messages: Vec<_> = batch.iter().map(|r| r.message.as_str()).collect();
-    assert_eq!(
-        messages,
-        [
-            "Order placed",
-            "Cart c-77 is over the limit",
-            "Payment provider timed out"
-        ]
-    );
-    assert_eq!(
-        send(
-            Request::post("/api/2/envelope/?sentry_key=key-a")
-                .body(Body::from(fixture("sentry-node-10-logs/1.body")))
-                .unwrap(),
-        )
-        .await
-        .0,
-        403,
-        "a key only opens its own project"
-    );
+    #[tokio::test]
+    async fn logtail_route() {
+        let s = server();
+        let logtail = |auth: &str| {
+            post(
+                "/",
+                &[
+                    ("authorization", auth),
+                    ("content-type", "application/msgpack"),
+                    ("content-encoding", "gzip"),
+                ],
+                fixture("logtail-pino/1.body"),
+            )
+        };
+        assert_eq!(s.send(logtail("Bearer key-b")).await.status, 202);
+        let batch = s.logs.try_recv().unwrap();
+        assert_eq!(batch.len(), 3);
+        assert_eq!(
+            (batch[0].project_id, batch[0].message.as_str()),
+            (2, "request completed")
+        );
+        assert_eq!(s.send(logtail("Bearer nope")).await.status, 403);
+        assert_eq!(s.send(logtail("Basic key-b")).await.status, 401);
+        let r = s
+            .send(post(
+                "/",
+                &[
+                    ("authorization", "Bearer key-a"),
+                    ("content-type", "application/json"),
+                ],
+                "\"text\"",
+            ))
+            .await;
+        assert_eq!(r.status, 406);
+    }
 
-    assert_eq!(
-        send(otlp("application/json", fixture("otlp-json/2.body")))
-            .await
-            .0,
-        200
-    );
-    let (status, _, _) = send(otlp("application/json", fixture("otlp-json/2.body"))).await;
-    assert_eq!(status, 429, "log queue is full");
-    let r = app
-        .clone()
-        .oneshot(otlp("application/json", fixture("otlp-json/2.body")))
-        .await
-        .unwrap();
-    assert_eq!(r.headers()["retry-after"], "1");
-    drop(logs_rx);
-    let r = app
-        .oneshot(
-            Request::builder()
-                .method("OPTIONS")
-                .uri("/v1/logs")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert!(
-        r.headers()["access-control-allow-headers"]
-            .to_str()
-            .unwrap()
-            .contains("authorization")
-    );
+    #[tokio::test]
+    async fn otlp_route_answers_in_the_request_encoding() {
+        let s = server();
+        let r = s
+            .send(otlp("application/x-protobuf", fixture("otlp-proto/1.body")))
+            .await;
+        assert_eq!(
+            (r.status, r.content_type(), r.body.as_slice()),
+            (200, "application/x-protobuf", &b""[..])
+        );
+        let batch = s.logs.try_recv().unwrap();
+        assert_eq!(
+            (batch[0].project_id, batch[0].message.as_str()),
+            (1, "GET /cart 200")
+        );
+
+        let r = s
+            .send(otlp("application/json", fixture("otlp-json/2.body")))
+            .await;
+        assert_eq!(
+            (r.status, r.content_type(), r.body.as_slice()),
+            (200, "application/json", &b"{}"[..])
+        );
+        assert_eq!(s.logs.try_recv().unwrap()[0].level, LogLevel::Error);
+
+        let r = s
+            .send(otlp("application/json", "{\"resourceLogs\":7}"))
+            .await;
+        assert_eq!((r.status, r.content_type()), (400, "application/json"));
+        let status: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(status["code"], 3);
+        assert_eq!(s.send(otlp("text/plain", "x")).await.status, 415);
+
+        let r = s
+            .send(post(
+                "/v1/logs",
+                &[
+                    ("authorization", "Bearer wrong"),
+                    ("content-type", "application/x-protobuf"),
+                ],
+                Body::empty(),
+            ))
+            .await;
+        assert_eq!(
+            (r.status, r.content_type()),
+            (403, "application/x-protobuf")
+        );
+        assert_eq!(&r.body[..2], b"\x08\x03");
+    }
+
+    #[tokio::test]
+    async fn sentry_log_items() {
+        let s = server();
+        let r = s
+            .send(post(
+                "/api/1/envelope/?sentry_key=key-a",
+                &[],
+                fixture("sentry-node-10-logs/1.body"),
+            ))
+            .await;
+        assert_eq!(r.status, 200);
+        let batch = s.logs.try_recv().unwrap();
+        let messages: Vec<_> = batch.iter().map(|r| r.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            [
+                "Order placed",
+                "Cart c-77 is over the limit",
+                "Payment provider timed out"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn full_log_queue_is_429() {
+        let s = server();
+        let body = fixture("otlp-json/2.body");
+        assert_eq!(
+            s.send(otlp("application/json", body.clone())).await.status,
+            200
+        );
+        let r = s.send(otlp("application/json", body)).await;
+        assert_eq!(r.status, 429);
+        assert_eq!(r.headers["retry-after"], "1");
+    }
 }

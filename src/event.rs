@@ -1,11 +1,9 @@
+use crate::time;
 use anyhow::{Result, bail};
 use serde::Serialize;
 use serde_json::Value;
 
 pub type Timestamp = i64;
-pub fn now() -> Timestamp {
-    chrono::Utc::now().timestamp_millis()
-}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct EventId(pub String);
 impl EventId {
@@ -112,18 +110,13 @@ impl Frame {
 fn timestamp(v: Option<&Value>) -> Option<Timestamp> {
     let ms = match v? {
         Value::Number(n) => n.as_f64()? * 1000.0,
-        Value::String(s) => {
-            return chrono::DateTime::parse_from_rfc3339(s)
-                .map(|t| t.timestamp_millis())
-                .or_else(|_| {
-                    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
-                        .map(|t| t.and_utc().timestamp_millis())
-                })
-                .ok();
-        }
+        Value::String(s) => return time::parse(s).map(jiff::Timestamp::as_millisecond),
         _ => return None,
     };
-    (ms.is_finite() && ms >= 0.0 && ms < i64::MAX as f64).then_some(ms as i64)
+    if ms < 0.0 {
+        return None;
+    }
+    time::whole(ms)
 }
 fn string(v: &Value) -> Option<String> {
     v.as_str().map(str::to_owned)
@@ -141,7 +134,7 @@ impl ErrorEvent {
             None => EventId::fresh(),
         };
         raw["event_id"] = Value::String(event_id.0.clone());
-        let received_at = now();
+        let received_at = time::now_ms();
         let timestamp = timestamp(raw.get("timestamp")).unwrap_or(received_at);
         let ex = &raw["exception"];
         let exceptions = ex

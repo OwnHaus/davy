@@ -6,8 +6,9 @@ CREATE TABLE IF NOT EXISTS issue_hourly(issue_id INTEGER NOT NULL REFERENCES iss
 CREATE INDEX IF NOT EXISTS issues_last_seen ON issues(last_seen DESC);
 CREATE INDEX IF NOT EXISTS events_issue ON events(issue_id, id DESC);";
 use crate::{
-    event::{ErrorEvent, Timestamp, now},
+    event::{ErrorEvent, Timestamp},
     grouping::group,
+    time,
 };
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -46,7 +47,7 @@ pub fn create_project(c: &Connection, slug: &str) -> Result<(i64, String)> {
     let key = uuid::Uuid::new_v4().simple().to_string();
     c.execute(
         "INSERT INTO projects(slug,public_key,created_at) VALUES (?1,?2,?3)",
-        params![slug, key, now()],
+        params![slug, key, time::now_ms()],
     )?;
     Ok((c.last_insert_rowid(), key))
 }
@@ -133,6 +134,10 @@ impl Writer {
                 })()
                 .map_err(|e| e.to_string());
                 for request in batch {
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "a closed receiver means the client hung up, and the batch is written either way"
+                    )]
                     let _ = request.done.send(result.clone());
                 }
             }

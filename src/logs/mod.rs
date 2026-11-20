@@ -3,7 +3,7 @@ pub mod otlp;
 pub mod sentry;
 pub mod store;
 
-use chrono::{DateTime, NaiveDateTime};
+use crate::time;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -131,13 +131,7 @@ pub fn timestamp(v: &Value) -> Option<i64> {
             Some(i) if i >= 100_000_000_000_000_000 => Some(i),
             _ => n.as_f64().and_then(scale),
         },
-        Value::String(s) => DateTime::parse_from_rfc3339(s)
-            .map(|d| d.to_utc())
-            .or_else(|_| {
-                NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f").map(|d| d.and_utc())
-            })
-            .ok()
-            .and_then(|d| d.timestamp_nanos_opt()),
+        Value::String(s) => time::parse(s).and_then(time::nanos),
         _ => None,
     }
 }
@@ -152,23 +146,17 @@ fn scale(n: f64) -> Option<i64> {
         n if n < 1e17 => (n, 1000),
         n => (n, 1),
     };
-    (micros < (i64::MAX / factor) as f64).then(|| micros.round() as i64 * factor)
-}
-
-pub fn now_ns() -> i64 {
-    chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    time::whole(micros.round())?.checked_mul(factor)
 }
 
 fn settle(raw: Option<Value>, observed: i64, attributes: &mut Map<String, Value>) -> i64 {
-    match raw.as_ref().and_then(timestamp) {
-        Some(ts) => ts,
-        None => {
-            if let Some(raw) = raw.filter(|v| !v.is_null()) {
-                attributes.insert(ORIGINAL_TIMESTAMP.into(), raw);
-            }
-            observed
-        }
+    if let Some(ts) = raw.as_ref().and_then(timestamp) {
+        return ts;
     }
+    if let Some(raw) = raw.filter(|v| !v.is_null()) {
+        attributes.insert(ORIGINAL_TIMESTAMP.into(), raw);
+    }
+    observed
 }
 
 pub fn hex_id(s: &str, len: usize) -> Option<String> {
@@ -178,7 +166,12 @@ pub fn hex_id(s: &str, len: usize) -> Option<String> {
 }
 
 pub fn hex_bytes(b: &[u8], len: usize) -> Option<String> {
-    let s: String = b.iter().map(|b| format!("{b:02x}")).collect();
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let s: String = b
+        .iter()
+        .flat_map(|b| [DIGITS[usize::from(b >> 4)], DIGITS[usize::from(b & 0xf)]])
+        .map(char::from)
+        .collect();
     hex_id(&s, len)
 }
 
