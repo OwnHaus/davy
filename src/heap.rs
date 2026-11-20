@@ -61,15 +61,16 @@ pub fn of_map(m: &Map<String, Value>) -> usize {
         .sum::<usize>()
 }
 
-/// The heap of a log record held in a batch.
+/// The heap of a log record held in a batch, by the room its strings hold,
+/// which can be more than their text.
 pub fn of_record(r: &LogRecord) -> usize {
     let ids = [&r.service, &r.trace_id, &r.span_id];
     RECORD
-        + text(r.message.len())
+        + text(r.message.capacity())
         + ids
             .into_iter()
             .flatten()
-            .map(|s| text(s.len()))
+            .map(|s| text(s.capacity()))
             .sum::<usize>()
         + of_map(&r.attributes)
 }

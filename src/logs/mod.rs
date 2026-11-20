@@ -211,6 +211,9 @@ fn message(v: Option<Value>, attributes: &mut Map<String, Value>) -> String {
         text.truncate(text.floor_char_boundary(MAX_MESSAGE));
         attributes.insert(TRUNCATED.into(), Value::Bool(true));
     }
+    // A cut, or text printed from another value, keeps more room than its
+    // text, and the record is priced by its room.
+    text.shrink_to_fit();
     text
 }
 

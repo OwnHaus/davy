@@ -665,6 +665,18 @@ fn long_messages_are_cut_at_64_kib_on_a_character_boundary() {
 }
 
 #[test]
+fn a_message_is_priced_by_what_it_holds() {
+    let cut = format!(r#"{{"message":"{}"}}"#, "a".repeat(1 << 20));
+    let printed = format!(r#"{{"message":{{"a":"{}"}}}}"#, "b".repeat(40_000));
+    for body in [cut, printed] {
+        let records = logtail::parse(body.as_bytes(), "application/json", 1, 7).unwrap();
+        let message = &records[0].message;
+        assert!(crate::heap::of_record(&records[0]) >= message.capacity());
+        assert_eq!(message.capacity(), message.len());
+    }
+}
+
+#[test]
 fn log_retention_is_1_to_36500_days() {
     let dir = scratch("logs");
     for days in [0, 36_501, u32::MAX] {
