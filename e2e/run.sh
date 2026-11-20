@@ -57,4 +57,48 @@ import json,sys
 p=json.load(open(sys.argv[1])); assert p['exception']['values'][-1]['type'] in ('TypeError','RangeError')
 print('event CLI: verified stored JSON payload')
 PY
+DSN=$("$BIN" project create logs --data "$SCRATCH/data" --public-url "$URL")
+KEY="${DSN#*://}"; KEY="${KEY%%@*}"
+node "$ROOT/e2e/send-logs.mjs" "$DSN"
+for i in {1..50}; do
+  "$BIN" logs --data "$SCRATCH/data" --project logs --since 10m --json > "$SCRATCH/logs.ndjson"
+  if [ "$(wc -l < "$SCRATCH/logs.ndjson")" -ge 10 ]; then break; fi
+  sleep 0.2
+done
+"$BIN" logs --data "$SCRATCH/data" --project logs --since 10m --level error --json 'timeout OR exception OR attributes.provider:acme' > "$SCRATCH/errors.ndjson"
+python3 - "$SCRATCH" <<'PY'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])
+rows=[json.loads(l) for l in (p/'logs.ndjson').read_text().splitlines()]
+got=sorted((r['source'],r['level'],r['message']) for r in rows)
+want=sorted([
+  ('logtail','info','logtail request completed'),
+  ('logtail','error','logtail unhandled exception'),
+  ('logtail','debug','logtail debug line'),
+  ('sentry','info','sentry order placed'),
+  ('sentry','warn','sentry cart c-77 is over the limit'),
+  ('sentry','error','sentry payment provider timed out'),
+  ('otlp','info','otlp proto GET /cart 200'),
+  ('otlp','error','{"error":"otlp proto db timeout","ms":5000}'),
+  ('otlp','info','otlp json GET /cart 200'),
+  ('otlp','error','{"error":"otlp json db timeout","ms":5000}'),
+])
+assert got==want,got
+ts=[r['timestamp_ns'] for r in rows]
+assert ts==sorted(ts),'oldest first'
+by={r['message']:r for r in rows}
+assert by['logtail request completed']['attributes']['res']=={'statusCode':200}
+assert by['sentry order placed']['attributes']['order.id']=='ord-1001'
+proto=by['otlp proto GET /cart 200']
+assert (proto['service'],proto['trace_id'],proto['span_id'])==('checkout','5b8efff798038103d269b633813fc60c','eee19b7ec3c1b174'),proto
+errors=sorted(json.loads(l)['message'] for l in (p/'errors.ndjson').read_text().splitlines())
+assert errors==sorted(['logtail unhandled exception','sentry payment provider timed out','{"error":"otlp proto db timeout","ms":5000}','{"error":"otlp json db timeout","ms":5000}']),errors
+print('logs: verified 10 rows from 4 senders, oldest first, level and text filters')
+PY
+STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer wrong' -H 'Content-Type: application/json' --data '{"message":"x"}' "$URL/")
+[ "$STATUS" = 403 ] || { echo "wrong bearer gave $STATUS"; exit 1; }
+STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' --data '{"message":"curl line","level":"warn"}' "$URL/")
+[ "$STATUS" = 202 ] || { echo "logtail JSON gave $STATUS"; exit 1; }
+echo 'logs: wrong bearer 403, Logtail JSON 202'
 echo 'PASS: all end-to-end assertions passed'
+
