@@ -4,12 +4,16 @@ use sourcemap::{SourceMap, SourceView};
 use std::{collections::HashMap, sync::Arc};
 
 const CONTEXT_LINES: u32 = 5;
+/// Each frame costs a token scan, so one event cannot buy unbounded CPU.
+const MAX_FRAMES: usize = 256;
 /// A frame deep in a long function sits many tokens after the function's name.
 const SCAN_TOKENS: usize = 1024;
 
 /// Rewrites the exception frames of minified files named in
 /// `debug_meta.images` to original source positions, in place. A frame whose
-/// build `builds` does not know stays as it is.
+/// build `builds` does not know stays as it is. `builds` runs once per debug
+/// ID. Only the newest [`MAX_FRAMES`] frames are rewritten, counted from the
+/// frame that threw, because Sentry lists frames oldest first.
 pub fn symbolicate(event: &mut Value, builds: impl Fn(DebugId) -> Option<Arc<Build>>) {
     let images: HashMap<String, DebugId> = event
         .pointer("/debug_meta/images")
@@ -34,21 +38,26 @@ pub fn symbolicate(event: &mut Value, builds: impl Fn(DebugId) -> Option<Arc<Bui
     else {
         return;
     };
+    let mut found: HashMap<DebugId, Option<Arc<Build>>> = HashMap::new();
     let frames = exceptions
         .iter_mut()
+        .rev()
         .filter_map(|x| x.pointer_mut("/stacktrace/frames"))
         .filter_map(Value::as_array_mut)
-        .flatten();
-    for frame in frames {
-        let Some(frame) = frame.as_object_mut() else {
-            continue;
-        };
-        let file = frame
-            .get("abs_path")
-            .or_else(|| frame.get("filename"))
-            .and_then(Value::as_str);
-        if let Some(build) = file.and_then(|f| images.get(f)).and_then(|id| builds(*id)) {
-            rewrite(frame, &build);
+        .flat_map(|frames| frames.iter_mut().rev())
+        .filter_map(Value::as_object_mut)
+        .filter_map(|frame| {
+            let file = frame
+                .get("abs_path")
+                .or_else(|| frame.get("filename"))
+                .and_then(Value::as_str)?;
+            let id = *images.get(file)?;
+            Some((frame, id))
+        })
+        .take(MAX_FRAMES);
+    for (frame, id) in frames {
+        if let Some(build) = found.entry(id).or_insert_with(|| builds(id)) {
+            rewrite(frame, build);
         }
     }
 }
@@ -83,8 +92,8 @@ fn rewrite(frame: &mut Map<String, Value>, build: &Build) -> Option<()> {
         frame.remove(key);
     }
     let src_line = token.get_src_line();
-    frame.insert("lineno".into(), json!(src_line + 1));
-    frame.insert("colno".into(), json!(token.get_src_col() + 1));
+    frame.insert("lineno".into(), json!(src_line.saturating_add(1)));
+    frame.insert("colno".into(), json!(token.get_src_col().saturating_add(1)));
     if let Some(function) = function {
         frame.insert("function".into(), json!(function));
     }
@@ -101,7 +110,9 @@ fn rewrite(frame: &mut Map<String, Value>, build: &Build) -> Option<()> {
         }
         frame.insert(
             "post_context".into(),
-            json!(lines(src_line + 1..src_line + 1 + CONTEXT_LINES)),
+            json!(lines(
+                src_line.saturating_add(1)..src_line.saturating_add(1 + CONTEXT_LINES)
+            )),
         );
     }
     if source.contains("node_modules") {

@@ -92,3 +92,22 @@ fn a_frame_from_another_file_stays_as_it_is() {
     symbolicate(&mut event, |_| Some(Arc::clone(&build)));
     assert_eq!(frames(&event)[1], before);
 }
+
+#[test]
+fn an_event_looks_up_each_build_once_and_symbolicates_at_most_256_frames() {
+    let mut event = captured_event();
+    let minified = frames(&event)[3].clone();
+    event["exception"]["values"][0]["stacktrace"]["frames"] = json!(vec![minified; 300]);
+    let build = captured_build();
+    let lookups = std::cell::Cell::new(0);
+    symbolicate(&mut event, |_| {
+        lookups.set(lookups.get() + 1);
+        Some(Arc::clone(&build))
+    });
+    assert_eq!(lookups.get(), 1);
+    let frames = frames(&event);
+    assert_eq!(
+        [&frames[43]["function"], &frames[44]["function"]],
+        [&json!("n"), &json!("parseOrder")]
+    );
+}
