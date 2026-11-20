@@ -57,13 +57,13 @@ The organizing structure is a policy table from item type to what we do with it,
 ```rust
 // boundary: parsed from bytes, never re-validated after this
 struct Envelope { header: EnvelopeHeader, items: Vec<Item> }
-struct EnvelopeHeader { event_id: Option<EventId>, dsn: Option<String>, sent_at: Option<String> }
+struct EnvelopeHeader { event_id: Option<EventId>, dsn: Option<String> }
 struct Item { kind: ItemKind, payload: Bytes }
 
 enum ItemKind { Event, Transaction, Span, Session, Sessions, ClientReport, Attachment, Log,
                 ReplayEvent, ReplayRecording, Profile, ProfileChunk, CheckIn, Other(String) }
 
-enum Disposition { StoreError, Drop(DataCategory) }   // one table: fn disposition(&ItemKind) -> Disposition
+enum Disposition { StoreError, StoreLogs, Drop }   // one table: fn disposition(&ItemKind) -> Disposition
 ```
 
 `Session`, `Sessions` and `ClientReport` are accepted and dropped in milestone 2 (release health comes later). `Log` is dropped until milestone 3. Unknown types are skipped, never an error.

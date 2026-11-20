@@ -40,43 +40,21 @@ impl ItemKind {
     }
 }
 #[derive(Debug, PartialEq, Eq)]
-pub enum DataCategory {
-    Transaction,
-    Span,
-    Session,
-    Internal,
-    Attachment,
-    Replay,
-    Profile,
-    Monitor,
-    Unknown,
-}
-#[derive(Debug, PartialEq, Eq)]
 pub enum Disposition {
     StoreError,
     StoreLogs,
-    Drop(DataCategory),
+    Drop,
 }
 pub fn disposition(kind: &ItemKind) -> Disposition {
-    use DataCategory as C;
-    Disposition::Drop(match kind {
-        ItemKind::Event => return Disposition::StoreError,
-        ItemKind::Log => return Disposition::StoreLogs,
-        ItemKind::Transaction => C::Transaction,
-        ItemKind::Span => C::Span,
-        ItemKind::Session | ItemKind::Sessions => C::Session,
-        ItemKind::ClientReport => C::Internal,
-        ItemKind::Attachment => C::Attachment,
-        ItemKind::ReplayEvent | ItemKind::ReplayRecording => C::Replay,
-        ItemKind::Profile | ItemKind::ProfileChunk => C::Profile,
-        ItemKind::CheckIn => C::Monitor,
-        ItemKind::Other(_) => C::Unknown,
-    })
+    match kind {
+        ItemKind::Event => Disposition::StoreError,
+        ItemKind::Log => Disposition::StoreLogs,
+        _ => Disposition::Drop,
+    }
 }
 pub struct EnvelopeHeader {
     pub event_id: Option<EventId>,
     pub dsn: Option<String>,
-    pub sent_at: Option<String>,
 }
 pub struct Item {
     pub kind: ItemKind,
@@ -117,14 +95,6 @@ impl EnvelopeHeader {
                     v.as_str()
                         .map(str::to_owned)
                         .ok_or_else(|| anyhow::anyhow!("invalid dsn"))
-                })
-                .transpose()?,
-            sent_at: h
-                .get("sent_at")
-                .map(|v| {
-                    v.as_str()
-                        .map(str::to_owned)
-                        .ok_or_else(|| anyhow::anyhow!("invalid sent_at"))
                 })
                 .transpose()?,
         })

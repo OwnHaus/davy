@@ -38,10 +38,7 @@ fn fixture_transactions_are_dropped() {
         let e = Envelope::parse(&std::fs::read(p).unwrap()).unwrap();
         assert_eq!(e.items.len(), 1);
         assert_eq!(e.items[0].kind, ItemKind::Transaction);
-        assert_eq!(
-            disposition(&e.items[0].kind),
-            Disposition::Drop(DataCategory::Transaction)
-        );
+        assert_eq!(disposition(&e.items[0].kind), Disposition::Drop);
     }
 }
 fn event(v: serde_json::Value) -> ErrorEvent {
@@ -87,15 +84,18 @@ fn envelope_binary_and_policy() {
     .unwrap();
     assert_eq!(e.items[0].payload.as_ref(), b"a\nb");
     assert_eq!(e.items[1].kind, ItemKind::Other("future".into()));
-    assert_eq!(
-        disposition(&e.items[1].kind),
-        Disposition::Drop(DataCategory::Unknown)
-    );
+    assert_eq!(disposition(&e.items[1].kind), Disposition::Drop);
     assert!(Envelope::parse(b"{}\n{\"type\":\"event\",\"length\":100}\nx").is_err());
     let e = Envelope::parse(b"{}\n\n{\"type\":\"session\"}\n{}\r\n\n{\"type\":\"event\"}\n{}\n\n")
         .unwrap();
     let kinds: Vec<_> = e.items.iter().map(|i| &i.kind).collect();
     assert_eq!(kinds, vec![&ItemKind::Session, &ItemKind::Event]);
+    let e = Envelope::parse(b"{\"sent_at\":1700000000}\n{\"type\":\"event\"}\n{}").unwrap();
+    assert_eq!(
+        e.items.len(),
+        1,
+        "a header field Davy does not read cannot reject"
+    );
 }
 #[test]
 fn event_boundary() {
