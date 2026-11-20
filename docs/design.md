@@ -398,7 +398,7 @@ Better Stack's uptime product is the reference (docs: Monitor types, Create a ne
 
 ### Data shapes
 
-The organizing structures are a state machine per monitor and an outbox table that the writer fills in the same transaction as the change it reports.
+The organizing structures are a state machine per monitor and an outbox table that the writer fills in the same transaction as the change it reports. `Down` carries no incident ID, because the open incident is the one row of `incidents` with no `resolved_at` for the monitor.
 
 ```rust
 struct Monitor { id: i64, project_id: i64, name: String, kind: Kind, every: Duration, timeout: Duration }
@@ -409,10 +409,10 @@ enum Kind {
 }
 enum Expect { Status, Keyword(String), NoKeyword(String) }
 
-enum Outcome { Up { status: u16, ms: u32 }, Down(Reason) }
+enum Outcome { Up, Down(Reason) }                  // a check row keeps status and ms beside it
 enum Reason { Timeout, Connect(String), Status(u16), KeywordMissing, KeywordFound, NotPublic, Late, Failed }
 
-enum State { Pending, Up, Failing, Down { incident: i64 } }   // fn next(State, Outcome) -> (State, Option<Change>)
+enum State { Pending, Up, Failing, Down }          // State::next(self, Outcome) -> (State, Option<Change>)
 enum Change { Opened(Reason), Resolved }
 
 enum Notice { IssueNew { issue: i64 }, IssueRegressed { issue: i64 }, MonitorDown { incident: i64 }, MonitorUp { incident: i64 }, Test }
@@ -457,7 +457,7 @@ HTTP checks and alert deliveries open connections to URLs a user typed. On a sel
 
 New tables, added by migration, so existing data directories keep opening:
 
-- `monitors(id, project_id, name, kind, url, expect, keyword, heartbeat_token UNIQUE, every_s, timeout_s, grace_s, state, failures, last_check_at, last_ping_at, created_at)`
+- `monitors(id, project_id, name, kind, url, expect, keyword, heartbeat_token UNIQUE, every_s, timeout_s, grace_s, state, last_check_at, last_ping_at, created_at)`. `state` is `Failing` after one failed check, so no failure counter is needed.
 - `checks(monitor_id, at, ok, status, ms, reason)` with an index on `(monitor_id, at)`
 - `incidents(id, monitor_id, started_at, resolved_at, reason)`
 - `channels(id, project_id NULL for all, kind, url, secret, dropped, created_at)`

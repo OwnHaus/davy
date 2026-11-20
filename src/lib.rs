@@ -5,6 +5,7 @@ pub mod grouping;
 pub mod http;
 pub mod logs;
 pub mod mcp;
+pub mod monitor;
 pub mod query;
 pub mod sourcemaps;
 pub mod store;
