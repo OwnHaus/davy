@@ -1,7 +1,8 @@
-//! Install by prompt: `davy setup` prepares a machine.
+//! Install by prompt: `davy setup` prepares a machine and `davy doctor` checks it.
 //! Each command prints what it found or wrote and names the next step, so a
 //! coding agent can finish an install without a browser or a terminal prompt.
 
+pub mod doctor;
 pub mod setup;
 mod unit;
 

@@ -1,0 +1,260 @@
+use super::*;
+use crate::install::setup::{self, Service};
+use crate::token::{self, Token};
+use axum::{
+    Router, middleware,
+    routing::{get, post},
+};
+use std::sync::Arc;
+
+const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
+fn dir() -> PathBuf {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    std::fs::create_dir_all(&root).unwrap();
+    root.canonicalize()
+        .unwrap()
+        .join(format!("test-doctor-{}", uuid::Uuid::new_v4()))
+}
+
+/// A server that answers like Davy: `/` takes only POST, `/mcp` is there
+/// with `token` and checks it.
+async fn server(token: Option<&str>) -> Url {
+    let mut app = Router::new().route("/", post(|| async { "" }));
+    if let Some(t) = token {
+        let mcp = Router::new().route("/mcp", get(|| async { "mcp" })).layer(
+            middleware::from_fn_with_state(Arc::new(Token::new(t)), token::require),
+        );
+        app = app.merge(mcp);
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    Url::parse(&format!("http://{addr}/")).unwrap()
+}
+
+/// A data directory prepared by `davy setup` with the token `TOKEN`.
+fn install(url: &Url, mail_from: Option<&str>) -> PathBuf {
+    let data = dir();
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("token"), format!("{TOKEN}\n")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(data.join("token"), std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+    }
+    let args = setup::Args {
+        data: data.clone(),
+        public_url: url.clone(),
+        listen: "127.0.0.1:8000".to_owned(),
+        mail_from: mail_from.map(str::to_owned),
+        service: Service::None,
+    };
+    setup::setup(&args, Path::new("/usr/local/bin/davy"), Some("davy")).unwrap();
+    data
+}
+
+async fn run(data: &Path) -> Vec<Check> {
+    checks(data)
+        .await
+        .into_iter()
+        .filter(|c| c.name != "disk")
+        .collect()
+}
+
+fn find<'a>(checks: &'a [Check], name: &str) -> &'a Check {
+    checks.iter().find(|c| c.name == name).unwrap()
+}
+
+#[tokio::test]
+async fn a_healthy_install_passes_every_check() {
+    let url = server(Some(TOKEN)).await;
+    let data = install(&url, None);
+    let d = data.display();
+    assert_eq!(
+        run(&data).await,
+        [
+            ok("data", format!("{d} is readable by its owner only")),
+            ok("token", format!("{d}/token holds a token of 32 characters")),
+            ok("tls", format!("{url} is plain http on this machine only")),
+            ok("server", format!("{url} answers (HTTP 405)")),
+            ok("mcp", format!("{url}mcp accepts the token")),
+            ok(
+                "smtp",
+                "no SMTP server set, alerts go to webhooks and Slack only"
+            ),
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn open_permissions_warn_with_the_chmod_that_fixes_them() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let url = server(Some(TOKEN)).await;
+    let data = install(&url, None);
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::set_permissions(data.join("token"), std::fs::Permissions::from_mode(0o644)).unwrap();
+    let checks = run(&data).await;
+    let d = data.display();
+    assert_eq!(
+        find(&checks, "data"),
+        &not_ok(
+            "data",
+            Status::Warn,
+            format!("{d} can be read by other users (mode 755)"),
+            format!("chmod 700 {d}")
+        )
+    );
+    assert_eq!(
+        find(&checks, "token"),
+        &not_ok(
+            "token",
+            Status::Warn,
+            format!("{d}/token can be read by other users (mode 644)"),
+            format!("chmod 600 {d}/token")
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_short_token_fails_and_the_server_refuses_it() {
+    let url = server(Some(TOKEN)).await;
+    let data = install(&url, None);
+    std::fs::write(data.join("token"), "short\n").unwrap();
+    let checks = run(&data).await;
+    let d = data.display();
+    assert_eq!(
+        find(&checks, "token"),
+        &not_ok(
+            "token",
+            Status::Fail,
+            format!("{d}/token holds 5 characters and needs 32"),
+            format!(
+                "rm {d}/token && davy setup --data {d} --public-url URL, then update every client of the old token"
+            )
+        )
+    );
+    assert_eq!(
+        find(&checks, "mcp"),
+        &not_ok(
+            "mcp",
+            Status::Fail,
+            format!("{url}mcp refuses the token in {d}/token, so the server runs with another one"),
+            "restart the server so it reads DAVY_TOKEN_FILE again"
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_server_that_is_down_or_runs_without_a_token_fails() {
+    let free = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap()
+    };
+    let down = Url::parse(&format!("http://{free}/")).unwrap();
+    let data = install(&down, None);
+    let checks = run(&data).await;
+    let down_check = find(&checks, "server");
+    assert_eq!(down_check.status, Status::Fail);
+    assert!(
+        down_check
+            .detail
+            .starts_with(&format!("{down} does not answer: ")),
+        "{}",
+        down_check.detail
+    );
+    assert_eq!(
+        down_check.fix.as_deref(),
+        Some(format!("start the server (davy setup --data {} printed how) and read its log; behind a proxy, check that the proxy forwards to it", data.display()).as_str())
+    );
+    assert!(checks.iter().all(|c| c.name != "mcp"));
+
+    let tokenless = server(None).await;
+    let data = install(&tokenless, None);
+    let d = data.display();
+    assert_eq!(
+        find(&run(&data).await, "mcp"),
+        &not_ok(
+            "mcp",
+            Status::Fail,
+            format!("{tokenless}mcp is not served, so the server runs without an admin token"),
+            format!("set DAVY_TOKEN_FILE={d}/token in the server's environment and restart it")
+        )
+    );
+}
+
+#[test]
+fn plain_http_fails_unless_it_stays_on_this_machine() {
+    let check = |url: &str| tls(&Url::parse(url).unwrap(), "127.0.0.1:8000", "/var/lib/davy");
+    assert_eq!(
+        check("https://davy.example.com/"),
+        ok("tls", "https://davy.example.com/ uses https")
+    );
+    assert_eq!(check("http://localhost:8000/").status, Status::Ok);
+    assert_eq!(check("http://[::1]:8000/").status, Status::Ok);
+    assert_eq!(
+        check("http://davy.example.com/"),
+        not_ok(
+            "tls",
+            Status::Fail,
+            "http://davy.example.com/ is plain http, so the admin token and events cross the network unencrypted",
+            "put a TLS proxy such as Caddy in front of 127.0.0.1:8000, then davy setup --data /var/lib/davy --public-url https://HOST"
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_refused_smtp_server_fails_with_its_error() {
+    let url = server(Some(TOKEN)).await;
+    let data = dir();
+    std::fs::create_dir_all(&data).unwrap();
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    std::fs::write(data.join("smtp-url"), format!("smtp://{closed}\n")).unwrap();
+    let data = {
+        let args = setup::Args {
+            data: data.clone(),
+            public_url: url.clone(),
+            listen: "127.0.0.1:8000".to_owned(),
+            mail_from: Some("alerts@example.com".to_owned()),
+            service: Service::None,
+        };
+        setup::setup(&args, Path::new("/usr/local/bin/davy"), Some("davy")).unwrap();
+        data
+    };
+    let checks = run(&data).await;
+    let smtp = find(&checks, "smtp");
+    assert_eq!(smtp.status, Status::Fail);
+    assert!(
+        smtp.detail.starts_with("the SMTP server refused: "),
+        "{}",
+        smtp.detail
+    );
+    assert_eq!(
+        smtp.fix.as_deref(),
+        Some(format!("check the host, port and login in {}/smtp-url, then davy setup again and restart the server", data.display()).as_str())
+    );
+}
+
+#[test]
+fn free_disk_space_warns_below_5_gib_and_fails_below_1_gib() {
+    let data = Path::new("/var/lib/davy");
+    let fix = "free space on the disk of /var/lib/davy, or lower --log-retention-days";
+    assert_eq!(disk(data, Some(40 * GIB)), ok("disk", "40 GiB free"));
+    assert_eq!(
+        disk(data, Some(3 * GIB)),
+        not_ok("disk", Status::Warn, "3 GiB free", fix)
+    );
+    assert_eq!(
+        disk(data, Some(512 << 20)),
+        not_ok("disk", Status::Fail, "512 MiB free", fix)
+    );
+    assert_eq!(
+        disk(data, None),
+        not_ok("disk", Status::Warn, "free space is unknown", fix)
+    );
+}

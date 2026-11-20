@@ -27,6 +27,9 @@ enum Command {
     /// Prepares a data directory, an admin token and a service file, and
     /// prints the next commands as JSON. Safe to run again.
     Setup(install::setup::Args),
+    /// Checks a running install. Each check that is not ok prints its fix. The
+    /// exit code is 1 when a check fails.
+    Doctor(install::doctor::Args),
     /// Runs the ingest server. With an admin token in DAVY_TOKEN or a file named
     /// by DAVY_TOKEN_FILE it also serves MCP at /mcp and takes source map uploads.
     Serve(Serve),
@@ -238,6 +241,7 @@ async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Serve(args) => serve(args).await?,
         Command::Setup(args) => install::setup::run(&mut out.lock(), &args)?,
+        Command::Doctor(args) => install::doctor::run(&mut out.lock(), &args).await?,
         Command::Project {
             command:
                 Project::Create {

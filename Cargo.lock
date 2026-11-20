@@ -665,6 +665,7 @@ dependencies = [
  "brotli",
  "clap",
  "flate2",
+ "fs4",
  "futures",
  "getrandom 0.4.3",
  "hmac",

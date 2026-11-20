@@ -68,6 +68,17 @@ impl Smtp {
         }
     }
 
+    /// Connects, logs in when the URL has a user, and sends `NOOP`. The error
+    /// is the server's answer or the connection error, cut to 200 characters.
+    pub async fn check(&self) -> Result<(), String> {
+        match tokio::time::timeout(SEND_TIMEOUT, self.transport.test_connection()).await {
+            Ok(Ok(true)) => Ok(()),
+            Ok(Ok(false)) => Err("the server did not answer NOOP".into()),
+            Ok(Err(e)) => Err(text(&e)),
+            Err(_) => Err("timeout".into()),
+        }
+    }
+
     fn message(&self, to: &str, payload: &str) -> anyhow::Result<Message> {
         let mail: Mail =
             serde_json::from_str(payload).context("the e-mail payload is not valid")?;
