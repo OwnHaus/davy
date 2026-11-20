@@ -21,6 +21,7 @@ pub mod store;
 pub mod tasks;
 #[cfg(test)]
 mod tests;
+pub mod text;
 pub mod time;
 pub mod token;
 pub mod upload;

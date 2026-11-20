@@ -1,7 +1,7 @@
 //! What a notice says, and the body each channel kind gets for it.
 
 use super::Kind;
-use crate::{event::Timestamp, time};
+use crate::{event::Timestamp, text, time};
 use serde::{Deserialize, Serialize};
 
 /// Slack shows a long title in full, so one event cannot fill a channel.
@@ -131,10 +131,7 @@ impl Notice {
             .join("\n");
         let text = format!("{line}\n\n{details}\n");
         Mail {
-            subject: line
-                .chars()
-                .map(|c| if c.is_control() { ' ' } else { c })
-                .collect(),
+            subject: text::printable(&line, ' ').into_owned(),
             text,
             message_id: format!("{id}.{at}"),
         }

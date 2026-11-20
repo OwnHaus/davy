@@ -2,11 +2,11 @@
 //! what fixes it. It reaches only the public URL and the SMTP server.
 
 use super::{SMTP_FILE, Settings, TOKEN_FILE, loopback, sh};
-use crate::{alert::mail::Smtp, secret::MIN_TOKEN_CHARS};
+use crate::{alert::mail::Smtp, secret::MIN_TOKEN_CHARS, text};
 use serde::Serialize;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use std::{borrow::Cow, io::Write};
 use url::Url;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -51,12 +51,9 @@ fn ok(name: &'static str, detail: impl Into<String>) -> Check {
 /// An SMTP server or a path can put control characters into a check, and
 /// they would move the cursor or retitle the terminal that prints it.
 fn printable(s: String) -> String {
-    if s.chars().any(char::is_control) {
-        s.chars()
-            .map(|c| if c.is_control() { '\u{fffd}' } else { c })
-            .collect()
-    } else {
-        s
+    match text::printable(&s, char::REPLACEMENT_CHARACTER) {
+        Cow::Owned(clean) => clean,
+        Cow::Borrowed(_) => s,
     }
 }
 

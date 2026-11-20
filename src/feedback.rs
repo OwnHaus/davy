@@ -2,11 +2,11 @@
 //! It stays in the data directory unless a channel was added with
 //! `--feedback`.
 
-use crate::{alert, event::Timestamp, time};
+use crate::{alert, event::Timestamp, text, time};
 use anyhow::Result;
 use rusqlite::{Connection, params};
 use serde::Serialize;
-use std::{io::Write, path::PathBuf};
+use std::{borrow::Cow, io::Write, path::PathBuf};
 
 /// Enough for a command, its output and a paragraph of explanation.
 pub const MAX_CHARS: usize = 4000;
@@ -139,7 +139,7 @@ pub fn run(out: &mut impl Write, args: &Args) -> Result<()> {
             "{}\t{}\t{}",
             item.id,
             item.at,
-            f.client.as_deref().map_or("-".to_owned(), one_line)
+            f.client.as_deref().map_or(Cow::Borrowed("-"), one_line)
         )?;
         writeln!(out, "  tried: {}", one_line(&f.tried))?;
         writeln!(out, "  happened: {}", one_line(&f.happened))?;
@@ -152,10 +152,8 @@ pub fn run(out: &mut impl Write, args: &Args) -> Result<()> {
 
 /// The text on one line with no control characters, so an agent's text
 /// cannot move the cursor or rewrite earlier lines in a terminal.
-fn one_line(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect()
+fn one_line(s: &str) -> Cow<'_, str> {
+    text::printable(s, ' ')
 }
 
 #[cfg(test)]

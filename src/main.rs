@@ -6,7 +6,7 @@ use davy::{
         store::{LogHit, LogQuery, search},
     },
     monitor::{self, CheckUrl, Expect, NewMonitor, Target},
-    query, store,
+    query, store, text,
     time::{self, now_ns},
 };
 use std::{
@@ -516,15 +516,7 @@ fn cell(v: &serde_json::Value) -> String {
 /// Text from ingest with every control character replaced by U+FFFD, so a
 /// stored string cannot move the cursor, retitle the terminal or split a line.
 fn safe(s: &str) -> Cow<'_, str> {
-    if s.chars().any(char::is_control) {
-        Cow::Owned(
-            s.chars()
-                .map(|c| if c.is_control() { '\u{fffd}' } else { c })
-                .collect(),
-        )
-    } else {
-        Cow::Borrowed(s)
-    }
+    text::printable(s, char::REPLACEMENT_CHARACTER)
 }
 #[cfg(test)]
 mod tests {
