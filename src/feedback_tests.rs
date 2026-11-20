@@ -129,6 +129,25 @@ fn unsent_feedback_takes_at_most_five_places_in_a_channel() {
 }
 
 #[test]
+fn feedback_neither_pushes_out_nor_holds_back_an_alert() {
+    let c = memory();
+    let hook = CheckUrl::parse("https://hooks.example/x").unwrap();
+    let id = alert::store::add(&c, None, &Destination::Webhook(hook), true, 0)
+        .unwrap()
+        .id;
+    add(&c, &item(None), 0).unwrap();
+    for at in 1..=100 {
+        assert!(alert::store::test(&c, id, at).unwrap());
+    }
+    let listed = &alert::store::list(&c).unwrap()[0];
+    assert_eq!((listed.unsent, listed.dropped), (101, 0));
+    let due = alert::store::due(&c, 1_000).unwrap();
+    assert_eq!(due.iter().map(|d| d.id).collect::<Vec<_>>(), [2]);
+    assert!(alert::store::test(&c, id, 101).unwrap());
+    assert_eq!(alert::store::list(&c).unwrap()[0].dropped, 1);
+}
+
+#[test]
 fn the_cli_prints_one_line_per_field_without_control_characters() {
     let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join(format!("target/test-feedback-{}", uuid::Uuid::new_v4()));

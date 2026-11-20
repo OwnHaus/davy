@@ -10,8 +10,8 @@ pub const MAX_CHANNELS: i64 = 100;
 /// A channel that is down for a day fills up, and its oldest notices are the
 /// ones a team needs, so new ones are counted and dropped.
 const MAX_UNSENT: i64 = 100;
-/// Feedback may take only a few of those places, so a flood of it cannot
-/// push out the alerts.
+/// Feedback has a few places of its own on top of those, so a flood of it
+/// cannot push out the alerts.
 const MAX_UNSENT_FEEDBACK: i64 = 5;
 const MAX_ERROR_CHARS: usize = 200;
 
@@ -181,8 +181,9 @@ pub fn test(c: &Connection, id: i64, at: Timestamp) -> Result<bool> {
 }
 
 /// Stores one notification row, due at once, or counts it as dropped when
-/// the channel already has [`MAX_UNSENT`]. The body holds the row's ID, so
-/// the row is stored first.
+/// the channel already has [`MAX_UNSENT`]. Feedback does not count against
+/// an alert, so it cannot push one out. The body holds the row's ID, so the
+/// row is stored first.
 fn queue(
     c: &Connection,
     channel: i64,
@@ -194,8 +195,9 @@ fn queue(
     let kind = Kind::parse(kind)
         .with_context(|| format!("channel {channel} has unknown kind {kind:?}"))?;
     let unsent: i64 = c.query_row(
-        "SELECT count(*) FROM notifications WHERE channel_id=?1 AND sent_at IS NULL AND failed_at IS NULL",
-        [channel],
+        "SELECT count(*) FROM notifications WHERE channel_id=?1 AND sent_at IS NULL AND failed_at IS NULL
+           AND (?2='feedback' OR type<>'feedback')",
+        params![channel, notice.kind()],
         |r| r.get(0),
     )?;
     if unsent >= MAX_UNSENT {
@@ -226,14 +228,17 @@ pub struct Due {
     pub payload: String,
 }
 
-/// The oldest unsent row of each channel, when it is due by `now`. A row
-/// waiting for its retry holds back the newer rows of its channel, so a
-/// receiver never gets `monitor.up` before its `monitor.down`.
+/// The oldest unsent alert of each channel, or its oldest feedback when no
+/// alert waits, when it is due by `now`. A row waiting for its retry holds
+/// back the newer alerts of its channel, so a receiver never gets
+/// `monitor.up` before its `monitor.down`, and feedback never holds back an
+/// alert.
 pub fn due(c: &Connection, now: Timestamp) -> Result<Vec<Due>> {
     let mut q = c.prepare(
         "SELECT n.id,ch.id,ch.kind,ch.url,ch.secret,n.payload FROM channels ch
-         JOIN notifications n ON n.id=(SELECT min(id) FROM notifications
-           WHERE channel_id=ch.id AND sent_at IS NULL AND failed_at IS NULL)
+         JOIN notifications n ON n.id=(SELECT id FROM notifications
+           WHERE channel_id=ch.id AND sent_at IS NULL AND failed_at IS NULL
+           ORDER BY type='feedback',id LIMIT 1)
          WHERE n.next_at<=?1 ORDER BY n.id",
     )?;
     let rows = q.query_map([now], |r| {
