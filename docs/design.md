@@ -621,6 +621,14 @@ Fuzzing, measured on 2026-11-20 with `FUZZ_CPUS=5 fuzz/docker 3600` on an M-seri
 
 The peak of `logtail_msgpack` is libFuzzer's whole process, not one input: a further 90 seconds with `-malloc_limit_mb=128` found no single allocation over 128 MB.
 
+The cleanup pass surveyed the code at `eb4de33` and found 28 items: duplicated code, dead fields, loose visibility and stale docs. 24 are fixed, one in part, in the `refactor`, `fix` and `docs` commits up to `997a7a7`. These stay, each for a reason:
+
+- `ErrorEvent::parse` reads the clock itself, because the fuzz targets call it with one argument.
+- `create_project` reads the clock itself. `projects.created_at` is never read, so a fixed time would help no test and touch about 20 call sites.
+- `IssueDetail.last_seen_ms` stays, because the issue context falls back to it when no event of the issue is stored.
+- `http::serve` keeps its six arguments. Taking `serve::Resolved` would make the library depend on a CLI type.
+- A `memory()` test helper of a few lines stays in four test files. Small copies like it read more easily in place than through a shared helper.
+
 ## Hardening
 
 A security review of `16f413c` showed that a client without a key could make the server allocate 4.4 GB with one 194 KB request (measured with a release build on a developer laptop: a gzip body that inflates to 190 MiB of `[0,0,...]` sent to `/store/`). The rules below close that class. Each has a test that a request over the limit is refused.
