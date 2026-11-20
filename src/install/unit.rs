@@ -130,6 +130,7 @@ impl Serve {
              ExecStart={exec}\n\
              Restart=on-failure\n\
              RestartSec=2\n\
+             LimitNOFILE=65536\n\
              UMask=0077\n\
              NoNewPrivileges=yes\n\
              ProtectSystem=strict\n\

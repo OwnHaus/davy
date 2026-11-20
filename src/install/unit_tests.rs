@@ -23,6 +23,7 @@ User=davy
 ExecStart=/usr/local/bin/davy serve --data /var/lib/davy
 Restart=on-failure
 RestartSec=2
+LimitNOFILE=65536
 UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict
