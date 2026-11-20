@@ -378,3 +378,18 @@ async fn the_sweep_task_queues_a_sweep_every_period_until_the_writer_stops() {
     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
     assert!(task.is_finished());
 }
+
+#[cfg(unix)]
+#[test]
+fn a_new_data_directory_is_readable_by_its_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = crate::test_support::scratch("data-mode");
+    let data = root.join("nested/data");
+    store::open(&data).unwrap();
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&data), 0o700);
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o750)).unwrap();
+    store::open(&data).unwrap();
+    assert_eq!(mode(&data), 0o750, "an existing directory keeps its mode");
+    std::fs::remove_dir_all(root).unwrap();
+}

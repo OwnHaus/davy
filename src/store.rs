@@ -90,8 +90,14 @@ pub const DB_FILE: &str = "davy.sqlite";
 /// How long a connection waits for another one's write lock.
 pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Opens the database in `data`, and creates a missing `data` readable by
+/// its owner only, because it holds events, logs and keys.
 pub fn open(data: &Path) -> Result<Connection> {
-    std::fs::create_dir_all(data)?;
+    let mut dir = std::fs::DirBuilder::new();
+    dir.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
+    dir.create(data)?;
     let mut c = Connection::open(data.join(DB_FILE))?;
     c.busy_timeout(BUSY_TIMEOUT)?;
     init(&mut c)?;
