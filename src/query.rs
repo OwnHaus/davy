@@ -45,10 +45,10 @@ pub struct Rows {
 pub fn open(data: &Path) -> Result<Connection> {
     drop(store::open(data)?);
     let mut c = Connection::open_with_flags(
-        data.join("davy.sqlite"),
+        data.join(store::DB_FILE),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    c.busy_timeout(Duration::from_secs(5))?;
+    c.busy_timeout(store::BUSY_TIMEOUT)?;
     // SQLite's default of 1 GB lets one `hex(zeroblob(..))` take that much
     // memory, and the timeout cannot stop a single allocation.
     c.set_limit(Limit::SQLITE_LIMIT_LENGTH, MAX_LENGTH)?;

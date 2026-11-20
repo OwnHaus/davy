@@ -1,16 +1,13 @@
 //! Sends e-mail rows through the operator's SMTP server.
 
-use super::Mail;
+use super::{Mail, SEND_TIMEOUT};
+use crate::net::MAX_ERROR_CHARS;
 use anyhow::{Context as _, bail};
 use lettre::{
     Address, AsyncSmtpTransport, AsyncTransport as _, Message, Tokio1Executor,
     message::{Mailbox, header::ContentType},
 };
-use std::time::Duration;
 use url::Url;
-
-const SEND_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_ERROR_CHARS: usize = 200;
 
 /// The SMTP server and sender of every e-mail channel.
 #[derive(Clone)]

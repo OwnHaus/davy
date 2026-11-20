@@ -12,7 +12,7 @@ use url::Host;
 
 /// Sent with every check and delivery.
 pub const USER_AGENT: &str = concat!("Davy/", env!("CARGO_PKG_VERSION"));
-const MAX_ERROR_CHARS: usize = 200;
+pub(crate) const MAX_ERROR_CHARS: usize = 200;
 
 /// IPv4 networks that are not public, from the IANA special-purpose
 /// registry, plus multicast.

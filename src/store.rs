@@ -85,10 +85,15 @@ impl IssueStatus {
         }
     }
 }
+/// The database file in a data directory.
+pub const DB_FILE: &str = "davy.sqlite";
+/// How long a connection waits for another one's write lock.
+pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub fn open(data: &Path) -> Result<Connection> {
     std::fs::create_dir_all(data)?;
-    let mut c = Connection::open(data.join("davy.sqlite"))?;
-    c.busy_timeout(std::time::Duration::from_secs(5))?;
+    let mut c = Connection::open(data.join(DB_FILE))?;
+    c.busy_timeout(BUSY_TIMEOUT)?;
     init(&mut c)?;
     Ok(c)
 }

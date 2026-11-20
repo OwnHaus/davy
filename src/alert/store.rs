@@ -1,7 +1,7 @@
 //! Channel rows. The tables are created by the migrations in `crate::store`.
 
 use super::{Channel, Destination, Kind, Notice, Secret, retry_after};
-use crate::event::Timestamp;
+use crate::{event::Timestamp, net::MAX_ERROR_CHARS};
 use anyhow::{Context as _, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
@@ -13,7 +13,6 @@ const MAX_UNSENT: i64 = 100;
 /// Feedback has a few places of its own on top of those, so a flood of it
 /// cannot push out the alerts.
 const MAX_UNSENT_FEEDBACK: i64 = 5;
-const MAX_ERROR_CHARS: usize = 200;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Added {

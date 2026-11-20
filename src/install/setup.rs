@@ -181,7 +181,7 @@ fn refuse_foreign_dir(dir: &Path) -> anyhow::Result<()> {
         return Ok(());
     };
     let empty = entries.next().is_none();
-    let ours = [TOKEN_FILE, SETTINGS_FILE, SMTP_FILE, "davy.sqlite"]
+    let ours = [TOKEN_FILE, SETTINGS_FILE, SMTP_FILE, crate::store::DB_FILE]
         .iter()
         .any(|f| dir.join(f).exists());
     ensure!(

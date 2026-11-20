@@ -20,6 +20,8 @@ use sha2::Sha256;
 use std::time::Duration;
 
 const MAX_ADDRESS: usize = 254;
+/// How long one webhook or SMTP delivery may take.
+const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A webhook gets a signed JSON body, Slack an incoming webhook message and
 /// an e-mail channel a plain text message.

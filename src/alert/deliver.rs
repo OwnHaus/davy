@@ -2,7 +2,7 @@
 //! marked through the writer, like every other write in the server.
 
 use super::{
-    Channel,
+    Channel, SEND_TIMEOUT,
     mail::Smtp,
     store::{self, Due},
 };
@@ -14,8 +14,6 @@ use crate::{
 };
 use rusqlite::Connection;
 use std::{sync::mpsc, time::Duration};
-
-const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
 const NO_SMTP: &str = "no SMTP server, set DAVY_SMTP_URL";
 
