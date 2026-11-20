@@ -130,5 +130,6 @@ assert (top['function'],top['filename'],top['lineno'],top['context_line'])==('pa
 assert ctx['issue']['title'].startswith('TypeError: Cannot read properties of undefined'),ctx['issue']
 print('source maps: sentry-cli upload, symbolicated top frame parseOrder at ../src/app.js:5')
 PY
+node "$ROOT/e2e/alerts.mjs" "$BIN" "$SCRATCH/alerts"
 echo 'PASS: all end-to-end assertions passed'
 

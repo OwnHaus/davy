@@ -510,7 +510,7 @@ Status pages, regions and remote probes, ping, TCP, DNS and TLS expiry checks, c
 ### Done means
 
 - Unit tests with literal values: the state machine for every pair of state and outcome; `Reach::Public` for a table of addresses, IPv4-mapped, NAT64 and 6to4 included; check outcomes against a local test server for status, keyword, keyword absence, timeout, a redirect to a refused address and a body over 1 MiB; the webhook signature of a fixed body, time and secret; the retry schedule; the outbox order per channel; the heartbeat route with a known, an unknown and a `/fail` token; the `sql` tool reading `NULL` for the three credential columns.
-- `e2e/run.sh` adds a monitor against a local server, takes the server down and up, and asserts that a local webhook receiver got `monitor.down` then `monitor.up` with valid signatures. A new issue from `@sentry/node` produces `issue.new`. A heartbeat monitor that misses its window produces `monitor.down`.
+- `e2e/alerts.mjs`, run by `e2e/run.sh`, starts its own `davy serve` with a local site, a local webhook and Slack receiver and a local SMTP server, and one channel of each kind for all projects. The site answers 503 until the monitor is down, then 200. `@sentry/node` sends two new issues. A heartbeat gets a ping, a failure ping and a ping, then misses its window. Each channel must get the same 7 notices: both `issue.new`, `monitor.down` then `monitor.up` for the site, and `monitor.down`, `monitor.up`, `monitor.down` for the heartbeat. Every webhook signature must verify with the channel's secret, every e-mail must have its own `Message-ID`, and `davy channel list` must show nothing unsent or failed. It takes about 75 s, most of it waiting for the missed heartbeat.
 - `scripts/check` passes.
 
 ## Hardening
