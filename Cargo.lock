@@ -671,6 +671,7 @@ dependencies = [
  "hmac",
  "jiff",
  "lettre",
+ "nix",
  "opentelemetry-proto",
  "prost",
  "regex",

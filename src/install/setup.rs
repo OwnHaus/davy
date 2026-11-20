@@ -2,7 +2,10 @@
 //! Running it again with the same flags changes nothing and prints the same
 //! JSON, so an agent may retry it after any failure.
 
-use super::{SETTINGS_FILE, SMTP_FILE, Settings, TOKEN_FILE, check_public_url, sh, unit::Serve};
+use super::{
+    SETTINGS_FILE, SMTP_FILE, Settings, TOKEN_FILE, check_public_url, sh,
+    unit::{Serve, check_user},
+};
 use crate::secret::MIN_TOKEN_CHARS;
 use anyhow::{Context as _, bail, ensure};
 use serde::Serialize;
@@ -24,7 +27,8 @@ pub struct Args {
     /// The sender of alert e-mail. Write the SMTP URL to DATA/smtp-url first.
     #[arg(long)]
     pub mail_from: Option<String>,
-    /// The service file to write into the data directory.
+    /// How the server is started: the commands for a systemd unit, a launchd
+    /// job written into the data directory, or a shell command.
     #[arg(long, value_enum, default_value_t = Service::None)]
     pub service: Service,
 }
@@ -61,15 +65,32 @@ pub fn run(out: &mut impl Write, args: &Args) -> anyhow::Result<()> {
 /// Prepares `args.data` for a server started from `exe` by `user`.
 pub fn setup(args: &Args, exe: &Path, user: Option<&str>) -> anyhow::Result<Report> {
     check_public_url(&args.public_url)?;
+    args.listen
+        .parse::<std::net::SocketAddr>()
+        .with_context(|| {
+            format!(
+                "--listen {:?} is not an address such as 127.0.0.1:8000",
+                args.listen
+            )
+        })?;
+    if args.service == Service::Systemd {
+        check_user(
+            user.context("USER is not set, run setup as the user the service will run as")?,
+        )?;
+    }
     refuse_foreign_dir(&args.data)?;
     std::fs::create_dir_all(&args.data)
         .with_context(|| format!("cannot create {}", args.data.display()))?;
     let data = args.data.canonicalize()?;
+    check_owner(&data)?;
     restrict(&data, 0o700)?;
     let token_file = data.join(TOKEN_FILE);
     ensure_token(&token_file)?;
     let smtp_file = data.join(SMTP_FILE);
-    let smtp = smtp_file.exists();
+    let smtp = regular_file(&smtp_file)?;
+    if smtp {
+        restrict(&smtp_file, 0o600)?;
+    }
     match (smtp, &args.mail_from) {
         (true, None) => bail!(
             "{} exists, pass --mail-from with the sender of alert e-mail",
@@ -89,21 +110,39 @@ pub fn setup(args: &Args, exe: &Path, user: Option<&str>) -> anyhow::Result<Repo
     let mut json = serde_json::to_string_pretty(&settings)?;
     json.push('\n');
     write(&data.join(SETTINGS_FILE), &json)?;
-    let serve = Serve::new(exe, &data, &settings, smtp)?;
-    let (service_file, mut next) = match args.service {
+    let (service_file, next) = service(args.service, exe, &data, user)?;
+    Ok(Report {
+        data,
+        token_file,
+        smtp,
+        service_file,
+        next,
+    })
+}
+
+/// The service file setup writes, if any, and the commands to run next.
+fn service(
+    service: Service,
+    exe: &Path,
+    data: &Path,
+    user: Option<&str>,
+) -> anyhow::Result<(Option<PathBuf>, Vec<String>)> {
+    let serve = Serve::new(exe, data)?;
+    let (service_file, mut next) = match service {
         Service::Systemd => {
-            let file = data.join("davy.service");
-            write(&file, &serve.systemd(service_user(user)?))?;
+            let unit = format!(
+                "{} systemd-unit --data {} --user {}",
+                sh(&exe.to_string_lossy()),
+                sh(&data.to_string_lossy()),
+                sh(user.unwrap_or_default())
+            );
             let next = vec![
-                format!(
-                    "sudo install -m 644 {} /etc/systemd/system/davy.service",
-                    sh(&file.to_string_lossy())
-                ),
+                format!("{unit} | sudo tee /etc/systemd/system/davy.service > /dev/null"),
                 "sudo systemctl daemon-reload".to_owned(),
                 "sudo systemctl enable davy".to_owned(),
                 "sudo systemctl restart davy".to_owned(),
             ];
-            (Some(file), next)
+            (None, next)
         }
         Service::Launchd => {
             let file = data.join("davy.plist");
@@ -126,13 +165,7 @@ pub fn setup(args: &Args, exe: &Path, user: Option<&str>) -> anyhow::Result<Repo
         sh(&exe.to_string_lossy()),
         sh(&data.to_string_lossy())
     ));
-    Ok(Report {
-        data,
-        token_file,
-        smtp,
-        service_file,
-        next,
-    })
+    Ok((service_file, next))
 }
 
 /// Setup makes the directory private, so it refuses a directory that holds
@@ -153,41 +186,57 @@ fn refuse_foreign_dir(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// systemd runs the server as the user who ran setup, so that user owns the
-/// data directory. Root is refused: the server parses untrusted input.
-fn service_user(user: Option<&str>) -> anyhow::Result<&str> {
-    let user = user
-        .filter(|u| !u.is_empty())
-        .context("USER is not set, run setup as the user the service will run as")?;
+/// Setup makes the directory private to the user who runs it, so it refuses
+/// one that belongs to someone else.
+#[cfg(unix)]
+fn check_owner(dir: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::MetadataExt as _;
+    let owner = std::fs::metadata(dir)?.uid();
     ensure!(
-        user != "root",
-        "the service must not run as root. Create a user for it (docs/install.md, step 3) and run setup as that user with `runuser -u davy -- davy setup ...`"
+        owner == nix::unistd::geteuid().as_raw(),
+        "{} belongs to another user, run setup as its owner (docs/install.md, step 4)",
+        dir.display()
     );
-    Ok(user)
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn check_owner(_dir: &Path) -> anyhow::Result<()> {
+    Ok(())
+}
+
+/// Whether `path` is a regular file. A symbolic link or a directory is
+/// refused, so setup never writes or tightens a file somewhere else.
+fn regular_file(path: &Path) -> anyhow::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.is_file() => Ok(true),
+        Ok(_) => bail!(
+            "{} is not a regular file, replace it with one",
+            path.display()
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("cannot read {}", path.display())),
+    }
 }
 
 /// Keeps a token that is long enough and writes a new one when there is none.
 fn ensure_token(path: &Path) -> anyhow::Result<()> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => {
-            let chars = text.trim_end_matches(['\n', '\r']).chars().count();
-            ensure!(
-                chars >= MIN_TOKEN_CHARS,
-                "{} holds {chars} characters and needs {MIN_TOKEN_CHARS}. Delete it and run setup again for a new token, then update every agent and sentry-cli that used the old one",
-                path.display()
-            );
-            restrict(path, 0o600)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let mut bytes = [0_u8; 32];
-            getrandom::fill(&mut bytes)
-                .map_err(|e| anyhow::anyhow!("no randomness for the token: {e}"))?;
-            let mut file = new_private_file(path)?;
-            writeln!(file, "{}", crate::alert::hex(&bytes))?;
-            Ok(())
-        }
-        Err(e) => Err(e).with_context(|| format!("cannot read {}", path.display())),
+    if regular_file(path)? {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("cannot read {}", path.display()))?;
+        let chars = text.trim_end_matches(['\n', '\r']).chars().count();
+        ensure!(
+            chars >= MIN_TOKEN_CHARS,
+            "{} holds {chars} characters and needs {MIN_TOKEN_CHARS}. Delete it and run setup again for a new token, then update every agent and sentry-cli that used the old one",
+            path.display()
+        );
+        return restrict(path, 0o600);
     }
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("no randomness for the token: {e}"))?;
+    let mut file = new_private_file(path)?;
+    writeln!(file, "{}", crate::alert::hex(&bytes))?;
+    Ok(())
 }
 
 fn new_private_file(path: &Path) -> anyhow::Result<std::fs::File> {
@@ -218,9 +267,18 @@ fn restrict(_path: &Path, _mode: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Replaces `path` with a private file holding `contents`. A file of that
+/// name that is a link is replaced, not followed.
 fn write(path: &Path, contents: &str) -> anyhow::Result<()> {
-    std::fs::write(path, contents).with_context(|| format!("cannot write {}", path.display()))?;
-    restrict(path, 0o600)
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
+    let temp = path.with_file_name(format!(".{name}.{}", uuid::Uuid::new_v4()));
+    let mut file = new_private_file(&temp)?;
+    file.write_all(contents.as_bytes())?;
+    file.sync_all()?;
+    std::fs::rename(&temp, path).with_context(|| format!("cannot write {}", path.display()))
 }
 
 #[cfg(test)]

@@ -65,7 +65,7 @@ Both print nothing. If `useradd` says the user already exists, go on.
 sudo runuser -u davy -- davy setup --data /var/lib/davy --public-url https://davy.example.com --service systemd
 ```
 
-It prints JSON with the files it wrote and the commands to run next. It writes a random admin token to `/var/lib/davy/token`, the settings to `/var/lib/davy/setup.json` and a systemd unit to `/var/lib/davy/davy.service`. Running it again keeps the token.
+It prints JSON with the files it wrote and the commands to run next. It writes a random admin token to `/var/lib/davy/token` and the settings to `/var/lib/davy/setup.json`, which the server reads at start. Running it again keeps the token.
 
 On a Mac for one person, run it as that person:
 
@@ -92,16 +92,16 @@ Setup prints the same JSON as before. Use `smtps://` for port 465 and `smtp://` 
 
 ## 6. Start the service
 
-Run the commands in `next` from the JSON of step 4, in order. On Linux they are:
+On Linux, run these commands. They match `next` in the JSON of step 4. The first one prints the systemd unit and writes it to `/etc/systemd/system`. The unit holds only the binary, the data directory and the user, never anything from the data directory, so the davy user cannot change what root installs.
 
 ```sh
-sudo install -m 644 /var/lib/davy/davy.service /etc/systemd/system/davy.service
+davy systemd-unit --data /var/lib/davy --user davy | sudo tee /etc/systemd/system/davy.service > /dev/null
 sudo systemctl daemon-reload
 sudo systemctl enable davy
 sudo systemctl restart davy
 ```
 
-`systemctl enable` prints that it created a symlink. The others print nothing. If the service does not start, `sudo journalctl -u davy -n 50` shows why.
+`systemctl enable` prints that it created a symlink. The others print nothing. On a Mac, run the commands in `next` instead. If the service does not start, `sudo journalctl -u davy -n 50` shows why.
 
 ## 7. TLS
 

@@ -1,14 +1,13 @@
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use davy::{
-    alert, context, feedback, http, install,
+    alert, context, feedback, install,
     logs::{
         LogLevel,
         store::{LogHit, LogQuery, search},
     },
     monitor::{self, CheckUrl, Expect, NewMonitor, Target},
-    query, secret, store,
+    query, store,
     time::{self, now_ns},
-    token::Token,
 };
 use std::{
     borrow::Cow,
@@ -36,9 +35,14 @@ enum Command {
     /// Lists what agents reported about Davy's tools and docs with the MCP
     /// tool submit_feedback, oldest first.
     Feedback(feedback::Args),
-    /// Runs the ingest server. With an admin token in DAVY_TOKEN or a file named
-    /// by DAVY_TOKEN_FILE it also serves MCP at /mcp and takes source map uploads.
-    Serve(Serve),
+    /// Prints the systemd unit for the data directory. Run it as root or the
+    /// operator, never as the service user, and write the output to
+    /// /etc/systemd/system/davy.service.
+    SystemdUnit(install::unit::Args),
+    /// Runs the ingest server. With an admin token in DAVY_TOKEN, a file named
+    /// by DAVY_TOKEN_FILE or DATA/token it also serves MCP at /mcp and takes
+    /// source map uploads.
+    Serve(davy::serve::Args),
     Project {
         #[command(subcommand)]
         command: Project,
@@ -94,20 +98,6 @@ enum Command {
         #[arg(long)]
         release: Option<String>,
     },
-}
-#[derive(clap::Args)]
-struct Serve {
-    #[arg(long)]
-    data: PathBuf,
-    #[arg(long)]
-    listen: String,
-    #[arg(long)]
-    public_url: url::Url,
-    #[arg(long, default_value_t = 30)]
-    log_retention_days: u32,
-    /// The sender of alert e-mail, required when DAVY_SMTP_URL or DAVY_SMTP_URL_FILE is set.
-    #[arg(long)]
-    mail_from: Option<String>,
 }
 #[derive(clap::Args)]
 struct Logs {
@@ -251,7 +241,8 @@ fn duration(s: &str) -> Result<Duration, String> {
 async fn main() -> anyhow::Result<()> {
     let mut out = std::io::stdout();
     match Cli::parse().command {
-        Command::Serve(args) => serve(args).await?,
+        Command::Serve(args) => davy::serve::run(args).await?,
+        Command::SystemdUnit(args) => install::unit::run(&mut out.lock(), &args)?,
         Command::Setup(args) => install::setup::run(&mut out.lock(), &args)?,
         Command::Doctor(args) => install::doctor::run(&mut out.lock(), &args).await?,
         Command::McpConfig(args) => install::client::run(&mut out.lock(), &args)?,
@@ -314,26 +305,6 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
-}
-async fn serve(args: Serve) -> anyhow::Result<()> {
-    install::check_public_url(&args.public_url)?;
-    let env = |key: &str| std::env::var(key).ok();
-    let token = secret::admin_token(env)?;
-    let smtp = match (secret::read("DAVY_SMTP_URL", env)?, &args.mail_from) {
-        (Some(url), Some(from)) => Some(alert::mail::Smtp::new(&url, from)?),
-        (Some(_), None) => anyhow::bail!("DAVY_SMTP_URL needs --mail-from"),
-        (None, Some(_)) => anyhow::bail!("--mail-from needs DAVY_SMTP_URL"),
-        (None, None) => None,
-    };
-    http::serve(
-        &args.data,
-        &args.listen,
-        &args.public_url,
-        args.log_retention_days,
-        token.as_deref().map(Token::new),
-        smtp,
-    )
-    .await
 }
 fn logs(out: &mut impl Write, args: Logs) -> anyhow::Result<()> {
     let project = match args.project {

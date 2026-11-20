@@ -6,7 +6,7 @@
 pub mod client;
 pub mod doctor;
 pub mod setup;
-mod unit;
+pub mod unit;
 
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
@@ -51,13 +51,31 @@ impl Settings {
     }
 }
 
-/// Refuses a public URL that SDKs could not send to.
+/// Refuses a public URL that SDKs could not send to, and one that carries a
+/// login, a query or a fragment, which would end up in every DSN and config.
 pub fn check_public_url(url: &Url) -> anyhow::Result<()> {
     anyhow::ensure!(
         matches!(url.scheme(), "http" | "https") && url.host_str().is_some(),
         "the public URL must start with https:// or http:// and name a host, e.g. https://davy.example.com"
     );
+    anyhow::ensure!(
+        url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        "the public URL must not hold a login, a query or a fragment, give only the scheme, host and path, e.g. https://davy.example.com"
+    );
     Ok(())
+}
+
+/// Whether `url` names this machine, where plain http does not leave it.
+pub fn loopback(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        Some(url::Host::Domain(name)) => name == "localhost" || name.ends_with(".localhost"),
+        None => false,
+    }
 }
 
 /// Quotes `s` for a POSIX shell, so a printed command can be pasted as is.
@@ -87,5 +105,20 @@ mod tests {
         );
         assert_eq!(sh("it's $HOME"), r"'it'\''s $HOME'");
         assert_eq!(sh(""), "''");
+    }
+
+    #[test]
+    fn a_public_url_holds_no_login_query_or_fragment() {
+        let check = |u: &str| check_public_url(&Url::parse(u).unwrap()).is_ok();
+        assert!(check("https://davy.example.com/"));
+        assert!(check("http://127.0.0.1:8000/davy/"));
+        for bad in [
+            "ftp://davy.example.com/",
+            "https://user:pass@davy.example.com/",
+            "https://davy.example.com/?key=secret",
+            "https://davy.example.com/#x",
+        ] {
+            assert!(!check(bad), "{bad}");
+        }
     }
 }

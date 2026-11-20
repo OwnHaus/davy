@@ -18,6 +18,14 @@ fn args(data: &Path, service: Service, mail_from: Option<&str>) -> Args {
     }
 }
 
+/// The user running the tests, who exists. Systemd setup needs a real one.
+fn me() -> String {
+    nix::unistd::User::from_uid(nix::unistd::geteuid())
+        .unwrap()
+        .unwrap()
+        .name
+}
+
 fn exe() -> &'static Path {
     Path::new("/usr/local/bin/davy")
 }
@@ -41,9 +49,7 @@ fn setup_on_an_empty_directory_writes_a_private_token_and_the_settings() {
             smtp: false,
             service_file: None,
             next: vec![
-                format!(
-                    "DAVY_TOKEN_FILE={d}/token /usr/local/bin/davy serve --data {d} --listen 127.0.0.1:8000 --public-url https://davy.example.com/"
-                ),
+                format!("/usr/local/bin/davy serve --data {d}"),
                 format!("/usr/local/bin/davy doctor --data {d}"),
             ],
         }
@@ -67,38 +73,77 @@ fn setup_on_an_empty_directory_writes_a_private_token_and_the_settings() {
 #[test]
 fn setup_twice_keeps_the_token_tightens_modes_and_prints_the_same_report() {
     let data = dir();
+    let user = me();
     let a = args(&data, Service::Systemd, None);
-    let first = setup(&a, exe(), Some("davy")).unwrap();
+    let first = setup(&a, exe(), Some(&user)).unwrap();
     let token = std::fs::read_to_string(data.join("token")).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        for path in [data.clone(), data.join("token"), data.join("davy.service")] {
+        for path in [data.clone(), data.join("token")] {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o777)).unwrap();
         }
     }
-    let second = setup(&a, exe(), Some("davy")).unwrap();
+    let second = setup(&a, exe(), Some(&user)).unwrap();
     assert_eq!(first, second);
     assert_eq!(std::fs::read_to_string(data.join("token")).unwrap(), token);
     #[cfg(unix)]
     assert_eq!(
-        [&data, &data.join("token"), &data.join("davy.service")].map(|p| mode(p)),
-        [0o700, 0o600, 0o600]
+        [&data, &data.join("token")].map(|p| mode(p)),
+        [0o700, 0o600]
     );
     let d = data.display();
-    assert_eq!(second.service_file, Some(data.join("davy.service")));
+    assert_eq!(second.service_file, None);
     assert_eq!(
         second.next,
         [
-            format!("sudo install -m 644 {d}/davy.service /etc/systemd/system/davy.service"),
+            format!(
+                "/usr/local/bin/davy systemd-unit --data {d} --user {user} | sudo tee /etc/systemd/system/davy.service > /dev/null"
+            ),
             "sudo systemctl daemon-reload".to_owned(),
             "sudo systemctl enable davy".to_owned(),
             "sudo systemctl restart davy".to_owned(),
             format!("/usr/local/bin/davy doctor --data {d}"),
         ]
     );
-    let unit = std::fs::read_to_string(data.join("davy.service")).unwrap();
-    assert!(unit.contains(&format!("\nEnvironment=DAVY_TOKEN_FILE={d}/token\n")));
+    let names: Vec<String> = std::fs::read_dir(&data)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    assert_eq!(names, ["setup.json", "token"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_refuses_links_in_place_of_its_files() {
+    let data = dir();
+    std::fs::create_dir_all(&data).unwrap();
+    let elsewhere = dir();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let target = elsewhere.join("known-token");
+    std::fs::write(&target, "0123456789abcdef0123456789abcdef\n").unwrap();
+    std::os::unix::fs::symlink(&target, data.join("token")).unwrap();
+    let a = args(&data, Service::None, None);
+    assert_eq!(
+        format!("{:#}", setup(&a, exe(), Some("davy")).unwrap_err()),
+        format!(
+            "{}/token is not a regular file, replace it with one",
+            data.display()
+        )
+    );
+    std::fs::remove_file(data.join("token")).unwrap();
+    let settings = elsewhere.join("victim");
+    std::fs::write(&settings, "keep\n").unwrap();
+    std::os::unix::fs::symlink(&settings, data.join("setup.json")).unwrap();
+    setup(&a, exe(), Some("davy")).unwrap();
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), "keep\n");
+    assert!(
+        !std::fs::symlink_metadata(data.join("setup.json"))
+            .unwrap()
+            .is_symlink()
+    );
 }
 
 #[test]
@@ -134,6 +179,12 @@ fn setup_refuses_a_short_token_a_foreign_directory_and_root() {
         err(&args(&fresh, Service::Systemd, None), Some("root")),
         "the service must not run as root. Create a user for it (docs/install.md, step 3) and run setup as that user with `runuser -u davy -- davy setup ...`"
     );
+    let mut bad_listen = args(&fresh, Service::None, None);
+    bad_listen.listen = "127.0.0.1:8000\nUser=root".to_owned();
+    assert_eq!(
+        err(&bad_listen, Some("davy")),
+        "--listen \"127.0.0.1:8000\\nUser=root\" is not an address such as 127.0.0.1:8000: invalid socket address syntax"
+    );
     assert_eq!(
         err(&args(&fresh, Service::Systemd, None), None),
         "USER is not set, run setup as the user the service will run as"
@@ -167,8 +218,6 @@ fn mail_from_and_the_smtp_file_come_together() {
     let d = data.display();
     assert_eq!(
         report.next[0],
-        format!(
-            "DAVY_TOKEN_FILE={d}/token DAVY_SMTP_URL_FILE={d}/smtp-url /usr/local/bin/davy serve --data {d} --listen 127.0.0.1:8000 --public-url https://davy.example.com/ --mail-from alerts@example.com"
-        )
+        format!("/usr/local/bin/davy serve --data {d}")
     );
 }

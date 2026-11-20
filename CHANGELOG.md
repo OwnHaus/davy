@@ -13,7 +13,9 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 - HTTP uptime monitors with status and keyword checks, and heartbeat monitors for cron jobs with a failure ping.
 - Alerts for new issues, regressions and monitor incidents to signed webhooks, Slack and e-mail over SMTP, with retries.
 - The admin token and the SMTP URL can come from files named by `DAVY_TOKEN_FILE` and `DAVY_SMTP_URL_FILE`, the way systemd credentials and container secrets hand them over.
-- `davy setup` prepares a machine in one command: a private data directory, a random admin token in `DATA/token` and a hardened systemd unit or launchd job. It prints the next commands as JSON and can run again safely.
+- `davy setup` prepares a machine in one command: a private data directory, a random admin token in `DATA/token`, its settings in `DATA/setup.json` and a launchd job when asked. It prints the next commands as JSON and can run again safely.
+- `davy systemd-unit --data DIR --user USER` prints a hardened systemd unit for `sudo tee`. It holds nothing from the data directory, so the service user cannot change what root installs.
+- `davy serve --data DIR` takes the address, the public URL and the sender from `DIR/setup.json`, and the admin token and SMTP URL from `DIR/token` and `DIR/smtp-url`, when they are not given.
 - The systemd unit waits until the server listens (`Type=notify`), so `systemctl restart davy` returns only when Davy answers.
 - `davy doctor` checks a running install: permissions of the data directory and token, TLS, that the server answers and runs with the token, the SMTP server and free disk space. Every check that is not ok prints the command that fixes it, and `--json` gives the same for an agent.
 - `davy mcp-config --client claude-code|codex|cursor` prints the MCP config for that client. It reads the token from `DAVY_TOKEN`, so the file can be committed.

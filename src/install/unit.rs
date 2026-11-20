@@ -1,85 +1,125 @@
-//! The `davy serve` command line that `davy setup` writes into a systemd unit,
-//! a launchd job or a shell command.
+//! The service files that start `davy serve --data DIR`. They name the
+//! binary, the data directory and, for systemd, the user, and nothing read
+//! from the data directory, so the service user cannot change what root
+//! installs.
 
-use super::{SMTP_FILE, Settings, TOKEN_FILE, sh};
-use anyhow::ensure;
-use std::path::Path;
+use super::sh;
+use anyhow::{Context as _, ensure};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
-/// How the service starts: the binary, its arguments and the variables that
-/// name the secret files. No word holds a secret.
+#[derive(clap::Args)]
+pub struct Args {
+    /// The data directory that `davy setup` prepared.
+    #[arg(long)]
+    pub data: PathBuf,
+    /// The user the service runs as, who ran `davy setup`.
+    #[arg(long)]
+    pub user: String,
+}
+
+pub fn run(out: &mut impl Write, args: &Args) -> anyhow::Result<()> {
+    let exe = std::env::current_exe()
+        .and_then(|e| e.canonicalize())
+        .context("cannot find the path of this binary")?;
+    let data = args
+        .data
+        .canonicalize()
+        .with_context(|| format!("cannot find {}, run davy setup first", args.data.display()))?;
+    check_user(&args.user)?;
+    write!(out, "{}", Serve::new(&exe, &data)?.systemd(&args.user)?)?;
+    Ok(())
+}
+
+const NOT_ROOT: &str = "the service must not run as root. Create a user for it (docs/install.md, step 3) and run setup as that user with `runuser -u davy -- davy setup ...`";
+
+/// Refuses a user that does not exist or is root, since the server parses
+/// untrusted input.
+pub fn check_user(user: &str) -> anyhow::Result<()> {
+    user_name(user)?;
+    ensure!(user != "root", "{NOT_ROOT}");
+    #[cfg(unix)]
+    {
+        let found = nix::unistd::User::from_name(user)
+            .with_context(|| format!("cannot look up the user {user}"))?
+            .with_context(|| {
+                format!("there is no user {user}, create it (docs/install.md, step 3)")
+            })?;
+        ensure!(!found.uid.is_root(), "{NOT_ROOT}");
+    }
+    Ok(())
+}
+
+/// Refuses a name systemd would read as a number or as syntax.
+fn user_name(user: &str) -> anyhow::Result<()> {
+    let mut chars = user.chars();
+    let plain = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c))
+        && user.len() <= 32;
+    ensure!(
+        plain,
+        "{user:?} is not a user name, use letters, digits and _ . - starting with a letter"
+    );
+    Ok(())
+}
+
+/// How the service starts: `EXE serve --data DATA`.
 pub struct Serve {
     exe: String,
     data: String,
-    args: Vec<String>,
-    env: Vec<(&'static str, String)>,
 }
 
 impl Serve {
-    /// Refuses a control character in any word, because a line break would
-    /// start a new directive in the unit file.
-    pub fn new(exe: &Path, data: &Path, settings: &Settings, smtp: bool) -> anyhow::Result<Self> {
+    /// Refuses a control character in either path, because a line break would
+    /// start a new directive in a unit file.
+    pub fn new(exe: &Path, data: &Path) -> anyhow::Result<Self> {
         let text = |p: &Path| p.to_string_lossy().into_owned();
-        let mut args = vec![
-            "serve".to_owned(),
-            "--data".to_owned(),
-            text(data),
-            "--listen".to_owned(),
-            settings.listen.clone(),
-            "--public-url".to_owned(),
-            settings.public_url.clone(),
-        ];
-        if let Some(from) = &settings.mail_from {
-            args.extend(["--mail-from".to_owned(), from.clone()]);
-        }
-        let mut env = vec![("DAVY_TOKEN_FILE", text(&data.join(TOKEN_FILE)))];
-        if smtp {
-            env.push(("DAVY_SMTP_URL_FILE", text(&data.join(SMTP_FILE))));
-        }
         let serve = Self {
             exe: text(exe),
             data: text(data),
-            args,
-            env,
         };
-        let words = std::iter::once(&serve.exe)
-            .chain(&serve.args)
-            .chain(serve.env.iter().map(|(_, v)| v));
-        for word in words {
+        for word in [&serve.exe, &serve.data] {
             ensure!(
                 !word.chars().any(char::is_control),
-                "{word:?} has a control character, choose a path or value without one"
+                "{word:?} has a control character, choose a path without one"
             );
         }
         Ok(serve)
     }
 
+    fn words(&self) -> [&str; 4] {
+        [&self.exe, "serve", "--data", &self.data]
+    }
+
     /// One line to paste into a shell.
     pub fn shell(&self) -> String {
-        let env = self.env.iter().map(|(k, v)| format!("{k}={}", sh(v)));
-        let cmd = std::iter::once(&self.exe).chain(&self.args).map(|w| sh(w));
-        env.chain(cmd).collect::<Vec<_>>().join(" ")
+        self.words().map(sh).join(" ")
     }
 
     /// A unit for `/etc/systemd/system/davy.service` that runs as `user` with
     /// write access to the data directory only.
-    pub fn systemd(&self, user: &str) -> String {
-        let exec = std::iter::once(&self.exe)
-            .chain(&self.args)
-            .map(|w| unit_word(w))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let env = self
-            .env
-            .iter()
-            .map(|(k, v)| format!("Environment={}\n", unit_word(&format!("{k}={v}"))))
-            .collect::<Vec<_>>()
-            .concat();
+    /// Refuses a path with a character systemd would read as syntax, so no
+    /// word needs quoting or escaping.
+    pub fn systemd(&self, user: &str) -> anyhow::Result<String> {
+        user_name(user)?;
+        for path in [&self.exe, &self.data] {
+            ensure!(
+                path.starts_with('/')
+                    && path
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "/._+-".contains(c)),
+                "{path:?} has a character systemd reads as syntax, use a path of letters, digits and / . _ + -"
+            );
+        }
+        let exec = self.words().join(" ");
         let home = if [&self.exe, &self.data].iter().any(|p| under_home(p)) {
             "read-only"
         } else {
             "yes"
         };
-        format!(
+        Ok(format!(
             "[Unit]\n\
              Description=Davy error tracking, logs and uptime\n\
              Documentation=https://github.com/dominikzabcik/davy\n\
@@ -90,7 +130,6 @@ impl Serve {
              Type=notify\n\
              User={user}\n\
              ExecStart={exec}\n\
-             {env}\
              Restart=on-failure\n\
              RestartSec=2\n\
              UMask=0077\n\
@@ -115,25 +154,17 @@ impl Serve {
              \n\
              [Install]\n\
              WantedBy=multi-user.target\n",
-            user = unit_word(user),
-            data = unit_word(&self.data),
-        )
+            data = self.data,
+        ))
     }
 
     /// A launchd job for `~/Library/LaunchAgents/davy.plist` that logs to
     /// `DATA/davy.log`.
     pub fn launchd(&self) -> String {
         let string = |s: &str| format!("<string>{}</string>", xml(s));
-        let args = std::iter::once(&self.exe)
-            .chain(&self.args)
+        let args = self
+            .words()
             .map(|w| format!("\n    {}", string(w)))
-            .collect::<Vec<_>>()
-            .concat();
-        let env = self
-            .env
-            .iter()
-            .map(|(k, v)| format!("\n    <key>{k}</key>{}", string(v)))
-            .collect::<Vec<_>>()
             .concat();
         let log = string(&format!("{}/davy.log", self.data));
         format!(
@@ -143,7 +174,6 @@ impl Serve {
              <dict>\n  \
              <key>Label</key><string>davy</string>\n  \
              <key>ProgramArguments</key>\n  <array>{args}\n  </array>\n  \
-             <key>EnvironmentVariables</key>\n  <dict>{env}\n  </dict>\n  \
              <key>RunAtLoad</key><true/>\n  \
              <key>KeepAlive</key><true/>\n  \
              <key>StandardOutPath</key>{log}\n  \
@@ -151,20 +181,6 @@ impl Serve {
              </dict>\n\
              </plist>\n"
         )
-    }
-}
-
-/// systemd expands `%` specifiers and `$` variables in a command line, and
-/// splits words at spaces unless they are quoted.
-fn unit_word(s: &str) -> String {
-    let escaped = s.replace('%', "%%").replace('$', "$$");
-    if escaped
-        .chars()
-        .any(|c| c.is_whitespace() || "\"'\\;".contains(c))
-    {
-        format!("\"{}\"", escaped.replace('\\', r"\\").replace('"', "\\\""))
-    } else {
-        escaped
     }
 }
 

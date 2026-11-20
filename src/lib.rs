@@ -15,6 +15,7 @@ mod net_tests;
 pub mod query;
 pub mod ready;
 pub mod secret;
+pub mod serve;
 pub mod sourcemaps;
 pub mod store;
 pub mod tasks;
