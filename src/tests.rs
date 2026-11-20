@@ -295,3 +295,21 @@ fn grouping_frame_selection_and_bundle_names() {
 }
 
 mod http;
+
+#[tokio::test(start_paused = true)]
+async fn the_sweep_task_queues_a_sweep_every_period_until_the_writer_stops() {
+    let (sender, inbox) = std::sync::mpsc::sync_channel(8);
+    let task = tokio::spawn(store::sweep_every(
+        sender,
+        std::time::Duration::from_secs(10),
+    ));
+    tokio::time::sleep(std::time::Duration::from_secs(25)).await;
+    let sweeps = inbox
+        .try_iter()
+        .filter(|w| matches!(w.job, store::Job::Sweep { .. }))
+        .count();
+    assert_eq!(sweeps, 3);
+    drop(inbox);
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    assert!(task.is_finished());
+}

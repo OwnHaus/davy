@@ -428,7 +428,7 @@ enum Channel { Webhook { url: Url, secret: Secret }, Slack { url: Url } }
 - A name is 1 to 100 characters, a keyword 1 to 1,000 bytes, a URL at most 2,048 bytes, `http` or `https`, with no user or password.
 - **Confirmation.** One failed HTTP check moves `Up` to `Failing` and schedules the next check after 10 s instead of `every`. A second failure in a row opens an incident (`Down`). One success closes it. A heartbeat opens its incident on the first late check or `/fail`, because the grace period is its confirmation.
 - One scheduler task in `davy serve` runs the checks, at most 16 at a time. It reloads the monitor table every 10 s, so `davy monitor add` in another process takes effect without a restart.
-- Check results, incident changes and pings go to the writer queue. The writer keeps a row per check for 30 days and deletes older rows once an hour, 10,000 at a time.
+- Check results and pings go to the writer queue. Every 10 s `davy serve` queues a sweep. The writer then opens an incident for each heartbeat that is up and late, and deletes up to 1,000 check rows older than 30 days. The check runs in the writer, so it cannot race a ping. A late heartbeat is noticed at most 10 s after its window ends. 1,000 rows every 10 s outpace the most a data directory adds, 1,000 monitors checking every 30 s.
 
 ### Heartbeat route
 

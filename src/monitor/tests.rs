@@ -363,3 +363,66 @@ fn pings_move_a_heartbeat_and_open_and_close_its_incident() {
     );
     assert!(!store::ping(&c, 99, 5_000, false).unwrap());
 }
+
+fn reasons(c: &rusqlite::Connection, id: i64) -> Vec<Option<String>> {
+    c.prepare("SELECT reason FROM checks WHERE monitor_id=?1 ORDER BY at")
+        .unwrap()
+        .query_map([id], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+#[test]
+fn a_sweep_marks_a_heartbeat_down_once_its_window_passes() {
+    let c = memory();
+    let id = backup(&c);
+    let never = backup(&c);
+    store::ping(&c, id, 1_000, false).unwrap();
+    let deadline = 1_000 + 3_900_000;
+    store::sweep(&c, deadline).unwrap();
+    assert_eq!(status(&c, id).0, State::Up);
+    store::sweep(&c, deadline + 1).unwrap();
+    store::sweep(&c, deadline + 10_000).unwrap();
+    assert_eq!(
+        status(&c, id),
+        (
+            State::Down,
+            Some(deadline + 1),
+            Some(deadline + 1),
+            Some(1_000)
+        )
+    );
+    assert_eq!(reasons(&c, id), [None, Some("no ping in time".to_owned())]);
+    assert_eq!(status(&c, never), (State::Pending, None, None, None));
+}
+
+#[test]
+fn a_sweep_deletes_up_to_1000_checks_older_than_30_days() {
+    let c = memory();
+    let id = backup(&c);
+    let day = 86_400_000;
+    let now = 40 * day;
+    let expired = now - 30 * day - 1;
+    c.execute(
+        "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n LIMIT 1500)
+         INSERT INTO checks(monitor_id,at,ok) SELECT ?1,?2,1 FROM n",
+        rusqlite::params![id, expired],
+    )
+    .unwrap();
+    for at in [now - 30 * day, now] {
+        c.execute(
+            "INSERT INTO checks(monitor_id,at,ok) VALUES (?1,?2,1)",
+            rusqlite::params![id, at],
+        )
+        .unwrap();
+    }
+    let left = |c: &rusqlite::Connection| -> i64 {
+        c.query_row("SELECT count(*) FROM checks", [], |r| r.get(0))
+            .unwrap()
+    };
+    store::sweep(&c, now).unwrap();
+    assert_eq!(left(&c), 502);
+    store::sweep(&c, now).unwrap();
+    assert_eq!(left(&c), 2);
+}

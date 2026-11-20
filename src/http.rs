@@ -37,6 +37,8 @@ const PARSING_SLOTS: usize = 8;
 /// Sentry's limit for one event or log item, so a client that works with Sentry fits.
 const MAX_ITEM: usize = 1024 * 1024;
 const BODY_TIMEOUT: Duration = Duration::from_secs(30);
+/// How late a missed heartbeat can be noticed.
+const SWEEP_EVERY: Duration = Duration::from_secs(10);
 pub const RATE: &str = "86400:transaction;span;replay;profile;profile_chunk:organization";
 
 pub struct Keys {
@@ -526,6 +528,7 @@ pub async fn serve(
             .merge(upload::router(maps, token, public_url));
     }
     let listener = tokio::net::TcpListener::bind(listen).await?;
+    let sweeper = tokio::spawn(store::sweep_every(writer.sender.clone(), SWEEP_EVERY));
     #[cfg(unix)]
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = axum::serve(listener, routes)
@@ -538,6 +541,14 @@ pub async fn serve(
             }
         })
         .await;
+    // The sweeper holds a sender, and the writer thread ends only when every
+    // sender is gone.
+    sweeper.abort();
+    if let Err(e) = sweeper.await
+        && e.is_panic()
+    {
+        anyhow::bail!("sweeper panicked");
+    }
     drop(writer.sender);
     drop(log_writer.queue);
     for (name, thread) in [("writer", writer.thread), ("log writer", log_writer.thread)] {

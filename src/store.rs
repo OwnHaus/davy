@@ -188,6 +188,9 @@ pub enum Job {
         at: Timestamp,
         failed: bool,
     },
+    Sweep {
+        at: Timestamp,
+    },
 }
 pub type Outcome = std::result::Result<(), String>;
 pub struct Write {
@@ -219,6 +222,10 @@ fn apply(c: &Connection, job: &Job) -> Result<Outcome> {
             Ok(found
                 .then_some(())
                 .ok_or_else(|| format!("no monitor {monitor}")))
+        }
+        Job::Sweep { at } => {
+            crate::monitor::store::sweep(c, *at)?;
+            Ok(Ok(()))
         }
     }
 }
@@ -253,6 +260,20 @@ impl Writer {
             }
         });
         Self { sender, thread }
+    }
+}
+/// Queues a [`Job::Sweep`] every `period`, the first one at once. A full
+/// queue skips a tick. The task ends when the writer stops.
+pub async fn sweep_every(sender: mpsc::SyncSender<Write>, period: std::time::Duration) {
+    let mut ticks = tokio::time::interval(period);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        ticks.tick().await;
+        let (done, _) = oneshot::channel();
+        let job = Job::Sweep { at: time::now_ms() };
+        if let Err(mpsc::TrySendError::Disconnected(_)) = sender.try_send(Write { job, done }) {
+            return;
+        }
     }
 }
 #[derive(Serialize, Debug)]
