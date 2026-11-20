@@ -11,6 +11,7 @@ This document fixes the data shapes and the order of work.
 - **Parse at the boundary.** HTTP handlers turn bytes into typed values (`Envelope`, `ErrorEvent`). Grouping and storage take typed values only and never see raw JSON shapes they have to guess at.
 - **Lenient on fields, strict on framing.** A broken envelope or an invalid `event_id` is a 400. A field with an unexpected type or value (`level: "warn"`, a timestamp without a zone, a negative `lineno`) falls back to a default instead, because rejecting it would lose a customer's error.
 - **Check the key before the work.** A request without a valid key costs Davy at most one header line of decompression. See Hardening.
+- **Agent-first operation.** One binary with no database server, so a coding agent can install, connect and debug Davy from one prompt. Self-hosted Sentry runs 53 services and needs about 14 GB of RAM. Every step an operator takes is a non-interactive command with `--json` output and an error that names the next step. The docs are plain markdown an agent can fetch and follow, and their commands are tested.
 - **Never fall over under a burst.** Ingest gets a bounded queue. When it fills, Davy answers 429 and the SDKs back off. One writer thread writes in batches.
 
 ## Milestone order
@@ -21,9 +22,10 @@ This document fixes the data shapes and the order of work.
 4. MCP and CLI for agents: `sql`, `schema`, `search_logs`, `issue_context`, `mark_fixed` (done).
 5. **Source maps**: the `sentry-cli` upload endpoints and debug ID lookup (done).
 6. Uptime checks and alerts: HTTP monitors, heartbeats, webhooks, Slack and e-mail (done).
-7. **Web UI for one team.** *Next.* Its spec comes first.
+7. **Install by prompt.** *Next.* A person pastes one prompt into a coding agent, and the agent installs Davy, connects the app and checks that errors arrive. See "Milestone 7" below.
 8. **Release 0.1.0**: signed releases with SBOM and provenance, fuzzing, an internal penetration test. See "Milestone 8" below.
-9. Managed cloud (closed, see "License and open core"). Outside users come in only after the external penetration test in `SECURITY.md`.
+9. **Web UI for one team.** Its spec comes first.
+10. Managed cloud (closed, see "License and open core"). Outside users come in only after the external penetration test in `SECURITY.md`.
 
 How code reaches `main` is in `CONTRIBUTING.md`, how a version ships in `RELEASING.md`, and what security work runs when in `SECURITY.md`.
 
@@ -515,6 +517,45 @@ Status pages, regions and remote probes, ping, TCP, DNS and TLS expiry checks, c
 
 - Unit tests with literal values: the state machine for every pair of state and outcome; `Reach::Public` for a table of addresses, IPv4-mapped, NAT64 and 6to4 included; check outcomes against a local test server for status, keyword, keyword absence, timeout, a redirect to a refused address and a body over 1 MiB; the webhook signature of a fixed body, time and secret; the retry schedule; the outbox order per channel; the heartbeat route with a known, an unknown and a `/fail` token; the `sql` tool reading `NULL` for the three credential columns.
 - `e2e/alerts.mjs`, run by `e2e/run.sh`, starts its own `davy serve` with a local site, a local webhook and Slack receiver and a local SMTP server, and one channel of each kind for all projects. The site answers 503 until the monitor is down, then 200. `@sentry/node` sends two new issues. A heartbeat gets a ping, a failure ping and a ping, then misses its window. Each channel must get the same 7 notices: both `issue.new`, `monitor.down` then `monitor.up` for the site, and `monitor.down`, `monitor.up`, `monitor.down` for the heartbeat. Every webhook signature must verify with the channel's secret, every e-mail must have its own `Message-ID`, and `davy channel list` must show nothing unsent or failed. It takes about 75 s, most of it waiting for the missed heartbeat.
+- `scripts/check` passes.
+
+## Milestone 7: install by prompt
+
+Davy's edge in self-hosting is that there is nothing to run next to it. This milestone turns that into a setup a coding agent finishes alone: install the binary, run it as a service, connect the app's Sentry SDK and log shipper, connect itself over MCP, and prove that an error arrives.
+
+### The prompt
+
+The README opens with one prompt to paste into Claude Code, Codex or Cursor:
+
+> Install Davy on this machine and connect this app to it. Follow `<docs URL>/install.md`.
+
+The docs URL is the repository's raw `docs/` on the release tag until Davy has its own domain.
+
+### Docs written for agents
+
+- `docs/install.md` is a list of steps. Each step has one command, what it prints on success, and what to do when it fails. No step needs a browser, a terminal prompt or a GUI.
+- The agent asks the person only for what it cannot know: the public URL and whether TLS is already in front of it, and optionally an SMTP server for e-mail alerts.
+- `docs/connect/` has one page per client: Node, the browser with source maps through `sentry-cli`, Python, Go, Logtail and pino, and OpenTelemetry. Each uses the official SDK and changes only the DSN or token.
+- `llms.txt` at the root of the repository lists these pages with one line each.
+- Every command in a fenced `sh` block of these pages runs in e2e (Done means), so a page cannot fall behind the binary.
+
+### Commands for agents
+
+- `davy setup --data DIR --public-url URL [--service systemd|launchd|none]` prepares a machine. It creates the data directory readable only by its owner, writes a random admin token to `DIR/token` with mode 0600 when none exists, writes the service file and prints JSON: the paths it wrote and the next commands. Running it twice changes nothing and prints the same JSON.
+- `davy serve` also reads the admin token from the file named by `DAVY_TOKEN_FILE`, so a service file holds a path, not the token.
+- `davy doctor --data DIR [--json]` checks a running install. Each check has a status (`ok`, `warn`, `fail`) and, unless it is `ok`, the command or setting that fixes it. It checks the data directory's permissions, the token's presence and length, that the server answers at the public URL, that the public URL is `https` unless it is a loopback address, that the SMTP server accepts a connection when one is set, and free disk space. It sends nothing to the internet beyond the public URL and the SMTP server. The exit code is 1 when a check fails.
+- `davy mcp-config --client claude-code|codex|cursor` prints how to add Davy to that client. The token is referenced through an environment variable or the token file where the client supports it, and is never printed without `--show-token`.
+- Every CLI error says what to run or set next.
+
+### Safety
+
+The agent runs these commands with the person's shell rights. The docs never tell it to put the token on a command line, to disable TLS checks, to widen file permissions or to pipe a download into a shell. The install step downloads the binary, checks it against `SHA256SUMS` and, when `gh` is present, against its build provenance, and only then moves it into place.
+
+### Done means
+
+- Unit tests with literal values: `setup` on an empty and on a prepared directory, the service files it writes, a `doctor` table where each broken install (open permissions, short token, server down, plain `http` public URL, refused SMTP) reports its own check and fix, and `mcp-config` for each client.
+- `e2e/install.sh` starts a clean Debian container with only the binary, extracts the `sh` blocks from `docs/install.md` and `docs/connect/node.md` and runs them in order. `davy doctor --json` must report every check `ok`, `@sentry/node` sends an error, and the MCP `issue_context` tool returns it.
+- An agent eval: Claude Code and Codex, each in a fresh container with a small Node app and nothing but the prompt, finish with the app's test error visible over MCP. Five runs each. The pass rate and the median time go into this section, and a failed run becomes a fix in the docs or the CLI.
 - `scripts/check` passes.
 
 ## Milestone 8: release 0.1.0
