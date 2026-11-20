@@ -2,7 +2,7 @@
 
 Davy takes errors from the official Sentry SDK for Node. Only the DSN changes.
 
-You need the DSN that `davy project create` printed in [install step 9](../install.md#9-connect-the-app). Put it into the app's settings as `SENTRY_DSN`, next to its other environment variables (`.env`, the deploy config or the process manager). The DSN is not a secret. It only lets a client send events.
+You need the DSN that `davy project create` printed in [install step 9](../install.md#9-connect-the-app). Put it into the app's settings as `SENTRY_DSN`, next to its other environment variables (`.env`, the deploy config or the process manager), so the app has it every time it starts and not only in the shell that follows this page. An app with no such place yet gets a `.env` file in its directory with the line `SENTRY_DSN=<the DSN>`, which its start command loads (step 2). The DSN is not a secret. It only lets a client send events.
 
 ## 1. Install the SDK
 
@@ -28,7 +28,7 @@ Sentry.init({
 })
 ```
 
-Start the app with `node --import ./instrument.mjs app.mjs`. With CommonJS, use `instrument.js` with `require('@sentry/node')` and start with `node --require ./instrument.js app.js`.
+Start the app with `node --env-file-if-exists=.env --import ./instrument.mjs app.mjs`, and make that the `start` script in `package.json` when the app has one. `--env-file-if-exists` needs Node 22.9 or newer and does nothing when there is no `.env`. A variable already set in the environment wins over the file. With CommonJS, use `instrument.js` with `require('@sentry/node')` and start with `node --require ./instrument.js app.js`.
 
 `release` is optional. With it, an issue marked fixed in one release reopens only when the error comes back in that release or a newer one.
 
