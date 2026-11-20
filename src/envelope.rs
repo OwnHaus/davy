@@ -46,7 +46,6 @@ pub enum DataCategory {
     Session,
     Internal,
     Attachment,
-    Log,
     Replay,
     Profile,
     Monitor,
@@ -55,18 +54,19 @@ pub enum DataCategory {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Disposition {
     StoreError,
+    StoreLogs,
     Drop(DataCategory),
 }
 pub fn disposition(kind: &ItemKind) -> Disposition {
     use DataCategory as C;
     Disposition::Drop(match kind {
         ItemKind::Event => return Disposition::StoreError,
+        ItemKind::Log => return Disposition::StoreLogs,
         ItemKind::Transaction => C::Transaction,
         ItemKind::Span => C::Span,
         ItemKind::Session | ItemKind::Sessions => C::Session,
         ItemKind::ClientReport => C::Internal,
         ItemKind::Attachment => C::Attachment,
-        ItemKind::Log => C::Log,
         ItemKind::ReplayEvent | ItemKind::ReplayRecording => C::Replay,
         ItemKind::Profile | ItemKind::ProfileChunk => C::Profile,
         ItemKind::CheckIn => C::Monitor,

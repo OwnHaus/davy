@@ -10,7 +10,7 @@ use crate::{
     grouping::group,
 };
 use anyhow::Result;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use std::{path::Path, sync::mpsc, thread};
 use tokio::sync::oneshot;
@@ -50,12 +50,21 @@ pub fn create_project(c: &Connection, slug: &str) -> Result<(i64, String)> {
     )?;
     Ok((c.last_insert_rowid(), key))
 }
-pub fn authenticate(c: &Connection, project: i64, key: &str) -> Result<bool> {
+pub fn project_for_key(c: &Connection, key: &str) -> Result<Option<i64>> {
     Ok(c.query_row(
-        "SELECT EXISTS(SELECT 1 FROM projects WHERE id=?1 AND public_key=?2)",
-        params![project, key],
+        "SELECT id FROM projects WHERE public_key=?1",
+        params![key],
         |r| r.get(0),
-    )?)
+    )
+    .optional()?)
+}
+pub fn project_id(c: &Connection, slug: &str) -> Result<Option<i64>> {
+    Ok(c.query_row(
+        "SELECT id FROM projects WHERE slug=?1",
+        params![slug],
+        |r| r.get(0),
+    )
+    .optional()?)
 }
 pub fn insert(c: &Connection, project: i64, e: &ErrorEvent) -> Result<()> {
     let duplicate: bool = c.query_row(
