@@ -12,7 +12,7 @@ use crate::{
     sourcemaps::{self, symbolicate},
     store::{self, Job, Write},
     time,
-    token::Token,
+    token::{Token, bearer},
     upload,
 };
 use axum::{
@@ -238,14 +238,6 @@ fn slot(app: &App) -> Result<OwnedSemaphorePermit, Failure> {
 }
 fn encoding(headers: &HeaderMap) -> String {
     header_str(headers, header::CONTENT_ENCODING).to_ascii_lowercase()
-}
-fn bearer(headers: &HeaderMap) -> Option<&str> {
-    let value = header_str(headers, header::AUTHORIZATION);
-    let (scheme, token) = value.split_once(' ')?;
-    scheme
-        .eq_ignore_ascii_case("bearer")
-        .then(|| token.trim())
-        .filter(|t| !t.is_empty())
 }
 fn key(headers: &HeaderMap, query: Option<&str>, dsn: Option<&str>) -> Option<String> {
     if let Some(h) = headers.get("x-sentry-auth") {
