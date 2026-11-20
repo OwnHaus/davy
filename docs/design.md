@@ -549,6 +549,12 @@ The docs URL is the repository's raw `docs/` on the release tag until Davy has i
 - `davy mcp-config --client claude-code|codex|cursor (--data DIR | --url URL) [--show-token]` prints what to add to which file of that client: `.mcp.json` for Claude Code, `.cursor/mcp.json` for Cursor, `~/.codex/config.toml` for Codex. The config reads the token from `DAVY_TOKEN` in the syntax of each client, so it can be committed. `--url` serves a laptop that has no data directory. The token itself is printed only with `--show-token`, which needs `--data`, and then the output says to keep the file out of version control.
 - Every CLI error says what to run or set next.
 
+### Feedback from agents
+
+- MCP gets a sixth tool, `submit_feedback`. An agent calls it when a tool was missing, returned the wrong thing or needed a workaround, with what it tried, what happened and a proposed fix. Its description asks for one call per problem and no data from the errors or logs it read.
+- Feedback stays on the server: one row in a `feedback` table with the time, the client name from the MCP handshake and the text. `davy feedback --data DIR [--json]` lists it. Davy sends it nowhere by default. A channel created with `--feedback` also receives each new item, so a team can route it to Slack and act on it there.
+- The agent eval reads `davy feedback` after each run. Each item becomes a fix in the docs, the CLI or a tool, or a line in this section on why not.
+
 ### Safety
 
 The agent runs these commands with the person's shell rights. The docs never tell it to put the token on a command line, to disable TLS checks, to widen file permissions or to pipe a download into a shell. The install step downloads the binary, checks it against `SHA256SUMS` and, when `gh` is present, against its build provenance, and only then moves it into place.
@@ -570,6 +576,7 @@ The first version someone can download, verify and run without building it. `REL
 - A test tag runs the release workflow end to end. Its artifacts verify with `gh attestation verify`, `sha256sum -c SHA256SUMS` and `cosign verify`, and `cargo audit bin` reads the dependency list from a downloaded binary.
 - The release workflow passes `zizmor`, pins every action to a SHA, and only its publish job can write.
 - A fuzz target exists for every parser in `SECURITY.md`, each ran for at least an hour without a crash, and CI runs each for a few minutes every night.
+- One cleanup pass over the whole codebase before the tag: leaky abstractions, copy-paste, wrappers with one caller and workarounds whose cause is gone. Each finding is fixed or recorded as a reason to keep it.
 - The internal penetration test report exists, and every critical and high finding is fixed with a test.
 - The owner's commits and the release tag are signed and show as verified on GitHub.
 - The e2e suite passes against the downloaded release binary and the container image.

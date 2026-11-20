@@ -1,0 +1,25 @@
+# Davy
+
+> One self-hosted binary that replaces Sentry and Better Stack: error tracking with the official Sentry SDKs, logs from Logtail shippers and OpenTelemetry, uptime checks, alerts, and MCP so coding agents read errors and logs and mark issues fixed.
+
+To install Davy and connect an app, follow docs/install.md from top to bottom. Every step has one command, what it prints when it works, and what to do when it does not. Ask the person only for the public URL and, optionally, an SMTP server.
+
+## Install
+
+- [Install](docs/install.md): download and verify the binary, create its user, run `davy setup`, start the service, add TLS, check with `davy doctor`.
+
+## Connect
+
+- [Node](docs/connect/node.md): errors from `@sentry/node`, only the DSN changes.
+- [Browser JavaScript](docs/connect/browser.md): errors from `@sentry/browser` and source maps uploaded with `sentry-cli`.
+- [Python](docs/connect/python.md): errors from `sentry-sdk`.
+- [Go](docs/connect/go.md): errors from `sentry-go`.
+- [Logs from pino and Logtail shippers](docs/connect/logtail.md): change the endpoint and the source token.
+- [OpenTelemetry logs](docs/connect/opentelemetry.md): two environment variables for the OTLP exporter.
+- [Coding agents](docs/connect/agents.md): MCP for Claude Code, Codex and Cursor with `davy mcp-config`.
+
+## Reference
+
+- [Design](docs/design.md): what each part does and why, milestone by milestone.
+- [Architecture](docs/architecture.md): how the binary is built inside.
+- [Security](SECURITY.md): how to report a vulnerability and what Davy defends against.

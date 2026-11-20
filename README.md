@@ -2,9 +2,20 @@
 
 One self-hosted binary that replaces Sentry and Better Stack. Point your existing Sentry SDK or Logtail shipper at it by changing the DSN or source token. No code changes.
 
-Status: error ingest works (Sentry envelope and `/store/`, grouping into issues, CLI). Log ingest works from Logtail shippers, OpenTelemetry and Sentry's logger, with full-text search from the CLI. Coding agents read errors and logs and mark issues fixed over MCP or the CLI. Source maps uploaded with `sentry-cli` turn minified JavaScript frames back into original source. Uptime and the UI come next. See `docs/design.md`.
+Status: errors, logs, source maps, uptime checks, heartbeats, alerts and MCP work. The UI comes later. See `docs/design.md`.
 
-## Try it
+## Install with a coding agent
+
+Give your agent this prompt in the app's repository:
+
+```text
+Install Davy on this machine and connect this app to it.
+Follow docs/install.md in https://github.com/dominikzabcik/davy from top to bottom.
+```
+
+The agent asks you for the public URL, and optionally an SMTP server, and does the rest: binary, service, TLS, the SDK in your app and MCP for itself. `davy doctor` tells it what is still wrong and how to fix it. The pages it follows are listed in `llms.txt`.
+
+## Try it locally
 
 ```sh
 cargo build --release
@@ -40,12 +51,13 @@ Search them:
 
 ## Coding agents
 
-Start the server with a token and `/mcp` turns on:
+`davy setup` writes an admin token, and `/mcp` turns on when the server has one. `davy mcp-config` prints the config for Claude Code, Codex or Cursor:
 
 ```sh
-export DAVY_TOKEN=$(openssl rand -base64 32)
-./target/release/davy serve --data ./data --listen 127.0.0.1:8000 --public-url http://127.0.0.1:8000
-claude mcp add --transport http davy http://127.0.0.1:8000/mcp --header "Authorization: Bearer $DAVY_TOKEN"
+./target/release/davy setup --data ./data --public-url http://127.0.0.1:8000
+DAVY_TOKEN_FILE=./data/token ./target/release/davy serve --data ./data --listen 127.0.0.1:8000 --public-url http://127.0.0.1:8000
+export DAVY_TOKEN="$(cat ./data/token)"
+./target/release/davy mcp-config --client claude-code --data ./data
 ```
 
 The agent gets five tools: `schema`, `sql` (one read-only SQLite query), `search_logs`, `issue_context` (stack with source lines, breadcrumbs, releases and the logs around the error) and `mark_fixed`. A fixed issue reopens when the error comes back in the fix release or a newer one, not from older releases still running.
@@ -69,6 +81,16 @@ npx @sentry/cli sourcemaps upload --release my-app@1.0.0 dist
 ```
 
 Errors that arrive after the upload show the original function, file, line and source. Davy matches by debug ID only, so the org, project and release names do not matter.
+
+## Uptime and alerts
+
+```sh
+./target/release/davy monitor add my-app homepage --url https://example.com --keyword Welcome --data ./data
+./target/release/davy monitor add my-app nightly-backup --heartbeat --every 24h --data ./data
+./target/release/davy channel add slack https://hooks.slack.com/services/... --all --data ./data
+```
+
+A heartbeat prints the path the job pings when it finishes. Channels get a notice when a monitor goes down or comes back and when an issue is new or regressed, never on every event. Webhook notices are signed with a secret printed once.
 
 ## Tests
 
