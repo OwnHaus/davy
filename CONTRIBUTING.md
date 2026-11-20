@@ -57,7 +57,7 @@ The scope says which part of the code changes, not who the change is for. A chan
 | `mcp` | `mcp.rs`, `query.rs` and `context.rs`: what agents see |
 | `monitor` | `src/monitor/`: HTTP checks and heartbeats |
 | `alert` | `src/alert/`: channels, notices and delivery |
-| `core` | What modules share: the SQLite schema, migrations and writer in `store.rs`, `time.rs`, `tasks.rs`, `lib.rs` |
+| `core` | What modules share: the SQLite schema, migrations and writer in `store.rs`, `secret.rs`, `time.rs`, `tasks.rs`, `lib.rs` |
 | `net` | `net.rs`: the outbound client and the addresses it may reach |
 | `cli` | `main.rs`: commands, flags and output |
 | `ui` | The web UI |

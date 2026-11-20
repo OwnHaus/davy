@@ -12,4 +12,5 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 - An MCP server for coding agents with the tools `schema`, `sql`, `search_logs`, `issue_context` and `mark_fixed`, behind an admin token from `DAVY_TOKEN`.
 - HTTP uptime monitors with status and keyword checks, and heartbeat monitors for cron jobs with a failure ping.
 - Alerts for new issues, regressions and monitor incidents to signed webhooks, Slack and e-mail over SMTP, with retries.
+- The admin token and the SMTP URL can come from files named by `DAVY_TOKEN_FILE` and `DAVY_SMTP_URL_FILE`, the way systemd credentials and container secrets hand them over.
 - The CLI commands `project`, `issues`, `event`, `logs`, `sql`, `context`, `resolve`, `monitor` and `channel`.

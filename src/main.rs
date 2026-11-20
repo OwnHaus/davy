@@ -6,7 +6,7 @@ use davy::{
         store::{LogHit, LogQuery, search},
     },
     monitor::{self, CheckUrl, Expect, NewMonitor, Target},
-    query, store,
+    query, secret, store,
     time::{self, now_ns},
     token::Token,
 };
@@ -24,8 +24,8 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Command {
-    /// Runs the ingest server. With DAVY_TOKEN set (32 characters or more) it
-    /// also serves MCP at /mcp and takes source map uploads.
+    /// Runs the ingest server. With an admin token in DAVY_TOKEN or a file named
+    /// by DAVY_TOKEN_FILE it also serves MCP at /mcp and takes source map uploads.
     Serve(Serve),
     Project {
         #[command(subcommand)]
@@ -93,7 +93,7 @@ struct Serve {
     public_url: url::Url,
     #[arg(long, default_value_t = 30)]
     log_retention_days: u32,
-    /// The sender of alert e-mail, required when DAVY_SMTP_URL is set.
+    /// The sender of alert e-mail, required when DAVY_SMTP_URL or DAVY_SMTP_URL_FILE is set.
     #[arg(long)]
     mail_from: Option<String>,
 }
@@ -296,18 +296,9 @@ async fn main() -> anyhow::Result<()> {
 }
 async fn serve(args: Serve) -> anyhow::Result<()> {
     validate_url(&args.public_url)?;
-    // Read from the environment only, so the token never shows up in `ps` or shell history.
-    let token = std::env::var("DAVY_TOKEN").ok().filter(|t| !t.is_empty());
-    if let Some(t) = &token {
-        anyhow::ensure!(t.len() >= 32, "DAVY_TOKEN must be at least 32 characters");
-    }
-    // Read from the environment only, because the URL holds the SMTP password.
-    let smtp = match (
-        std::env::var("DAVY_SMTP_URL")
-            .ok()
-            .filter(|u| !u.is_empty()),
-        &args.mail_from,
-    ) {
+    let env = |key: &str| std::env::var(key).ok();
+    let token = secret::admin_token(env)?;
+    let smtp = match (secret::read("DAVY_SMTP_URL", env)?, &args.mail_from) {
         (Some(url), Some(from)) => Some(alert::mail::Smtp::new(&url, from)?),
         (Some(_), None) => anyhow::bail!("DAVY_SMTP_URL needs --mail-from"),
         (None, Some(_)) => anyhow::bail!("--mail-from needs DAVY_SMTP_URL"),

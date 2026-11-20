@@ -11,6 +11,7 @@ pub mod net;
 #[cfg(test)]
 mod net_tests;
 pub mod query;
+pub mod secret;
 pub mod sourcemaps;
 pub mod store;
 pub mod tasks;
