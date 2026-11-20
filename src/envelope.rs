@@ -95,14 +95,18 @@ fn line(input: &mut &[u8]) -> Result<Value> {
     *input = &input[(n + 1).min(input.len())..];
     Ok(v)
 }
-impl Envelope {
+impl EnvelopeHeader {
+    /// Parses the first line of an envelope. Bytes after the first newline are ignored.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        let mut input = bytes;
-        let h = line(&mut input)?;
+        Self::take(&mut &bytes[..])
+    }
+
+    fn take(input: &mut &[u8]) -> Result<Self> {
+        let h = line(input)?;
         if !h.is_object() {
             bail!("invalid envelope header");
         }
-        let header = EnvelopeHeader {
+        Ok(Self {
             event_id: h
                 .get("event_id")
                 .map(|v| EventId::parse(v.as_str().unwrap_or("")))
@@ -123,7 +127,13 @@ impl Envelope {
                         .ok_or_else(|| anyhow::anyhow!("invalid sent_at"))
                 })
                 .transpose()?,
-        };
+        })
+    }
+}
+impl Envelope {
+    pub fn parse(bytes: &[u8]) -> Result<Self> {
+        let mut input = bytes;
+        let header = EnvelopeHeader::take(&mut input)?;
         let mut items = Vec::new();
         loop {
             while let Some((b'\n' | b'\r', rest)) = input.split_first() {

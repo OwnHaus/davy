@@ -400,6 +400,58 @@ mod http {
     }
 
     #[tokio::test]
+    async fn a_key_inside_the_envelope_is_checked_before_the_items_are_read() {
+        let s = server();
+        for (body, status) in [
+            (
+                "{\"dsn\":\"http://key-a@h/1\"}\n{\"type\":\"session\"}\n{}",
+                200,
+            ),
+            (
+                "{\"dsn\":\"http://key-b@h/2\"}\n{\"type\":\"session\"}\n{}",
+                403,
+            ),
+            ("{\"dsn\":\"http://wrong@h/1\"}\n{broken", 403),
+            ("{}\n{broken", 401),
+        ] {
+            let r = s.send(post("/api/1/envelope/", &[], body)).await;
+            assert_eq!(r.status, status, "{body}");
+        }
+        let long_header = format!("{{\"pad\":\"{}\"}}\n", "x".repeat(70_000));
+        let r = s.send(post("/api/1/envelope/", &[], long_header)).await;
+        assert_eq!(r.status, 400, "a header line over 64 KiB");
+    }
+
+    #[tokio::test]
+    async fn an_anonymous_body_is_not_decompressed() {
+        use std::io::Write as _;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(b"{\"dsn\":\"http://wrong@h/1\"}\n").unwrap();
+        gz.write_all(&vec![b' '; 201 * 1024 * 1024]).unwrap();
+        let bomb = gz.finish().unwrap();
+        let s = server();
+        let r = s
+            .send(post(
+                "/api/1/envelope/",
+                &[("content-encoding", "gzip")],
+                bomb,
+            ))
+            .await;
+        assert_eq!(
+            r.status, 403,
+            "the header key fails before the rest inflates"
+        );
+        let r = s
+            .send(post(
+                "/api/1/store/",
+                &[("content-encoding", "gzip")],
+                "not gzip",
+            ))
+            .await;
+        assert_eq!(r.status, 401, "/store/ has no header to carry a key");
+    }
+
+    #[tokio::test]
     async fn envelope_accepts_unknown_item_types() {
         let r = server()
             .send(post(
