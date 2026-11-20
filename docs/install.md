@@ -9,7 +9,7 @@ Run every command as a user who may use `sudo`. Davy itself runs as its own user
 Ask the person two things and nothing else:
 
 1. **The public URL**, the address apps and agents will reach Davy at, such as `https://davy.example.com`. Ask whether a TLS proxy (Caddy, nginx, a load balancer) already serves that name. On a laptop for one person, use `http://127.0.0.1:8000`.
-2. **Optional: an SMTP server** for alert e-mail, as a URL such as `smtps://user:password@smtp.example.com:465`, and the sender address. Without it, alerts go to webhooks and Slack.
+2. **Optional: an SMTP server** for alert e-mail, its host and port, and the sender address. Do not ask for the SMTP password. The person types it in step 5, so it never passes through you. Without SMTP, alerts go to webhooks and Slack.
 
 In the commands below, replace `https://davy.example.com` with the public URL. Keep `/var/lib/davy` as the data directory unless the person names another one. On a Mac for one person, leave out `sudo runuser -u davy --` and use the data directory from step 4.
 
@@ -78,17 +78,23 @@ When it fails, the error says what to change. Run setup again after the change.
 
 ## 5. Optional: e-mail alerts
 
-Skip this step when the person gave no SMTP server. The SMTP URL holds a password, so it goes into a file only the davy user can read, never on a command line. Write the URL the person gave between the two `EOF` lines:
+Skip this step when the person gave no SMTP server. The SMTP URL holds a password, so it goes into a file only the davy user can read, never on a command line, and the person writes it themselves. Ask the person to run this in their own terminal on the server, paste the URL, press Enter and then Ctrl-D:
 
 <!-- e2e: skip, the test has no SMTP server -->
 ```sh
-sudo runuser -u davy -- sh -c 'umask 077 && cat > /var/lib/davy/smtp-url' <<'EOF'
-smtps://user:password@smtp.example.com:465
-EOF
+sudo runuser -u davy -- sh -c 'umask 077 && cat > /var/lib/davy/smtp-url'
+```
+
+The URL is `smtps://user:password@smtp.example.com:465` for port 465, or `smtp://user:password@smtp.example.com:587?tls=required` for STARTTLS on port 587. Davy refuses a password without TLS. Characters such as `@`, `:` or `/` in the user or password must be percent-encoded, `@` as `%40`.
+
+When the person says it is done, run setup again with the sender:
+
+<!-- e2e: skip, the test has no SMTP server -->
+```sh
 sudo runuser -u davy -- davy setup --data /var/lib/davy --public-url https://davy.example.com --service systemd --mail-from 'Davy <alerts@example.com>'
 ```
 
-Setup prints the same JSON as before. Use `smtps://` for port 465 and `smtp://` with port 587 for STARTTLS.
+Setup prints the same JSON as before. Step 8 checks that the SMTP server accepts the login.
 
 ## 6. Start the service
 
@@ -107,20 +113,29 @@ sudo systemctl restart davy
 
 Skip this step when the public URL starts with `http://127.0.0.1`, or when a TLS proxy already serves the name and forwards to `127.0.0.1:8000`.
 
-Otherwise install Caddy, which gets a certificate on its own. The name must already point at this server in DNS, and ports 80 and 443 must be open.
+Otherwise install Caddy, which gets a certificate on its own. The name must already point at this server in DNS, and ports 80 and 443 must be open. Install it, keep a copy of its config and show it:
 
 <!-- e2e: skip, the test has no public name -->
 ```sh
 sudo apt-get install -y caddy
+sudo cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.before-davy
+sudo cat /etc/caddy/Caddyfile
+```
+
+If the file holds nothing but comments and the `:80` site with `file_server` that the package installs, replace it. Otherwise it serves other sites, so add Davy after them: use `sudo tee -a` in place of `sudo tee` below.
+
+<!-- e2e: skip, the test has no public name -->
+```sh
 sudo tee /etc/caddy/Caddyfile > /dev/null <<'EOF'
 davy.example.com {
 	reverse_proxy 127.0.0.1:8000
 }
 EOF
+sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 sudo systemctl reload caddy
 ```
 
-Replace `davy.example.com` with the name from the public URL, without `https://`.
+Replace `davy.example.com` with the name from the public URL, without `https://`. `caddy validate` prints `Valid configuration` at the end. When it prints an error, do not reload. Restore the copy with `sudo cp /etc/caddy/Caddyfile.before-davy /etc/caddy/Caddyfile` and tell the person.
 
 ## 8. Check the install
 
