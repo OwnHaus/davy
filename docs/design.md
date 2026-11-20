@@ -16,8 +16,8 @@ This document fixes the data shapes and the order of work.
 ## Milestone order
 
 1. Storage benchmark (done, `bench/storage`, see "Log storage" below).
-2. **Errors**: Sentry envelope and `/store/` ingest, grouping, issues, CLI to list them. *This milestone.*
-3. Logs: Logtail endpoint (msgpack and JSON), the Sentry `log` item, OTLP/HTTP logs, full-text search.
+2. Errors: Sentry envelope and `/store/` ingest, grouping, issues, CLI to list them (done).
+3. **Logs**: Logtail endpoint (msgpack and JSON), the Sentry `log` item, OTLP/HTTP logs, full-text search. *Next.*
 4. MCP and CLI for agents: `sql`, `schema`, `issue_context`, `mark_fixed`.
 5. Source maps: the `sentry-cli` upload endpoints and debug ID lookup.
 6. Uptime checks and alerts.
@@ -150,6 +150,111 @@ issue_hourly(issue_id INTEGER NOT NULL, hour INTEGER NOT NULL, count INTEGER NOT
 - Decompression and JSON parsing run on the async runtime threads. Move them to `spawn_blocking` before load tests.
 - Key lookup takes a `Mutex` around one SQLite connection. Cache the project keys in memory before load tests.
 - A single bad event in an envelope fails the whole request with 400. Relay drops only the bad item. Decide when the first real case shows up.
+
+## Milestone 3: logs
+
+Three wire formats come in. One `LogRecord` shape goes out to one store. Each source is an adapter: a pure function from bytes to records, unit-tested on captured fixtures. The HTTP layer does auth, size caps and decompression the same way for all of them.
+
+### Wire protocol (what we accept)
+
+| Source | Route | Auth | Body | Success |
+|---|---|---|---|---|
+| Logtail (`@logtail/node`, `@logtail/pino`, Vector, Fluent Bit) | `POST /` | `Authorization: Bearer <public_key>` | msgpack, JSON or NDJSON | `202`, empty body |
+| OTLP/HTTP logs | `POST /v1/logs` | `Authorization: Bearer <public_key>` | protobuf (`application/x-protobuf`) or JSON (`application/json`) | `200`, empty `ExportLogsServiceResponse` in the request's encoding and content type |
+| Sentry `log` item | the existing envelope route | the existing Sentry key rules | `{"items":[...]}` inside an envelope | the existing `200 {"id":...}` |
+
+- The bearer token is the project's `public_key`, so one DSN key also works as a Logtail source token and an OTLP header (`OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <key>`). The token alone picks the project.
+- All three use the existing `Content-Encoding` handling and the 20 MiB / 200 MiB caps. The token is checked before decompression.
+- Errors. `401` missing token, `403` unknown token, `413` too large, `429` with `Retry-After: 1` when the log queue is full. An undecodable Logtail body is `406` (what Better Stack answers). An undecodable OTLP body is `400` with a `google.rpc.Status` in the request's encoding. An OTLP content type other than protobuf or JSON is `415`.
+- Lenient on fields here too. A record that is not an object is skipped. A field of the wrong type falls back to a default. A batch never fails because of one record.
+
+### Data shape
+
+```rust
+pub struct LogRecord {
+    pub project_id: i64,
+    pub timestamp: i64,          // unix nanoseconds; logs need sub-millisecond order inside a burst
+    pub observed_at: i64,        // unix nanoseconds, when Davy received it
+    pub source: LogSource,       // Logtail | Otlp | Sentry
+    pub level: LogLevel,         // Trace < Debug < Info < Warn < Error < Fatal, stored as 1..=6
+    pub message: String,
+    pub service: Option<String>,
+    pub trace_id: Option<String>, // 32 lowercase hex, None when empty or all zeros
+    pub span_id: Option<String>,  // 16 lowercase hex
+    pub attributes: serde_json::Map<String, serde_json::Value>,
+}
+```
+
+One level table for every source (`LogLevel::parse`). Logs default to `Info`, unlike error events.
+
+| Input | Level |
+|---|---|
+| number (pino): ≤10, ≤20, ≤30, ≤40, ≤50, above | Trace, Debug, Info, Warn, Error, Fatal |
+| OTLP `severity_number` 1-4, 5-8, 9-12, 13-16, 17-20, 21-24 | Trace, Debug, Info, Warn, Error, Fatal |
+| string, case-insensitive: `trace`; `debug`; `info`, `information`, `notice`, `log`; `warn`, `warning`; `error`, `err`; `fatal`, `critical`, `crit`, `alert`, `emerg`, `emergency`, `panic` | in that order |
+| OTLP `severity_number` 0 | parse `severity_text`, else Info |
+| anything else | Info |
+
+One timestamp function for every source. A number below 1e11 is seconds (fractions allowed), below 1e14 milliseconds, below 1e17 microseconds, else nanoseconds. A string is RFC 3339, with a naive `YYYY-MM-DDTHH:MM:SS[.f]` read as UTC. A msgpack timestamp extension (type -1, 4, 8 or 12 bytes) is decoded per the msgpack spec, because `@logtail/node` sends `dt` as a `Date`. Anything else, or a time older than the retention window or more than 24 h in the future, becomes `observed_at`, and the original value is kept in the attribute `davy.original_timestamp`.
+
+### Adapters
+
+**Logtail.** Content type `application/msgpack` or `application/x-msgpack`, `application/json`, `application/x-ndjson` or `application/ndjson`. Without a content type, a body whose first non-space byte is `[` or `{` is JSON or NDJSON, else msgpack. The body is an array of records, one record, or one record per line. In each record `dt` is the timestamp, `message` the message (a non-string is written as compact JSON), `level` the level. `service`, `trace_id` and `span_id` are lifted out when they are strings, the ids only when they are valid hex. Every other key stays in `attributes` as it came, nested objects included. Decode msgpack with `rmpv`.
+
+**OTLP.** Use the `opentelemetry-proto` message types (prost) for protobuf. Check its serde JSON against a real exporter capture first. OTLP JSON writes trace and span ids as hex, not base64, 64-bit integers as strings or numbers, and enums as integers. If the crate gets any of that wrong, parse the JSON by hand. Mapping:
+
+- resource attribute `service.name` becomes `service`. Other resource attributes go into `attributes` as `resource.<key>`. A non-empty scope name goes in as `otel.scope.name`, a non-empty `event_name` as `otel.event_name`.
+- the timestamp is `time_unix_nano`, else `observed_time_unix_nano`, else `observed_at`.
+- a string `body` is the message. Any other body is written as compact JSON.
+- `AnyValue` converts to JSON as string, bool, integer, float, array, object (from a kvlist), and base64 string (from bytes).
+
+**Sentry `log` item.** `ItemKind::Log` moves from `Drop` to a new `Disposition::StoreLogs`. The payload is `{"items":[{"timestamp": <float seconds>, "trace_id", "span_id"?, "level", "body", "severity_number"?, "attributes": {"<key>": {"value": ..., "type": ...}}}]}`. Attributes are flattened to `<key>: value`. `service.name`, when present, becomes `service`. An envelope with only log items still answers `200 {"id": ...}`.
+
+### Storage (Tantivy, one index per UTC day)
+
+- `data/logs/YYYY-MM-DD/` is one Tantivy index for the UTC day of `timestamp`. Docstore compressed with zstd, as in the benchmark.
+- Fields: `project` u64 indexed and fast. `ts` i64 indexed, fast and stored. `observed` i64 stored. `level` u64 indexed, fast and stored, so `--level warn` is a range query. `source` u64 stored. `service`, `trace_id` and `span_id` raw strings, indexed and stored. `message` text, stored. `attributes` a JSON field, indexed with the default tokenizer and stored, so `attributes.user_id:42` works.
+- The benchmark measured attributes as one flat text field. A JSON field may cost more disk. Measure both on 1M synthetic rows before committing to it, and keep the flat text field if the JSON field goes over 1.0× the raw size.
+- One log writer thread owns the open `IndexWriter`s (at most 3 days open, least recently written one closed first, a day idle for 10 minutes closed). It reads batches of `LogRecord` from a bounded channel of 256 batches. A full channel is the `429`. Each writer uses 1 indexing thread and a 64 MB heap (1 thread was faster in the benchmark).
+- The writer commits every second when anything changed, and at once when 100k documents are uncommitted. It commits everything on shutdown.
+- The HTTP handler answers once the batch is queued, not once it is committed. Error events wait for their commit because they are few and each matters. Logs come in bulk and the shippers retry on failure only. The cost is that a crash loses at most about one second of accepted logs, and a log shows up in search within about one second.
+- Retention: `davy serve --log-retention-days <n>`, default 30. Once an hour the writer renames day directories older than that into `data/logs/.trash/` and removes them. It touches only names that parse as `YYYY-MM-DD`.
+
+### Search
+
+```rust
+pub struct LogQuery { pub project: Option<i64>, pub since: i64, pub until: i64,
+                      pub min_level: Option<LogLevel>, pub text: Option<String>, pub limit: usize }
+pub fn search(data: &Path, q: &LogQuery) -> anyhow::Result<Vec<LogHit>>   // newest first
+```
+
+- Opens only the day indexes that overlap `since..until`, newest first, sorts by the `ts` fast field and stops once it has `limit` hits.
+- `text` goes through Tantivy's `QueryParser` with `message` and `attributes` as default fields. So `timeout`, `"connection reset"`, boolean queries such as `timeout AND db` and `attributes.user_id:42` all work. A parse error is shown to the user, not a panic.
+- The CLI reads the indexes from its own process while the server writes. The writer's segment cleanup can delete a file just as the CLI opens it. Retry the search once on a missing-file error. The MCP server in milestone 4 runs inside the server process and avoids this.
+
+### CLI
+
+`davy logs --data <dir> [--project <slug>] [--since 1h|30m|2d|<RFC 3339>] [--until ...] [--level warn] [--limit 100] [--json] [query]`
+
+- Defaults: `--since 1h`, `--limit 100`.
+- Text output prints the newest `limit` hits oldest first, like `tail`: `2026-11-20T10:00:00.123Z WARN api message key=value ...`.
+- `--json` prints one JSON object per line.
+
+### Also in this milestone
+
+Logs make the two load follow-ups from milestone 2 hot, so both land now.
+
+- Project keys live in memory (`HashMap<public_key, project_id>` behind an `RwLock`), loaded at start and reloaded from SQLite on a miss at most once per second. It replaces the `Mutex<Connection>` in `App`. The Sentry routes use it too.
+- Decompression and parsing run in `spawn_blocking` for every ingest route.
+
+### Done means
+
+- Fixtures captured from real clients with synthetic data into `e2e/fixtures/`, by extending `e2e/capture.mjs`. They are `logtail-pino` (`@logtail/pino`), `sentry-node-10-logs` (`@sentry/node` 10 with `enableLogs: true` and `Sentry.logger.*`), `otlp-proto` and `otlp-json` (the OpenTelemetry JS log exporters).
+- Unit tests assert literal values. Each adapter parses its fixture into exact records. Every row of the level table and every timestamp form gets a case, the msgpack timestamp extension included. A Logtail batch with one bad record keeps the others.
+- A store test writes three days of synthetic records and asserts exact hits and order for each of project, level, text, attribute query and time range. Retention then removes the oldest day.
+- `e2e/run.sh` also sends logs through `@logtail/pino`, Sentry `logger.*` and both OTLP exporters, waits 1.5 s, and asserts with `davy logs --json` the exact message, level, service and one attribute per source, plus a trace id where the client sets one. A wrong bearer token gets 403.
+- A load script sends 1M synthetic Logtail records in msgpack batches of 1000. Report rows per second and disk over raw size, with what limits them. It is a number to explain, not a gate.
+- `cargo test` passes and `cargo clippy --all-targets -- -D warnings` is clean.
 
 ## License and open core
 
