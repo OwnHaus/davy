@@ -39,6 +39,14 @@ exceptions = [
 [bans]
 multiple-versions = "allow"
 wildcards = "deny"
+# Tests talk to real servers on loopback and real files, never to mocks.
+deny = [
+    { crate = "mockall", reason = "tests use real servers and files" },
+    { crate = "mockito", reason = "tests use real servers and files" },
+    { crate = "wiremock", reason = "tests use real servers and files" },
+    { crate = "httpmock", reason = "tests use real servers and files" },
+    { crate = "faux", reason = "tests use real servers and files" },
+]
 
 [sources]
 unknown-registry = "deny"

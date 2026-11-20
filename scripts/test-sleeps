@@ -1,0 +1,9 @@
+# Tests wait for the event they expect, never for a fixed time. These are the
+# sleeps in tests that remain, per file, with why. scripts/check fails when a
+# file has more sleeps than listed here, and when it has fewer, so lower the
+# count when one goes. The list only shrinks.
+#
+# file                       count  why
+src/tests.rs                 2      the clock is paused, so the sleeps move tokio time and wait for nothing
+src/monitor/check_tests.rs   3      a test server that answers late, a poll until the first check is stored, and the window in which no confirmation check may start
+src/alert/deliver_tests.rs   1      a poll until the notifier has sent every notice

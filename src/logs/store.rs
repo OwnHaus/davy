@@ -120,7 +120,7 @@ struct OpenDay {
     dirty: bool,
 }
 
-struct State {
+pub(super) struct State {
     root: PathBuf,
     fields: Fields,
     retention_days: u32,
@@ -129,6 +129,16 @@ struct State {
 }
 
 impl State {
+    pub(super) fn new(root: PathBuf, retention_days: u32) -> Self {
+        Self {
+            root,
+            fields: schema().1,
+            retention_days,
+            open: HashMap::new(),
+            uncommitted: 0,
+        }
+    }
+
     fn settle(&self, r: &mut LogRecord) {
         let oldest = r.observed_at - DAY_NS * i64::from(self.retention_days);
         if r.timestamp < oldest || r.timestamp > r.observed_at + DAY_NS {
@@ -162,7 +172,7 @@ impl State {
         Ok(self.open.get_mut(&day).expect("inserted above"))
     }
 
-    fn add(&mut self, batch: Vec<LogRecord>) -> Result<()> {
+    pub(super) fn add(&mut self, batch: Vec<LogRecord>) -> Result<()> {
         let fields = self.fields;
         for mut r in batch {
             self.settle(&mut r);
@@ -182,7 +192,7 @@ impl State {
         Ok(())
     }
 
-    fn commit(&mut self) -> Result<()> {
+    pub(super) fn commit(&mut self) -> Result<()> {
         let mut failed = Vec::new();
         for (day, open) in self.open.iter_mut().filter(|(_, o)| o.dirty) {
             match open.writer.commit() {
@@ -247,7 +257,7 @@ impl State {
         Ok(())
     }
 
-    fn close_all(&mut self) -> Result<()> {
+    pub(super) fn close_all(&mut self) -> Result<()> {
         let days: Vec<_> = self.open.keys().copied().collect();
         for day in days {
             self.close(day)?;
@@ -387,13 +397,7 @@ impl LogWriter {
         );
         std::fs::create_dir_all(&root)?;
         let (queue, inbox) = LogQueue::bounded(QUEUE_ROWS, QUEUE_BYTES);
-        let mut state = State {
-            root,
-            fields: schema().1,
-            retention_days,
-            open: HashMap::new(),
-            uncommitted: 0,
-        };
+        let mut state = State::new(root, retention_days);
         let thread = thread::spawn(move || {
             #[expect(
                 clippy::print_stderr,

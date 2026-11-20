@@ -80,6 +80,13 @@ The scope says which part of the code changes, not who the change is for. A chan
 - Actions are pinned to a full commit SHA with the version in a comment.
 - A Rust toolchain bump is its own commit that changes `rust-toolchain.toml` and fixes what new lints find.
 
+## Tests
+
+- A test calls the code the way its users do, through a real server on loopback, a real SQLite file or a real index, and compares the result with a literal value. Mock crates are banned in `deny.toml`.
+- A test waits for the event it expects, never for a fixed time. `scripts/test-sleeps` lists the few sleeps that remain, per file and with the reason. `scripts/check` fails when a file has more or fewer, so the list only shrinks.
+- No test is skipped with `#[ignore]`. A test that cannot pass is fixed or deleted.
+- A `fix` commit adds a test that fails without the fix.
+
 ## Review
 
 - Every change passes `scripts/check`. A change to `http.rs`, a parser or a wire format also passes `bash e2e/run.sh`. A change to `docs/install.md`, `docs/connect/` or `src/install/` also passes `bash e2e/install.sh`, which follows the docs in a Debian container with systemd (needs Docker).

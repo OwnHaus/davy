@@ -40,6 +40,33 @@ if git grep --untracked -nIwE 'TODO|FIXME|XXX|HACK' -- src examples e2e/*.mjs e2
     problem 'TODO without a link in the lines above'
 fi
 
+# Tests wait for the event they expect and none is skipped. scripts/test-sleeps
+# lists the sleeps that remain, and the counts must match it exactly.
+sleeps=$(git grep --untracked -c -e 'sleep(' -- 'src/*tests.rs' 'src/tests/*' || true)
+if ! printf '%s\n' "$sleeps" | awk -F: '
+    BEGIN {
+        while ((getline line < "scripts/test-sleeps") > 0) {
+            if (line ~ /^#/ || line == "") continue
+            split(line, a, " ")
+            allowed[a[1]] = a[2]
+        }
+    }
+    NF { found[$1] = $2 }
+    END {
+        bad = 0
+        for (f in allowed) if (!(f in found)) found[f] = 0
+        for (f in found) if (found[f] != allowed[f] + 0) {
+            printf "check: %s has %d sleeps, scripts/test-sleeps lists %d\n", f, found[f], allowed[f] + 0 > "/dev/stderr"
+            bad = 1
+        }
+        exit bad
+    }'; then
+    problem 'wait for the event instead of sleeping, or lower the count in scripts/test-sleeps when a sleep goes'
+fi
+if git grep --untracked -n -e '#\[ignore' -- src; then
+    problem 'an ignored test in the lines above, fix it or delete it'
+fi
+
 # Big files are where agents pile up unrelated code. Split by responsibility.
 max_lines=700
 for f in $(git ls-files --cached --others --exclude-standard 'src/*.rs' 'src/**/*.rs'); do

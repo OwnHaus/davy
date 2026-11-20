@@ -1,4 +1,4 @@
-use super::store::{LogQuery, LogWriter, search};
+use super::store::{LogQuery, LogWriter, State, search};
 use super::*;
 use crate::time::{self, now_ns};
 use serde_json::json;
@@ -584,7 +584,7 @@ fn store_recovers_when_a_day_index_breaks() {
     let dir = scratch_dir();
     let now = now_ns();
     let day = dir.join(day_name(now));
-    let batch = |n: usize, message: &str| -> Vec<LogRecord> {
+    let batch = move |n: usize, message: &str| -> Vec<LogRecord> {
         (0..n)
             .map(|i| {
                 record(
@@ -597,27 +597,27 @@ fn store_recovers_when_a_day_index_breaks() {
             })
             .collect()
     };
-    let writer = LogWriter::start(dir.clone(), 30).unwrap();
-    assert!(writer.queue.push(batch(10, "before")).is_ok());
-    while !day.join("meta.json").exists() {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    std::fs::remove_dir_all(&day).unwrap();
-    assert!(writer.queue.push(batch(10, "lost")).is_ok());
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    for _ in 0..3 {
-        while writer.queue.push(batch(10_000, "after")).is_err() {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-    }
-    drop(writer.queue);
+    let root = dir.clone();
+    // A dead indexing worker blocks add_document forever, so the steps run
+    // on a thread and the test waits for it with a deadline.
     let (done, finished) = std::sync::mpsc::channel();
-    std::thread::spawn(move || done.send(writer.thread.join().is_ok()));
+    std::thread::spawn(move || {
+        let mut state = State::new(root, 30);
+        state.add(batch(10, "before")).unwrap();
+        state.commit().unwrap();
+        std::fs::remove_dir_all(&day).unwrap();
+        let broken = state.add(batch(10, "lost")).and_then(|()| state.commit());
+        for _ in 0..3 {
+            state.add(batch(10_000, "after")).unwrap();
+        }
+        state.commit().unwrap();
+        state.close_all().unwrap();
+        done.send(broken.is_err()).unwrap();
+    });
     assert_eq!(
         finished.recv_timeout(std::time::Duration::from_secs(30)),
         Ok(true),
-        "writer shut down instead of blocking on a dead indexing worker"
+        "the write into the deleted index failed and the next writes reopened it"
     );
     let hits = search(
         &dir,
