@@ -415,28 +415,35 @@ async fn heartbeat(app: &App, token: &str, failed: bool) -> Result<&'static str,
     .await?;
     Ok("ok")
 }
+async fn ingest_logs(
+    app: &App,
+    headers: &HeaderMap,
+    raw: axum::body::Body,
+    parse: impl FnOnce(&[u8]) -> Result<Vec<LogRecord>, Failure> + Send + 'static,
+) -> Result<(), Failure> {
+    let bytes = compressed(raw).await?;
+    let slot = slot(app)?;
+    let encoding = encoding(headers);
+    let records = blocking(move || {
+        let _slot = slot;
+        parse(&decode(&bytes, &encoding)?)
+    })
+    .await?;
+    if !records.is_empty() {
+        app.logs.push(records)?;
+    }
+    Ok(())
+}
 async fn logtail_ingest(State(app): State<App>, req: Request) -> Response {
     let run = async {
         let (parts, raw) = req.into_parts();
         let project = app.keys.authenticate(bearer(&parts.headers))?;
-        let bytes = compressed(raw).await?;
-        let slot = slot(&app)?;
-        let encoding = encoding(&parts.headers);
         let content_type = header_str(&parts.headers, header::CONTENT_TYPE).to_owned();
-        let records = blocking(move || {
-            let _slot = slot;
-            logtail::parse(
-                &decode(&bytes, &encoding)?,
-                &content_type,
-                project,
-                time::now_ns(),
-            )
-            .map_err(|e| (StatusCode::NOT_ACCEPTABLE, e))
+        ingest_logs(&app, &parts.headers, raw, move |body| {
+            logtail::parse(body, &content_type, project, time::now_ns())
+                .map_err(|e| (StatusCode::NOT_ACCEPTABLE, e))
         })
         .await?;
-        if !records.is_empty() {
-            app.logs.push(records)?;
-        }
         Ok::<_, Failure>(StatusCode::ACCEPTED.into_response())
     };
     run.await.unwrap_or_else(IntoResponse::into_response)
@@ -453,23 +460,10 @@ async fn otlp_ingest(State(app): State<App>, req: Request) -> Response {
                 "expected application/x-protobuf or application/json".to_owned(),
             )
         })?;
-        let bytes = compressed(raw).await?;
-        let slot = slot(&app)?;
-        let content_encoding = self::encoding(&parts.headers);
-        let records = blocking(move || {
-            let _slot = slot;
-            otlp::parse(
-                &decode(&bytes, &content_encoding)?,
-                encoding,
-                project,
-                time::now_ns(),
-            )
-            .map_err(bad)
+        ingest_logs(&app, &parts.headers, raw, move |body| {
+            otlp::parse(body, encoding, project, time::now_ns()).map_err(bad)
         })
         .await?;
-        if !records.is_empty() {
-            app.logs.push(records)?;
-        }
         Ok::<_, Failure>(encoding)
     };
     match (run.await, encoding) {
