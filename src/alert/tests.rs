@@ -299,3 +299,79 @@ fn a_failed_delivery_retries_five_times_with_doubling_waits() {
         ]
     );
 }
+
+fn row(c: &rusqlite::Connection, id: i64) -> (i64, i64, Option<i64>, Option<i64>, Option<String>) {
+    c.query_row(
+        "SELECT attempts,next_at,sent_at,failed_at,last_error FROM notifications WHERE id=?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    )
+    .unwrap()
+}
+
+#[test]
+fn only_the_oldest_unsent_row_of_each_channel_is_due() {
+    let c = memory();
+    let hook = channel(&c, Some(1), Kind::Webhook);
+    let slack = channel(&c, None, Kind::Slack);
+    store::notify(&c, 1, &Notice::Test, 1_000).unwrap();
+    store::notify(&c, 1, &Notice::Test, 2_000).unwrap();
+    c.execute("UPDATE notifications SET next_at=5000 WHERE id=2", [])
+        .unwrap();
+    let due = |at| -> Vec<(i64, i64, &'static str)> {
+        store::due(&c, at)
+            .unwrap()
+            .into_iter()
+            .map(|d| {
+                let kind = match d.to {
+                    Channel::Webhook { secret, .. } if secret.as_str().len() == 64 => "webhook",
+                    Channel::Webhook { .. } => "webhook without its secret",
+                    Channel::Slack { .. } => "slack",
+                };
+                (d.id, d.channel, kind)
+            })
+            .collect()
+    };
+    assert_eq!(due(3_000), [(1, hook, "webhook")]);
+    assert_eq!(due(5_000), [(1, hook, "webhook"), (2, slack, "slack")]);
+    store::delivered(&c, 1, 5_000, &Ok(())).unwrap();
+    assert_eq!(due(5_000), [(2, slack, "slack"), (3, hook, "webhook")]);
+}
+
+#[test]
+fn a_failed_row_waits_longer_each_time_then_fails_and_a_sent_row_stays_sent() {
+    let c = memory();
+    channel(&c, Some(1), Kind::Slack);
+    store::notify(&c, 1, &Notice::Test, 0).unwrap();
+    let failure = Err("HTTP 500".to_owned());
+    let mut seen = Vec::new();
+    for at in [1_000, 40_000, 110_000, 240_000, 500_000, 990_000] {
+        store::delivered(&c, 1, at, &failure).unwrap();
+        let (attempts, next_at, sent, failed, error) = row(&c, 1);
+        assert_eq!((sent, error.as_deref()), (None, Some("HTTP 500")));
+        seen.push((attempts, next_at, failed));
+    }
+    assert_eq!(
+        seen,
+        [
+            (1, 31_000, None),
+            (2, 100_000, None),
+            (3, 230_000, None),
+            (4, 480_000, None),
+            (5, 980_000, None),
+            (6, 980_000, Some(990_000)),
+        ]
+    );
+    store::notify(&c, 1, &Notice::Test, 0).unwrap();
+    store::delivered(&c, 2, 1_000, &Err("x".repeat(300))).unwrap();
+    assert_eq!(row(&c, 2).4.unwrap().len(), 200);
+    store::delivered(&c, 2, 2_000, &Ok(())).unwrap();
+    assert_eq!(row(&c, 2).0, 2);
+    assert_eq!(row(&c, 2).2, Some(2_000));
+    store::delivered(&c, 99, 2_000, &Err("gone".into())).unwrap();
+}
+
+#[test]
+fn a_secret_never_shows_in_debug_output() {
+    assert_eq!(format!("{:?}", Secret::load("a1".repeat(32))), "Secret(..)");
+}

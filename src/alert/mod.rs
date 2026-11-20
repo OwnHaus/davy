@@ -1,5 +1,8 @@
 //! Alert channels: where notices about issues and incidents go.
 
+pub mod deliver;
+#[cfg(test)]
+mod deliver_tests;
 mod notice;
 pub mod store;
 #[cfg(test)]
@@ -37,10 +40,23 @@ impl Kind {
     }
 }
 
+/// Where a notification goes. Both URLs are credentials.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Channel {
+    Webhook { url: String, secret: Secret },
+    Slack { url: String },
+}
+
 /// 32 random bytes as 64 lowercase hex characters. A webhook receiver checks
 /// the signature of each delivery with it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Secret(String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(..)")
+    }
+}
 
 impl Secret {
     fn random() -> anyhow::Result<Self> {

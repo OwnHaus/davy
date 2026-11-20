@@ -1,6 +1,6 @@
 //! Channel rows. The tables are created by the migrations in `crate::store`.
 
-use super::{Kind, Notice, Secret};
+use super::{Channel, Kind, Notice, Secret, retry_after};
 use crate::{event::Timestamp, monitor::CheckUrl};
 use anyhow::{Context as _, Result};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -10,6 +10,7 @@ pub const MAX_CHANNELS: i64 = 100;
 /// A channel that is down for a day fills up, and its oldest notices are the
 /// ones a team needs, so new ones are counted and dropped.
 const MAX_UNSENT: i64 = 100;
+const MAX_ERROR_CHARS: usize = 200;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Added {
@@ -180,5 +181,99 @@ fn queue(
         "UPDATE notifications SET payload=?2 WHERE id=?1",
         params![id, notice.render(kind, id, project, at)?],
     )?;
+    Ok(())
+}
+
+/// A notification ready to send.
+#[derive(Debug)]
+pub struct Due {
+    pub id: i64,
+    pub channel: i64,
+    pub to: Channel,
+    pub payload: String,
+}
+
+/// The oldest unsent row of each channel, when it is due by `now`. A row
+/// waiting for its retry holds back the newer rows of its channel, so a
+/// receiver never gets `monitor.up` before its `monitor.down`.
+pub fn due(c: &Connection, now: Timestamp) -> Result<Vec<Due>> {
+    let mut q = c.prepare(
+        "SELECT n.id,ch.id,ch.kind,ch.url,ch.secret,n.payload FROM channels ch
+         JOIN notifications n ON n.id=(SELECT min(id) FROM notifications
+           WHERE channel_id=ch.id AND sent_at IS NULL AND failed_at IS NULL)
+         WHERE n.next_at<=?1 ORDER BY n.id",
+    )?;
+    let rows = q.query_map([now], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, Option<String>>(4)?,
+            r.get::<_, String>(5)?,
+        ))
+    })?;
+    rows.map(|row| {
+        let (id, channel, kind, url, secret, payload) = row?;
+        let to = match (Kind::parse(&kind), secret) {
+            (Some(Kind::Webhook), Some(secret)) => Channel::Webhook {
+                url,
+                secret: Secret::load(secret),
+            },
+            (Some(Kind::Slack), _) => Channel::Slack { url },
+            (Some(Kind::Webhook), None) => anyhow::bail!("webhook channel {channel} has no secret"),
+            (None, _) => anyhow::bail!("channel {channel} has unknown kind {kind:?}"),
+        };
+        Ok(Due {
+            id,
+            channel,
+            to,
+            payload,
+        })
+    })
+    .collect()
+}
+
+/// Records one attempt to send row `id` at `at`. A failure keeps the error,
+/// cut to 200 characters, and schedules the next try or marks the row failed.
+pub fn delivered(
+    c: &Connection,
+    id: i64,
+    at: Timestamp,
+    result: &Result<(), String>,
+) -> Result<()> {
+    let error = match result {
+        Ok(()) => {
+            c.execute(
+                "UPDATE notifications SET attempts=attempts+1,sent_at=?2 WHERE id=?1",
+                params![id, at],
+            )?;
+            return Ok(());
+        }
+        Err(e) => e.chars().take(MAX_ERROR_CHARS).collect::<String>(),
+    };
+    let Some(attempts) = c
+        .query_row(
+            "SELECT attempts FROM notifications WHERE id=?1",
+            [id],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+    else {
+        return Ok(());
+    };
+    let attempts = attempts.saturating_add(1);
+    let wait = retry_after(u32::try_from(attempts).unwrap_or(u32::MAX))
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+    match wait {
+        Some(wait) => c.execute(
+            "UPDATE notifications SET attempts=?2,next_at=?3,last_error=?4 WHERE id=?1",
+            params![id, attempts, at.saturating_add(wait), error],
+        )?,
+        None => c.execute(
+            "UPDATE notifications SET attempts=?2,failed_at=?3,last_error=?4 WHERE id=?1",
+            params![id, attempts, at, error],
+        )?,
+    };
     Ok(())
 }

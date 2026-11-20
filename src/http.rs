@@ -1,4 +1,5 @@
 use crate::{
+    alert,
     envelope::{Disposition, Envelope, EnvelopeHeader, disposition},
     event::{ErrorEvent, EventId},
     logs::{
@@ -39,6 +40,8 @@ const MAX_ITEM: usize = 1024 * 1024;
 const BODY_TIMEOUT: Duration = Duration::from_secs(30);
 /// How late a missed heartbeat can be noticed.
 const SWEEP_EVERY: Duration = Duration::from_secs(10);
+/// How late a due notification can be sent.
+const NOTIFY_EVERY: Duration = Duration::from_secs(1);
 pub const RATE: &str = "86400:transaction;span;replay;profile;profile_chunk:organization";
 
 pub struct Keys {
@@ -529,6 +532,12 @@ pub async fn serve(
     }
     let listener = tokio::net::TcpListener::bind(listen).await?;
     let sweeper = tokio::spawn(store::sweep_every(writer.sender.clone(), SWEEP_EVERY));
+    let notifier = tokio::spawn(alert::deliver::run(
+        store::open(data)?,
+        alert::deliver::client()?,
+        writer.sender.clone(),
+        NOTIFY_EVERY,
+    ));
     #[cfg(unix)]
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = axum::serve(listener, routes)
@@ -541,13 +550,16 @@ pub async fn serve(
             }
         })
         .await;
-    // The sweeper holds a sender, and the writer thread ends only when every
-    // sender is gone.
-    sweeper.abort();
-    if let Err(e) = sweeper.await
-        && e.is_panic()
-    {
-        anyhow::bail!("sweeper panicked");
+    // The sweeper and the notifier hold senders, and the writer thread ends
+    // only when every sender is gone. A notice in flight is sent again on the
+    // next start.
+    for (name, task) in [("sweeper", sweeper), ("notifier", notifier)] {
+        task.abort();
+        if let Err(e) = task.await
+            && e.is_panic()
+        {
+            anyhow::bail!("{name} panicked");
+        }
     }
     drop(writer.sender);
     drop(log_writer.queue);
