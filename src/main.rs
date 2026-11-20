@@ -1,11 +1,11 @@
 use clap::{Parser, Subcommand};
 use davy::{
-    http,
+    context, http,
     logs::{
         LogLevel,
         store::{LogHit, LogQuery, search},
     },
-    store,
+    mcp, query, store,
     time::{self, now_ns},
 };
 use std::{
@@ -20,16 +20,7 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Command {
-    Serve {
-        #[arg(long)]
-        data: PathBuf,
-        #[arg(long)]
-        listen: String,
-        #[arg(long)]
-        public_url: url::Url,
-        #[arg(long, default_value_t = 30)]
-        log_retention_days: u32,
-    },
+    Serve(Serve),
     Project {
         #[command(subcommand)]
         command: Project,
@@ -49,25 +40,66 @@ enum Command {
     },
     /// Search logs, oldest first. QUERY uses Tantivy syntax over the message and
     /// attributes, e.g. `timeout` or `attributes.provider:acme`.
-    Logs {
-        query: Option<String>,
+    Logs(Logs),
+    /// Runs one read-only SQL query against the error store. `davy sql schema`
+    /// prints the tables and notes on units.
+    Sql {
+        query: String,
         #[arg(long)]
         data: PathBuf,
         #[arg(long)]
-        project: Option<String>,
-        /// A duration back from now (30m, 1h, 2d) or an RFC 3339 timestamp.
-        #[arg(long, default_value = "24h", value_parser = instant)]
-        since: i64,
-        #[arg(long, value_parser = instant)]
-        until: Option<i64>,
-        /// Minimum level: trace, debug, info, warn, error, fatal.
-        #[arg(long, value_parser = level)]
-        level: Option<LogLevel>,
-        #[arg(long, default_value_t = 100)]
-        limit: usize,
-        #[arg(long)]
         json: bool,
     },
+    /// Prints what an agent needs to fix an issue as JSON: the issue, its newest
+    /// event, recent events, releases and the logs around it.
+    Context {
+        issue_id: i64,
+        #[arg(long)]
+        data: PathBuf,
+    },
+    /// Marks an issue fixed. Without --release it stays fixed until an event
+    /// arrives from a release first seen after now.
+    Resolve {
+        issue_id: i64,
+        #[arg(long)]
+        data: PathBuf,
+        #[arg(long)]
+        release: Option<String>,
+    },
+}
+#[derive(clap::Args)]
+struct Serve {
+    #[arg(long)]
+    data: PathBuf,
+    #[arg(long)]
+    listen: String,
+    #[arg(long)]
+    public_url: url::Url,
+    #[arg(long, default_value_t = 30)]
+    log_retention_days: u32,
+    /// Turns on the MCP server at /mcp. Agents send it as a Bearer token.
+    #[arg(long, env = "DAVY_TOKEN", hide_env_values = true)]
+    token: Option<String>,
+}
+#[derive(clap::Args)]
+struct Logs {
+    query: Option<String>,
+    #[arg(long)]
+    data: PathBuf,
+    #[arg(long)]
+    project: Option<String>,
+    /// A duration back from now (30m, 1h, 2d) or an RFC 3339 timestamp.
+    #[arg(long, default_value = "24h", value_parser = instant)]
+    since: i64,
+    #[arg(long, value_parser = instant)]
+    until: Option<i64>,
+    /// Minimum level: trace, debug, info, warn, error, fatal.
+    #[arg(long, value_parser = level)]
+    level: Option<LogLevel>,
+    #[arg(long, default_value_t = 100)]
+    limit: usize,
+    #[arg(long)]
+    json: bool,
 }
 fn instant(s: &str) -> Result<i64, String> {
     time::instant(s, now_ns())
@@ -96,19 +128,7 @@ fn validate_url(url: &url::Url) -> anyhow::Result<()> {
 async fn main() -> anyhow::Result<()> {
     let mut out = std::io::stdout();
     match Cli::parse().command {
-        Command::Serve {
-            data,
-            listen,
-            public_url,
-            log_retention_days,
-        } => {
-            validate_url(&public_url)?;
-            anyhow::ensure!(
-                log_retention_days >= 1,
-                "--log-retention-days must be at least 1"
-            );
-            http::serve(&data, &listen, log_retention_days).await?;
-        }
+        Command::Serve(args) => serve(args).await?,
         Command::Project {
             command:
                 Project::Create {
@@ -130,38 +150,74 @@ async fn main() -> anyhow::Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("no stored event for issue {issue_id}"))?;
             writeln!(out, "{}", serde_json::to_string_pretty(&payload)?)?;
         }
-        Command::Logs {
-            query,
+        Command::Logs(args) => logs(&mut out.lock(), args)?,
+        Command::Sql { query, data, json } => {
+            let c = query::open(&data)?;
+            if query.trim() == "schema" {
+                writeln!(out, "{}", query::schema(&c)?)?;
+            } else {
+                print_rows(&mut out.lock(), &query::run(&c, &query)?, json)?;
+            }
+        }
+        Command::Context { issue_id, data } => {
+            let context = context::issue_context(&store::open(&data)?, &data, issue_id)?
+                .ok_or_else(|| anyhow::anyhow!("no issue {issue_id}"))?;
+            writeln!(out, "{}", serde_json::to_string_pretty(&context)?)?;
+        }
+        Command::Resolve {
+            issue_id,
             data,
-            project,
-            since,
-            until,
-            level,
-            limit,
-            json,
+            release,
         } => {
-            let project = match project {
-                Some(slug) => Some(
-                    store::project_id(&store::open(&data)?, &slug)?
-                        .ok_or_else(|| anyhow::anyhow!("unknown project {slug:?}"))?,
-                ),
-                None => None,
-            };
-            let hits = search(
-                &data.join("logs"),
-                &LogQuery {
-                    project,
-                    since,
-                    until: until.unwrap_or_else(now_ns),
-                    min_level: level,
-                    text: query,
-                    limit,
-                },
+            let found = store::resolve(
+                &store::open(&data)?,
+                issue_id,
+                release.as_deref(),
+                time::now_ms(),
             )?;
-            print_logs(&mut out.lock(), hits, json)?;
+            anyhow::ensure!(found, "no issue {issue_id}");
         }
     }
     Ok(())
+}
+async fn serve(args: Serve) -> anyhow::Result<()> {
+    validate_url(&args.public_url)?;
+    anyhow::ensure!(
+        args.log_retention_days >= 1,
+        "--log-retention-days must be at least 1"
+    );
+    if let Some(t) = &args.token {
+        anyhow::ensure!(t.len() >= 32, "--token must be at least 32 characters");
+    }
+    http::serve(
+        &args.data,
+        &args.listen,
+        args.public_url.host_str().unwrap_or("localhost"),
+        args.log_retention_days,
+        args.token.as_deref().map(mcp::Token::new),
+    )
+    .await
+}
+fn logs(out: &mut impl Write, args: Logs) -> anyhow::Result<()> {
+    let project = match args.project {
+        Some(slug) => Some(
+            store::project_id(&store::open(&args.data)?, &slug)?
+                .ok_or_else(|| anyhow::anyhow!("unknown project {slug:?}"))?,
+        ),
+        None => None,
+    };
+    let hits = search(
+        &args.data.join("logs"),
+        &LogQuery {
+            project,
+            since: args.since,
+            until: args.until.unwrap_or_else(now_ns),
+            min_level: args.level,
+            text: args.query,
+            limit: args.limit,
+        },
+    )?;
+    print_logs(out, hits, args.json)
 }
 /// Creates the project and returns its DSN.
 fn create_project(data: &Path, slug: &str, mut public_url: url::Url) -> anyhow::Result<url::Url> {
@@ -191,6 +247,27 @@ fn print_issues(out: &mut impl Write, issues: Vec<store::Issue>, json: bool) -> 
             i.title,
             i.culprit.unwrap_or_default()
         )?;
+    }
+    Ok(())
+}
+fn print_rows(out: &mut impl Write, rows: &query::Rows, json: bool) -> anyhow::Result<()> {
+    if json {
+        writeln!(out, "{}", serde_json::to_string(rows)?)?;
+        return Ok(());
+    }
+    writeln!(out, "{}", rows.columns.join("\t"))?;
+    for row in &rows.rows {
+        let cells: Vec<String> = row
+            .iter()
+            .map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            })
+            .collect();
+        writeln!(out, "{}", cells.join("\t"))?;
+    }
+    if rows.truncated {
+        writeln!(std::io::stderr(), "stopped at {} rows", rows.rows.len())?;
     }
     Ok(())
 }

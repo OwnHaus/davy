@@ -17,9 +17,9 @@ This document fixes the data shapes and the order of work.
 
 1. Storage benchmark (done, `bench/storage`, see "Log storage" below).
 2. Errors: Sentry envelope and `/store/` ingest, grouping, issues, CLI to list them (done).
-3. **Logs**: Logtail endpoint (msgpack and JSON), the Sentry `log` item, OTLP/HTTP logs, full-text search. *Next.*
-4. MCP and CLI for agents: `sql`, `schema`, `issue_context`, `mark_fixed`.
-5. Source maps: the `sentry-cli` upload endpoints and debug ID lookup.
+3. Logs: Logtail endpoint (msgpack and JSON), the Sentry `log` item, OTLP/HTTP logs, full-text search (done).
+4. MCP and CLI for agents: `sql`, `schema`, `search_logs`, `issue_context`, `mark_fixed` (done).
+5. **Source maps**: the `sentry-cli` upload endpoints and debug ID lookup. *Next.*
 6. Uptime checks and alerts.
 7. Managed cloud (closed, see "License and open core").
 
@@ -256,6 +256,89 @@ Logs make the two load follow-ups from milestone 2 hot, so both land now.
 - `e2e/run.sh` also sends logs through `@logtail/pino`, Sentry `logger.*` and both OTLP exporters, polls `davy logs` until all 10 records are searchable, and asserts with `davy logs --json` the exact message, level, service and one attribute per source, plus a trace id where the client sets one. A wrong bearer token gets 403.
 - A load script sends 1M synthetic Logtail records in msgpack batches of 1000. Report rows per second and disk over raw size, with what limits them. It is a number to explain, not a gate.
 - `cargo test` passes and `cargo clippy --all-targets -- -D warnings` is clean.
+
+## Milestone 4: MCP and CLI for agents
+
+A coding agent should get from "there is an error" to a fix without a human copying stack traces. It needs to read everything Davy stores, see one issue with everything around it, and say "fixed" in a way that reopens the issue if the error comes back after the fix ships.
+
+### Transport and auth
+
+- MCP over Streamable HTTP at `/mcp` inside `davy serve`, stateless, JSON responses (rmcp `legacy_session_mode = false`, `json_response = true`). In-process, so `mark_fixed` goes through the writer thread and log search never races segment cleanup. One port for ingest and agents. No stdio server: an agent on the same machine connects to `127.0.0.1`.
+- `davy serve --token <secret>` or `DAVY_TOKEN`. `/mcp` takes `Authorization: Bearer <secret>`. Without a configured token `/mcp` is not mounted and answers 404. A project's ingest key is never accepted on `/mcp`, because it ships inside browser bundles.
+- The token is compared as a blake3 hash, so the comparison takes the same time for every wrong token.
+- Allowed `Host` values are loopback and the host of `--public-url`, against DNS rebinding.
+
+### Tools
+
+| Tool | Input | Output |
+|---|---|---|
+| `schema` | none | The `CREATE TABLE` statements of the SQLite tables, what the columns mean, and the log query syntax. |
+| `sql` | `query` | `{columns, rows, truncated}`. One read-only statement. |
+| `search_logs` | `query?`, `project?`, `since?`, `until?`, `level?`, `limit?` | Hits as `davy logs --json` prints them, oldest first. When more match than `limit`, the newest win. |
+| `issue_context` | `issue_id` | The issue, its latest event made compact, its recent events and releases, and the logs around the latest event. |
+| `mark_fixed` | `issue_id`, `release?` | A sentence that says which release the fix is expected in. |
+
+**`sql`** opens its own read-only connection per call (`SQLITE_OPEN_READ_ONLY`, `PRAGMA query_only`), prepares exactly one statement, and runs it under an authorizer that allows only reads and function calls. `stmt.readonly()` is not enough, because SQLite counts `ATTACH` and `PRAGMA query_only=0` as read-only. At most 500 rows. A text cell over 4000 characters is cut and marked. A blob cell is `{"blob_bytes": n}`. The function `payload_json(payload)` decompresses an event payload to JSON text, so `json_extract(payload_json(payload), '$.request.url')` works. A query is interrupted after 5 s. A bad query is a tool error with SQLite's message, not a protocol error.
+
+**`issue_context`** returns:
+
+- `issue`: id, project slug, title, culprit, level, status, `event_count`, `first_seen`, `last_seen`, `resolved_in_release`, `regressed_at`. Times are RFC 3339.
+- `latest_event`: from the newest stored payload. `event_id`, `timestamp`, `release`, `environment`, `platform`, `message`, `exceptions` (oldest first, each with type, value and at most the 30 frames nearest the crash; a frame keeps `filename`, `function`, `lineno`, `colno`, `in_app`, and for in-app frames `context_line`, `pre_context`, `post_context`), the last 20 `breadcrumbs`, `tags`, `user`, `request` (method, url), and the names and versions from `contexts.runtime`, `contexts.os` and `contexts.browser`. Everything else in the payload (SDK integrations, module lists, device memory) is dropped, because it costs tokens and rarely helps.
+- `recent_events`: the last 10 events with `event_id`, `timestamp`, `release`, `environment`.
+- `releases`: each release this issue was seen in, with its event count and last time.
+- `logs`: with a trace id on the latest event, up to 50 logs of that trace within an hour of it. Otherwise up to 30 logs of the project from 60 s before to 10 s after it.
+
+The compaction is a pure function from payload JSON to the `latest_event` value, tested on captured fixtures.
+
+**`mark_fixed`** resolves the issue in a release:
+
+- With `release`, the fix ships in that release.
+- Without it, the fix ships in any release first seen after now.
+
+### Regression rule
+
+```rust
+enum IssueStatus { Unresolved, Resolved { in_release: Option<String>, at: Timestamp }, Ignored }
+impl IssueStatus { fn on_event(&mut self, release: Option<(&str, Timestamp /* release first seen */)>, at: Timestamp) -> Option<Timestamp> }
+```
+
+A new event on a `Resolved` issue reopens it (sets `regressed_at`) when:
+
+- the event has no release, because Davy cannot tell whether it runs the fix, or
+- its release is `in_release`, or
+- its release was first seen after the issue was resolved.
+
+An event from an older release still counts but does not reopen the issue, so a server that has not been redeployed yet does not undo the fix. `Ignored` keeps counting and stays ignored, as before.
+
+A new table holds when each release was first seen:
+
+```sql
+releases(project_id INTEGER NOT NULL, version TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY(project_id, version))
+```
+
+The writer inserts a row for each event with a release it has not seen. Schema changes from now on go through `PRAGMA user_version`. Version 1 creates `releases` and fills it from the existing `events` once, so an old data directory keeps the right first-seen times.
+
+### Writer
+
+The writer queue carries a job, either an ingest batch or a resolve. `mark_fixed` waits for the commit, like ingest. A resolve of an unknown issue is an error the tool returns to the agent.
+
+### CLI
+
+The same library functions back three commands, for agents that run shell commands instead of MCP:
+
+- `davy sql --data <dir> <query>` prints a header and tab-separated rows, or with `--json` the same object the tool returns. `davy sql schema` prints what the `schema` tool returns.
+- `davy context --data <dir> <issue_id>` prints `issue_context` as JSON.
+- `davy resolve --data <dir> <issue_id> [--release <r>]` resolves from its own process. SQLite's locking orders it with the server's writer.
+
+`--since` and `--until` parsing moves from `main.rs` into `time.rs`, so `search_logs` and `davy logs` read the same forms.
+
+### Done means
+
+- Unit tests with literal values: `on_event` for every row of the regression rule; `sql` returns exact rows, refuses a write, refuses two statements, cuts at 500 rows, decompresses with `payload_json`, and interrupts a runaway recursive query; compaction of the `sentry-node-10` error fixture gives the exact exception, frames and context lines.
+- A store test resolves an issue in a release and asserts that an event from an older release keeps it resolved and one from a newer release reopens it.
+- HTTP contract tests: `/mcp` is 401 without the token or with a wrong one and 403 for a `Host` it does not serve; with the right one `tools/list` and `tools/call` of `sql` and `mark_fixed` answer. Without a configured token `serve` does not merge the MCP router, so there is no route to test.
+- `e2e/run.sh` connects with the official MCP TypeScript client (`@modelcontextprotocol/sdk`) over Streamable HTTP with the bearer token, lists the five tools, calls `issue_context` on an issue the Sentry SDKs created and asserts the exception type and an in-app frame, finds a log with `search_logs`, calls `mark_fixed` and reads the status back with `sql`.
+- `scripts/check` passes.
 
 ## License and open core
 

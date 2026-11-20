@@ -2,7 +2,7 @@
 
 One self-hosted binary that replaces Sentry and Better Stack. Point your existing Sentry SDK or Logtail shipper at it by changing the DSN or source token. No code changes.
 
-Status: error ingest works (Sentry envelope and `/store/`, grouping into issues, CLI). Log ingest works from Logtail shippers, OpenTelemetry and Sentry's logger, with full-text search from the CLI. MCP for coding agents, UI, uptime and source maps come next. See `docs/design.md`.
+Status: error ingest works (Sentry envelope and `/store/`, grouping into issues, CLI). Log ingest works from Logtail shippers, OpenTelemetry and Sentry's logger, with full-text search from the CLI. Coding agents read errors and logs and mark issues fixed over MCP or the CLI. Source maps, uptime and the UI come next. See `docs/design.md`.
 
 ## Try it
 
@@ -38,11 +38,31 @@ Search them:
 
 `--since` and `--until` take `30m`, `2h`, `7d` or an RFC 3339 time (default the last 24 h). The query uses Tantivy syntax over the message and the attributes. `--json` prints one hit per line. Logs are kept 30 days by default (`davy serve --log-retention-days`).
 
+## Coding agents
+
+Start the server with a token and `/mcp` turns on:
+
+```sh
+export DAVY_TOKEN=$(openssl rand -base64 32)
+./target/release/davy serve --data ./data --listen 127.0.0.1:8000 --public-url http://127.0.0.1:8000
+claude mcp add --transport http davy http://127.0.0.1:8000/mcp --header "Authorization: Bearer $DAVY_TOKEN"
+```
+
+The agent gets five tools: `schema`, `sql` (one read-only SQLite query), `search_logs`, `issue_context` (stack with source lines, breadcrumbs, releases and the logs around the error) and `mark_fixed`. A fixed issue reopens when the error comes back in the fix release or a newer one, not from older releases still running.
+
+The same works from a shell:
+
+```sh
+./target/release/davy sql --data ./data "SELECT id, title, event_count FROM issues WHERE status = 'unresolved'"
+./target/release/davy context 12 --data ./data
+./target/release/davy resolve 12 --data ./data --release 1.4.0
+```
+
 ## Tests
 
 ```sh
 cargo test
-bash e2e/run.sh    # needs Node and pnpm; runs real @sentry/node 7 and 10, @logtail/pino and the OpenTelemetry exporters against the binary
+bash e2e/run.sh    # needs Node and pnpm; runs real @sentry/node 7 and 10, @logtail/pino, the OpenTelemetry exporters and the MCP client against the binary
 ```
 
 ## License

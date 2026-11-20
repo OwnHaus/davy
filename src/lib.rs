@@ -4,6 +4,7 @@ pub mod event;
 pub mod grouping;
 pub mod http;
 pub mod logs;
+pub mod mcp;
 pub mod query;
 pub mod store;
 #[cfg(test)]

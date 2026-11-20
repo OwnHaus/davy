@@ -14,7 +14,8 @@ cleanup() {
 trap cleanup EXIT
 PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
 URL="http://127.0.0.1:$PORT"
-"$BIN" serve --data "$SCRATCH/data" --listen "127.0.0.1:$PORT" --public-url "$URL" >"$SCRATCH/server.log" 2>&1 &
+TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+DAVY_TOKEN="$TOKEN" "$BIN" serve --data "$SCRATCH/data" --listen "127.0.0.1:$PORT" --public-url "$URL" >"$SCRATCH/server.log" 2>&1 &
 PID=$!
 for i in {1..100}; do
   if curl -s -o /dev/null "$URL/"; then break; fi
@@ -100,5 +101,21 @@ STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer wrong'
 STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' --data '{"message":"curl line","level":"warn"}' "$URL/")
 [ "$STATUS" = 202 ] || { echo "logtail JSON gave $STATUS"; exit 1; }
 echo 'logs: wrong bearer 403, Logtail JSON 202'
+STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' --data '{}' "$URL/mcp")
+[ "$STATUS" = 401 ] || { echo "MCP without token gave $STATUS"; exit 1; }
+node "$ROOT/e2e/mcp.mjs" "$URL" "$TOKEN"
+ISSUE=$("$BIN" sql --data "$SCRATCH/data" "SELECT i.id FROM issues i JOIN projects p ON p.id = i.project_id WHERE p.slug = 'sentry-node-7' AND i.title LIKE 'RangeError%'" | tail -n 1)
+"$BIN" context "$ISSUE" --data "$SCRATCH/data" > "$SCRATCH/context.json"
+"$BIN" resolve "$ISSUE" --data "$SCRATCH/data" --release e2e@2
+"$BIN" sql --data "$SCRATCH/data" --json "SELECT status, resolved_in_release FROM issues WHERE id = $ISSUE" > "$SCRATCH/resolved.json"
+python3 - "$SCRATCH" <<'PY'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])
+ctx=json.loads((p/'context.json').read_text())
+assert ctx['issue']['title']=='RangeError: SDK test failure',ctx['issue']
+assert ctx['latest_event']['exceptions'][-1]['type']=='RangeError'
+assert json.loads((p/'resolved.json').read_text())['rows']==[['resolved','e2e@2']]
+print('agent CLI: verified sql, context and resolve')
+PY
 echo 'PASS: all end-to-end assertions passed'
 

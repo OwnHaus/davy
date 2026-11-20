@@ -1,0 +1,418 @@
+//! The MCP server agents use to read and triage errors and logs. `http::serve`
+//! mounts it at `/mcp` when an access token is configured.
+
+use crate::{
+    context,
+    logs::{
+        LogLevel,
+        store::{LogQuery, search},
+    },
+    query,
+    store::{self, Job, Write},
+    time,
+};
+use axum::{
+    Router,
+    extract::{Request, State},
+    http::{StatusCode, header},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+};
+use rmcp::{
+    ServerHandler,
+    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
+    model::{ServerCapabilities, ServerConfig},
+    schemars::JsonSchema,
+    tool, tool_handler, tool_router,
+    transport::streamable_http_server::{
+        StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+    },
+};
+use serde::{Deserialize, Serialize};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, mpsc},
+};
+
+const MAX_LOGS: usize = 500;
+
+const INSTRUCTIONS: &str = "Davy stores the errors that Sentry SDKs report and the logs that services ship. \
+To triage, list open issues with `sql` (SELECT id,title,event_count,last_seen FROM issues WHERE status='unresolved' ORDER BY last_seen DESC LIMIT 20), \
+then call `issue_context` on one issue. It returns the stack with source lines, breadcrumbs, releases and the logs around the error. \
+Call `schema` before writing other SQL. After a fix ships, call `mark_fixed`.";
+
+const LOG_NOTES: &str = "
+Logs are not in SQL. Use search_logs. Its query is Tantivy syntax over these fields:
+- message (full text, the default field)
+- attributes.<key> (full text inside the JSON attributes, e.g. attributes.provider:acme)
+- service, trace_id, span_id (exact match, e.g. trace_id:4bf92f3577b34da6a3ce929d0e0e4736)
+Combine with AND, OR, NOT and parentheses. Levels are trace, debug, info, warn, error, fatal.";
+
+/// An access token, kept only as its hash.
+#[derive(Clone)]
+pub struct Token(blake3::Hash);
+
+impl Token {
+    pub fn new(secret: &str) -> Self {
+        Self(blake3::hash(secret.as_bytes()))
+    }
+
+    /// `blake3::Hash` compares in constant time.
+    fn admits(&self, presented: &str) -> bool {
+        blake3::hash(presented.as_bytes()) == self.0
+    }
+}
+
+/// `/mcp`, behind the token. Requests must name loopback or `public_host` in
+/// their `Host` header, which stops DNS rebinding from a browser.
+pub fn router(
+    data: PathBuf,
+    writes: mpsc::SyncSender<Write>,
+    token: Token,
+    public_host: &str,
+) -> Router {
+    let tools = Tools {
+        data: Arc::from(data),
+        writes,
+        tool_router: Tools::tool_router(),
+    };
+    let config = StreamableHttpServerConfig::default()
+        .with_legacy_session_mode(false)
+        .with_json_response(true)
+        .with_allowed_hosts(["localhost", "127.0.0.1", "::1", public_host]);
+    let service: StreamableHttpService<Tools, LocalSessionManager> =
+        StreamableHttpService::new(move || Ok(tools.clone()), Arc::default(), config);
+    Router::new()
+        .nest_service("/mcp", service)
+        .layer(middleware::from_fn_with_state(Arc::new(token), auth))
+}
+
+async fn auth(State(token): State<Arc<Token>>, req: Request, next: Next) -> Response {
+    let presented = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    if presented.is_some_and(|p| token.admits(p)) {
+        return next.run(req).await;
+    }
+    (
+        StatusCode::UNAUTHORIZED,
+        [(header::WWW_AUTHENTICATE, "Bearer")],
+        "missing or wrong access token",
+    )
+        .into_response()
+}
+
+#[derive(Clone)]
+struct Tools {
+    data: Arc<Path>,
+    writes: mpsc::SyncSender<Write>,
+    tool_router: ToolRouter<Self>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct Sql {
+    /// One SQLite statement that only reads, such as a SELECT or WITH.
+    query: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct SearchLogs {
+    /// Tantivy query, see `schema`. Leave out to match every log.
+    query: Option<String>,
+    /// Project slug. Leave out to search every project.
+    project: Option<String>,
+    /// RFC 3339 timestamp or a duration back from now: 30m, 1h, 2d. Default 24h.
+    since: Option<String>,
+    /// RFC 3339 timestamp or a duration back from now. Default now.
+    until: Option<String>,
+    /// Minimum level: trace, debug, info, warn, error or fatal.
+    level: Option<String>,
+    /// At most 500. Default 100. The newest logs win when there are more.
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct Issue {
+    issue_id: i64,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct MarkFixed {
+    issue_id: i64,
+    /// The release that contains the fix. Leave out to mean any release first seen after now.
+    release: Option<String>,
+}
+
+type Reply = Result<String, String>;
+
+#[tool_router]
+impl Tools {
+    #[tool(
+        description = "The SQL tables (projects, issues, events, releases, issue_hourly), what their columns mean, and how to search logs. Read it before writing SQL."
+    )]
+    async fn schema(&self) -> Reply {
+        self.blocking(|data| Ok(query::schema(&query::open(data)?)? + LOG_NOTES))
+            .await
+    }
+
+    #[tool(
+        description = "Run one read-only SQLite query over issues and events. Returns columns, rows and whether rows were cut at 500. events.payload holds the full event; read it with json_extract(payload_json(payload), '$.path')."
+    )]
+    async fn sql(&self, Parameters(Sql { query }): Parameters<Sql>) -> Reply {
+        self.blocking(move |data| json(&query::run(&query::open(data)?, &query)?))
+            .await
+    }
+
+    #[tool(
+        description = "Search logs from every source (Sentry, OpenTelemetry, Logtail shippers). Returns hits oldest first with level, service, message, trace_id and attributes."
+    )]
+    async fn search_logs(&self, Parameters(req): Parameters<SearchLogs>) -> Reply {
+        self.blocking(move |data| {
+            let now = time::now_ns();
+            let instant = |s: Option<&str>, default: &str| {
+                time::instant(s.unwrap_or(default), now).map_err(anyhow::Error::msg)
+            };
+            let project = match &req.project {
+                Some(slug) => Some(
+                    store::project_id(&store::open(data)?, slug)?
+                        .ok_or_else(|| anyhow::anyhow!("unknown project {slug:?}"))?,
+                ),
+                None => None,
+            };
+            let min_level = match &req.level {
+                Some(s) => {
+                    Some(LogLevel::parse(s).ok_or_else(|| anyhow::anyhow!("unknown level {s:?}"))?)
+                }
+                None => None,
+            };
+            let mut hits = search(
+                &data.join("logs"),
+                &LogQuery {
+                    project,
+                    since: instant(req.since.as_deref(), "24h")?,
+                    until: instant(req.until.as_deref(), "0s")?,
+                    min_level,
+                    text: req.query,
+                    limit: req.limit.unwrap_or(100).min(MAX_LOGS),
+                },
+            )?;
+            hits.reverse();
+            json(&hits)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Everything needed to start fixing one issue: the issue, its newest event cut to the useful parts (stack with source lines of in-app frames, breadcrumbs, tags, user, request, runtime), the last 10 events, the releases it appeared in, and the logs of the same trace or from just before the error."
+    )]
+    async fn issue_context(&self, Parameters(Issue { issue_id }): Parameters<Issue>) -> Reply {
+        self.blocking(move |data| {
+            let c = query::open(data)?;
+            json(
+                &context::issue_context(&c, data, issue_id)?
+                    .ok_or_else(|| anyhow::anyhow!("no issue {issue_id}"))?,
+            )
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Mark an issue resolved. Give the release that contains the fix when you know it. The issue reopens if the error comes back in that release or a newer one, but not from older releases still running."
+    )]
+    async fn mark_fixed(
+        &self,
+        Parameters(MarkFixed { issue_id, release }): Parameters<MarkFixed>,
+    ) -> Reply {
+        let (done, outcome) = tokio::sync::oneshot::channel();
+        let reply = match &release {
+            Some(r) => format!("issue {issue_id} resolved in release {r}"),
+            None => format!("issue {issue_id} resolved until a new release reports it"),
+        };
+        self.writes
+            .try_send(Write {
+                job: Job::Resolve {
+                    issue: issue_id,
+                    release,
+                },
+                done,
+            })
+            .map_err(|e| format!("the writer is busy, try again: {e}"))?;
+        outcome
+            .await
+            .map_err(|e| format!("the writer stopped: {e}"))??;
+        Ok(reply)
+    }
+}
+
+impl Tools {
+    /// Runs blocking store or index work off the async runtime. Errors become
+    /// tool errors the agent can read and act on.
+    async fn blocking(
+        &self,
+        f: impl FnOnce(&Path) -> anyhow::Result<String> + Send + 'static,
+    ) -> Reply {
+        let data = Arc::clone(&self.data);
+        tokio::task::spawn_blocking(move || f(&data))
+            .await
+            .map_err(|e| format!("tool crashed: {e}"))?
+            .map_err(|e| format!("{e:#}"))
+    }
+}
+
+fn json(v: &impl Serialize) -> anyhow::Result<String> {
+    Ok(serde_json::to_string(v)?)
+}
+
+#[tool_handler(router = self.tool_router)]
+#[expect(
+    clippy::unused_async_trait_impl,
+    reason = "the generated list_tools is async because the trait says so"
+)]
+impl ServerHandler for Tools {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_instructions(INSTRUCTIONS)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::{Body, to_bytes};
+    use serde_json::{Value, json};
+    use tower::ServiceExt;
+
+    const SECRET: &str = "a-test-token-that-is-long-enough!";
+
+    struct Server {
+        app: Router,
+        writes: mpsc::Receiver<Write>,
+    }
+
+    fn server() -> Server {
+        let data = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("target/test-mcp-{}", uuid::Uuid::new_v4()));
+        let c = store::open(&data).unwrap();
+        store::create_project(&c, "api").unwrap();
+        let (tx, writes) = mpsc::sync_channel(1);
+        Server {
+            app: router(data, tx, Token::new(SECRET), "davy.example"),
+            writes,
+        }
+    }
+
+    async fn post(app: &Router, host: &str, token: Option<&str>, body: Value) -> (u16, String) {
+        let mut req = axum::http::Request::post("/mcp")
+            .header(header::HOST, host)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, "application/json, text/event-stream");
+        if let Some(t) = token {
+            req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        let r = app
+            .clone()
+            .oneshot(req.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = r.status().as_u16();
+        let body = to_bytes(r.into_body(), 1_000_000).await.unwrap();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    fn call(tool: &str, arguments: &Value) -> Value {
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+               "params": {"name": tool, "arguments": arguments}})
+    }
+
+    /// The text and `isError` flag of a tool result.
+    async fn tool(app: &Router, tool: &str, arguments: Value) -> (String, bool) {
+        let (status, body) = post(app, "localhost", Some(SECRET), call(tool, &arguments)).await;
+        assert_eq!(status, 200, "{body}");
+        let reply: Value = serde_json::from_str(&body).unwrap();
+        let result = &reply["result"];
+        (
+            result["content"][0]["text"].as_str().unwrap().to_owned(),
+            result["isError"].as_bool().unwrap_or(false),
+        )
+    }
+
+    #[tokio::test]
+    async fn mcp_answers_only_with_the_token() {
+        let s = server();
+        let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+        for (token, expected) in [(None, 401), (Some("wrong"), 401), (Some(SECRET), 200)] {
+            let (status, body) = post(&s.app, "localhost", token, list.clone()).await;
+            assert_eq!(status, expected, "{token:?}: {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_answers_only_for_loopback_and_the_public_host() {
+        let s = server();
+        let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+        for (host, expected) in [
+            ("localhost:8080", 200),
+            ("127.0.0.1", 200),
+            ("davy.example", 200),
+            ("attacker.example", 403),
+        ] {
+            let (status, body) = post(&s.app, host, Some(SECRET), list.clone()).await;
+            assert_eq!(status, expected, "{host}: {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn sql_tool_reads_and_refuses_writes() {
+        let s = server();
+        assert_eq!(
+            tool(&s.app, "sql", json!({"query": "SELECT slug FROM projects"})).await,
+            (
+                r#"{"columns":["slug"],"rows":[["api"]],"truncated":false}"#.to_owned(),
+                false
+            )
+        );
+        let (text, is_error) = tool(&s.app, "sql", json!({"query": "DELETE FROM projects"})).await;
+        assert!(is_error, "{text}");
+    }
+
+    #[tokio::test]
+    async fn mark_fixed_queues_a_resolve_and_reports_the_writer_outcome() {
+        let s = server();
+        let writer = std::thread::spawn(move || {
+            for outcome in [Ok(()), Err("no issue 9".to_owned())] {
+                let w = s.writes.recv().unwrap();
+                let Job::Resolve { issue, release } = w.job else {
+                    panic!("expected a resolve job");
+                };
+                w.done.send(outcome).unwrap();
+                assert_eq!(release.as_deref(), Some("2.0.0"));
+                assert!(issue == 7 || issue == 9);
+            }
+        });
+        assert_eq!(
+            tool(
+                &s.app,
+                "mark_fixed",
+                json!({"issue_id": 7, "release": "2.0.0"})
+            )
+            .await,
+            ("issue 7 resolved in release 2.0.0".to_owned(), false)
+        );
+        assert_eq!(
+            tool(
+                &s.app,
+                "mark_fixed",
+                json!({"issue_id": 9, "release": "2.0.0"})
+            )
+            .await,
+            ("no issue 9".to_owned(), true)
+        );
+        writer.join().unwrap();
+    }
+}

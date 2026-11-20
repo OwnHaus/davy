@@ -7,6 +7,10 @@ all-features = false
 
 [advisories]
 yanked = "deny"
+# Each ignore names one advisory and why it cannot be fixed here yet.
+ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, not vulnerable. Only rmcp and schemars pull it in, as a hard dependency. Davy's own time code uses jiff. Drop this when rmcp moves off chrono." },
+]
 
 [licenses]
 allow = [

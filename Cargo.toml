@@ -13,7 +13,7 @@ serde_json = "1"
 zstd = "0.13"
 flate2 = "1"
 brotli = "8"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 blake3 = "1"
 regex = "1"
 uuid = { version = "1", features = ["v4"] }
@@ -25,6 +25,7 @@ prost = "0.14.6"
 opentelemetry-proto = { version = "0.33.1", default-features = false, features = ["logs", "gen-tonic-messages", "with-serde"] }
 base64 = "0.23.1"
 jiff = { version = "1.0.1", default-features = false, features = ["std"] }
+rmcp = { version = "3.11.0", features = ["server", "macros", "transport-streamable-http-server"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

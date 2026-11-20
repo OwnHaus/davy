@@ -5,6 +5,7 @@ use crate::{
         self, LogRecord, logtail, otlp,
         store::{LogQueue, LogWriter, QueueError},
     },
+    mcp,
     store::{self, Job, Write},
     time,
 };
@@ -354,10 +355,14 @@ async fn otlp_ingest(State(app): State<App>, req: Request) -> Response {
         (Err(failure), None) => failure.into_response(),
     }
 }
+/// Serves ingest, and `/mcp` when `mcp_token` is set. `public_host` is the host
+/// name clients use to reach this server.
 pub async fn serve(
     data: &std::path::Path,
     listen: &str,
+    public_host: &str,
     log_retention_days: u32,
+    mcp_token: Option<mcp::Token>,
 ) -> anyhow::Result<()> {
     let writer = store::Writer::start(store::open(data)?, 1024);
     let log_writer = LogWriter::start(data.join("logs"), log_retention_days)?;
@@ -366,10 +371,19 @@ pub async fn serve(
         sender: writer.sender.clone(),
         logs: log_writer.queue.clone(),
     };
+    let mut routes = router(app);
+    if let Some(token) = mcp_token {
+        routes = routes.merge(mcp::router(
+            data.to_owned(),
+            writer.sender.clone(),
+            token,
+            public_host,
+        ));
+    }
     let listener = tokio::net::TcpListener::bind(listen).await?;
     #[cfg(unix)]
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let result = axum::serve(listener, router(app))
+    let result = axum::serve(listener, routes)
         .with_graceful_shutdown(async move {
             #[cfg(unix)]
             tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
