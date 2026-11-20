@@ -74,8 +74,12 @@ Errors that arrive after the upload show the original function, file, line and s
 
 ```sh
 cargo test
-bash e2e/run.sh    # needs Node and pnpm; runs real @sentry/node 7 and 10, @logtail/pino, the OpenTelemetry exporters, the MCP client and sentry-cli against the binary
+bash e2e/run.sh    # needs Node and pnpm; runs real @sentry/node 7 and 10, @logtail/pino, the OpenTelemetry exporters, the MCP client, sentry-cli and the alert receivers against the binary
 ```
+
+## Contributing, releases and security
+
+How changes land is in `CONTRIBUTING.md`, how versions ship in `RELEASING.md`, what changed in `CHANGELOG.md`. Report a vulnerability as `SECURITY.md` says, never in a public issue.
 
 ## License
 

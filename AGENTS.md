@@ -6,7 +6,7 @@ Davy is one Rust binary that replaces Sentry and Better Stack. Read `docs/archit
 
 - `scripts/check` is the gate. It runs fmt, clippy with every lint as an error, the tests, `cargo deny`, and the slop checks. The pre-commit hook, the Claude Stop hook and CI all run it. A change is done when it passes.
 - `cargo test` runs unit and contract tests. `bash e2e/run.sh` runs real SDKs against the release binary. Run e2e when you touch `http.rs`, a parser or a wire format.
-- After a fresh clone: `git config core.hooksPath .githooks`.
+- After a fresh clone: `git config core.hooksPath .githooks`. The hooks run `scripts/check` and `scripts/commit-msg`.
 
 Mechanical rules live in `Cargo.toml` `[lints]`, `clippy.toml`, `deny.toml` and `scripts/check`. This file holds only what a tool cannot check.
 
@@ -50,7 +50,9 @@ Mechanical rules live in `Cargo.toml` `[lints]`, `clippy.toml`, `deny.toml` and 
 
 ## Git
 
+- `CONTRIBUTING.md` holds the commit, changelog, dependency and review rules, `RELEASING.md` the release flow. Read them before a commit or a release.
 - One logical change per commit. Formatting, refactors and behavior changes go in separate commits.
+- A change an operator would notice adds a line under `## Unreleased` in `CHANGELOG.md` in the same commit.
 - Never commit generated data, `data/`, `target/` or secrets.
 - Never force-push `main`.
 - The repo owner is the only author. No AI attribution in commits or PRs: no `Co-Authored-By` trailer for a model, no "Generated with" line.

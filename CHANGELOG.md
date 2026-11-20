@@ -1,0 +1,15 @@
+# Changelog
+
+What changes for someone who runs Davy, per release. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow [Semantic Versioning](https://semver.org/). How to add a line is in `CONTRIBUTING.md`.
+
+## Unreleased
+
+### Added
+
+- Error ingest from the Sentry SDKs through the envelope and `/store/` routes, grouped into issues that reopen on a regression in the fix release or a newer one.
+- Log ingest from Logtail shippers (JSON and msgpack), OTLP/HTTP and the Sentry `log` item, with full-text search kept per UTC day and a retention in days.
+- Source map upload from `sentry-cli` and symbolication of minified stack frames by debug ID.
+- An MCP server for coding agents with the tools `schema`, `sql`, `search_logs`, `issue_context` and `mark_fixed`, behind an admin token from `DAVY_TOKEN`.
+- HTTP uptime monitors with status and keyword checks, and heartbeat monitors for cron jobs with a failure ping.
+- Alerts for new issues, regressions and monitor incidents to signed webhooks, Slack and e-mail over SMTP, with retries.
+- The CLI commands `project`, `issues`, `event`, `logs`, `sql`, `context`, `resolve`, `monitor` and `channel`.

@@ -20,8 +20,12 @@ This document fixes the data shapes and the order of work.
 3. Logs: Logtail endpoint (msgpack and JSON), the Sentry `log` item, OTLP/HTTP logs, full-text search (done).
 4. MCP and CLI for agents: `sql`, `schema`, `search_logs`, `issue_context`, `mark_fixed` (done).
 5. **Source maps**: the `sentry-cli` upload endpoints and debug ID lookup (done).
-6. **Uptime checks and alerts.** *Next.*
-7. Managed cloud (closed, see "License and open core").
+6. Uptime checks and alerts: HTTP monitors, heartbeats, webhooks, Slack and e-mail (done).
+7. **Web UI for one team.** *Next.* Its spec comes first.
+8. **Release 0.1.0**: signed releases with SBOM and provenance, fuzzing, an internal penetration test. See "Milestone 8" below.
+9. Managed cloud (closed, see "License and open core"). Outside users come in only after the external penetration test in `SECURITY.md`.
+
+How code reaches `main` is in `CONTRIBUTING.md`, how a version ships in `RELEASING.md`, and what security work runs when in `SECURITY.md`.
 
 ## Milestone 2: errors
 
@@ -512,6 +516,20 @@ Status pages, regions and remote probes, ping, TCP, DNS and TLS expiry checks, c
 - Unit tests with literal values: the state machine for every pair of state and outcome; `Reach::Public` for a table of addresses, IPv4-mapped, NAT64 and 6to4 included; check outcomes against a local test server for status, keyword, keyword absence, timeout, a redirect to a refused address and a body over 1 MiB; the webhook signature of a fixed body, time and secret; the retry schedule; the outbox order per channel; the heartbeat route with a known, an unknown and a `/fail` token; the `sql` tool reading `NULL` for the three credential columns.
 - `e2e/alerts.mjs`, run by `e2e/run.sh`, starts its own `davy serve` with a local site, a local webhook and Slack receiver and a local SMTP server, and one channel of each kind for all projects. The site answers 503 until the monitor is down, then 200. `@sentry/node` sends two new issues. A heartbeat gets a ping, a failure ping and a ping, then misses its window. Each channel must get the same 7 notices: both `issue.new`, `monitor.down` then `monitor.up` for the site, and `monitor.down`, `monitor.up`, `monitor.down` for the heartbeat. Every webhook signature must verify with the channel's secret, every e-mail must have its own `Message-ID`, and `davy channel list` must show nothing unsent or failed. It takes about 75 s, most of it waiting for the missed heartbeat.
 - `scripts/check` passes.
+
+## Milestone 8: release 0.1.0
+
+The first version someone can download, verify and run without building it. `RELEASING.md` and the security program in `SECURITY.md` are the spec. This milestone builds what they mark as planned.
+
+### Done means
+
+- `scripts/release X.Y.Z` cuts a release as `RELEASING.md` describes, and refuses to run on a dirty tree, off `main`, behind `origin/main` or with an empty `## Unreleased`.
+- A test tag runs the release workflow end to end. Its artifacts verify with `gh attestation verify`, `sha256sum -c SHA256SUMS` and `cosign verify`, and `cargo audit bin` reads the dependency list from a downloaded binary.
+- The release workflow passes `zizmor`, pins every action to a SHA, and only its publish job can write.
+- A fuzz target exists for every parser in `SECURITY.md`, each ran for at least an hour without a crash, and CI runs each for a few minutes every night.
+- The internal penetration test report exists, and every critical and high finding is fixed with a test.
+- The owner's commits and the release tag are signed and show as verified on GitHub.
+- The e2e suite passes against the downloaded release binary and the container image.
 
 ## Hardening
 
