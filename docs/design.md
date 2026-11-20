@@ -567,13 +567,13 @@ Results of 2026-11-20, with the default model of each agent and a subscription l
 | Agent | Model | Passed | Median | Range |
 |---|---|---|---|---|
 | Claude Code 2.1.322 | `claude-sonnet-5-5` | 5 of 5 | 34 s | 31 to 34 s |
-| Codex 0.170.0 | its default | 3 of 3 | 91 s | 47 to 114 s |
+| Codex 0.170.0 | its default | 5 of 5 | 65 s | 47 to 114 s |
 
-Codex has 3 runs, not 5: the next two stopped within seconds on the ChatGPT plan's usage limit, before the agent did anything, and count as not run. A Claude Code run read about 13 thousand new and 200 thousand cached input tokens and wrote about 2.4 thousand, 0.10 USD at API prices. A Codex run read 210 to 300 thousand input tokens, over 90 % of them cached, and wrote under 2 thousand. Each agent followed `install.md` in order, checked the binary against `SHA256SUMS`, installed the unit with `davy systemd-unit` and connected itself, and `davy feedback` was empty after every run.
+A Claude Code run read about 13 thousand new and 200 thousand cached input tokens and wrote about 2.4 thousand, 0.10 USD at API prices. A Codex run read 210 to 390 thousand input tokens, over 90 % of them cached, and wrote under 2 thousand. Each agent followed `install.md` in order, checked the binary against `SHA256SUMS`, installed the unit with `davy systemd-unit` and connected itself, and `davy feedback` was empty after every run.
 
-The first round, judged only by doctor and the test error, passed 5 of 5 for both agents, but in 2 of the 5 Claude Code runs the DSN lived only in the shell that sent the test error, so the app would have sent nothing after a restart. `docs/connect/node.md` said to put the DSN next to the app's other variables, and this app had none. It now says that such an app gets a `.env` loaded by `node --env-file-if-exists=.env` in its `start` script, and the eval starts the app to check it. In the second round all 8 runs did that.
+The first round, judged only by doctor and the test error, passed 5 of 5 for both agents, but in 2 of the 5 Claude Code runs the DSN lived only in the shell that sent the test error, so the app would have sent nothing after a restart. `docs/connect/node.md` said to put the DSN next to the app's other variables, and this app had none. It now says that such an app gets a `.env` loaded by `node --env-file-if-exists=.env` in its `start` script, and the eval starts the app to check it. In the second round all 10 runs did that.
 
-The commands that failed during the runs came from the container or the agent, not from the docs, and each agent recovered on its own: `rg` is not installed, `systemctl` without `sudo` finds no D-Bus in the container, and a hand-written MCP request without `Accept: application/json, text/event-stream` got the 406 the MCP specification asks for.
+The commands that failed during the runs came from the container or the agent, not from the docs, and each agent recovered on its own: `rg` and `gh` are not installed, `systemctl` without `sudo` finds no D-Bus in the container, and a hand-written MCP request without `Accept: application/json, text/event-stream` got the 406 the MCP specification asks for.
 
 `davy mcp-config` prints the target file and the config together, so Codex cut the TOML out with `sed` or ran `codex mcp add` with the same values. It stays that way: for Claude Code and Cursor the config is merged into a JSON file that may already exist, which an append cannot do, and the output names the file in each case.
 
