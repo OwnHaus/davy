@@ -2,7 +2,7 @@
 
 One self-hosted binary that replaces Sentry and Better Stack. Point your existing Sentry SDK or Logtail shipper at it by changing the DSN or source token. No code changes.
 
-Status: error ingest works (Sentry envelope and `/store/`, grouping into issues, CLI). Log ingest works from Logtail shippers, OpenTelemetry and Sentry's logger, with full-text search from the CLI. Coding agents read errors and logs and mark issues fixed over MCP or the CLI. Source maps, uptime and the UI come next. See `docs/design.md`.
+Status: error ingest works (Sentry envelope and `/store/`, grouping into issues, CLI). Log ingest works from Logtail shippers, OpenTelemetry and Sentry's logger, with full-text search from the CLI. Coding agents read errors and logs and mark issues fixed over MCP or the CLI. Source maps uploaded with `sentry-cli` turn minified JavaScript frames back into original source. Uptime and the UI come next. See `docs/design.md`.
 
 ## Try it
 
@@ -58,11 +58,23 @@ The same works from a shell:
 ./target/release/davy resolve 12 --data ./data --release 1.4.0
 ```
 
+## Source maps
+
+With `DAVY_TOKEN` set, `sentry-cli` uploads source maps to Davy as it would to Sentry. Run `inject` before you deploy the bundle, so the SDK reports the debug ID that ties an error to its map:
+
+```sh
+export SENTRY_URL=http://127.0.0.1:8000 SENTRY_AUTH_TOKEN=$DAVY_TOKEN SENTRY_ORG=any SENTRY_PROJECT=my-app
+npx @sentry/cli sourcemaps inject dist
+npx @sentry/cli sourcemaps upload --release my-app@1.0.0 dist
+```
+
+Errors that arrive after the upload show the original function, file, line and source. Davy matches by debug ID only, so the org, project and release names do not matter.
+
 ## Tests
 
 ```sh
 cargo test
-bash e2e/run.sh    # needs Node and pnpm; runs real @sentry/node 7 and 10, @logtail/pino, the OpenTelemetry exporters and the MCP client against the binary
+bash e2e/run.sh    # needs Node and pnpm; runs real @sentry/node 7 and 10, @logtail/pino, the OpenTelemetry exporters, the MCP client and sentry-cli against the binary
 ```
 
 ## License

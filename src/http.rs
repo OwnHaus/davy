@@ -6,9 +6,11 @@ use crate::{
         store::{LogQueue, LogWriter, QueueError},
     },
     mcp,
+    sourcemaps::{self, symbolicate},
     store::{self, Job, Write},
     time,
     token::Token,
+    upload,
 };
 use axum::{
     Json, Router,
@@ -67,6 +69,7 @@ pub struct App {
     pub keys: Arc<Keys>,
     pub sender: mpsc::SyncSender<Write>,
     pub logs: LogQueue,
+    pub sourcemaps: Arc<sourcemaps::Store>,
 }
 pub fn router(app: App) -> Router {
     let preflight = || async { StatusCode::NO_CONTENT };
@@ -106,14 +109,14 @@ async fn headers(req: Request, next: Next) -> Response {
     }
     response
 }
-type Failure = (StatusCode, String);
-fn bad(e: impl std::fmt::Display) -> Failure {
+pub(crate) type Failure = (StatusCode, String);
+pub(crate) fn bad(e: impl std::fmt::Display) -> Failure {
     (StatusCode::BAD_REQUEST, e.to_string())
 }
-fn internal(e: impl std::fmt::Display) -> Failure {
+pub(crate) fn internal(e: impl std::fmt::Display) -> Failure {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, Failure> + Send + 'static,
 ) -> Result<T, Failure> {
     tokio::task::spawn_blocking(f).await.map_err(internal)?
@@ -132,7 +135,7 @@ fn queue_logs(logs: &LogQueue, batch: Vec<LogRecord>) -> Result<(), Failure> {
         QueueError::Stopped => (StatusCode::SERVICE_UNAVAILABLE, "writer stopped".into()),
     })
 }
-fn decode(bytes: &[u8], encoding: &str) -> Result<Vec<u8>, Failure> {
+pub(crate) fn decode(bytes: &[u8], encoding: &str) -> Result<Vec<u8>, Failure> {
     let source = Cursor::new(bytes);
     let reader: Box<dyn Read + '_> = match encoding {
         "" | "identity" => Box::new(source),
@@ -228,13 +231,23 @@ struct Parsed {
     events: Vec<ErrorEvent>,
     logs: Vec<LogRecord>,
 }
-fn parse_sentry(bytes: &[u8], project: i64, legacy: bool) -> Result<Parsed, Failure> {
+fn parse_sentry(
+    bytes: &[u8],
+    project: i64,
+    legacy: bool,
+    maps: &sourcemaps::Store,
+) -> Result<Parsed, Failure> {
+    let event = |json: &[u8]| {
+        let mut value = serde_json::from_slice(json).map_err(bad)?;
+        // A stored map that no longer reads leaves frames minified. The event still counts.
+        symbolicate(&mut value, |id| maps.build(id).ok().flatten());
+        ErrorEvent::parse(value).map_err(bad)
+    };
     if legacy {
-        let event = ErrorEvent::parse(serde_json::from_slice(bytes).map_err(bad)?).map_err(bad)?;
         return Ok(Parsed {
             id: None,
             dsn: None,
-            events: vec![event],
+            events: vec![event(bytes)?],
             logs: Vec::new(),
         });
     }
@@ -248,10 +261,7 @@ fn parse_sentry(bytes: &[u8], project: i64, legacy: bool) -> Result<Parsed, Fail
     };
     for item in envelope.items {
         match disposition(&item.kind) {
-            Disposition::StoreError => parsed.events.push(
-                ErrorEvent::parse(serde_json::from_slice(&item.payload).map_err(bad)?)
-                    .map_err(bad)?,
-            ),
+            Disposition::StoreError => parsed.events.push(event(&item.payload)?),
             Disposition::StoreLogs => {
                 if let Ok(records) = logs::sentry::parse(&item.payload, project, observed_at) {
                     parsed.logs.extend(records);
@@ -269,7 +279,8 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
         authorize(&app, project, early.as_deref())?;
     }
     let bytes = body(&parts.headers, raw).await?;
-    let parsed = blocking(move || parse_sentry(&bytes, project, legacy)).await?;
+    let maps = Arc::clone(&app.sourcemaps);
+    let parsed = blocking(move || parse_sentry(&bytes, project, legacy, &maps)).await?;
     if early.is_none() {
         authorize(
             &app,
@@ -356,14 +367,14 @@ async fn otlp_ingest(State(app): State<App>, req: Request) -> Response {
         (Err(failure), None) => failure.into_response(),
     }
 }
-/// Serves ingest, and `/mcp` when `mcp_token` is set. `public_host` is the host
-/// name clients use to reach this server.
+/// Serves ingest, and with a token `/mcp` and the source map upload.
+/// `public_url` is where clients reach this server.
 pub async fn serve(
     data: &std::path::Path,
     listen: &str,
-    public_host: &str,
+    public_url: &url::Url,
     log_retention_days: u32,
-    mcp_token: Option<Token>,
+    token: Option<Token>,
 ) -> anyhow::Result<()> {
     let writer = store::Writer::start(store::open(data)?, 1024);
     let log_writer = LogWriter::start(data.join("logs"), log_retention_days)?;
@@ -371,15 +382,19 @@ pub async fn serve(
         keys: Arc::new(Keys::new(store::open(data)?)),
         sender: writer.sender.clone(),
         logs: log_writer.queue.clone(),
+        sourcemaps: Arc::new(sourcemaps::Store::open(data)),
     };
+    let maps = Arc::clone(&app.sourcemaps);
     let mut routes = router(app);
-    if let Some(token) = mcp_token {
-        routes = routes.merge(mcp::router(
-            data.to_owned(),
-            writer.sender.clone(),
-            token,
-            public_host,
-        ));
+    if let Some(token) = token {
+        routes = routes
+            .merge(mcp::router(
+                data.to_owned(),
+                writer.sender.clone(),
+                token.clone(),
+                public_url.host_str().unwrap_or("localhost"),
+            ))
+            .merge(upload::router(maps, token, public_url));
     }
     let listener = tokio::net::TcpListener::bind(listen).await?;
     #[cfg(unix)]

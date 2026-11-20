@@ -193,7 +193,7 @@ async fn serve(args: Serve) -> anyhow::Result<()> {
     http::serve(
         &args.data,
         &args.listen,
-        args.public_url.host_str().unwrap_or("localhost"),
+        &args.public_url,
         args.log_retention_days,
         args.token.as_deref().map(Token::new),
     )

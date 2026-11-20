@@ -19,8 +19,8 @@ This document fixes the data shapes and the order of work.
 2. Errors: Sentry envelope and `/store/` ingest, grouping, issues, CLI to list them (done).
 3. Logs: Logtail endpoint (msgpack and JSON), the Sentry `log` item, OTLP/HTTP logs, full-text search (done).
 4. MCP and CLI for agents: `sql`, `schema`, `search_logs`, `issue_context`, `mark_fixed` (done).
-5. **Source maps**: the `sentry-cli` upload endpoints and debug ID lookup. *Next.*
-6. Uptime checks and alerts.
+5. **Source maps**: the `sentry-cli` upload endpoints and debug ID lookup (done).
+6. **Uptime checks and alerts.** *Next.*
 7. Managed cloud (closed, see "License and open core").
 
 ## Milestone 2: errors
@@ -338,6 +338,56 @@ The same library functions back three commands, for agents that run shell comman
 - A store test resolves an issue in a release and asserts that an event from an older release keeps it resolved and one from a newer release reopens it.
 - HTTP contract tests: `/mcp` is 401 without the token or with a wrong one and 403 for a `Host` it does not serve; with the right one `tools/list` and `tools/call` of `sql` and `mark_fixed` answer. Without a configured token `serve` does not merge the MCP router, so there is no route to test.
 - `e2e/run.sh` connects with the official MCP TypeScript client (`@modelcontextprotocol/sdk`) over Streamable HTTP with the bearer token, lists the five tools, calls `issue_context` on an issue the Sentry SDKs created and asserts the exception type and an in-app frame, finds a log with `search_logs`, calls `mark_fixed` and reads the status back with `sql`.
+- `scripts/check` passes.
+
+## Milestone 5: source maps
+
+A stack trace from minified JavaScript (`n` at `app.min.js:3:74`) is useless to a human and to an agent. With source maps uploaded, the same frame reads `parseOrder` at `src/app.js:5` with the source line. Davy takes the upload from the tool teams already run in CI, `sentry-cli`, and matches maps to events by debug ID only.
+
+What `sentry-cli` 3.8.2 sends was captured with `e2e/capture-sourcemaps.mjs` into `e2e/fixtures/sentry-cli-3/`. `sentry-cli sourcemaps inject` writes a debug ID (a UUID derived from the content) into each minified file and its map. The SDK reports it per file in `debug_meta.images`.
+
+### Wire protocol (what we accept)
+
+All three routes take `Authorization: Bearer <token>`, the same token as `/mcp`, so `SENTRY_AUTH_TOKEN=$DAVY_TOKEN`. Without a configured token they are not mounted. The organization slug in the path is ignored. `SENTRY_URL` is the public URL.
+
+- `GET /api/0/organizations/{org}/chunk-upload/` answers the upload options: `url` (this same route on the public URL), `chunkSize` 8 MiB, `chunksPerRequest` 4, `maxRequestSize` 32 MiB, `maxFileSize` 256 MiB, `concurrency` 1, `hashAlgorithm` `sha1`, `compression` `["gzip"]`, `accept` `["artifact_bundles"]`. Offering only artifact bundles keeps `sentry-cli` off the legacy release-file upload.
+- `POST /api/0/organizations/{org}/chunk-upload/` is multipart. Each part is named `file` or `file_gzip` (gzip-compressed). Its filename is the SHA-1 of the uncompressed chunk. A chunk whose content does not hash to its name is a `400`. Body limit 33 MiB.
+- `POST /api/0/organizations/{org}/artifactbundle/assemble/` takes `{"checksum", "chunks": [sha1], "projects": [slug], "version"?, "dist"?}`. If chunks are missing it answers `{"state": "not_found", "missingChunks": [...]}` and `sentry-cli` uploads them and asks again. Otherwise it joins the chunks in order, checks the SHA-1 of the whole against `checksum`, unpacks the bundle and answers `{"state": "created", "missingChunks": []}`. A bundle that does not unpack is `{"state": "error", "detail": "..."}`. Assembly runs in the request, so there is no `assembling` state.
+
+The bundle is a zip. `manifest.json` maps each path to `{"type", "url", "headers": {"debug-id", "sourcemap"?}}`. Davy keeps the files of type `minified_source` and `source_map` that have a `debug-id` and ignores the rest. `projects` and `version` are not used for lookup: a debug ID is a content hash, so it names one build in every project.
+
+### Storage
+
+- `data/chunks/<sha1>` holds uploaded chunks until assembly. A successful assembly deletes its chunks.
+- `data/sourcemaps/<debug-id>.map.zst` and `<debug-id>.js.zst` hold the map and the minified file, zstd-compressed. Files are written to a temporary name and renamed, so a reader never sees half a file and a repeated upload of the same build is harmless.
+- These are files, not SQLite rows. The writer threads stay the only writers of SQLite and Tantivy.
+
+### Symbolication
+
+At ingest, before parsing into `ErrorEvent`, so the stored payload, grouping and `issue_context` all see original frames.
+
+```rust
+/// Rewrites minified frames in a Sentry event JSON in place. Pure apart from `maps`.
+pub fn symbolicate(event: &mut serde_json::Value, maps: &impl Fn(DebugId) -> Option<Arc<Build>>)
+```
+
+- For each image in `debug_meta.images` with `type: "sourcemap"`, `code_file` names the minified file and `debug_id` the build.
+- A frame whose `abs_path` or `filename` equals a `code_file` with a known build is looked up at (`lineno` − 1, `colno` − 1). The frame gets the original `filename` (the map's source), `lineno`, `colno`, the original function name, and `pre_context`, `context_line`, `post_context` (5 lines each) from `sourcesContent`. `in_app` becomes false when the source path contains `node_modules`. The minified position moves to `data.minified` (`{filename, lineno, colno, function}`), so nothing is lost.
+- The original function name is the map's name for the nearest earlier token that spells the minified name right after the `function` keyword (`async function o` too), searched over at most 1024 tokens. Without a match, or without the minified file, the minified name stays.
+- A frame with no image, no stored build or no token on its line stays as it is. A map without `sourcesContent` still gives file, line and function, without context lines.
+- Parsed builds sit in a small cache (32 entries), so a burst of one error parses its map once.
+
+Grouping is unchanged. It sees original frames when a map was uploaded before the event, so issues stay the same across builds. An event that arrived before its map stays minified.
+
+### Not in this milestone
+
+URL or release based lookup, the legacy release-file upload, fetching scripts from the web (it invites SSRF), Hermes and React Native maps, native debug files.
+
+### Done means
+
+- Unit tests with literal values: the captured event (`06.body`) symbolicated against the captured build gives `parseOrder` at `../src/app.js:5` with context line `  return order.items.length`, and `run` at line 11; a frame without a build, and a frame from another file, stay unchanged.
+- HTTP contract tests replay the captured `sentry-cli` requests: every route is 401 without the token or with a wrong one; the options name the public URL; assemble answers `not_found` with the missing chunk, the chunk upload stores it, assemble then answers `created` and the stored build symbolicates a frame; a chunk renamed to another SHA-1 is 400.
+- `e2e/run.sh` runs `sentry-cli sourcemaps inject` and `upload` against the release binary, runs the bundle with `@sentry/node`, and asserts with `davy context` that the top in-app frame is `parseOrder` in `../src/app.js` at line 5.
 - `scripts/check` passes.
 
 ## License and open core

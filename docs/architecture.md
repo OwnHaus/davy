@@ -9,8 +9,9 @@ One binary, `davy`, with subcommands. `davy serve` takes HTTP ingest, writes to 
 ```
 SDK / shipper ──HTTP──> http.rs ──parse──> envelope.rs, event.rs, logs/{logtail,otlp,sentry}.rs
                            │                        (pure: bytes in, typed records out)
-                           ├── errors ──> store::Writer (one thread) ──> data/davy.sqlite (SQLite, WAL)
+                           ├── errors ──> sourcemaps::symbolicate ──> store::Writer (one thread) ──> data/davy.sqlite (SQLite, WAL)
                            └── logs ────> logs::store::LogWriter (one thread) ──> data/logs/YYYY-MM-DD/ (Tantivy)
+sentry-cli ──HTTP──> upload.rs ──> sourcemaps::Store ──> data/sourcemaps/<debug-id>.{map,js}.zst
 agent ──HTTP /mcp──> mcp.rs ──reads──> query.rs, context.rs, logs::store::search
                        └── mark_fixed ──> store::Writer
 CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::search
@@ -28,6 +29,8 @@ CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::se
 - `src/query.rs` runs one read-only SQL statement for an agent, behind an authorizer, with row, text and time limits.
 - `src/context.rs` gathers one issue with its compacted latest event, recent events, releases and nearby logs.
 - `src/token.rs` holds the admin token and the middleware that requires it.
+- `src/upload.rs` is the `sentry-cli` boundary: chunk upload and artifact bundle assembly behind the admin token.
+- `src/sourcemaps/` stores uploaded builds per debug ID (`mod.rs`), unpacks artifact bundles (`bundle.rs`) and rewrites minified frames in an event before it is parsed (`symbolicate.rs`, pure apart from the build lookup).
 - `src/mcp.rs` is the MCP boundary: allowed hosts behind the admin token, and the tools as thin calls into `query`, `context`, `logs::store::search` and the writer queue.
 - `src/logs/mod.rs` defines `LogRecord`, `LogLevel` and the timestamp and level rules shared by every log source.
 - `src/logs/{logtail,otlp,sentry}.rs` are the log adapters. Each is a pure function from a request body to `Vec<LogRecord>`.
@@ -39,6 +42,7 @@ CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::se
 - **Parsers are pure.** Everything that turns wire bytes into domain types takes bytes and returns a value or an error. No I/O, no clock reads except a passed-in `observed_at`, no global state. Each is tested on fixtures captured from real clients.
 - **Validation happens once, at the boundary.** `http.rs` and the parsers check input. Code behind them trusts the types and does not re-check.
 - **One writer thread per store.** Inside the server, only `store::Writer` writes SQLite and only `LogWriter` writes Tantivy. HTTP handlers and MCP tools queue work and never write directly. A full queue is a `429` or a tool error, never an unbounded buffer. CLI commands that write (`project create`, `resolve`) use their own connection, and SQLite's lock orders them with the writer.
+- **Source maps are files, not rows.** `upload.rs` writes chunks and builds under `data/chunks/` and `data/sourcemaps/` by writing a temporary file and renaming it. A build is named by its debug ID, a content hash, so a second upload of the same build writes the same bytes and nothing needs a lock.
 - **Readers live in other processes.** The CLI opens the data directory while the server writes. SQLite WAL and Tantivy's segment files make that safe. Search retries once on a missing segment file.
 - **Lenient on fields, strict on framing.** A malformed envelope or body is an error status. A wrong field inside a valid record falls back to a default, and one bad record never fails a batch.
 - **Time is unix nanoseconds for logs and unix milliseconds for error events** (`event::Timestamp`), both `i64`. `src/time.rs` owns clock reads, string parsing and UTC days. Every log source goes through `logs::timestamp`.

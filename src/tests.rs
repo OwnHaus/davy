@@ -322,6 +322,9 @@ mod http {
             keys: Arc::new(Keys::new(c)),
             sender: errors.clone(),
             logs,
+            sourcemaps: Arc::new(crate::sourcemaps::Store::open(std::path::Path::new(
+                "target/no-sourcemaps",
+            ))),
         });
         Server {
             app,
