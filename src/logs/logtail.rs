@@ -49,12 +49,17 @@ fn json(body: &[u8]) -> Result<Vec<Value>, String> {
 fn ndjson(body: &[u8]) -> Result<Vec<Value>, String> {
     body.split(|b| *b == b'\n')
         .filter(|l| !l.iter().all(u8::is_ascii_whitespace))
-        .map(|l| serde_json::from_slice(l).map_err(|e| e.to_string()))
+        .map(|l| serde_json::from_slice::<Value>(l).map_err(|e| e.to_string()))
+        // A line that is JSON but not a record is one bad record, not a bad batch.
+        .filter(|line| !matches!(line, Ok(v) if !v.is_object() && !v.is_array()))
         .collect()
 }
 
 fn msgpack(mut body: &[u8]) -> Result<Value, String> {
     let v = rmpv::decode::read_value(&mut body).map_err(|e| e.to_string())?;
+    if !body.is_empty() {
+        return Err("bytes after the msgpack value".into());
+    }
     Ok(to_json(v))
 }
 
@@ -107,6 +112,9 @@ pub fn msgpack_timestamp(b: &[u8]) -> Option<i64> {
         ),
         _ => return None,
     };
+    if nanos >= 1_000_000_000 {
+        return None;
+    }
     secs.checked_mul(1_000_000_000)?.checked_add(nanos)
 }
 

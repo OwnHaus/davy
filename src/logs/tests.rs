@@ -102,6 +102,53 @@ fn logtail_json_and_ndjson() {
 }
 
 #[test]
+fn an_ndjson_line_that_is_not_a_record_is_skipped() {
+    let ndjson = b"{\"message\":\"x\"}\n42\n\"text\"\n{\"message\":\"y\"}\n";
+    let records = logtail::parse(ndjson, "application/x-ndjson", 1, 5).unwrap();
+    let messages: Vec<_> = records.iter().map(|r| r.message.as_str()).collect();
+    assert_eq!(messages, ["x", "y"]);
+}
+
+#[test]
+fn a_msgpack_body_with_bytes_after_its_value_is_refused() {
+    let mut body = Vec::new();
+    let record = rmpv::Value::Map(vec![("message".into(), "x".into())]);
+    rmpv::encode::write_value(&mut body, &record).unwrap();
+    assert_eq!(
+        logtail::parse(&body, "application/msgpack", 1, 5).unwrap()[0].message,
+        "x"
+    );
+    body.push(0xc0);
+    assert_eq!(
+        logtail::parse(&body, "application/msgpack", 1, 5).unwrap_err(),
+        "bytes after the msgpack value"
+    );
+}
+
+#[test]
+fn a_msgpack_timestamp_needs_fewer_than_1e9_nanoseconds() {
+    let secs: u64 = 1_795_161_600;
+    let packed = |nanos: u64| ((nanos << 34) | secs).to_be_bytes();
+    let wide = |nanos: u32| {
+        [
+            nanos.to_be_bytes().as_slice(),
+            &1_795_161_600i64.to_be_bytes(),
+        ]
+        .concat()
+    };
+    assert_eq!(
+        logtail::msgpack_timestamp(&packed(999_999_999)),
+        Some(1_795_161_600_999_999_999)
+    );
+    assert_eq!(logtail::msgpack_timestamp(&packed(1_000_000_000)), None);
+    assert_eq!(
+        logtail::msgpack_timestamp(&wide(999_999_999)),
+        Some(1_795_161_600_999_999_999)
+    );
+    assert_eq!(logtail::msgpack_timestamp(&wide(1_000_000_000)), None);
+}
+
+#[test]
 fn msgpack_timestamp_ext() {
     assert_eq!(
         logtail::msgpack_timestamp(&1_795_161_600u32.to_be_bytes()),
