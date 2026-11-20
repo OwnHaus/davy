@@ -37,6 +37,7 @@ CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::se
 - `src/mcp.rs` is the MCP boundary: allowed hosts behind the admin token, and the tools as thin calls into `query`, `context`, `logs::store::search` and the writer queue.
 - `src/monitor/` holds uptime monitors: what a monitor watches, its limits and the state machine a check result moves (`mod.rs`), and the monitor rows (`store.rs`). The tables are created by `store.rs` migrations like every other table.
 - `src/alert/` holds alert channels: their kinds and signing secret (`mod.rs`), what a notice says and the body each channel kind gets (`notice.rs`, pure), the channel and outbox rows (`store.rs`), and the notifier task that sends due rows and stores each result through the writer queue (`deliver.rs`). `store::insert` and `monitor::store` call `alert::store::notify` inside the writer's transaction.
+- `src/tasks.rs` holds `poll`, the loop behind each background task in `davy serve` that reads due work from SQLite: one task per key, a limit on how many run, and the result stored through the writer before the key is free.
 - `src/logs/mod.rs` defines `LogRecord`, `LogLevel` and the timestamp and level rules shared by every log source.
 - `src/logs/{logtail,otlp,sentry}.rs` are the log adapters. Each is a pure function from a request body to `Vec<LogRecord>`.
 - `src/logs/store.rs` owns the Tantivy schema, the log writer thread, retention and search.

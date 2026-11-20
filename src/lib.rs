@@ -10,6 +10,7 @@ pub mod monitor;
 pub mod query;
 pub mod sourcemaps;
 pub mod store;
+pub mod tasks;
 #[cfg(test)]
 mod tests;
 pub mod time;

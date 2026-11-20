@@ -31,6 +31,8 @@ use serde::Serialize;
 use std::{path::Path, sync::mpsc, thread};
 use tokio::sync::oneshot;
 
+const QUEUE_FULL_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum IssueStatus {
     Unresolved,
@@ -293,6 +295,25 @@ impl Writer {
 }
 /// Queues a [`Job::Sweep`] every `period`, the first one at once. A full
 /// queue skips a tick. The task ends when the writer stops.
+/// Queues `job` and waits until the writer has applied it. A full queue is
+/// tried again every 50 ms. Returns without waiting when the writer is gone.
+pub async fn queue_and_wait(sender: &mpsc::SyncSender<Write>, mut job: Job) {
+    loop {
+        let (done, applied) = oneshot::channel();
+        match sender.try_send(Write { job, done }) {
+            Ok(()) => {
+                drop(applied.await);
+                return;
+            }
+            Err(mpsc::TrySendError::Full(write)) => {
+                job = write.job;
+                tokio::time::sleep(QUEUE_FULL_WAIT).await;
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => return,
+        }
+    }
+}
+
 pub async fn sweep_every(sender: mpsc::SyncSender<Write>, period: std::time::Duration) {
     let mut ticks = tokio::time::interval(period);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

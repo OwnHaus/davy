@@ -8,14 +8,12 @@ use super::{
 use crate::{
     event::Timestamp,
     store::{Job, Write},
-    time,
+    tasks, time,
 };
 use rusqlite::Connection;
-use std::{collections::HashMap, sync::mpsc, time::Duration};
-use tokio::{sync::oneshot, task::JoinSet};
+use std::{sync::mpsc, time::Duration};
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
-const QUEUE_FULL_WAIT: Duration = Duration::from_millis(50);
 
 /// The client every delivery uses. A redirect is a failed send, so a
 /// receiver cannot bounce a signed body to another address.
@@ -73,68 +71,23 @@ pub async fn run(
     writer: mpsc::SyncSender<Write>,
     period: Duration,
 ) {
-    let mut ticks = tokio::time::interval(period);
-    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut busy: HashMap<tokio::task::Id, i64> = HashMap::new();
-    let mut sends = JoinSet::new();
-    loop {
-        tokio::select! {
-            _ = ticks.tick() => {
-                let due = match store::due(&c, time::now_ms()) {
-                    Ok(due) => due,
-                    Err(e) => {
-                        report(&e);
-                        continue;
-                    }
-                };
-                for due in due {
-                    if busy.values().any(|&channel| channel == due.channel) {
-                        continue;
-                    }
-                    let channel = due.channel;
-                    let task = sends.spawn(deliver(client.clone(), due, writer.clone()));
-                    busy.insert(task.id(), channel);
-                }
-            }
-            Some(done) = sends.join_next_with_id() => {
-                let id = match done {
-                    Ok((id, ())) => id,
-                    Err(e) => e.id(),
-                };
-                busy.remove(&id);
-            }
-        }
-    }
-}
-
-/// A failed read is tried again on the next tick. The error holds no URL.
-#[expect(
-    clippy::print_stderr,
-    reason = "the server has no logger yet, stderr is its log"
-)]
-fn report(e: &anyhow::Error) {
-    eprintln!("notifier: reading due notifications: {e:#}");
+    tasks::poll(
+        "notifier",
+        period,
+        usize::MAX,
+        move || store::due(&c, time::now_ms()),
+        |due| due.channel,
+        |due| deliver(client.clone(), due, writer.clone()),
+    )
+    .await;
 }
 
 async fn deliver(client: reqwest::Client, due: Due, writer: mpsc::SyncSender<Write>) {
     let result = send(&client, &due, time::now_ms()).await;
-    let mut job = Job::Delivery {
+    let job = Job::Delivery {
         id: due.id,
         at: time::now_ms(),
         result,
     };
-    loop {
-        let (done, stored) = oneshot::channel();
-        match writer.try_send(Write { job, done }) {
-            Ok(()) => {
-                drop(stored.await);
-                return;
-            }
-            Err(mpsc::TrySendError::Full(write)) => {
-                job = write.job;
-                tokio::time::sleep(QUEUE_FULL_WAIT).await;
-            }
-            Err(mpsc::TrySendError::Disconnected(_)) => return,
-        }
-    }
+    crate::store::queue_and_wait(&writer, job).await;
 }
