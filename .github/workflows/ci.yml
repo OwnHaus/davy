@@ -52,6 +52,18 @@ jobs:
         working-directory: e2e
       - run: bash e2e/run.sh
 
+  install:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Follows docs/install.md in Debian with systemd. It builds the binary
+      # in rust:bookworm, so it runs on the glibc of the test container.
+      - run: bash e2e/install.sh
+
   commits:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest

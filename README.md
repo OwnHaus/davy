@@ -97,6 +97,7 @@ A heartbeat prints the path the job pings when it finishes. Channels get a notic
 ```sh
 cargo test
 bash e2e/run.sh    # needs Node and pnpm; runs real @sentry/node 7 and 10, @logtail/pino, the OpenTelemetry exporters, the MCP client, sentry-cli and the alert receivers against the binary
+bash e2e/install.sh # needs Docker; follows docs/install.md and the connect pages in Debian with systemd
 ```
 
 ## Contributing, releases and security

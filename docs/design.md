@@ -563,7 +563,7 @@ The agent runs these commands with the person's shell rights. The docs never tel
 ### Done means
 
 - Unit tests with literal values: `setup` on an empty and on a prepared directory, the service files it writes, a `doctor` table where each broken install (open permissions, short token, server down, plain `http` public URL, refused SMTP) reports its own check and fix, and `mcp-config` for each client.
-- `e2e/install.sh` starts a clean Debian container with only the binary, extracts the `sh` blocks from `docs/install.md` and `docs/connect/node.md` and runs them in order. `davy doctor --json` must report every check `ok`, `@sentry/node` sends an error, and the MCP `issue_context` tool returns it.
+- `e2e/install.sh` starts a clean Debian container with only the binary, extracts the `sh` blocks from `docs/install.md`, `docs/connect/node.md` and `docs/connect/agents.md` and runs them in order as a user with `sudo`, leaving out a block marked `<!-- e2e: skip, reason -->`. `davy doctor --json` must report every check `ok`, `@sentry/node` sends an error, and the MCP `issue_context` tool returns it.
 - An agent eval: Claude Code and Codex, each in a fresh container with a small Node app and nothing but the prompt, finish with the app's test error visible over MCP. Five runs each. The pass rate and the median time go into this section, and a failed run becomes a fix in the docs or the CLI.
 - `scripts/check` passes.
 

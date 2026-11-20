@@ -82,6 +82,6 @@ The scope says which part of the code changes, not who the change is for. A chan
 
 ## Review
 
-- Every change passes `scripts/check`. A change to `http.rs`, a parser or a wire format also passes `bash e2e/run.sh`.
+- Every change passes `scripts/check`. A change to `http.rs`, a parser or a wire format also passes `bash e2e/run.sh`. A change to `docs/install.md`, `docs/connect/` or `src/install/` also passes `bash e2e/install.sh`, which follows the docs in a Debian container with systemd (needs Docker).
 - A change to a trust boundary gets a security read before it is pushed, by a model that did not write it. The trust boundaries are `http.rs`, `upload.rs`, `mcp.rs`, `token.rs`, `query.rs`, `net.rs`, the parsers and anything that touches a credential. A finding becomes a fix or a reason in the commit body why it is not one.
 - Each milestone ends with a security review of everything since the last one. See `SECURITY.md`.
