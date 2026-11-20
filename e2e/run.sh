@@ -117,5 +117,18 @@ assert ctx['latest_event']['exceptions'][-1]['type']=='RangeError'
 assert json.loads((p/'resolved.json').read_text())['rows']==[['resolved','e2e@2']]
 print('agent CLI: verified sql, context and resolve')
 PY
+DSN=$("$BIN" project create shop --data "$SCRATCH/data" --public-url "$URL")
+node "$ROOT/e2e/send-sourcemapped.mjs" "$SCRATCH/shop" "$URL" "$TOKEN" "$DSN" 2>"$SCRATCH/sentry-cli.log" || { cat "$SCRATCH/sentry-cli.log"; exit 1; }
+ISSUE=$("$BIN" sql --data "$SCRATCH/data" "SELECT i.id FROM issues i JOIN projects p ON p.id = i.project_id WHERE p.slug = 'shop'" | tail -n 1)
+"$BIN" context "$ISSUE" --data "$SCRATCH/data" > "$SCRATCH/context.json"
+python3 - "$SCRATCH/context.json" <<'PY'
+import json,sys
+ctx=json.load(open(sys.argv[1]))
+frames=ctx['latest_event']['exceptions'][-1]['frames']
+top=[f for f in frames if f['in_app']][-1]
+assert (top['function'],top['filename'],top['lineno'],top['context_line'])==('parseOrder','../src/app.js',5,'  return order.items.length'),top
+assert ctx['issue']['title'].startswith('TypeError: Cannot read properties of undefined'),ctx['issue']
+print('source maps: sentry-cli upload, symbolicated top frame parseOrder at ../src/app.js:5')
+PY
 echo 'PASS: all end-to-end assertions passed'
 
