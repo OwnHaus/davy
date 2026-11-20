@@ -87,7 +87,7 @@ fn to_json(v: rmpv::Value) -> Value {
     }
 }
 
-pub fn msgpack_timestamp(b: &[u8]) -> Option<i64> {
+pub(crate) fn msgpack_timestamp(b: &[u8]) -> Option<i64> {
     let (secs, nanos) = match b.len() {
         4 => (i64::from(u32::from_be_bytes(b.try_into().ok()?)), 0),
         8 => {

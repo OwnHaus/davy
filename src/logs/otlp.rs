@@ -29,11 +29,11 @@ impl Encoding {
 }
 
 #[derive(Clone, PartialEq, Message)]
-pub struct Status {
+struct Status {
     #[prost(int32, tag = "1")]
-    pub code: i32,
+    code: i32,
     #[prost(string, tag = "2")]
-    pub message: String,
+    message: String,
 }
 
 pub fn status(encoding: Encoding, message: &str) -> Vec<u8> {

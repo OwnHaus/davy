@@ -58,7 +58,7 @@ pub enum Reach {
 
 impl Reach {
     #[must_use]
-    pub fn allows(self, ip: IpAddr) -> bool {
+    pub(crate) fn allows(self, ip: IpAddr) -> bool {
         self == Self::Any || is_public(ip)
     }
 
