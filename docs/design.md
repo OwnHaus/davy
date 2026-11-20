@@ -558,6 +558,20 @@ The docs URL is the repository's raw `docs/` on the release tag until Davy has i
 - Feedback stays on the server: one row in a `feedback` table with the time, the client name and the text. `/mcp` keeps no sessions, so the name comes from `io.modelcontextprotocol/clientInfo` in the request's `_meta` and otherwise from `User-Agent`. That is a hint, not an identity: the TypeScript SDK 1.x sends neither name, so `e2e/run.sh` sees `node`. Each field holds at most 4000 characters, and only the newest 1000 rows stay, so an agent in a loop cannot fill the disk. `davy feedback --data DIR [--json]` lists it. Davy sends it nowhere by default. A channel created with `--feedback` also receives each new item, so a team can route it to Slack and act on it there.
 - The agent eval reads `davy feedback` after each run. Each item becomes a fix in the docs, the CLI or a tool, or a line in this section on why not.
 
+### Agent eval
+
+`e2e/eval/run.sh codex RUNS` starts a Debian container with systemd, Node 22, `sudo` and the coding agent, copies the small app in `e2e/eval/app` to `/app` and runs the agent once with the prompt in `e2e/eval/prompt.txt` and no other help. A run passes when `davy doctor` reports no failed check and a fresh MCP client, using the token in the data directory, finds the app's test error with `sql`. The results, the agent's events and `davy feedback` of each run stay in `.scratch/eval/results/`.
+
+Until 0.1.0 is released, the prompt differs from the README's in two ways. The docs are a copy of the repository at `/davy`, because the repository is private, and step 1 uses a binary built from the same commit with its `SHA256SUMS` instead of a download. The answers to the questions the docs tell the agent to ask are in the prompt, because no person watches the run: the public URL `http://127.0.0.1:8000`, no TLS proxy, no SMTP server.
+
+Codex, 2026-11-20, codex-cli 0.170.0 with its default model and a ChatGPT login: 5 of 5 runs passed, in a median of 62 s (54 to 106 s). A run read 250 to 315 thousand input tokens, 92 % of them cached, and wrote at most 2.2 thousand. Each agent followed `install.md` in order, checked the binary against `SHA256SUMS`, installed the unit with `davy systemd-unit` and connected itself, and `davy feedback` was empty after every run.
+
+The commands that failed during the runs came from the container or the agent, not from the docs, and each agent recovered on its own: `rg` is not installed, `systemctl` without `sudo` finds no D-Bus in the container, and a hand-written MCP request without `Accept: application/json, text/event-stream` got the 406 the MCP specification asks for. The slowest run spent its extra time on that request, a check the docs do not ask for.
+
+`davy mcp-config` prints the target file and the config together, so the agents cut the TOML out with `sed` or ran `codex mcp add` with the same values. It stays that way: for Claude Code and Cursor the config is merged into a JSON file that may already exist, which an append cannot do, and the output names the file in each case.
+
+Claude Code has no runs yet. `run.sh` wires up only Codex, and a Claude Code run needs a token from `claude setup-token` in the container.
+
 ### Safety
 
 The agent runs these commands with the person's shell rights. The docs never tell it to put the token on a command line, to disable TLS checks, to widen file permissions or to pipe a download into a shell. The install step downloads the binary, checks it against `SHA256SUMS` and, when `gh` is present, against its build provenance, and only then moves it into place.
