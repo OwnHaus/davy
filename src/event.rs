@@ -1,7 +1,7 @@
 use crate::time;
 use anyhow::{Result, bail};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 pub type Timestamp = i64;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -174,5 +174,112 @@ impl ErrorEvent {
             trace_id: string(&raw["contexts"]["trace"]["trace_id"]),
             raw,
         })
+    }
+}
+
+const MAX_FRAMES: usize = 30;
+const MAX_BREADCRUMBS: usize = 20;
+
+/// The parts of a stored event that help someone fix the bug, small enough
+/// for an agent's context: the innermost 30 frames per exception with source
+/// lines only for in-app frames, the last 20 breadcrumbs, and the runtime.
+/// Empty fields are left out.
+pub fn compact(e: &ErrorEvent) -> Value {
+    let raw = &e.raw;
+    let ex = &raw["exception"];
+    let exceptions: Vec<Value> = ex
+        .as_array()
+        .or_else(|| ex["values"].as_array())
+        .into_iter()
+        .flatten()
+        .map(|x| {
+            let frames = x["stacktrace"]["frames"].as_array().map_or(&[][..], Vec::as_slice);
+            json!({
+                "type": x["type"],
+                "value": x["value"],
+                "mechanism": x["mechanism"]["type"],
+                "handled": x["mechanism"]["handled"],
+                "frames": frames[frames.len().saturating_sub(MAX_FRAMES)..].iter().map(compact_frame).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let crumbs = &raw["breadcrumbs"];
+    let crumbs = crumbs
+        .as_array()
+        .or_else(|| crumbs["values"].as_array())
+        .map_or(&[][..], Vec::as_slice);
+    let breadcrumbs: Vec<Value> = crumbs[crumbs.len().saturating_sub(MAX_BREADCRUMBS)..]
+        .iter()
+        .map(|b| {
+            json!({
+                "timestamp": timestamp(b.get("timestamp")).map(time::rfc3339_ms),
+                "type": b["type"],
+                "category": b["category"],
+                "level": b["level"],
+                "message": b["message"],
+                "data": b["data"],
+            })
+        })
+        .collect();
+    let named = |k: &str| json!({"name": raw["contexts"][k]["name"], "version": raw["contexts"][k]["version"]});
+    prune(json!({
+        "event_id": e.event_id.0,
+        "timestamp": time::rfc3339_ms(e.timestamp),
+        "level": e.level.as_str(),
+        "platform": e.platform,
+        "release": e.release,
+        "environment": e.environment,
+        "message": e.message,
+        "trace_id": e.trace_id,
+        "exceptions": exceptions,
+        "breadcrumbs": breadcrumbs,
+        "tags": raw["tags"],
+        "user": raw["user"],
+        "request": {"method": raw["request"]["method"], "url": raw["request"]["url"]},
+        "runtime": named("runtime"),
+        "os": named("os"),
+        "browser": named("browser"),
+    }))
+}
+
+fn compact_frame(f: &Value) -> Value {
+    let mut out = json!({
+        "function": f["function"],
+        "module": f["module"],
+        "filename": f["filename"],
+        "lineno": f["lineno"],
+        "colno": f["colno"],
+        "in_app": f["in_app"],
+    });
+    if f["in_app"] == true {
+        for k in ["pre_context", "context_line", "post_context"] {
+            out[k] = f[k].clone();
+        }
+    }
+    out
+}
+
+/// Drops nulls and empty arrays and objects, recursively.
+fn prune(v: Value) -> Value {
+    match v {
+        Value::Object(m) => Value::Object(
+            m.into_iter()
+                .map(|(k, v)| (k, prune(v)))
+                .filter(|(_, v)| !is_empty(v))
+                .collect(),
+        ),
+        Value::Array(a) => {
+            Value::Array(a.into_iter().map(prune).filter(|v| !is_empty(v)).collect())
+        }
+        other => other,
+    }
+}
+
+fn is_empty(v: &Value) -> bool {
+    match v {
+        Value::Null => true,
+        Value::Array(a) => a.is_empty(),
+        Value::Object(m) => m.is_empty(),
+        _ => false,
     }
 }
