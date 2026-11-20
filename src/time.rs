@@ -2,6 +2,7 @@
 //! and error events unix milliseconds, both as `i64`. Days are UTC.
 
 use jiff::{Timestamp, civil, tz::TimeZone};
+use std::time::Duration;
 
 pub fn now_ms() -> i64 {
     Timestamp::now().as_millisecond()
@@ -42,24 +43,26 @@ pub fn rfc3339_ms(ms: i64) -> String {
     rfc3339(ms.saturating_mul(1_000_000))
 }
 
+/// A span such as `30s`, `15m`, `1h` or `2d`, or `None` when `s` is not one
+/// or does not fit.
+pub fn duration(s: &str) -> Option<Duration> {
+    let (count, unit_secs) = [('s', 1), ('m', 60), ('h', 3600), ('d', 86_400)]
+        .into_iter()
+        .find_map(|(suffix, secs)| Some((s.strip_suffix(suffix)?, secs)))?;
+    let count: u64 = count.parse().ok()?;
+    count.checked_mul(unit_secs).map(Duration::from_secs)
+}
+
 /// A point in time from a CLI flag or a tool argument: an RFC 3339 timestamp,
 /// or a duration back from `now_ns` such as `30s`, `15m`, `1h` or `2d`.
 pub fn instant(s: &str, now_ns: i64) -> Result<i64, String> {
-    const EXPECTED: &str = "expected 30m, 1h, 2d or an RFC 3339 timestamp";
     if let Some(t) = parse(s) {
         return nanos(t).ok_or_else(|| format!("{s:?} is out of range"));
     }
-    let (count, unit_secs) = [('s', 1), ('m', 60), ('h', 3600), ('d', 86_400)]
-        .into_iter()
-        .find_map(|(suffix, secs)| Some((s.strip_suffix(suffix)?, secs)))
-        .ok_or_else(|| format!("{EXPECTED}, got {s:?}"))?;
-    let count: i64 = count
-        .parse()
-        .map_err(|e| format!("{EXPECTED}, got {s:?} ({e})"))?;
-    count
-        .checked_mul(unit_secs * 1_000_000_000)
+    duration(s)
+        .and_then(|back| i64::try_from(back.as_nanos()).ok())
         .and_then(|back| now_ns.checked_sub(back))
-        .ok_or_else(|| format!("{s:?} is out of range"))
+        .ok_or_else(|| format!("expected 30m, 1h, 2d or an RFC 3339 timestamp, got {s:?}"))
 }
 
 /// The integer part of `n`, or `None` when `n` is not finite or does not fit an `i64`.
@@ -84,6 +87,17 @@ mod tests {
         assert_eq!(instant("2026-11-20", now), Ok(1_795_132_800_000_000_000));
         for bad in ["", "h", "1w", "-", "99999999999d"] {
             assert!(instant(bad, now).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn duration_reads_a_count_and_a_unit() {
+        assert_eq!(duration("90s"), Some(Duration::from_secs(90)));
+        assert_eq!(duration("5m"), Some(Duration::from_mins(5)));
+        assert_eq!(duration("2d"), Some(Duration::from_hours(48)));
+        assert_eq!(duration("0s"), Some(Duration::ZERO));
+        for bad in ["", "s", "1w", "-1s", "1.5h", "99999999999999999999d"] {
+            assert_eq!(duration(bad), None, "{bad:?}");
         }
     }
 
