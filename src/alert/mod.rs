@@ -13,7 +13,7 @@ mod tests;
 
 pub use notice::{Incident, Issue, Mail, Notice};
 
-use crate::monitor::CheckUrl;
+use crate::{monitor::CheckUrl, secret, text::hex};
 use anyhow::anyhow;
 use hmac::{Hmac, KeyInit as _, Mac as _};
 use sha2::Sha256;
@@ -118,9 +118,8 @@ impl std::fmt::Debug for Secret {
 
 impl Secret {
     fn random() -> anyhow::Result<Self> {
-        let mut bytes = [0_u8; 32];
-        getrandom::fill(&mut bytes).map_err(|e| anyhow!("no randomness for a secret: {e}"))?;
-        Ok(Self(hex(&bytes)))
+        let hex = secret::random_hex().map_err(|e| anyhow!("no randomness for a secret: {e}"))?;
+        Ok(Self(hex))
     }
 
     /// A secret read back from its channel row.
@@ -151,12 +150,4 @@ impl Secret {
 pub fn retry_after(failures: u32) -> Option<Duration> {
     let doublings = failures.checked_sub(1).filter(|&d| d < 5)?;
     Some(Duration::from_secs(30 << doublings))
-}
-
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .flat_map(|b| [b >> 4, b & 0xf])
-        .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
-        .collect()
 }

@@ -178,13 +178,7 @@ pub fn hex_id(s: &str, len: usize) -> Option<String> {
 }
 
 pub fn hex_bytes(b: &[u8], len: usize) -> Option<String> {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let s: String = b
-        .iter()
-        .flat_map(|b| [DIGITS[usize::from(b >> 4)], DIGITS[usize::from(b & 0xf)]])
-        .map(char::from)
-        .collect();
-    hex_id(&s, len)
+    hex_id(&crate::text::hex(b), len)
 }
 
 /// The text of a record's message, cut to 64 KiB at a character boundary.

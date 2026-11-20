@@ -238,10 +238,10 @@ fn ensure_token(path: &Path) -> anyhow::Result<()> {
         );
         return restrict(path, 0o600);
     }
-    let mut bytes = [0_u8; 32];
-    getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("no randomness for the token: {e}"))?;
+    let token = crate::secret::random_hex()
+        .map_err(|e| anyhow::anyhow!("no randomness for the token: {e}"))?;
     let mut file = new_private_file(path)?;
-    writeln!(file, "{}", crate::alert::hex(&bytes))?;
+    writeln!(file, "{token}")?;
     Ok(())
 }
 

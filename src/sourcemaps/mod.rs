@@ -47,13 +47,7 @@ pub struct ChunkId(String);
 
 impl ChunkId {
     pub fn of(bytes: &[u8]) -> Self {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut hex = String::with_capacity(40);
-        for byte in Sha1::digest(bytes) {
-            hex.push(char::from(HEX[usize::from(byte >> 4)]));
-            hex.push(char::from(HEX[usize::from(byte & 0xf)]));
-        }
-        Self(hex)
+        Self(crate::text::hex(&Sha1::digest(bytes)))
     }
 }
 

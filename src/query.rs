@@ -342,10 +342,7 @@ mod tests {
         let (_data, c) = store_with_one_event();
         let sql = |bytes: usize| {
             let blob = zstd::encode_all(vec![b' '; bytes].as_slice(), 19).unwrap();
-            let hex = blob.iter().fold(String::new(), |mut hex, b| {
-                std::fmt::Write::write_fmt(&mut hex, format_args!("{b:02x}")).unwrap();
-                hex
-            });
+            let hex = crate::text::hex(&blob);
             format!("SELECT length(payload_json(x'{hex}'))")
         };
         assert_eq!(run(&c, &sql(1 << 20)).unwrap().rows[0][0], 1 << 20);

@@ -41,6 +41,13 @@ pub fn admin_token(env: impl Fn(&str) -> Option<String>) -> anyhow::Result<Optio
     Ok(token)
 }
 
+/// 32 random bytes as 64 hex digits, for a token or a signing secret.
+pub(crate) fn random_hex() -> Result<String, getrandom::Error> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes)?;
+    Ok(crate::text::hex(&bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,3 +15,12 @@ pub fn printable(s: &str, with: char) -> Cow<'_, str> {
         Cow::Borrowed(s)
     }
 }
+
+/// `bytes` as lowercase hex digits, two per byte.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .flat_map(|b| [b >> 4, b & 0xf])
+        .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
+        .collect()
+}
