@@ -15,4 +15,5 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 - The admin token and the SMTP URL can come from files named by `DAVY_TOKEN_FILE` and `DAVY_SMTP_URL_FILE`, the way systemd credentials and container secrets hand them over.
 - `davy setup` prepares a machine in one command: a private data directory, a random admin token in `DATA/token` and a hardened systemd unit or launchd job. It prints the next commands as JSON and can run again safely.
 - `davy doctor` checks a running install: permissions of the data directory and token, TLS, that the server answers and runs with the token, the SMTP server and free disk space. Every check that is not ok prints the command that fixes it, and `--json` gives the same for an agent.
+- `davy mcp-config --client claude-code|codex|cursor` prints the MCP config for that client. It reads the token from `DAVY_TOKEN`, so the file can be committed.
 - The CLI commands `project`, `issues`, `event`, `logs`, `sql`, `context`, `resolve`, `monitor` and `channel`.

@@ -30,6 +30,9 @@ enum Command {
     /// Checks a running install. Each check that is not ok prints its fix. The
     /// exit code is 1 when a check fails.
     Doctor(install::doctor::Args),
+    /// Prints the MCP config for Claude Code, Codex or Cursor. The config
+    /// reads the token from DAVY_TOKEN, so it can be committed.
+    McpConfig(install::client::Args),
     /// Runs the ingest server. With an admin token in DAVY_TOKEN or a file named
     /// by DAVY_TOKEN_FILE it also serves MCP at /mcp and takes source map uploads.
     Serve(Serve),
@@ -242,6 +245,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Serve(args) => serve(args).await?,
         Command::Setup(args) => install::setup::run(&mut out.lock(), &args)?,
         Command::Doctor(args) => install::doctor::run(&mut out.lock(), &args).await?,
+        Command::McpConfig(args) => install::client::run(&mut out.lock(), &args)?,
         Command::Project {
             command:
                 Project::Create {
