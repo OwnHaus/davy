@@ -12,7 +12,10 @@ use axum::{
     body::{Body, to_bytes},
     http::{HeaderMap, Request, header},
 };
-use std::sync::{Arc, mpsc};
+use std::{
+    sync::{Arc, mpsc},
+    time::Duration,
+};
 use tokio::sync::Semaphore;
 use tower::ServiceExt;
 
@@ -234,19 +237,21 @@ async fn envelope_accepts_unknown_item_types() {
     assert_eq!(reply["id"].as_str().unwrap().len(), 32);
 }
 
+fn dummy_write() -> store::Write {
+    let (done, _) = tokio::sync::oneshot::channel();
+    store::Write {
+        job: store::Job::Ingest {
+            project: 1,
+            events: vec![],
+        },
+        done,
+    }
+}
+
 #[tokio::test]
 async fn full_error_queue_is_429() {
     let s = server();
-    let (done, _) = tokio::sync::oneshot::channel();
-    s.errors
-        .try_send(store::Write {
-            job: store::Job::Ingest {
-                project: 1,
-                events: vec![],
-            },
-            done,
-        })
-        .unwrap();
+    s.errors.try_send(dummy_write()).unwrap();
     let r = s
         .send(post(
             "/api/1/store/?sentry_key=key-a",
@@ -389,6 +394,38 @@ async fn sentry_log_items() {
             "Payment provider timed out"
         ]
     );
+}
+
+#[tokio::test]
+async fn items_over_one_mib_are_dropped_before_parsing() {
+    let s = server();
+    let big = format!("{{\"message\":\"{}\"}}", "x".repeat(1024 * 1024));
+    let logs = format!(
+        "{{\"items\":[{{\"timestamp\":1,\"level\":\"info\",\"body\":\"{}\"}}]}}",
+        "x".repeat(1024 * 1024)
+    );
+    for (uri, body) in [
+        ("/api/1/store/?sentry_key=key-a", big.clone()),
+        (
+            "/api/1/envelope/?sentry_key=key-a",
+            format!("{{}}\n{{\"type\":\"event\"}}\n{big}"),
+        ),
+        (
+            "/api/1/envelope/?sentry_key=key-a",
+            format!("{{}}\n{{\"type\":\"log\"}}\n{logs}"),
+        ),
+    ] {
+        // A queued event waits for a writer this test does not run.
+        let r = tokio::time::timeout(Duration::from_secs(5), s.send(post(uri, &[], body)))
+            .await
+            .expect("answered without queueing an event");
+        assert_eq!(r.status, 200, "{uri}");
+    }
+    assert!(
+        s.errors.try_send(dummy_write()).is_ok(),
+        "no event was queued"
+    );
+    assert!(s.logs.try_recv().is_none(), "no log was queued");
 }
 
 #[tokio::test]

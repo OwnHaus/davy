@@ -33,6 +33,8 @@ const COMPRESSED: usize = 20 * 1024 * 1024;
 const DECOMPRESSED: usize = 200 * 1024 * 1024;
 const MAX_HEADER_LINE: usize = 64 * 1024;
 const PARSING_SLOTS: usize = 8;
+/// Sentry's limit for one event or log item, so a client that works with Sentry fits.
+const MAX_ITEM: usize = 1024 * 1024;
 const BODY_TIMEOUT: Duration = Duration::from_secs(30);
 pub const RATE: &str = "86400:transaction;span;replay;profile;profile_chunk:organization";
 
@@ -290,7 +292,11 @@ fn parse_sentry(
     if legacy {
         return Ok(Parsed {
             id: None,
-            events: vec![event(bytes)?],
+            events: if bytes.len() > MAX_ITEM {
+                Vec::new()
+            } else {
+                vec![event(bytes)?]
+            },
             logs: Vec::new(),
         });
     }
@@ -301,7 +307,11 @@ fn parse_sentry(
         events: Vec::new(),
         logs: Vec::new(),
     };
-    for item in envelope.items {
+    for item in envelope
+        .items
+        .into_iter()
+        .filter(|i| i.payload.len() <= MAX_ITEM)
+    {
         match disposition(&item.kind) {
             Disposition::StoreError => parsed.events.push(event(&item.payload)?),
             Disposition::StoreLogs => {
