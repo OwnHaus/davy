@@ -220,6 +220,7 @@ pub enum Job {
     Resolve {
         issue: i64,
         release: Option<String>,
+        at: Timestamp,
     },
     Ping {
         monitor: i64,
@@ -262,8 +263,8 @@ fn apply(c: &Connection, job: &Job) -> Result<Outcome> {
             }
             Ok(Ok(()))
         }
-        Job::Resolve { issue, release } => {
-            let found = resolve(c, *issue, release.as_deref(), time::now_ms())?;
+        Job::Resolve { issue, release, at } => {
+            let found = resolve(c, *issue, release.as_deref(), *at)?;
             Ok(found
                 .then_some(())
                 .ok_or_else(|| format!("no issue {issue}")))

@@ -212,6 +212,7 @@ impl Tools {
         let job = Job::Resolve {
             issue: issue_id,
             release,
+            at: time::now_ms(),
         };
         store::submit(&self.writes, job)
             .await
@@ -396,7 +397,7 @@ mod tests {
         let writer = std::thread::spawn(move || {
             for outcome in [Ok(()), Err("no issue 9".to_owned())] {
                 let w = s.writes.recv().unwrap();
-                let Job::Resolve { issue, release } = w.job else {
+                let Job::Resolve { issue, release, .. } = w.job else {
                     panic!("expected a resolve job");
                 };
                 w.done.send(outcome).unwrap();
