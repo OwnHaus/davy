@@ -69,6 +69,8 @@ fn json_bodies() -> Vec<(&'static str, String)> {
             format!("[{}{{}}]", "{\"a\":1},".repeat(n)),
         ),
         ("deep", format!("{}{}", "[".repeat(127), "]".repeat(127))),
+        ("escaped string", format!("[\"{}\"]", "\\n".repeat(n))),
+        ("escaped key", format!("{{\"{}\":0}}", "\\u00e9".repeat(n))),
     ]
 }
 

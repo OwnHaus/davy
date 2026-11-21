@@ -24,17 +24,24 @@ fn an_object_pays_for_its_first_node_its_entries_and_its_text() {
 
 #[test]
 fn the_count_matches_the_tree_it_stands_for() {
-    let bodies: [&[u8]; 5] = [
+    let bodies: [&[u8]; 4] = [
         br#"[1, "two", null, true, 4.5]"#,
         br#"{"nested": {"deeper": [{"k": "v"}, [], {}]}, "list": ["a", "bb"]}"#,
         br#""a string of more than sixteen bytes""#,
-        br#"{"escaped \" key": "tab\tand \u00e9"}"#,
         br"[[[[[]]]]]",
     ];
     for body in bodies {
         let tree = serde_json::from_slice::<Value>(body).unwrap();
         assert_eq!(json(body, 0).unwrap(), of_value(&tree), "{body:?}");
     }
+}
+
+#[test]
+fn escaped_text_also_pays_for_the_scratch_buffer_it_is_unescaped_into() {
+    let body = br#"{"escaped \" key": "tab\tand \u00e9"}"#;
+    let tree = serde_json::from_slice::<Value>(body).unwrap();
+    // The longer of the two unescaped strings is the 13-byte key.
+    assert_eq!(json(body, 0).unwrap(), of_value(&tree) + 2 * 13);
 }
 
 #[test]

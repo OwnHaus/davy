@@ -79,15 +79,21 @@ pub fn of_record(r: &LogRecord) -> usize {
 /// `per_object` for each object in it, found without building anything.
 /// Errors where `serde_json` would.
 pub fn json(bytes: &[u8], per_object: usize) -> Result<usize, serde_json::Error> {
-    let mut total = VALUE;
+    let mut tally = Tally {
+        total: VALUE,
+        escaped: 0,
+    };
     let mut de = serde_json::Deserializer::from_slice(bytes);
     Count {
-        total: &mut total,
+        tally: &mut tally,
         per_object,
     }
     .deserialize(&mut de)?;
     de.end()?;
-    Ok(total)
+    // `serde_json` unescapes a string into one scratch buffer that it keeps
+    // for the whole parse, and the buffer grows by doubling to fit the
+    // longest escaped string.
+    Ok(tally.total + 2 * tally.escaped)
 }
 
 /// [`json`] for each non-blank line of `bytes`.
@@ -99,8 +105,14 @@ pub fn ndjson(bytes: &[u8], per_object: usize) -> Result<usize, serde_json::Erro
         .sum()
 }
 
+struct Tally {
+    total: usize,
+    /// The longest string that had to be unescaped.
+    escaped: usize,
+}
+
 struct Count<'a> {
-    total: &'a mut usize,
+    tally: &'a mut Tally,
     per_object: usize,
 }
 
@@ -131,8 +143,15 @@ impl<'de> Visitor<'de> for Count<'_> {
     fn visit_unit<E>(self) -> Result<(), E> {
         Ok(())
     }
+    /// A string without escapes, read in place.
+    fn visit_borrowed_str<E>(self, s: &'de str) -> Result<(), E> {
+        self.tally.total += text(s.len());
+        Ok(())
+    }
+    /// A string that was unescaped into the scratch buffer.
     fn visit_str<E>(self, s: &str) -> Result<(), E> {
-        *self.total += text(s.len());
+        self.tally.total += text(s.len());
+        self.tally.escaped = self.tally.escaped.max(s.len());
         Ok(())
     }
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
@@ -140,39 +159,39 @@ impl<'de> Visitor<'de> for Count<'_> {
         let mut items = 0;
         while seq
             .next_element_seed(Count {
-                total: &mut *self.total,
+                tally: &mut *self.tally,
                 per_object,
             })?
             .is_some()
         {
-            *self.total += VALUE;
+            self.tally.total += VALUE;
             items += 1;
         }
         if items > 0 {
-            *self.total += ARRAY;
+            self.tally.total += ARRAY;
         }
         Ok(())
     }
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
         let per_object = self.per_object;
-        *self.total += per_object;
+        self.tally.total += per_object;
         let mut entries = 0;
         while map
             .next_key_seed(Count {
-                total: &mut *self.total,
+                tally: &mut *self.tally,
                 per_object,
             })?
             .is_some()
         {
             map.next_value_seed(Count {
-                total: &mut *self.total,
+                tally: &mut *self.tally,
                 per_object,
             })?;
-            *self.total += ENTRY;
+            self.tally.total += ENTRY;
             entries += 1;
         }
         if entries > 0 {
-            *self.total += MAP;
+            self.tally.total += MAP;
         }
         Ok(())
     }
