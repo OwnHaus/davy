@@ -5,7 +5,7 @@ edition = "2024"
 license = "AGPL-3.0-only"
 
 [dependencies]
-axum = { version = "0.8", features = ["multipart"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "multipart", "original-uri"] }
 tokio = { version = "1", features = ["full"] }
 rusqlite = { version = "0.43", features = ["bundled", "functions", "hooks", "limits"] }
 serde = { version = "1", features = ["derive"] }

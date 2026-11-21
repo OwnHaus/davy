@@ -17,7 +17,7 @@ use crate::{
     upload,
 };
 use axum::{
-    Json, Router,
+    Router,
     body::Body,
     extract::{Path, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
@@ -162,6 +162,13 @@ async fn headers(req: Request, next: Next) -> Response {
     response
 }
 pub(crate) type Failure = (StatusCode, String);
+/// A JSON response. axum's `Json` would turn on serde_json's `raw_value`,
+/// under which an object whose first key is serde_json's private token
+/// parses its string as a fresh JSON tree, unpriced and with its own depth
+/// limit, so davy builds its JSON responses and requests itself.
+pub(crate) fn json_response(v: &serde_json::Value) -> Response {
+    ([(header::CONTENT_TYPE, "application/json")], v.to_string()).into_response()
+}
 pub(crate) fn bad(e: impl std::fmt::Display) -> Failure {
     (StatusCode::BAD_REQUEST, e.to_string())
 }
@@ -372,7 +379,7 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
         let events = vec![event];
         store::submit(&app.sender, Job::Ingest { project, events }).await?;
     }
-    Ok(Json(json!({"id":id.0})).into_response())
+    Ok(json_response(&json!({"id":id.0})))
 }
 async fn ping(State(app): State<App>, Path(token): Path<String>) -> Result<&'static str, Failure> {
     heartbeat(&app, &token, false).await

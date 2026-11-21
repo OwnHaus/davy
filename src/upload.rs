@@ -2,18 +2,20 @@
 //! assembly. `http::serve` mounts it behind the admin token.
 
 use crate::{
-    http::{Failure, bad, blocking, body::inflate, internal},
+    http::{Failure, bad, blocking, body::inflate, internal, json_response},
     sourcemaps::{Assembly, ChunkId, MAX_FILE, Store},
     token::{self, Token},
 };
 use axum::{
-    Json, Router,
+    Router,
+    body::Bytes,
     extract::{DefaultBodyLimit, Multipart, OriginalUri, State},
     middleware,
+    response::Response,
     routing::{get, post},
 };
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::sync::Arc;
 
 const CHUNK_SIZE: usize = 8 * 1024 * 1024;
@@ -51,8 +53,8 @@ pub fn router(store: Arc<Store>, token: Token, public_url: &url::Url) -> Router 
         ))
 }
 
-async fn options(State(upload): State<Upload>, OriginalUri(uri): OriginalUri) -> Json<Value> {
-    Json(json!({
+async fn options(State(upload): State<Upload>, OriginalUri(uri): OriginalUri) -> Response {
+    json_response(&json!({
         "url": format!("{}{}", upload.base, uri.path()),
         "chunkSize": CHUNK_SIZE,
         "chunksPerRequest": CHUNKS_PER_REQUEST,
@@ -65,7 +67,7 @@ async fn options(State(upload): State<Upload>, OriginalUri(uri): OriginalUri) ->
     }))
 }
 
-async fn chunks(State(upload): State<Upload>, mut form: Multipart) -> Result<Json<Value>, Failure> {
+async fn chunks(State(upload): State<Upload>, mut form: Multipart) -> Result<Response, Failure> {
     let mut parts = Vec::new();
     while let Some(field) = form.next_field().await.map_err(bad)? {
         let gzip = match field.name() {
@@ -97,7 +99,7 @@ async fn chunks(State(upload): State<Upload>, mut form: Multipart) -> Result<Jso
         Ok(())
     })
     .await?;
-    Ok(Json(json!({})))
+    Ok(json_response(&json!({})))
 }
 
 #[derive(Deserialize)]
@@ -106,10 +108,8 @@ struct AssembleRequest {
     chunks: Vec<ChunkId>,
 }
 
-async fn assemble(
-    State(upload): State<Upload>,
-    Json(req): Json<AssembleRequest>,
-) -> Result<Json<Value>, Failure> {
+async fn assemble(State(upload): State<Upload>, body: Bytes) -> Result<Response, Failure> {
+    let req: AssembleRequest = serde_json::from_slice(&body).map_err(bad)?;
     if req.chunks.len() > MAX_ASSEMBLE_CHUNKS {
         return Err(bad(format!(
             "an assemble request names at most {MAX_ASSEMBLE_CHUNKS} chunks"
@@ -122,7 +122,7 @@ async fn assemble(
             .map_err(internal)
     })
     .await?;
-    Ok(Json(match outcome {
+    Ok(json_response(&match outcome {
         Assembly::Missing(chunks) => json!({"state": "not_found", "missingChunks": chunks}),
         Assembly::Created => json!({"state": "created", "missingChunks": []}),
         Assembly::Failed(detail) => {
@@ -140,6 +140,7 @@ mod tests {
         body::{Body, to_bytes},
         http::{Request, StatusCode, header},
     };
+    use serde_json::Value;
     use tower::ServiceExt;
 
     const SECRET: &str = "a-test-token-that-is-long-enough!";

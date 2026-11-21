@@ -83,3 +83,13 @@ fn msgpack_nested_deeper_than_its_price_allows_is_refused() {
     assert!(cost(&deep, "application/msgpack").is_err());
     assert!(parse(&deep, "application/msgpack", 1, 0).is_err());
 }
+
+#[test]
+fn serde_jsons_raw_value_key_is_an_ordinary_key() {
+    let key = "$serde_json::private::RawValue";
+    let body = format!(r#"{{"{key}":"{{\"message\":\"inner\"}}","message":"outer"}}"#);
+    let records = parse(body.as_bytes(), "application/json", 1, 5).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].message, "outer");
+    assert_eq!(records[0].attributes[key], r#"{"message":"inner"}"#);
+}
