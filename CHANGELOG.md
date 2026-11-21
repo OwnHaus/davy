@@ -27,4 +27,4 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 
 ### Security
 
-- An internal penetration test before the release found one high, two medium, seven low and six informational findings. The high and both mediums are fixed, and `docs/security/pentest-0.1.0.md` lists what became of each one.
+- An internal penetration test before the release found one high, two medium, seven low and six informational findings. The high and both mediums are fixed. A security read of the fixes by a second model found one high, five medium and one low finding. Five are fixed, one is partly fixed with the rest accepted, and one, slow envelopes from clients without a key, is accepted as the reverse proxy's job. `docs/security/pentest-0.1.0.md` lists what became of each finding.
