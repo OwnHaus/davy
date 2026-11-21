@@ -33,7 +33,10 @@ fuzz_target!(|data: &[u8]| {
         ] } }] },
     });
     let id = DebugId::parse(ID);
-    symbolicate(&mut event, |found| {
-        (Some(found) == id).then(|| Arc::clone(&build))
-    });
+    let free = |_| Ok::<(), std::convert::Infallible>(());
+    let Ok(()) = symbolicate(
+        &mut event,
+        |found| (Some(found) == id).then(|| Arc::clone(&build)),
+        free,
+    );
 });

@@ -18,3 +18,7 @@ pub fn fixture(path: &str) -> Vec<u8> {
     )
     .unwrap()
 }
+
+/// A `pay` for code that pays for its memory as it goes, when no budget is
+/// kept.
+pub const FREE: fn(usize) -> Result<(), std::convert::Infallible> = |_| Ok(());

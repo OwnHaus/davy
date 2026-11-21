@@ -135,6 +135,7 @@ async fn assemble(
 mod tests {
     use super::*;
     use crate::sourcemaps::DebugId;
+    use crate::test_support::FREE;
     use axum::{
         body::{Body, to_bytes},
         http::{Request, StatusCode, header},
@@ -239,7 +240,7 @@ mod tests {
             "debug_meta": {"images": [{"type": "sourcemap", "code_file": "/app.min.js", "debug_id": id.to_string()}]},
             "exception": {"values": [{"stacktrace": {"frames": [{"filename": "/app.min.js", "function": "n", "lineno": 3, "colno": 74}]}}]},
         });
-        crate::sourcemaps::symbolicate(&mut event, |id| store.build(id).unwrap());
+        crate::sourcemaps::symbolicate(&mut event, |id| store.build(id).unwrap(), FREE).unwrap();
         let frame = &event["exception"]["values"][0]["stacktrace"]["frames"][0];
         assert_eq!(
             [&frame["function"], &frame["filename"], &frame["lineno"]],

@@ -4,7 +4,7 @@ use super::{
     symbolicate,
 };
 use crate::envelope::{Envelope, ItemKind};
-use crate::test_support::fixture;
+use crate::test_support::{FREE, fixture};
 use serde_json::{Value, json};
 use sourcemap::{SourceMap, SourceView};
 use std::{io::Write, sync::Arc};
@@ -45,9 +45,12 @@ fn frames(event: &Value) -> &Vec<Value> {
 fn minified_frames_get_the_original_function_file_line_and_source() {
     let mut event = captured_event();
     let build = captured_build();
-    symbolicate(&mut event, |id| {
-        (id == DebugId::parse(BUILD).unwrap()).then(|| Arc::clone(&build))
-    });
+    symbolicate(
+        &mut event,
+        |id| (id == DebugId::parse(BUILD).unwrap()).then(|| Arc::clone(&build)),
+        FREE,
+    )
+    .unwrap();
     let frames = frames(&event);
     assert_eq!(
         frames[3],
@@ -81,7 +84,7 @@ fn minified_frames_get_the_original_function_file_line_and_source() {
 fn frames_without_a_known_build_stay_as_they_are() {
     let mut event = captured_event();
     let before = event.clone();
-    symbolicate(&mut event, |_| None);
+    symbolicate(&mut event, |_| None, FREE).unwrap();
     assert_eq!(event, before);
 }
 
@@ -90,7 +93,7 @@ fn a_frame_from_another_file_stays_as_it_is() {
     let mut event = captured_event();
     let before = frames(&event)[1].clone();
     let build = captured_build();
-    symbolicate(&mut event, |_| Some(Arc::clone(&build)));
+    symbolicate(&mut event, |_| Some(Arc::clone(&build)), FREE).unwrap();
     assert_eq!(frames(&event)[1], before);
 }
 
@@ -101,10 +104,15 @@ fn an_event_looks_up_each_build_once_and_symbolicates_at_most_256_frames() {
     event["exception"]["values"][0]["stacktrace"]["frames"] = json!(vec![minified; 300]);
     let build = captured_build();
     let lookups = std::cell::Cell::new(0);
-    symbolicate(&mut event, |_| {
-        lookups.set(lookups.get() + 1);
-        Some(Arc::clone(&build))
-    });
+    symbolicate(
+        &mut event,
+        |_| {
+            lookups.set(lookups.get() + 1);
+            Some(Arc::clone(&build))
+        },
+        FREE,
+    )
+    .unwrap();
     assert_eq!(lookups.get(), 1);
     let frames = frames(&event);
     assert_eq!(
@@ -131,7 +139,7 @@ fn a_context_line_keeps_256_bytes_around_the_column() {
     map["sourcesContent"][app] = json!(long);
     let build = Arc::new(Build::parse(&serde_json::to_vec(&map).unwrap(), None).unwrap());
     let mut event = captured_event();
-    symbolicate(&mut event, |_| Some(Arc::clone(&build)));
+    symbolicate(&mut event, |_| Some(Arc::clone(&build)), FREE).unwrap();
     let line = format!("  return order.items.length{}", "x".repeat(1 << 20));
     assert_eq!(
         frames(&event)[3]["context_line"],
@@ -140,13 +148,39 @@ fn a_context_line_keeps_256_bytes_around_the_column() {
 }
 
 #[test]
-fn symbolication_returns_the_heap_it_adds() {
+fn each_symbolicated_frame_pays_for_the_heap_it_adds() {
     let mut event = captured_event();
     let before = crate::heap::of_value(&event);
     let build = captured_build();
-    let added = symbolicate(&mut event, |_| Some(Arc::clone(&build)));
-    assert!(added > 0);
-    assert_eq!(before + added, crate::heap::of_value(&event));
+    let mut paid = Vec::new();
+    symbolicate(
+        &mut event,
+        |_| Some(Arc::clone(&build)),
+        |bytes| {
+            paid.push(bytes);
+            Ok::<_, ()>(())
+        },
+    )
+    .unwrap();
+    assert_eq!(paid.len(), 2);
+    assert!(paid.iter().all(|&bytes| bytes > 0));
+    assert_eq!(
+        before + paid.iter().sum::<usize>(),
+        crate::heap::of_value(&event)
+    );
+}
+
+#[test]
+fn a_refused_payment_stops_symbolication() {
+    let mut event = captured_event();
+    let build = captured_build();
+    let refused = symbolicate(&mut event, |_| Some(Arc::clone(&build)), |_| Err("busy"));
+    assert_eq!(refused, Err("busy"));
+    let frames = frames(&event);
+    assert_eq!(
+        [&frames[2]["function"], &frames[3]["function"]],
+        [&json!("o"), &json!("parseOrder")]
+    );
 }
 
 #[test]

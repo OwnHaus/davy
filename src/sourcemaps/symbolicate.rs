@@ -17,9 +17,14 @@ const SCAN_TOKENS: usize = 1024;
 /// `debug_meta.images` to original source positions, in place. A frame whose
 /// build `builds` does not know stays as it is. `builds` runs once per debug
 /// ID. Only the newest [`MAX_FRAMES`] frames are rewritten, counted from the
-/// frame that threw, because Sentry lists frames oldest first. Returns the
-/// heap the rewritten frames grew by, by the prices of [`crate::heap`].
-pub fn symbolicate(event: &mut Value, builds: impl Fn(DebugId) -> Option<Arc<Build>>) -> usize {
+/// frame that threw, because Sentry lists frames oldest first. Each frame
+/// pays `pay` the heap it grew by, by the prices of [`crate::heap`], before
+/// the next frame is rewritten, and a refused payment stops the rewrite.
+pub fn symbolicate<E>(
+    event: &mut Value,
+    builds: impl Fn(DebugId) -> Option<Arc<Build>>,
+    mut pay: impl FnMut(usize) -> Result<(), E>,
+) -> Result<(), E> {
     let images: HashMap<String, DebugId> = event
         .pointer("/debug_meta/images")
         .and_then(Value::as_array)
@@ -35,13 +40,13 @@ pub fn symbolicate(event: &mut Value, builds: impl Fn(DebugId) -> Option<Arc<Bui
         })
         .collect();
     if images.is_empty() {
-        return 0;
+        return Ok(());
     }
     let Some(exceptions) = event
         .pointer_mut("/exception/values")
         .and_then(Value::as_array_mut)
     else {
-        return 0;
+        return Ok(());
     };
     let mut found: HashMap<DebugId, Option<Arc<Build>>> = HashMap::new();
     let frames = exceptions
@@ -60,15 +65,14 @@ pub fn symbolicate(event: &mut Value, builds: impl Fn(DebugId) -> Option<Arc<Bui
             Some((frame, id))
         })
         .take(MAX_FRAMES);
-    let mut added = 0;
     for (frame, id) in frames {
         if let Some(build) = found.entry(id).or_insert_with(|| builds(id)) {
             let before = heap::of_map(frame);
             rewrite(frame, build);
-            added += heap::of_map(frame).saturating_sub(before);
+            pay(heap::of_map(frame).saturating_sub(before))?;
         }
     }
-    added
+    Ok(())
 }
 
 fn rewrite(frame: &mut Map<String, Value>, build: &Build) -> Option<()> {
