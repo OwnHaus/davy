@@ -27,8 +27,9 @@ pub const ARRAY: usize = 4 * size_of::<Value>();
 /// A log record's slot in a growing batch, priced as [`VALUE`] is, without
 /// its text and attributes.
 pub const RECORD: usize = 3 * size_of::<LogRecord>();
-/// Deeper input is refused, as `serde_json` refuses it.
-const MAX_DEPTH: usize = 128;
+/// Deeper input is refused, as `serde_json` refuses it. The outermost
+/// value is at depth 0.
+pub const MAX_DEPTH: usize = 128;
 
 /// Text of `len` bytes, rounded up to the allocator's 16-byte steps.
 pub fn text(len: usize) -> usize {

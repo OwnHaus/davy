@@ -86,7 +86,24 @@ fn msgpack(mut body: &[u8]) -> Result<Value, String> {
     if !body.is_empty() {
         return Err("bytes after the msgpack value".into());
     }
+    // The price refuses what nests deeper than JSON may, so parsing does too.
+    if levels(&v) > heap::MAX_DEPTH + 1 {
+        return Err("msgpack nested too deep".into());
+    }
     Ok(to_json(v))
+}
+
+/// How many values deep `v` nests, counting itself.
+fn levels(v: &rmpv::Value) -> usize {
+    1 + match v {
+        rmpv::Value::Array(a) => a.iter().map(levels).max().unwrap_or(0),
+        rmpv::Value::Map(m) => m
+            .iter()
+            .map(|(k, v)| levels(k).max(levels(v)))
+            .max()
+            .unwrap_or(0),
+        _ => 0,
+    }
 }
 
 fn to_json(v: rmpv::Value) -> Value {
@@ -187,3 +204,7 @@ fn record(v: Value, project_id: i64, observed_at: i64) -> Option<LogRecord> {
         attributes,
     })
 }
+
+#[cfg(test)]
+#[path = "logtail_tests.rs"]
+mod tests;
