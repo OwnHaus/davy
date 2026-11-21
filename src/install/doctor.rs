@@ -105,7 +105,7 @@ pub async fn run(out: &mut impl Write, args: &Args) -> anyhow::Result<()> {
 /// Runs every check against the data directory `data`.
 pub async fn checks(data: &Path) -> Vec<Check> {
     let d = sh(&data.to_string_lossy());
-    let mut checks = vec![data_dir(data, &d)];
+    let mut checks = vec![data_dir(data, &d, current_user())];
     let token = std::fs::read_to_string(data.join(TOKEN_FILE)).ok();
     checks.push(token_file(&data.join(TOKEN_FILE), token.as_deref(), &d));
     match Settings::load(data) {
@@ -133,13 +133,23 @@ pub async fn checks(data: &Path) -> Vec<Check> {
     checks
 }
 
-fn data_dir(data: &Path, d: &str) -> Check {
+/// `me` is the user doctor runs as. Another user who owns the directory
+/// can read and change everything in it, whatever its mode says.
+fn data_dir(data: &Path, d: &str, me: u32) -> Check {
     if !data.is_dir() {
         return not_ok(
             "data",
             Status::Fail,
             format!("{d} does not exist"),
             format!("davy setup --data {d} --public-url URL"),
+        );
+    }
+    if let Some(owner) = other_owner(data, me) {
+        return not_ok(
+            "data",
+            Status::Warn,
+            format!("{d} belongs to user {owner}, and doctor runs as user {me}"),
+            "run Davy and doctor as the user that owns the data directory (docs/install.md)",
         );
     }
     match open_mode(data) {
@@ -376,6 +386,29 @@ fn disk(data: &Path, free: Option<u64>) -> Check {
         }
         Some(b) => ok("disk", format!("{} GiB free", b / GIB)),
     }
+}
+
+#[cfg(unix)]
+fn current_user() -> u32 {
+    nix::unistd::geteuid().as_raw()
+}
+
+#[cfg(not(unix))]
+fn current_user() -> u32 {
+    0
+}
+
+/// The owner of `path`, when that is not `me`.
+#[cfg(unix)]
+fn other_owner(path: &Path, me: u32) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt as _;
+    let owner = std::fs::metadata(path).ok()?.uid();
+    (owner != me).then_some(owner)
+}
+
+#[cfg(not(unix))]
+fn other_owner(_path: &Path, _me: u32) -> Option<u32> {
+    None
 }
 
 /// The permission bits that let other users in, when there are any.

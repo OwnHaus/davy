@@ -115,6 +115,30 @@ async fn open_permissions_warn_with_the_chmod_that_fixes_them() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_data_directory_of_another_user_warns() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let data = scratch("doctor-owner");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let owner = std::fs::metadata(&data).unwrap().uid();
+    let d = data.display().to_string();
+    assert_eq!(data_dir(&data, &d, owner).status, Status::Ok);
+    assert_eq!(
+        data_dir(&data, &d, owner + 1),
+        not_ok(
+            "data",
+            Status::Warn,
+            format!(
+                "{d} belongs to user {owner}, and doctor runs as user {}",
+                owner + 1
+            ),
+            "run Davy and doctor as the user that owns the data directory (docs/install.md)"
+        )
+    );
+}
+
 #[tokio::test]
 async fn a_short_token_fails_and_the_server_refuses_it() {
     let url = server(Some(TOKEN)).await;
