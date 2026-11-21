@@ -12,11 +12,14 @@ const MAX_LINE: usize = 256;
 const MAX_FRAMES: usize = 256;
 /// A frame deep in a long function sits many tokens after the function's name.
 const SCAN_TOKENS: usize = 1024;
+/// A stack runs through a few bundles. Each build an event names can cost a
+/// parse and stays in memory until the event is symbolicated.
+const MAX_BUILDS: usize = 8;
 
 /// Rewrites the exception frames of minified files named in
 /// `debug_meta.images` to original source positions, in place. A frame whose
 /// build `builds` does not know stays as it is. `builds` runs once per debug
-/// ID. Only the newest [`MAX_FRAMES`] frames are rewritten, counted from the
+/// ID, for the [`MAX_BUILDS`] IDs the newest frames name. Only the newest [`MAX_FRAMES`] frames are rewritten, counted from the
 /// frame that threw, because Sentry lists frames oldest first. Each frame
 /// pays `pay` the heap it grew by, by the prices of [`crate::heap`], before
 /// the next frame is rewritten, and a refused payment stops the rewrite.
@@ -66,6 +69,9 @@ pub fn symbolicate<E>(
         })
         .take(MAX_FRAMES);
     for (frame, id) in frames {
+        if !found.contains_key(&id) && found.len() == MAX_BUILDS {
+            continue;
+        }
         if let Some(build) = found.entry(id).or_insert_with(|| builds(id)) {
             let before = heap::of_map(frame);
             rewrite(frame, build);

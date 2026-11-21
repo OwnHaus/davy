@@ -195,7 +195,7 @@ fn requests_that_miss_the_cache_together_parse_a_build_once() {
             let (store, start) = (Arc::clone(&store), Arc::clone(&start));
             std::thread::spawn(move || {
                 start.wait();
-                store.build(id).unwrap().unwrap()
+                store.build(id, super::parse_deadline()).unwrap().unwrap()
             })
         })
         .collect::<Vec<_>>()
@@ -264,4 +264,46 @@ fn a_bundle_is_refused_once_it_unpacks_past_its_byte_limit() {
         .len(),
         2
     );
+}
+
+#[test]
+fn an_event_looks_up_at_most_8_builds() {
+    let ids: Vec<String> = (0..9)
+        .map(|i| format!("00000000-0000-4000-8000-00000000000{i}"))
+        .collect();
+    let mut event = json!({
+        "debug_meta": {"images": ids.iter().enumerate().map(|(i, id)| json!({
+            "type": "sourcemap", "code_file": format!("/{i}.js"), "debug_id": id,
+        })).collect::<Vec<_>>()},
+        "exception": {"values": [{"stacktrace": {"frames": (0..9).map(|i| json!({
+            "filename": format!("/{i}.js"), "lineno": 1, "colno": 1,
+        })).collect::<Vec<_>>()}}]},
+    });
+    let looked_up = std::cell::RefCell::new(Vec::new());
+    symbolicate(
+        &mut event,
+        |id| {
+            looked_up.borrow_mut().push(id);
+            None
+        },
+        FREE,
+    )
+    .unwrap();
+    let newest: Vec<DebugId> = ids[1..]
+        .iter()
+        .rev()
+        .map(|id| DebugId::parse(id).unwrap())
+        .collect();
+    assert_eq!(looked_up.into_inner(), newest);
+}
+
+#[test]
+fn a_build_gives_up_when_the_parse_lock_stays_busy_past_its_deadline() {
+    let store = Store::open(&crate::test_support::scratch("parse-deadline"));
+    let _busy = store.parsing.lock().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+    let Err(err) = store.build(DebugId::parse(BUILD).unwrap(), deadline) else {
+        panic!("built while another parse held the lock");
+    };
+    assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
 }

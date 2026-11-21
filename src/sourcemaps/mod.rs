@@ -16,12 +16,23 @@ use std::{
     collections::VecDeque,
     fmt, fs, io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex, TryLockError},
+    thread,
+    time::{Duration, Instant},
 };
 
 /// The largest bundle, and the largest file inside one, that Davy accepts.
 pub const MAX_FILE: usize = 256 * 1024 * 1024;
 const CACHED_BUILDS: usize = 32;
+/// How long one event waits, in total, for builds that others are parsing.
+/// Events that name builds the cache does not hold could otherwise queue
+/// every other event behind their parses.
+const PARSE_WAIT: Duration = Duration::from_secs(5);
+
+/// When an event that starts symbolicating now stops waiting for parses.
+pub fn parse_deadline() -> Instant {
+    Instant::now() + PARSE_WAIT
+}
 
 /// The UUID that `sentry-cli sourcemaps inject` writes into a minified file
 /// and its map. It is derived from the content, so it names one build.
@@ -105,7 +116,8 @@ pub struct Store {
     builds: PathBuf,
     cache: Mutex<VecDeque<(DebugId, Arc<Build>)>>,
     /// A parse takes many times the size of its map, so one runs at a time,
-    /// and requests for a build that is being parsed wait for it.
+    /// and requests for a build that is being parsed wait for it, until
+    /// their deadline.
     parsing: Mutex<()>,
 }
 
@@ -177,12 +189,22 @@ impl Store {
         Ok(Assembly::Created)
     }
 
-    /// The build with this debug ID, if its map was uploaded.
-    pub fn build(&self, id: DebugId) -> io::Result<Option<Arc<Build>>> {
+    /// The build with this debug ID, if its map was uploaded. Waiting for
+    /// another parse past `deadline` is a `TimedOut` error.
+    pub fn build(&self, id: DebugId, deadline: Instant) -> io::Result<Option<Arc<Build>>> {
         if let Some(found) = self.cached(id) {
             return Ok(Some(found));
         }
-        let _parsing = self.parsing.lock().unwrap_or_else(PoisonError::into_inner);
+        let _parsing = loop {
+            match self.parsing.try_lock() {
+                Ok(parsing) => break parsing,
+                Err(TryLockError::Poisoned(e)) => break e.into_inner(),
+                Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(TryLockError::WouldBlock) => return Err(io::ErrorKind::TimedOut.into()),
+            }
+        };
         if let Some(found) = self.cached(id) {
             return Ok(Some(found));
         }
