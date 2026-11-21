@@ -288,6 +288,18 @@ fn a_decoder_allocates_no_more_than_its_price() {
         }),
         ("br", brotli(&text, 11, 22)),
         ("zstd", zstd(&text, 19, 23)),
+        ("gzip", {
+            // The decoder keeps a header's extra field, file name and
+            // comment, each up to 64 KiB.
+            let field = vec![b'x'; 65535];
+            let mut e = flate2::GzBuilder::new()
+                .extra(field.clone())
+                .filename(field.clone())
+                .comment(field)
+                .write(Vec::new(), flate2::Compression::best());
+            e.write_all(&text).unwrap();
+            e.finish().unwrap()
+        }),
     ];
     for log in 10..=24 {
         bodies.push(("br", brotli(&text[..4096], 5, log)));

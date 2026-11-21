@@ -254,7 +254,10 @@ fn header_line(bytes: &[u8], encoding: &str, whole: bool) -> Result<Option<Vec<u
 /// `bytes`.
 pub fn decoder_memory(bytes: &[u8], encoding: &str) -> usize {
     match encoding {
-        "gzip" | "deflate" => 128 * KIB,
+        // A gzip header can add an extra field, a file name and a comment
+        // of up to 64 KiB each, and the last two grow by doubling.
+        "gzip" => 128 * KIB + 256 * KIB,
+        "deflate" => 128 * KIB,
         "zstd" => (1 << ZSTD_WINDOW_LOG) + MIB,
         "br" => brotli_window(bytes) + BROTLI_TABLES,
         _ => 0,
