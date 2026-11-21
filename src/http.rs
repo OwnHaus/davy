@@ -359,7 +359,7 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
         body::read(raw, &mut held).await?
     };
     let maps = Arc::clone(&app.sourcemaps);
-    let (parsed, _held) = blocking(move || {
+    let (parsed, held) = blocking(move || {
         let body = body::decode(bytes, &encoding, &mut held)?;
         let parsed = parse_sentry(&body, project, legacy, &maps, &mut held)?;
         let capacity = body.capacity();
@@ -377,7 +377,12 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
     }
     if let Some(event) = parsed.event {
         let events = vec![event];
-        store::submit(&app.sender, Job::Ingest { project, events }).await?;
+        let job = Job::Ingest {
+            project,
+            events,
+            held,
+        };
+        store::submit(&app.sender, job).await?;
     }
     Ok(json_response(&json!({"id":id.0})))
 }

@@ -222,6 +222,9 @@ pub enum Job {
     Ingest {
         project: i64,
         events: Vec<ErrorEvent>,
+        /// What the request paid for the events. It goes back to the budget
+        /// when the writer is done with the job, not when the client hangs up.
+        held: crate::http::body::Held,
     },
     Resolve {
         issue: i64,
@@ -263,7 +266,9 @@ pub struct Write {
 /// the inner one a problem with this job alone.
 fn apply(c: &Connection, job: &Job) -> Result<Outcome> {
     match job {
-        Job::Ingest { project, events } => {
+        Job::Ingest {
+            project, events, ..
+        } => {
             for e in events {
                 insert(c, *project, e)?;
             }

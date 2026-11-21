@@ -213,6 +213,20 @@ async fn every_ingest_route_is_429_while_the_budget_is_spent() {
     }
 }
 
+#[tokio::test]
+async fn a_queued_event_keeps_its_memory_after_the_client_hangs_up() {
+    let s = server();
+    let req = post("/api/1/store/?sentry_key=key-a", &[], r#"{"message":"m"}"#);
+    let hung_up = tokio::time::timeout(Duration::from_millis(500), s.send(req)).await;
+    assert!(
+        hung_up.is_err(),
+        "the event waits for a writer this test does not run"
+    );
+    assert_eq!(s.budget.hold().take(BUDGET).unwrap_err().0, 429);
+    drop(s.error_inbox.try_recv().unwrap());
+    s.budget.hold().take(BUDGET).unwrap();
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_body_that_stalls_is_408() {
     let stalled =
@@ -364,6 +378,7 @@ fn dummy_write() -> store::Write {
         job: store::Job::Ingest {
             project: 1,
             events: vec![],
+            held: Budget::new(0).hold(),
         },
         done,
     }
