@@ -1,5 +1,5 @@
 use super::{
-    Build, DebugId, Store,
+    Assembly, Build, Cache, ChunkId, DebugId, MAX_BUILD, Store,
     bundle::{self, Kind, Limit},
     symbolicate,
 };
@@ -306,4 +306,100 @@ fn a_build_gives_up_when_the_parse_lock_stays_busy_past_its_deadline() {
         panic!("built while another parse held the lock");
     };
     assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+}
+
+/// A map of `commas` separators, each priced as a token of 28 bytes.
+fn commas(commas: usize) -> Vec<u8> {
+    format!("{{\"version\":3,\"mappings\":\"{}\"}}", ",".repeat(commas)).into_bytes()
+}
+
+fn assemble(name: &str, map: &[u8]) -> Assembly {
+    let store = Store::open(&crate::test_support::scratch(name));
+    let (path, entry) = source_map(1);
+    let bundle = zip(&json!({"files": {&path: entry}}), &[(&path, map)]);
+    let checksum = ChunkId::of(&bundle);
+    store.put_chunk(&checksum, &bundle).unwrap();
+    store
+        .assemble(&checksum, std::slice::from_ref(&checksum))
+        .unwrap()
+}
+
+#[test]
+fn a_map_too_large_to_parse_is_refused_at_assemble() {
+    assert_eq!(
+        assemble("too-large", &commas(8 << 20)),
+        Assembly::Failed(
+            "source map of 1c85f8bb-fda9-501c-b106-000000000001 would take 273 MiB to parse, \
+             over the limit of 256 MiB"
+                .into()
+        )
+    );
+    assert_eq!(assemble("large", &commas(7 << 20)), Assembly::Created);
+}
+
+#[test]
+fn index_and_hermes_maps_are_refused_at_assemble() {
+    assert_eq!(
+        assemble("index", br#"{"version":3,"sections":[]}"#),
+        Assembly::Failed(
+            "source map of 1c85f8bb-fda9-501c-b106-000000000001 does not parse: \
+             index and Hermes source maps are not supported"
+                .into()
+        )
+    );
+    assert!(Build::price(br#"{"x_facebook_sources":[]}"#, None).is_err());
+    assert!(Build::price(br#"{"sections":null,"mappings":""}"#, None).is_ok());
+}
+
+#[test]
+fn a_build_whose_files_together_cost_too_much_is_not_parsed() {
+    let store = Store::open(&crate::test_support::scratch("too-large-together"));
+    let id = DebugId::parse(BUILD).unwrap();
+    let (map, minified) = (commas(6 << 20), "\n".repeat(2 << 20));
+    assert!(Build::price(&map, None).unwrap().parse <= MAX_BUILD);
+    assert!(
+        Build::price(b"{}", Some(minified.as_bytes()))
+            .unwrap()
+            .parse
+            <= MAX_BUILD
+    );
+    for (kind, bytes) in [
+        (Kind::Map, map.as_slice()),
+        (Kind::Minified, minified.as_bytes()),
+    ] {
+        super::write_atomic(&store.path(id, kind), &zstd::encode_all(bytes, 3).unwrap()).unwrap();
+    }
+    let Err(err) = store.build(id, super::parse_deadline()) else {
+        panic!("parsed a build over the limit");
+    };
+    assert_eq!(
+        err.to_string(),
+        format!("build {BUILD} would take 261 MiB to parse")
+    );
+}
+
+#[test]
+fn the_cache_drops_its_oldest_builds_to_stay_under_its_byte_limit() {
+    let build = Arc::new(Build::parse(br#"{"version":3,"mappings":""}"#, None).unwrap());
+    let ids: Vec<DebugId> = (0..4)
+        .map(|i| DebugId::parse(&format!("00000000-0000-4000-8000-00000000000{i}")).unwrap())
+        .collect();
+    let mut cache = Cache::default();
+    for (id, kept) in ids.iter().zip([100 << 20, 100 << 20, 50 << 20, 60 << 20]) {
+        cache.insert(*id, Arc::clone(&build), kept);
+    }
+    let cached: Vec<DebugId> = cache.builds.iter().map(|(id, ..)| *id).collect();
+    assert_eq!(cached, ids[1..]);
+    assert_eq!(cache.bytes, 210 << 20);
+    cache.insert(ids[0], build, MAX_BUILD);
+    assert_eq!(cache.builds.len(), 1);
+    assert_eq!(cache.bytes, MAX_BUILD);
+}
+
+#[test]
+fn line_ends_are_counted_in_every_escape_form() {
+    assert_eq!(
+        super::price::escaped_line_ends(br#""a\nb\rc\u000Ad\u000de\\nf\u000bg\"""#),
+        4
+    );
 }

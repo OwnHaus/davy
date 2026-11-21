@@ -2,10 +2,12 @@
 //! symbolication uses. `upload.rs` is the HTTP side.
 
 pub mod bundle;
+mod price;
 mod symbolicate;
 #[cfg(test)]
 mod tests;
 
+pub use price::Price;
 pub use symbolicate::symbolicate;
 
 use bundle::Kind;
@@ -23,6 +25,10 @@ use std::{
 
 /// The largest bundle, and the largest file inside one, that Davy accepts.
 pub const MAX_FILE: usize = 256 * 1024 * 1024;
+/// The most memory one build may take to parse, and the most the cache of
+/// parsed builds keeps. A build keeps less than its parse took, so every
+/// build that parses fits in the cache.
+pub const MAX_BUILD: usize = 256 * 1024 * 1024;
 const CACHED_BUILDS: usize = 32;
 /// How long one event waits, in total, for builds that others are parsing.
 /// Events that name builds the cache does not hold could otherwise queue
@@ -100,6 +106,12 @@ impl Build {
         };
         Ok(Self { map, minified })
     }
+
+    /// What parsing and keeping the build with these files takes, without
+    /// parsing them. An error where the map is not one Davy can read.
+    pub fn price(map: &[u8], minified: Option<&[u8]>) -> io::Result<Price> {
+        Ok(price::of_map(map)? + minified.map(price::of_minified).unwrap_or_default())
+    }
 }
 
 /// What an assemble request found.
@@ -114,7 +126,7 @@ pub enum Assembly {
 pub struct Store {
     chunks: PathBuf,
     builds: PathBuf,
-    cache: Mutex<VecDeque<(DebugId, Arc<Build>)>>,
+    cache: Mutex<Cache>,
     /// A parse takes many times the size of its map, so one runs at a time,
     /// and requests for a build that is being parsed wait for it, until
     /// their deadline.
@@ -176,6 +188,25 @@ impl Store {
             Ok(files) => files,
             Err(e) => return Ok(Assembly::Failed(format!("bundle does not unpack: {e:#}"))),
         };
+        for file in &files {
+            let (what, price) = match file.kind {
+                Kind::Map => ("source map", price::of_map(&file.bytes)),
+                Kind::Minified => ("minified file", Ok(price::of_minified(&file.bytes))),
+            };
+            let refused = match price {
+                Ok(price) if price.parse <= MAX_BUILD => continue,
+                Ok(price) => format!(
+                    "would take {} MiB to parse, over the limit of {} MiB",
+                    price.parse.div_ceil(1 << 20),
+                    MAX_BUILD >> 20
+                ),
+                Err(e) => format!("does not parse: {e}"),
+            };
+            return Ok(Assembly::Failed(format!(
+                "{what} of {} {refused}",
+                file.debug_id
+            )));
+        }
         for file in files {
             let compressed = zstd::encode_all(file.bytes.as_slice(), 3)?;
             write_atomic(&self.path(file.debug_id, file.kind), &compressed)?;
@@ -211,12 +242,17 @@ impl Store {
         let Some(map) = self.read(id, Kind::Map)? else {
             return Ok(None);
         };
-        let build = Arc::new(Build::parse(&map, self.read(id, Kind::Minified)?)?);
+        let minified = self.read(id, Kind::Minified)?;
+        let price = Build::price(&map, minified.as_deref())?;
+        if price.parse > MAX_BUILD {
+            return Err(io::Error::other(format!(
+                "build {id} would take {} MiB to parse",
+                price.parse.div_ceil(1 << 20)
+            )));
+        }
+        let build = Arc::new(Build::parse(&map, minified)?);
         if let Ok(mut cache) = self.cache.lock() {
-            if cache.len() == CACHED_BUILDS {
-                cache.pop_front();
-            }
-            cache.push_back((id, Arc::clone(&build)));
+            cache.insert(id, Arc::clone(&build), price.kept);
         }
         Ok(Some(build))
     }
@@ -224,9 +260,10 @@ impl Store {
     fn cached(&self, id: DebugId) -> Option<Arc<Build>> {
         let cache = self.cache.lock().ok()?;
         cache
+            .builds
             .iter()
-            .find(|(cached, _)| *cached == id)
-            .map(|(_, build)| Arc::clone(build))
+            .find(|(cached, ..)| *cached == id)
+            .map(|(_, build, _)| Arc::clone(build))
     }
 
     fn read(&self, id: DebugId, kind: Kind) -> io::Result<Option<Vec<u8>>> {
@@ -243,6 +280,28 @@ impl Store {
             Kind::Minified => "js",
         };
         self.builds.join(format!("{id}.{extension}.zst"))
+    }
+}
+
+/// The parsed builds, oldest first, each with what it keeps.
+#[derive(Default)]
+struct Cache {
+    builds: VecDeque<(DebugId, Arc<Build>, usize)>,
+    bytes: usize,
+}
+
+impl Cache {
+    /// Adds a build that keeps `kept` bytes, dropping the oldest builds
+    /// until there is room for it.
+    fn insert(&mut self, id: DebugId, build: Arc<Build>, kept: usize) {
+        while self.builds.len() == CACHED_BUILDS || self.bytes + kept > MAX_BUILD {
+            let Some((.., size)) = self.builds.pop_front() else {
+                break;
+            };
+            self.bytes -= size;
+        }
+        self.builds.push_back((id, build, kept));
+        self.bytes += kept;
     }
 }
 

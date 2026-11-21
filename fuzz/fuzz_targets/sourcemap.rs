@@ -19,9 +19,12 @@ fuzz_target!(|data: &[u8]| {
         Some(at) => (&rest[..at], Some(rest[at + 1..].to_vec())),
         None => (rest, None),
     };
+    let price = Build::price(map, minified.as_deref());
     let Ok(build) = Build::parse(map, minified) else {
         return;
     };
+    // A map that parses must have a price, or assemble would refuse it.
+    assert!(price.is_ok(), "{price:?}");
     let build = Arc::new(build);
     let frame = |lineno: u32, colno: u32| json!({ "abs_path": "app.min.js", "function": "a", "lineno": lineno, "colno": colno });
     let mut event = json!({

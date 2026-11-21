@@ -5,6 +5,7 @@ use davy::{
     heap,
     http::body,
     logs::{logtail, otlp, sentry},
+    sourcemaps::Build,
 };
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
@@ -321,6 +322,151 @@ fn a_decoder_allocates_no_more_than_its_price() {
             used <= price,
             "{encoding} of {}: used {used}, priced {price}",
             body.len()
+        );
+    }
+}
+
+/// Maps that each stress one part of a parse.
+fn maps() -> Vec<(&'static str, String, Option<String>)> {
+    let n = 100_000;
+    let lines = 1 << 17;
+    let map = |fields: &str| format!("{{\"version\":3,{fields}}}");
+    vec![
+        (
+            "one-field tokens",
+            map(&format!("\"mappings\":\"{}A\"", "A,".repeat(n))),
+            None,
+        ),
+        (
+            "four-field tokens",
+            map(&format!(
+                "\"sources\":[\"a\"],\"mappings\":\"{}AAAA\"",
+                "AAAA,".repeat(n)
+            )),
+            None,
+        ),
+        (
+            "empty lines",
+            map(&format!("\"mappings\":\"{}\"", ";".repeat(n))),
+            None,
+        ),
+        (
+            "names",
+            map(&format!("\"names\":[{}1]", "\"a\",1,".repeat(n))),
+            None,
+        ),
+        (
+            "sources with content",
+            map(&format!(
+                "\"sources\":[{0}\"s\"],\"sourcesContent\":[{1}\"x\"]",
+                "\"s\",".repeat(n),
+                "\"x\",".repeat(n)
+            )),
+            None,
+        ),
+        (
+            "escaped line ends",
+            map(&format!(
+                "\"sources\":[\"s\"],\"sourcesContent\":[\"{}\"]",
+                "\\n".repeat(lines)
+            )),
+            None,
+        ),
+        (
+            "unicode line ends",
+            map(&format!(
+                "\"sources\":[\"s\"],\"sourcesContent\":[\"{}\"]",
+                "\\u000D".repeat(lines)
+            )),
+            None,
+        ),
+        (
+            "unknown fields",
+            map(&format!(
+                "\"x\":[{}{{}}],\"y\":\"{}\"",
+                "{},".repeat(n),
+                "\\n".repeat(n)
+            )),
+            None,
+        ),
+        (
+            "range mappings",
+            map(&format!(
+                "\"mappings\":\"A\",\"rangeMappings\":\"{}\"",
+                "A".repeat(n)
+            )),
+            None,
+        ),
+    ]
+}
+
+/// Builds with minified files, one of them ordinary, after [`maps`].
+fn builds() -> Vec<(&'static str, String, Option<String>)> {
+    let lines = 1 << 17;
+    let map = |fields: &str| format!("{{\"version\":3,{fields}}}");
+    let code = "  return order.items.length;\\n".repeat(lines >> 4);
+    let mut builds = maps();
+    builds.extend([
+        (
+            "ordinary build",
+            map(&format!(
+                "\"sources\":[\"../src/app.js\"],\"names\":[\"order\"],\"sourcesContent\":[\"{code}\"],\"mappings\":\"{}\"",
+                "AAAA,CAACA,EAAE;".repeat(lines >> 4)
+            )),
+            Some("function o(n){return n.items.length}\n".repeat(lines >> 4)),
+        ),
+        (
+            "minified line ends",
+            map("\"mappings\":\"\""),
+            Some("\n".repeat(lines)),
+        ),
+        (
+            "minified crlf",
+            map("\"mappings\":\"\""),
+            Some("\r\n".repeat(lines)),
+        ),
+    ]);
+    builds
+}
+
+#[test]
+fn a_builds_price_bounds_its_parse_and_what_it_keeps() {
+    let _alone = alone();
+    for (name, map, minified) in builds() {
+        let price = Build::price(map.as_bytes(), minified.as_ref().map(String::as_bytes)).unwrap();
+        // As the store does, from the compressed files, and then through
+        // every line of every file, as lookups over time can.
+        let stored = zstd::encode_all(map.as_bytes(), 3).unwrap();
+        let stored_minified = minified.map(|js| zstd::encode_all(js.as_bytes(), 3).unwrap());
+        ALLOC.reset_peak_usage();
+        let before = ALLOC.current_usage();
+        let map = zstd::decode_all(stored.as_slice()).unwrap();
+        let minified = stored_minified.map(|js| zstd::decode_all(js.as_slice()).unwrap());
+        let parsed = sourcemap::SourceMap::from_slice(&map).unwrap();
+        let view =
+            minified.map(|js| sourcemap::SourceView::new(String::from_utf8(js).unwrap().into()));
+        drop(map);
+        let views = (0..parsed.get_source_count())
+            .filter_map(|i| parsed.get_source_view(i))
+            .chain(view.as_ref());
+        for view in views {
+            let mut line = 0;
+            while view.get_line(line).is_some() {
+                line += 1;
+            }
+        }
+        let kept = ALLOC.current_usage() - before;
+        let used = ALLOC.peak_usage() - before;
+        drop((parsed, view));
+        assert!(
+            used <= price.parse,
+            "{name}: parse used {used}, priced {}",
+            price.parse
+        );
+        assert!(
+            kept <= price.kept,
+            "{name}: kept {kept}, priced {}",
+            price.kept
         );
     }
 }
