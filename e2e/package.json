@@ -15,5 +15,9 @@
     "pino": "^10",
     "sentry-node-10": "npm:@sentry/node@^10",
     "sentry-node-7": "npm:@sentry/node@7.107.0"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.65.1"
   }
 }

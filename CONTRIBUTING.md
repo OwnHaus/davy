@@ -78,7 +78,7 @@ The scope says which part of the code changes, not who the change is for. A chan
 
 ## Dependencies
 
-- Dependabot opens grouped pull requests every week for Cargo, the e2e packages and the GitHub Actions. They are never merged on GitHub. The owner applies the update locally, runs the gate and e2e, and commits it as `build(deps): update <crate> to <version>`.
+- Dependabot opens grouped pull requests every week for Cargo, the e2e packages, the web UI packages and the GitHub Actions. They are never merged on GitHub. The owner applies the update locally, runs the gate and e2e, and commits it as `build(deps): update <crate> to <version>`.
 - Actions are pinned to a full commit SHA with the version in a comment.
 - A Rust toolchain bump is its own commit that changes `rust-toolchain.toml` and fixes what new lints find.
 
@@ -91,6 +91,6 @@ The scope says which part of the code changes, not who the change is for. A chan
 
 ## Review
 
-- Every change passes `scripts/check`. A change to `http.rs`, a parser or a wire format also passes `bash e2e/run.sh`, and a parser change also passes `fuzz/docker 60` (see `fuzz/README.md`). A change to `docs/install.md`, `docs/connect/` or `src/install/` also passes `bash e2e/install.sh`, which follows the docs in a Debian container with systemd (needs Docker).
+- Every change passes `scripts/check`. A change to `http.rs`, a parser, a wire format, `ui/` or `src/ui/` also passes `bash e2e/run.sh`, and a parser change also passes `fuzz/docker 60` (see `fuzz/README.md`). A change to `docs/install.md`, `docs/connect/` or `src/install/` also passes `bash e2e/install.sh`, which follows the docs in a Debian container with systemd (needs Docker).
 - A change to a trust boundary gets a security read before it is pushed, by a model that did not write it. The trust boundaries are `http.rs`, `upload.rs`, `mcp.rs`, `token.rs`, `query.rs`, `net.rs`, the parsers and anything that touches a credential. A finding becomes a fix or a reason in the commit body why it is not one.
 - Each milestone ends with a security review of everything since the last one. See `SECURITY.md`.

@@ -40,6 +40,10 @@ assert {i['title']:i['count'] for i in issues}=={'TypeError: SDK test failure':2
 print(sys.argv[2]+': verified 2 issues, counts 2 and 1')
 PY
 done
+# The web UI test resolves the sentry-node-7 TypeError. The steps below use
+# the other three issues.
+(cd "$ROOT/e2e" && pnpm exec playwright install chromium --only-shell && DAVY_BIN="$BIN" DAVY_URL="$URL" DAVY_DATA="$SCRATCH/data" pnpm exec playwright test ui.spec.ts --reporter=line --output "$SCRATCH/playwright")
+echo 'web UI: verified sign-in, the list, the in-app frame, resolve, login, axe and CSP'
 DSN=$("$BIN" project create legacy --data "$SCRATCH/data" --public-url "$URL")
 KEY="${DSN#*://}"; KEY="${KEY%%@*}"
 PROJECT="${DSN##*/}"

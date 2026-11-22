@@ -194,6 +194,8 @@ jobs:
           package-manager-cache: false
       - run: pnpm install --frozen-lockfile
         working-directory: e2e
+      - run: pnpm exec playwright install --with-deps chromium --only-shell
+        working-directory: e2e
       - name: e2e against the release binary
         run: |
           chmod +x release/davy-x86_64-unknown-linux-musl
