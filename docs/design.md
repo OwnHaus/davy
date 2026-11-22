@@ -734,6 +734,8 @@ The API pages with a cursor, never an offset, so a page costs the same at row 50
 
 **Account** (`/ui/account`). Change password, log out everywhere.
 
+**Setup** (`/ui/setup`). What the install by prompt has done so far, for the person who pasted the prompt and waits for the agent. The idea comes from Sentry's agent-first onboarding page, which lists the steps the agent reports. Davy lists only what it saw itself, so no step shows done unless it happened: the agent connected (the first `/mcp` request with the admin token), a project exists, the first error arrived, a frame was symbolicated with an uploaded source map, the first log arrived, a monitor exists and a channel delivered a notification. The first four are required, the rest optional. A step that is not done names the page in `docs/` that does it, and an optional one shows "not set up", not a failure. The first `/mcp` request is the only fact not already in a table, so it gets one: `firsts(what TEXT PRIMARY KEY, at INTEGER NOT NULL)`, written once by the writer. The page asks again every 2 seconds while the tab is visible, like **Live**. `/ui/` opens on it while a required step is open and no issue exists. For this, `docs/install.md` moves `davy user add` to right after the server answers: the agent hands the person the link first, so they can watch the rest.
+
 ### What it looks like
 
 The look is decided on a prototype of the issue page and the issues list, built with real fixtures from the e2e SDKs, before the shell is built. The prototype goes to the owner, and the chosen direction is written into this section. Already fixed:
@@ -760,7 +762,7 @@ npm is a supply chain of its own, and Davy is a security product. The rules:
 2. The design prototype of the issue page and the list, then the direction written here.
 3. The app shell, then Issues and Issue.
 4. Logs with the histogram and live.
-5. Uptime, Alerts, Projects and Account.
+5. Uptime, Alerts, Projects, Setup and Account.
 6. An internal pentest of the UI routes, recorded in `docs/security/`, before the release that ships the UI.
 
 ### Not in this milestone
