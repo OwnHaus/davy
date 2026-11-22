@@ -1,0 +1,5 @@
+# Supply chain rules from docs/design.md, "Front-end dependencies".
+# A version enters the lockfile only after it has been public for 7 days.
+minimumReleaseAge: 10080
+# No dependency runs an install script.
+onlyBuiltDependencies: []

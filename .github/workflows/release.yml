@@ -48,6 +48,15 @@ jobs:
       - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-cyclonedx@0.5.10,cargo-auditable@0.7.7
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 11
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      # The binary embeds the UI from ui/dist, so it is built first.
+      - run: scripts/ui
       - run: scripts/build-release "$TARGET"
         env:
           TARGET: ${{ matrix.target }}

@@ -27,6 +27,32 @@ else
     printf 'check: zizmor is not installed, skipping (brew install zizmor)\n' >&2
 fi
 
+# The web UI, when Node and pnpm are here. CI has both, so CI always runs it.
+# The build goes to target/ui-check, so a check never changes what the next
+# cargo build embeds from ui/dist.
+if command -v pnpm >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+    scripts/ui ../target/ui-check || problem 'the UI fails its type check, build or bundle budget'
+    (cd ui && pnpm licenses list --prod --json) | node scripts/ui-licenses.mjs ||
+        problem 'a bundled npm package has a license outside the list'
+    # Every string in the UI came from an SDK or a person, so it reaches the
+    # page as text and never as markup or code.
+    if git grep --untracked -nE 'dangerouslySetInnerHTML|innerHTML|outerHTML|insertAdjacentHTML|document\.write|(^|[^A-Za-z0-9_$])eval\(|new Function' -- ui/src; then
+        problem 'markup or code built from a string in the lines above, render text instead'
+    fi
+else
+    printf 'check: pnpm or node is missing, skipping the UI (see CONTRIBUTING.md)\n' >&2
+    [ -z "${CI:-}" ] || problem 'CI runs the UI checks, so it needs pnpm and node'
+fi
+if command -v osv-scanner >/dev/null 2>&1; then
+    if ! found=$(osv-scanner scan --lockfile ui/pnpm-lock.yaml 2>&1); then
+        printf '%s\n' "$found" >&2
+        problem 'osv-scanner finds a known vulnerability in ui/pnpm-lock.yaml'
+    fi
+else
+    printf 'check: osv-scanner is not installed, skipping (brew install osv-scanner)\n' >&2
+    [ -z "${CI:-}" ] || problem 'CI scans the UI lockfile, so it needs osv-scanner'
+fi
+
 scripts/test-commit-msg || problem 'scripts/commit-msg fails its table test'
 scripts/test-release || problem 'scripts/release fails its test'
 

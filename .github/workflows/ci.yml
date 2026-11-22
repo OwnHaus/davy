@@ -28,7 +28,15 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
-          tool: cargo-deny,zizmor
+          tool: cargo-deny,zizmor,osv-scanner
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 11
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
       - run: scripts/check
 
   e2e:
@@ -47,7 +55,10 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: e2e/pnpm-lock.yaml
+          cache-dependency-path: |
+            e2e/pnpm-lock.yaml
+            ui/pnpm-lock.yaml
+      - run: scripts/ui
       - run: pnpm install --frozen-lockfile
         working-directory: e2e
       - run: bash e2e/run.sh

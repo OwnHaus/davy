@@ -1,0 +1,15 @@
+#!/bin/sh
+# Builds the web UI into ui/dist, where build.rs embeds it into the binary.
+# With a directory argument it builds there instead, as scripts/check does, so
+# a check never changes what the next cargo build embeds.
+set -eu
+cd "$(dirname "$0")/../ui"
+out=${1:-dist}
+
+pnpm install --frozen-lockfile --silent
+pnpm exec tsc --noEmit
+pnpm exec vite build --logLevel warn --outDir "$out" --emptyOutDir
+if [ "$out" = dist ]; then
+    touch dist/.gitkeep
+fi
+node ../scripts/ui-pack.mjs "$out"

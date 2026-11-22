@@ -24,6 +24,7 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 - An install guide for coding agents in `docs/install.md`, one page per SDK in `docs/connect/` and an index in `llms.txt`.
 - The CLI commands `project`, `issues`, `event`, `logs`, `sql`, `context`, `resolve`, `monitor` and `channel`.
 - The web UI's issue API under `/ui/api/`: the issue list with filters, sorts, cursors and 24-hour counts, an issue with its events, the view of one event with every list cut to a limit, the logs around an event, and a status change of up to 500 issues at once that applies to all or none.
+- The web UI at `/ui/`: log in, or set a password from the link `davy user add` prints, then triage issues from the keyboard in a list with a 24-hour strip per issue and an inspector, and read an issue's events with their stack traces, breadcrumbs, context and the logs around them. Resolve, resolve in a release, ignore and reopen work on one issue or many. It follows the system's light or dark setting and is served compressed with Brotli.
 - Release downloads: static Linux binaries for x86_64 and aarch64 and macOS binaries for both architectures, each with a CycloneDX SBOM, build provenance and `SHA256SUMS`, and a signed multi-arch image `ghcr.io/dominikzabcik/davy` on distroless as a non-root user. `RELEASING.md` shows how to verify them.
 
 ### Security

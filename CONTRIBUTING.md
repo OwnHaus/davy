@@ -6,8 +6,10 @@ Davy is built by its owner and the coding agents that work for the owner. Outsid
 
 ```sh
 git config core.hooksPath .githooks
-brew install cargo-deny zizmor
+brew install cargo-deny zizmor osv-scanner
 ```
+
+The web UI needs Node 24 and pnpm 11. `scripts/ui` builds it into `ui/dist/`, which the next `cargo build` embeds. Without Node, `scripts/check` skips the UI and CI still runs it. While you work on the UI, `cd ui && pnpm exec vite` serves it with hot reload and sends the API to the Davy at `DAVY_URL` (default `http://127.0.0.1:8000`).
 
 The pre-commit hook runs `scripts/check`. The commit-msg hook runs `scripts/commit-msg`.
 
