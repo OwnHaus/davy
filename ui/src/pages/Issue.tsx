@@ -109,7 +109,7 @@ export function Issue() {
         Issues
       </Link>
       <Icon name="fwd" size={11} />
-      <b className="mono">#{id}</b>
+      <b>#{id}</b>
     </>
   );
 
@@ -131,7 +131,6 @@ export function Issue() {
                     <span className="hint">in {shown(issue.resolved_in_release)}</span>
                   ) : null}
                   {issue.regressed_at !== null ? <Regressed /> : null}
-                  <span className="hint">Issue {issue.id}</span>
                 </div>
                 <h1>{shown(issue.title)}</h1>
                 <div className="sub">

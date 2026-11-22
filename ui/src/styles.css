@@ -108,7 +108,7 @@ kbd { background: var(--btn); color: var(--ink); border-radius: 3px; padding: 0 
 .legend h2 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
 .legend .sw { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; }
 .legend .sw i { height: 10px; border-radius: 1px; }
-.legend .lb { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; margin-top: 3px; font-size: 10.5px; color: var(--faint); text-align: center; white-space: nowrap; }
+.legend .lb { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; margin-top: 3px; font-size: 11px; color: var(--muted); text-align: center; white-space: nowrap; }
 .legend .lb span { overflow: visible; }
 
 /* Heat strip */
@@ -127,7 +127,7 @@ kbd { background: var(--btn); color: var(--ink); border-radius: 3px; padding: 0 
 .strip i.col { box-shadow: 0 0 0 1px var(--muted); z-index: 1; }
 .strip i.on { box-shadow: 0 0 0 2px var(--ink); z-index: 2; }
 .strip:focus-visible { outline-offset: 3px; }
-.axis { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 2px; margin-top: 4px; font-size: 11px; color: var(--faint); line-height: 13px; }
+.axis { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 2px; margin-top: 4px; font-size: 11px; color: var(--muted); line-height: 13px; }
 .axis span { justify-self: center; white-space: nowrap; text-align: center; }
 .axis.lg { min-height: 28px; }
 .axis.lg span.day { color: var(--muted); }
@@ -169,7 +169,8 @@ tr.row { cursor: default; position: relative; }
 tr.row:hover td { background: var(--hover); }
 tr.row.sel td { background: var(--sel); }
 tr.row.cur td { background: var(--cursor); }
-tr.row.cur td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+tr.row td:first-child { position: relative; }
+tr.row.cur td:first-child::before { content: ""; position: absolute; left: 0; top: 4px; bottom: 4px; width: 3px; border-radius: 0 2px 2px 0; background: var(--accent); }
 tr.row.leaving { opacity: 0; transition: opacity .15s ease-out; }
 td.title { display: table-cell; }
 td.title .tt { display: flex; align-items: center; min-width: 0; }
@@ -305,7 +306,6 @@ tr.more td { padding: 10px 14px; height: auto; border-bottom: 0; }
 .tbr .problem { margin-right: 6px; }
 .crumb .up { color: var(--muted); }
 .crumb .up:hover { color: var(--ink); }
-.crumb b.mono { font-size: 13px; }
 .acct { margin-left: auto; display: flex; align-items: center; gap: 12px; min-width: 0; }
 .who { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .railbtn { display: none; }

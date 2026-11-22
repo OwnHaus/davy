@@ -4,7 +4,7 @@ import { get } from "../api/client";
 import type { EventView, IssueView, Status } from "../api/types";
 import { useSettled } from "../lib/live";
 import { plural, shown } from "../lib/text";
-import { ago, agoLong, stamp } from "../lib/time";
+import { agoLong, stamp } from "../lib/time";
 import { StatusButtons } from "../parts/Actions";
 import { topFrame, where } from "../parts/Event";
 import { Axis, Strip, StripTable, peakWords } from "../parts/HeatStrip";
@@ -118,7 +118,7 @@ export function Inspector({ row, busy, onAct }: { row: ListRow | undefined; busy
           <div key={r.release} className="relrow">
             <span className="mono">{shown(r.release)}</span>
             <span className="dim">
-              {r.events.toLocaleString("en-US")}, {ago(r.last_seen, now)}
+              {r.events.toLocaleString("en-US")} {plural(r.events, "event")}, {agoLong(r.last_seen, now)}
             </span>
           </div>
         ))}

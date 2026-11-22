@@ -5,7 +5,8 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { HOUR, day, hourOfDay, hourRange } from "../lib/time";
 
-export const LEGEND = ["0", "1-2", "3-6", "7-14", "15-29", "30+"];
+// Each label is the least count of its step, so six fit under the swatches.
+const LEGEND = ["0", "1", "3", "7", "15", "30+"];
 
 export function step(n: number): number {
   return n <= 0 ? 0 : n < 3 ? 1 : n < 7 ? 2 : n < 15 ? 3 : n < 30 ? 4 : 5;
