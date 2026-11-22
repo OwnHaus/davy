@@ -22,9 +22,9 @@ This document fixes the data shapes and the order of work.
 4. MCP and CLI for agents: `sql`, `schema`, `search_logs`, `issue_context`, `mark_fixed` (done), `submit_feedback` (milestone 7).
 5. **Source maps**: the `sentry-cli` upload endpoints and debug ID lookup (done).
 6. Uptime checks and alerts: HTTP monitors, heartbeats, webhooks, Slack and e-mail (done).
-7. **Install by prompt.** *Next.* A person pastes one prompt into a coding agent, and the agent installs Davy, connects the app and checks that errors arrive. See "Milestone 7" below.
+7. **Install by prompt** (done). A person pastes one prompt into a coding agent, and the agent installs Davy, connects the app and checks that errors arrive. See "Milestone 7" below.
 8. **Release 0.1.0**: signed releases with SBOM and provenance, fuzzing, an internal penetration test. See "Milestone 8" below.
-9. **Web UI for one team.** Its spec comes first.
+9. **Web UI for one team.** *Next.* See "Milestone 9" below.
 10. Managed cloud (closed, see "License and open core"). Outside users come in only after the external penetration test in `SECURITY.md`.
 
 How code reaches `main` is in `CONTRIBUTING.md`, how a version ships in `RELEASING.md`, and what security work runs when in `SECURITY.md`.
@@ -634,6 +634,147 @@ The cleanup pass surveyed the code at `eb4de33` and found 28 items: duplicated c
 - `IssueDetail.last_seen_ms` stays, because the issue context falls back to it when no event of the issue is stored.
 - `http::serve` keeps its six arguments. Taking `serve::Resolved` would make the library depend on a CLI type.
 - A `memory()` test helper of a few lines stays in four test files. Small copies like it read more easily in place than through a shared helper.
+
+## Milestone 9: web UI for one team
+
+The CLI and MCP serve agents and whoever lives in a terminal. A team also needs a place to see what broke, read a stack trace, search logs and check a monitor without a shell on the server. This milestone gives one team that place, inside the same binary. Roles, SSO and an audit log stay in the closed cloud (see "License and open core").
+
+A person in the UI reads everything, changes the status of issues and manages their own account. Everything that makes Davy reach a URL or decides who gets in stays on the host: monitors, channels, projects and users are created with the CLI. Self-hosted Davy reaches any address (`net::Reach::Any`), because only someone with a shell on the host could type a URL. A form that let every account type one would let every account make Davy fetch internal addresses.
+
+### Shape
+
+- **A single-page app embedded in the binary.** React and TypeScript, built with Vite into `ui/dist/` and embedded at compile time. The browser loads it from `/ui/` and talks to a JSON API under `/ui/api/`. `GET /` redirects to `/ui/`, and `POST /` stays the Logtail route. No Node at run time.
+- **Why not server-rendered HTML.** Server-rendered pages need no JavaScript toolchain, and that is their real advantage. The views this milestone needs are interactive: a stack trace that folds frames, filters that change a list without a reload, a log histogram you drag to zoom, keyboard navigation and dialogs that must be accessible. Built by hand, each is a weaker copy of a tested component. With React the UI uses accessible primitives (Radix, through shadcn/ui) instead.
+- **Every view state lives in the URL.** Filters, the time range, the selected event and the log query are search parameters. A link from a person, an alert or an agent opens the same view. The CLI prints these links with `--public-url`.
+- **The API types come from Rust.** Every API response is a Rust struct with `#[cfg_attr(test, derive(ts_rs::TS))]`, so `ts-rs` is a dev dependency only. `scripts/check` fails when the generated `ui/src/api/types.ts` differs from the committed one, and a round-trip test parses real responses with the generated types.
+- **Numbers JavaScript can hold.** A JSON number is exact in JavaScript only up to 2^53. Log times are unix nanoseconds, near 1.7 × 10^18, so the API sends them as decimal strings. Every cursor is an opaque string the server made and the UI passes back unchanged.
+- **A binary without the UI still builds.** `ui/dist/` holds only a `.gitkeep` in git. `cargo build` without a UI build serves a page under `/ui/` that says the binary was built without it and names `scripts/ui`. CI, the e2e suite and the release workflow build the UI first.
+- **Accounts are a trait.** The routes take an `Accounts` implementation that turns a request into a `Person` or refuses it. The open crate implements it on the SQLite tables below. The closed cloud crate brings its own, with tenants, roles and SSO, and reuses the routes and the views. UI reads go through the same library functions as the CLI and MCP, so the cloud's tenant scope reaches them too.
+
+### People and sessions
+
+Davy has had one secret, the admin token, for agents and `sentry-cli`. People get their own accounts, because a shared password cannot be taken back from one person.
+
+```sql
+users(id INTEGER PRIMARY KEY, email TEXT UNIQUE NOT NULL, password TEXT, created_at INTEGER NOT NULL)
+sessions(hash BLOB PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at INTEGER NOT NULL, used_at INTEGER NOT NULL)
+invites(hash BLOB PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at INTEGER NOT NULL)
+```
+
+- An e-mail is stored trimmed and lowercased, so `Ana@x.cz` and `ana@x.cz` are one user.
+- `davy user add <email>` creates a user without a password and prints a one-time link, `<public-url>/ui/welcome#<secret>`. The link works for 24 hours and once. The secret sits after `#`, so it never reaches a proxy log, and the page removes it from the address bar (`history.replaceState`) before anything else runs. The page posts it in the body with the new password, and the answer logs the person in. This works without SMTP, and an agent that installs Davy can hand the link to its person.
+- `davy user reset <email>` deletes the user's open invites and sessions and prints a new link. `davy user remove <email>` deletes the user, their sessions and invites. `davy user list` prints the users. All four take `--json`. They write from their own process, like `project create`.
+- In the UI a person changes their own password, which ends their other sessions, and can log out everywhere.
+- Passwords are hashed with Argon2id at the OWASP settings (19 MiB, 2 passes, 1 lane) and stored as PHC strings. A password has at least 12 characters and at most 1,024 bytes. A login for an unknown e-mail hashes a fixed dummy, so its timing does not say which e-mails exist.
+
+### Login under attack
+
+- A body sent to login or welcome is read only up to 4 KiB.
+- A hash pays its 19 MiB from the memory budget in "Hardening" before it starts, and at most two hashes run at once. A login that finds both slots busy, or not enough budget, gets `429` with `Retry-After: 1` at once. It never waits holding a connection.
+- After failed logins for one e-mail, the next try is refused with `429` and `Retry-After` for 2^n seconds, up to 15 minutes. Unknown e-mails count the same way, so the answer does not say whether an e-mail exists. The counts live in memory, at most 10,000 e-mails, the oldest dropped first.
+- This slows a guesser to a few tries an hour, but it also lets anyone who knows a colleague's e-mail keep them from logging in for 15 minutes at a time. A session already open is not touched, and limits per client address are the reverse proxy's job. Both are written into `SECURITY.md`.
+
+### Sessions and cookies
+
+- A session is 32 random bytes in the cookie `__Host-davy_session` (`Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`). The database keeps only its blake3 hash. It ends 14 days after its last use and 90 days after login. The lookup joins `users`, so a removed user's session ends even before the cascade runs.
+- `Lax`, not `Strict`, because a link to an issue opened from Slack or an e-mail is a navigation from another site. With `Strict` the browser would leave the cookie out and every alert link would land on the login page. A write is a JSON `POST` with an exact `Origin` (below), and `Lax` does not send the cookie on a `POST` from another site.
+- The login page takes `next`, the page to open after login. Davy follows it only when it is a path under `/ui/`, so it cannot redirect elsewhere.
+- Chrome and Firefox keep a `Secure` cookie from `http://localhost`, so a local Davy works before TLS is set up. Safari does not, and the login page says that it needs HTTPS when the cookie did not stick. Any other host needs the HTTPS that `SECURITY.md` already requires.
+
+### Where the API checks access
+
+- The whole `/ui/api/` router sits behind a `route_layer` that asks `Accounts` for a `Person`. Login, logout and welcome live on a separate router without it. A test lists every route of the app and fails if a `/ui/api/` route outside those three answers without a session.
+- A write must have `Content-Type: application/json` and an `Origin` that is exactly the public URL: scheme, host and port. Without a public URL, it is exactly the address Davy listens on. A write without `Origin` is refused. The loopback rule of `/mcp` (`http://localhost:*`) is not enough here, because a cookie is sent to every port of a host. Any dev server on the same machine could then act as the person.
+- The `Host` check of `/mcp` applies to `/ui/` too, against DNS rebinding. The `Access-Control-Allow-Origin: *` that ingest answers with is not sent under `/ui/`.
+- The session cookie is not accepted on `/mcp` or the upload routes, and the admin token is not accepted under `/ui/api/`. Each caller keeps one credential, as in the table in `docs/architecture.md`.
+- Every `/ui/` response carries `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`, plus `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, `Cross-Origin-Opener-Policy: same-origin` and a `Permissions-Policy` that turns off camera, microphone and geolocation. `/ui/api/` and `/ui/welcome` answer with `Cache-Control: no-store`.
+- No script and no `<style>` element runs inline. React, Radix and Motion set styles through the CSSOM, which this policy allows. A primitive that inserts a `<style>` element, as Radix's scroll lock for modal dialogs does, is not used. The e2e suite fails on any CSP violation the browser reports.
+
+### Untrusted text in the browser
+
+Anyone with a project's public key can send an event, so every title, message, frame, tag, breadcrumb and log line is attacker-controlled text.
+
+- The UI renders it as text only. `dangerouslySetInnerHTML`, `innerHTML` and `eval` are banned by a lint rule that fails `scripts/check`.
+- A URL from an event (`request.url`, a link in a breadcrumb) is a link only when it parses as `http:` or `https:`, and it opens with `rel="noopener noreferrer"`. Anything else is shown as text.
+- Control characters and bidirectional overrides in a title or message are shown as visible escapes, so a title cannot hide or reorder what it says.
+- The browser never loads anything an event names. There are no images, favicons or previews from event data. `img-src` allows only Davy's own origin.
+- **Hand to an agent** (see Issue) copies a prompt with the issue's number and the names of the MCP tools, never its title, message or any other event text. Event text in a prompt would let anyone with the public key write instructions into a coding agent that has a shell.
+
+### Reads cost memory too
+
+- The issue view decompresses an event's payload and parses it. It pays for both from the memory budget, priced like an ingest body, and gets `429` when the budget is held.
+- `EventView` keeps at most 256 frames per exception, as symbolication does, 200 breadcrumbs, 200 tags and 64 KiB of any one string. Each cut shows how many more there were.
+- At most 8 log searches and histograms run at once, shared by every person. Another one gets `429` with `Retry-After: 1`, and the UI tries again.
+
+### Writes go through the writer
+
+Inside the server only `store::Writer` writes SQLite. The writer queue gains these jobs, each answered when it commits, like `Resolve`:
+
+- `SetStatus { issues, status, at }` for resolve, resolve in a release, ignore and reopen, of one issue or up to 500 at once in one transaction, so a bulk change never half applies.
+- `Login { user, hash, at }`, `Logout { hash }`, `LogoutAll { user, except }`, `Welcome { invite, password, session, at }` and `SetPassword { user, password, keep }`.
+- `Touch { hash, at }`, which writes a session's `used_at` at most once an hour.
+
+During an error storm the ingest queue is full, and that is when the team needs the UI most. The writer takes UI jobs from a second queue of 64, so a full ingest queue does not refuse a login or a resolve.
+
+### Views
+
+The API pages with a cursor, never an offset, so a page costs the same at row 50 as at row 500,000.
+
+**Issues** (`/ui/issues`). A list of issues sorted by last seen, event count or first seen. Filters are project, status, environment, release and a text match on title and culprit. Each row shows title, culprit, level, status, event count, first and last seen, and a bar chart of the last 24 hours from `issue_hourly`. Select several issues to resolve, ignore or reopen them at once. A new index `issues(project_id, status, last_seen DESC)` serves the default filter.
+
+**Issue** (`/ui/issues/{id}`). The issue with its status actions: resolve, resolve in a release, ignore, reopen. The selected event (the latest by default) shows the exception chain with its frames (in-app frames open, the rest folded, the symbolicated position and context lines), breadcrumbs, tags, the request, the user, runtime, OS and browser. Then the events of the issue to step through, the releases it was seen in, and the logs around the event that `issue_context` finds. The compaction `issue_context` does for agents drops frames and fields to save tokens. The UI reads the payload through its own pure function from payload JSON to an `EventView`, with the limits above, tested on the captured fixtures. **Hand to an agent** copies a prompt that names the issue and the MCP tools `issue_context` and `mark_fixed`. This is the agent-first loop, started from the place a person found the error.
+
+**Logs** (`/ui/logs`). The query syntax of `davy logs`, a time range, project and level filters. Above the results is a histogram of matches over the range, from a new `logs::store::histogram`: tantivy's histogram aggregation over the timestamp, run in each daily index the range touches and merged, at most 200 buckets. Drag across it to zoom the range. Results are newest first and page backwards. A row opens to show every attribute. **Live** asks for logs newer than the last one every 2 seconds while the tab is visible. Polling, not a held connection, so a proxy needs no streaming setup and a hidden tab costs nothing.
+
+**Uptime** (`/ui/monitors`). Monitors with their state, last check and the response times of the last 24 hours from `checks`. A monitor's page adds 7 and 30 day uptime, its incidents with reasons, and for a heartbeat the expected and last ping.
+
+**Alerts** (`/ui/alerts`). Channels with their kind, project and host, and recent notifications with their delivery state and last error. A channel's URL path and secret are never shown.
+
+**Projects** (`/ui/projects`). Each project's DSN, Logtail source token and OTLP endpoint, with the setup snippets from `docs/connect/` for the SDK it picks.
+
+**Account** (`/ui/account`). Change password, log out everywhere.
+
+### What it looks like
+
+The look is decided on a prototype of the issue page and the issues list, built with real fixtures from the e2e SDKs, before the shell is built. The prototype goes to the owner, and the chosen direction is written into this section. Already fixed:
+
+- It is a tool people read for hours. Information density beats decoration, body text is a neutral system face, and a monospace face is for code, stack traces and log lines only.
+- Light and dark follow the system setting, each with its own palette. There is no theme toggle.
+- Icons are a small set drawn for Davy, not a generic icon package.
+- Every chart has a table form, identity is never color alone, and each chart palette passes a color-vision check in both themes.
+- Motion is short and serves a change of state: a folded frame opening, a row leaving a list after resolve. Nothing is hidden behind an entrance animation, and `prefers-reduced-motion` turns motion off.
+- WCAG 2.2 AA. Every action works from the keyboard: `/` searches, `j` and `k` move through a list, `Enter` opens, `Esc` closes.
+
+### Front-end dependencies
+
+npm is a supply chain of its own, and Davy is a security product. The rules:
+
+- pnpm with a frozen lockfile. Dependency install scripts do not run (pnpm's default), and a version newer than 7 days cannot be added (`minimumReleaseAge: 10080`, in minutes). That setting checks a version when it enters the lockfile, not again later.
+- A short list of runtime dependencies, each named here with the reason: `react` and `react-dom`; `@tanstack/react-router` for typed search parameters; `@tanstack/react-query` for cached API reads; Radix primitives, copied in through shadcn/ui; `motion`; `uplot` for time series (about 50 KB minified, canvas, fast at 100,000 points). Tailwind v4 at build time only. A new runtime dependency needs a line in this list.
+- CI fails on a known high or critical vulnerability in the lockfile (osv-scanner), and on a license outside MIT, ISC, BSD, 0BSD and Apache-2.0 in a package that ships in the bundle. The release SBOM lists the npm packages next to the crates.
+- At most 200 KB of JavaScript compressed for the first load. Assets carry content hashes and are served with `Cache-Control: immutable` and as brotli when the browser accepts it. `index.html` is never cached. The binary grows by at most 2 MB.
+
+### Order of work
+
+1. Accounts and sessions: the tables, `davy user`, the writer jobs and their second queue, login, logout, welcome, `Accounts` and the route layer, the security headers and the `/ui/` serving with the no-UI page. Contract tests first.
+2. The design prototype of the issue page and the list, then the direction written here.
+3. The app shell, then Issues and Issue.
+4. Logs with the histogram and live.
+5. Uptime, Alerts, Projects and Account.
+6. An internal pentest of the UI routes, recorded in `docs/security/`, before the release that ships the UI.
+
+### Not in this milestone
+
+Creating monitors, channels, projects and users from the UI, which needs roles and a public-only `Reach` for URLs typed in a browser. Dashboards and saved queries, alert rules beyond channels, release health, traces, more than one team, roles, SSO, an audit log, translations, and a mobile layout beyond a readable single column.
+
+### Done means
+
+- Contract tests with literal values: every `/ui/api/` route answers `401` without a session, with an expired one and with one of a removed user; a write answers `403` with an `Origin` on another port of the same host, without `Origin` and without JSON; login answers the same way for a wrong password and an unknown e-mail, and `429` at once when both hash slots are busy; a welcome link works once and not after 24 hours; `next` outside `/ui/` is ignored; the admin token is refused under `/ui/api/` and the cookie on `/mcp`; every `/ui/` response carries the headers above and no `Access-Control-Allow-Origin`.
+- A store test: a bulk `SetStatus` of 500 issues commits all or none, and a login commits while the ingest queue is full.
+- Unit tests: `EventView` from each captured fixture gives the exact frames and fields, and cuts an event with 10,000 breadcrumbs to 200 with the count of the rest; the log histogram counts a known set of logs across two daily indexes into the right buckets; a link from an event is a link only for `http` and `https`; a log time of `1763600000123456789` survives the round trip through the API and the generated types.
+- `e2e/ui.spec.ts` runs Playwright against the built binary: `davy user add`, open the link, set a password, see the issue a real Sentry SDK sent, read its in-app frame, resolve it, find a log with a query and zoom the histogram, open a monitor, change the password. axe-core reports no violation on any view, and the browser reports no CSP violation.
+- A load check: the issues list and the log search each answer in under 100 ms at the 95th percentile with 100,000 issues and 10 million logs in the data directory, measured and recorded here.
+- `scripts/check` passes, including the type diff, the lint ban, osv-scanner and the bundle budget.
 
 ## Hardening
 
