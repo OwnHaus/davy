@@ -742,7 +742,7 @@ The API pages with a cursor, never an offset, so a page costs the same at row 50
 
 ### What it looks like
 
-The look is decided on a prototype of the issue page and the issues list, built with real fixtures from the e2e SDKs, before the shell is built. The prototype goes to the owner, and the chosen direction is written into this section. Already fixed:
+The look was decided on a prototype of the issue page and the issues list, built on fixtures from the e2e SDKs. Of three directions the owner chose the one called Instrument. It should feel like calm, exact test equipment for someone who triages hundreds of issues. The prototype is in [`docs/ui-prototype/`](ui-prototype/index.html) and opens from disk with no server. Its issues 1 to 4, 9, 10 and 14 come from the e2e fixtures, the rest and every hourly count are made up. The app follows these rules:
 
 - It is a tool people read for hours. Information density beats decoration, body text is a neutral system face, and a monospace face is for code, stack traces and log lines only.
 - Light and dark follow the system setting, each with its own palette. There is no theme toggle.
@@ -750,6 +750,32 @@ The look is decided on a prototype of the issue page and the issues list, built 
 - Every chart has a table form, identity is never color alone, and each chart palette passes a color-vision check in both themes.
 - Motion is short and serves a change of state: a folded frame opening, a row leaving a list after resolve. Nothing is hidden behind an entrance animation, and `prefers-reduced-motion` turns motion off.
 - WCAG 2.2 AA. Every action works from the keyboard: `/` searches, `j` and `k` move through a list, `Enter` opens, `Esc` closes.
+
+**Layout.** A list view has three regions. A left rail of about 190 px holds the projects with their counts, the status and environment filters, and the sort, which the browser remembers. The middle is the list in rows of 30 px, with the columns that **Views** names. A right inspector of about 310 px shows the row under the cursor without leaving the list: the title, the culprit, the nearest in-app frame with its crash line and source-map origin, counts, first and last seen, the releases and the 24-hour strip. `Enter` opens the issue page. It keeps the rail and gives the event the rest of the width, with tags and contexts as a two-column grid of keys and values, never chips. A bar at the bottom names the keys of the view. A narrow window loses the inspector first, then folds the rail behind a button.
+
+**The heat strip.** It is the one signature of the look. The last 24 hours of an issue are 24 small cells in one hue, light to dark, on one scale for every row. In a column of rows the eye finds a spike without reading a number. Hover or the arrow keys read out the hour and the count, and the same numbers sit in a visually hidden table. The issue page shows the strip large, with an hour axis and the count in each cell. Cells with few events stay close to the surface color on purpose, and their counts are in the readout and the table.
+
+**Color.** One palette per theme, a neutral graphite with a slight olive cast, and one accent, verdigris, for focus, the cursor row and the selected state. Regions part by tone, the rail and the panels a step off the list surface, not by a border on every box. Shadows only lift tooltips and popovers. The values from the prototype, contrast measured against the list surface:
+
+| Token | Light | Dark | Contrast (light, dark) |
+|---|---|---|---|
+| list surface | `#fcfcfb` | `#1a1b17` | |
+| rail | `#efefe9` | `#151613` | |
+| panel | `#f4f4ef` | `#22231e` | |
+| ink | `#1d1e1a` | `#e8e7de` | 16.3, 14.0 |
+| muted ink | `#54554d` | `#b0afa2` | 7.4, 7.8 |
+| faint ink | `#62635a` | `#a3a295` | 5.9, 6.7 |
+| accent | `#17695a` | `#6cc6b1` | 6.4, 8.5 |
+| cursor row | `#d7ebe5` | `#233a33` | |
+| alarm (fatal, error) | `#a3302a` | `#e5958a` | 6.8, 7.4 |
+| warning | `#715b00` | `#cdbf7c` | 6.4, 9.4 |
+| heat, empty to peak | `#e4e6dd` to `#0b463b` | `#2a2b25` to `#bdf0de` | |
+
+Every text color keeps at least 4.7:1 on the cursor row too. Fatal and error share the alarm color, and info uses the muted ink, so the status set has two hues. Each level has its own drawn mark and its word next to it, because the two hues alone fail for deuteranopia in the light theme (an OKLab distance of 1.9, measured).
+
+**Type.** `system-ui` at 13 px for text, `ui-monospace` for code, frames, ids and times, tabular figures for every count. Weight and size make the hierarchy. No web font is loaded.
+
+**Marks.** The Davy mark is a D built from five rounded bars, its middle bar in the accent, like rows of the strip. Icons for levels, statuses, folding, copying and the source-map origin are drawn for Davy.
 
 ### Front-end dependencies
 
