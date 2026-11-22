@@ -1,6 +1,6 @@
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use davy::{
-    alert, context, feedback, install,
+    alert, context, feedback, install, issues,
     logs::{
         self, LogLevel,
         store::{LogHit, LogQuery, search},
@@ -301,13 +301,16 @@ async fn main() -> anyhow::Result<()> {
             data,
             release,
         } => {
-            let found = store::resolve(
+            let status = store::IssueStatus::Resolved {
+                in_release: release,
+                at: time::now_ms(),
+            };
+            issues::set_status(
                 &store::open(&data)?,
-                issue_id,
-                release.as_deref(),
-                time::now_ms(),
-            )?;
-            anyhow::ensure!(found, "no issue {issue_id}");
+                &issues::IssueIds::one(issue_id),
+                &status,
+            )?
+            .map_err(anyhow::Error::msg)?;
         }
     }
     Ok(())

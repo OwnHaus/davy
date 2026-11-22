@@ -2,7 +2,7 @@
 //! sessions.
 
 use super::{
-    Refusal,
+    Refusal, json,
     session::{self, Guess, Local},
     write,
 };
@@ -12,7 +12,7 @@ use crate::{
         store::{self, Change},
         verify_password,
     },
-    http::{body, internal, json_response},
+    http::{body, internal},
     time,
 };
 use axum::{
@@ -23,14 +23,28 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use serde::{Deserialize, de::DeserializeOwned};
-use serde_json::json;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::sync::Arc;
 
 /// What a login, welcome or password body may weigh.
 pub const MAX_BODY: usize = 4 * 1024;
 const WRONG: &str = "wrong e-mail or password";
 const LINK_GONE: &str = "this link was used or is older than 24 hours, ask for a new one";
+
+/// Who is logged in.
+#[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct Me {
+    pub email: String,
+}
+
+/// Who logged in, and the page under `/ui/` to go to.
+#[derive(Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub(super) struct LoggedIn {
+    email: String,
+    next: String,
+}
 
 /// Login, logout and welcome, which need no session.
 pub fn open(local: Arc<Local>) -> Router {
@@ -66,19 +80,21 @@ async fn hashing<T: Send + 'static>(
     Ok(tokio::task::spawn_blocking(run).await.map_err(internal)??)
 }
 
-fn signed_in(secret: &Secret, body: &serde_json::Value) -> Result<Response, Refusal> {
+fn signed_in(secret: &Secret, body: &impl Serialize) -> Result<Response, Refusal> {
     Ok((
         [(header::SET_COOKIE, session::cookie(secret)?)],
-        json_response(body),
+        json(body)?,
     )
         .into_response())
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-struct Login {
+pub(super) struct Login {
     email: String,
     password: String,
+    #[cfg_attr(test, ts(optional))]
     next: Option<String>,
 }
 
@@ -110,7 +126,11 @@ async fn login(State(local): State<Arc<Local>>, body: Body) -> Result<Response, 
         .map_err(|_password_changed| Refusal::new(StatusCode::UNAUTHORIZED, WRONG))?;
     local.succeeded(Guess::Login, &email);
     let next = next_page(req.next.as_deref());
-    signed_in(&secret, &json!({ "email": email.as_str(), "next": next }))
+    let body = LoggedIn {
+        email: email.as_str().to_owned(),
+        next,
+    };
+    signed_in(&secret, &body)
 }
 
 /// `next` when it is a path under `/ui/`, else `/ui/`, so a login link
@@ -154,8 +174,9 @@ async fn logout(State(local): State<Arc<Local>>, headers: HeaderMap) -> Result<R
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-struct Welcome {
+pub(super) struct Welcome {
     secret: String,
     password: String,
 }
@@ -186,7 +207,7 @@ async fn welcome(State(local): State<Arc<Local>>, body: Body) -> Result<Response
     let email = session
         .map(|s| s.person.email.to_string())
         .unwrap_or_default();
-    signed_in(&secret, &json!({ "email": email }))
+    signed_in(&secret, &Me { email })
 }
 
 /// The session the request came with. The session check ran first.
@@ -195,8 +216,9 @@ fn current(headers: &HeaderMap) -> Result<Secret, Refusal> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-struct NewPassword {
+pub(super) struct NewPassword {
     current: String,
     new: String,
 }

@@ -48,6 +48,7 @@ tower = { version = "0.5", features = ["util"] }
 tokio = { version = "1", features = ["test-util"] }
 futures = "0.3"
 peak_alloc = "0.3"
+ts-rs = { version = "12", features = ["serde-json-impl"] }
 
 # Mechanical rules live here, not in AGENTS.md. Never loosen a lint to get a
 # change through; fix the code or use #[expect(lint, reason = "...")].

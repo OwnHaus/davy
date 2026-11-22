@@ -4,13 +4,16 @@
 
 mod account;
 mod assets;
+pub mod issues;
 pub mod session;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod types;
 
 use crate::{
     accounts::{Accounts, Person},
-    http::{self, Failure, json_response},
+    http::{self, Failure, body::Budget, json_response},
     store,
 };
 use axum::{
@@ -21,6 +24,7 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
     routing::{any, get},
 };
+use issues::Reads;
 use serde_json::json;
 use session::Local;
 use std::{path::Path, sync::Arc, time::Duration};
@@ -28,18 +32,24 @@ use std::{path::Path, sync::Arc, time::Duration};
 pub const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 /// The routes under `/ui` of the server on `data`. `writes` is the writer's
-/// UI queue.
-pub fn serve(data: &Path, writes: store::Sender, public_url: &url::Url) -> anyhow::Result<Router> {
-    let local = Local::new(store::open(data)?, writes);
-    Ok(router(Arc::new(local), public_url))
+/// UI queue, `budget` the memory budget of ingest.
+pub fn serve(
+    data: &Path,
+    writes: store::Sender,
+    budget: Budget,
+    public_url: &url::Url,
+) -> anyhow::Result<Router> {
+    let local = Local::new(store::open(data)?, writes.clone());
+    let reads = Reads::new(store::open(data)?, data.to_owned(), budget, writes);
+    Ok(router(Arc::new(local), Arc::new(reads), public_url))
 }
 
-/// The routes under `/ui`, for the people of `local`, reached at
-/// `public_url`.
-pub fn router(local: Arc<Local>, public_url: &url::Url) -> Router {
+/// The routes under `/ui`, for the people of `local`, reading issues from
+/// `reads`, reached at `public_url`.
+pub fn router(local: Arc<Local>, reads: Arc<Reads>, public_url: &url::Url) -> Router {
     let accounts: Arc<dyn Accounts> = Arc::clone(&local) as Arc<dyn Accounts>;
     let guard = Arc::new(Guard::new(public_url));
-    protected(Arc::clone(&local))
+    protected(Arc::clone(&local), reads)
         .route_layer(middleware::from_fn_with_state(accounts, require))
         .merge(account::open(local))
         .route("/ui", get(|| async { Redirect::permanent("/ui/") }))
@@ -51,9 +61,10 @@ pub fn router(local: Arc<Local>, public_url: &url::Url) -> Router {
 
 /// The `/ui/api/` routes that need a person, each with the one method it
 /// answers. A test sends each of them without a session.
-fn protected(local: Arc<Local>) -> Router {
+fn protected(local: Arc<Local>, reads: Arc<Reads>) -> Router {
     Router::new()
         .route("/ui/api/me", get(me))
+        .merge(issues::routes(reads))
         .route(
             "/ui/api/{*rest}",
             any(|| async { refuse(StatusCode::NOT_FOUND, "no such route") }),
@@ -66,11 +77,25 @@ pub(crate) const PROTECTED: &[(&str, &str)] = &[
     ("GET", "/ui/api/me"),
     ("POST", "/ui/api/account/password"),
     ("POST", "/ui/api/account/logout-others"),
+    ("GET", "/ui/api/projects"),
+    ("GET", "/ui/api/issues"),
+    ("POST", "/ui/api/issues/status"),
+    ("GET", "/ui/api/issues/1"),
+    ("GET", "/ui/api/issues/1/events"),
+    ("GET", "/ui/api/issues/1/event"),
+    ("GET", "/ui/api/issues/1/logs"),
     ("GET", "/ui/api/nowhere"),
 ];
 
-async fn me(Extension(person): Extension<Person>) -> Response {
-    json_response(&json!({ "email": person.email.as_str() }))
+async fn me(Extension(person): Extension<Person>) -> Result<Response, Refusal> {
+    json(&account::Me {
+        email: person.email.as_str().to_owned(),
+    })
+}
+
+fn json<T: serde::Serialize>(value: &T) -> Result<Response, Refusal> {
+    let body = serde_json::to_vec(value).map_err(http::internal)?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
 }
 
 async fn require(
@@ -272,11 +297,21 @@ async fn write(
     change: crate::accounts::store::Change,
 ) -> Result<Result<(), String>, Refusal> {
     use crate::accounts::store::{LINK_USED, PASSWORD_CHANGED};
-    match store::submit(writes, store::Job::Account(change)).await {
+    let known = |why: &str| why == PASSWORD_CHANGED || why == LINK_USED;
+    submit(writes, store::Job::Account(change), known).await
+}
+
+/// Queues `job` on the writer's UI queue and waits until it commits. The
+/// inner error is a reason the job did not apply that `known` accepts as
+/// a person's mistake rather than a fault of the server.
+async fn submit(
+    writes: &store::Sender,
+    job: store::Job,
+    known: impl Fn(&str) -> bool,
+) -> Result<Result<(), String>, Refusal> {
+    match store::submit(writes, job).await {
         Ok(()) => Ok(Ok(())),
-        Err(store::Refused::Failed(why)) if why == PASSWORD_CHANGED || why == LINK_USED => {
-            Ok(Err(why))
-        }
+        Err(store::Refused::Failed(why)) if known(&why) => Ok(Err(why)),
         Err(store::Refused::Full) => Err(Refusal {
             retry_after: Some(Duration::from_secs(1)),
             ..Refusal::new(

@@ -27,7 +27,7 @@ pub enum Level {
     Debug,
 }
 impl Level {
-    fn parse(s: &str) -> Self {
+    pub(crate) fn parse(s: &str) -> Self {
         match s.to_ascii_lowercase().as_str() {
             "fatal" | "critical" => Self::Fatal,
             "warning" | "warn" => Self::Warning,
@@ -100,7 +100,7 @@ impl Frame {
         }
     }
 }
-fn timestamp(v: Option<&Value>) -> Option<Timestamp> {
+pub(crate) fn timestamp(v: Option<&Value>) -> Option<Timestamp> {
     let ms = match v? {
         Value::Number(n) => n.as_f64()? * 1000.0,
         Value::String(s) => return time::parse(s).map(jiff::Timestamp::as_millisecond),
@@ -112,7 +112,7 @@ fn timestamp(v: Option<&Value>) -> Option<Timestamp> {
     time::whole(ms)
 }
 /// The items of a list that SDKs send either bare or as `{"values": [...]}`.
-fn values(v: &Value) -> &[Value] {
+pub(crate) fn values(v: &Value) -> &[Value] {
     v.as_array()
         .or_else(|| v["values"].as_array())
         .map_or(&[], Vec::as_slice)
@@ -139,12 +139,8 @@ impl ErrorEvent {
             .iter()
             .map(Exception::parse)
             .collect();
-        let entry = raw
-            .get("logentry")
-            .or_else(|| raw.get("message").filter(|v| v.is_object()));
-        let message = entry
-            .and_then(|v| string(&v["formatted"]).or_else(|| string(&v["message"])))
-            .or_else(|| string(&raw["message"]));
+        let entry = log_entry(&raw);
+        let message = message(&raw);
         Ok(Self {
             event_id,
             timestamp,
@@ -174,6 +170,19 @@ impl ErrorEvent {
             raw,
         })
     }
+}
+
+/// The structured message of an event, where SDKs put the template.
+fn log_entry(raw: &Value) -> Option<&Value> {
+    raw.get("logentry")
+        .or_else(|| raw.get("message").filter(|v| v.is_object()))
+}
+
+/// The message of an event, formatted when the SDK sent a template.
+pub(crate) fn message(raw: &Value) -> Option<String> {
+    log_entry(raw)
+        .and_then(|v| string(&v["formatted"]).or_else(|| string(&v["message"])))
+        .or_else(|| string(&raw["message"]))
 }
 
 const MAX_FRAMES: usize = 30;

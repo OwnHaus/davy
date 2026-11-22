@@ -4,12 +4,13 @@
 use crate::{
     context,
     feedback::Feedback,
+    issues::IssueIds,
     logs::{
         self, LogLevel,
         store::{LogQuery, search},
     },
     query,
-    store::{self, Job},
+    store::{self, IssueStatus, Job},
     time,
     token::{self, Token},
 };
@@ -217,10 +218,12 @@ impl Tools {
             Some(r) => format!("issue {issue_id} resolved in release {r}"),
             None => format!("issue {issue_id} resolved until a new release reports it"),
         };
-        let job = Job::Resolve {
-            issue: issue_id,
-            release,
-            at: time::now_ms(),
+        let job = Job::SetStatus {
+            issues: IssueIds::one(issue_id),
+            status: IssueStatus::Resolved {
+                in_release: release,
+                at: time::now_ms(),
+            },
         };
         store::submit(&self.writes, job)
             .await
@@ -450,12 +453,16 @@ mod tests {
         let writer = std::thread::spawn(move || {
             for outcome in [Ok(()), Err("no issue 9".to_owned())] {
                 let w = s.writes.recv().unwrap();
-                let Job::Resolve { issue, release, .. } = w.job else {
+                let Job::SetStatus {
+                    issues,
+                    status: IssueStatus::Resolved { in_release, .. },
+                } = w.job
+                else {
                     panic!("expected a resolve job");
                 };
                 w.done.send(outcome).unwrap();
-                assert_eq!(release.as_deref(), Some("2.0.0"));
-                assert!(issue == 7 || issue == 9);
+                assert_eq!(in_release.as_deref(), Some("2.0.0"));
+                assert!(issues == IssueIds::one(7) || issues == IssueIds::one(9));
             }
         });
         assert_eq!(

@@ -23,6 +23,7 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 - `davy project create` takes the public URL from `davy setup` and prints the existing DSN when the project is already there, so it can run again safely.
 - An install guide for coding agents in `docs/install.md`, one page per SDK in `docs/connect/` and an index in `llms.txt`.
 - The CLI commands `project`, `issues`, `event`, `logs`, `sql`, `context`, `resolve`, `monitor` and `channel`.
+- The web UI's issue API under `/ui/api/`: the issue list with filters, sorts, cursors and 24-hour counts, an issue with its events, the view of one event with every list cut to a limit, the logs around an event, and a status change of up to 500 issues at once that applies to all or none.
 - Release downloads: static Linux binaries for x86_64 and aarch64 and macOS binaries for both architectures, each with a CycloneDX SBOM, build provenance and `SHA256SUMS`, and a signed multi-arch image `ghcr.io/dominikzabcik/davy` on distroless as a non-root user. `RELEASING.md` shows how to verify them.
 
 ### Security

@@ -524,7 +524,7 @@ pub async fn serve(
         budget: body::Budget::new(body::MEMORY),
     };
     let maps = Arc::clone(&app.sourcemaps);
-    let ui = crate::ui::serve(data, writer.ui.clone(), public_url)?;
+    let ui = crate::ui::serve(data, writer.ui.clone(), app.budget.clone(), public_url)?;
     let admin = match token {
         Some(token) => mcp::router(
             data.to_owned(),

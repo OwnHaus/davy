@@ -39,11 +39,28 @@ pub fn issue_context(c: &Connection, data: &Path, id: i64) -> Result<Option<Issu
         .as_ref()
         .map_or(issue.last_seen_ms, |e| e.timestamp)
         .saturating_mul(1_000_000);
-    let (logs_scope, query) = match latest.as_ref().and_then(|e| e.trace_id.as_deref()) {
+    let trace = latest.as_ref().and_then(|e| e.trace_id.as_deref());
+    let (logs_scope, query) = logs_around(issue.project_id, at_ns, trace);
+    let logs = search(&crate::logs::dir(data), &query)?;
+    Ok(Some(IssueContext {
+        latest_event: latest.as_ref().map(event::compact),
+        recent_events: store::recent_events(c, id)?,
+        releases: store::issue_releases(c, id)?,
+        issue,
+        logs_scope,
+        logs,
+    }))
+}
+
+/// The logs that tell what led to an event of `project` at `at_ns`, and
+/// which logs those are, in words: the event's trace within an hour either
+/// side, or the whole project in the minute before when it has no trace.
+pub fn logs_around(project: i64, at_ns: i64, trace: Option<&str>) -> (String, LogQuery) {
+    match trace {
         Some(trace) => (
             format!("trace {trace}, one hour either side of the event"),
             LogQuery {
-                project: Some(issue.project_id),
+                project: Some(project),
                 since: at_ns.saturating_sub(HOUR_NS),
                 until: at_ns.saturating_add(HOUR_NS),
                 min_level: None,
@@ -54,7 +71,7 @@ pub fn issue_context(c: &Connection, data: &Path, id: i64) -> Result<Option<Issu
         None => (
             "project, 60 seconds before to 10 seconds after the event".to_owned(),
             LogQuery {
-                project: Some(issue.project_id),
+                project: Some(project),
                 since: at_ns.saturating_sub(60 * SECOND_NS),
                 until: at_ns.saturating_add(10 * SECOND_NS),
                 min_level: None,
@@ -62,16 +79,7 @@ pub fn issue_context(c: &Connection, data: &Path, id: i64) -> Result<Option<Issu
                 limit: 30,
             },
         ),
-    };
-    let logs = search(&crate::logs::dir(data), &query)?;
-    Ok(Some(IssueContext {
-        latest_event: latest.as_ref().map(event::compact),
-        recent_events: store::recent_events(c, id)?,
-        releases: store::issue_releases(c, id)?,
-        issue,
-        logs_scope,
-        logs,
-    }))
+    }
 }
 
 #[cfg(test)]

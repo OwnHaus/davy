@@ -169,6 +169,18 @@ fn an_event_keeps_only_a_trace_id_of_32_hex_digits() {
         assert_eq!(trace(bad), None, "{bad}");
     }
 }
+fn resolve(
+    c: &rusqlite::Connection,
+    issue: i64,
+    release: Option<&str>,
+    at: i64,
+) -> Result<(), String> {
+    let status = store::IssueStatus::Resolved {
+        in_release: release.map(str::to_owned),
+        at,
+    };
+    crate::issues::set_status(c, &crate::issues::IssueIds::one(issue), &status).unwrap()
+}
 fn memory() -> rusqlite::Connection {
     let mut c = rusqlite::Connection::open_in_memory().unwrap();
     store::init(&mut c).unwrap();
@@ -218,12 +230,12 @@ fn resolving_waits_for_the_next_release() {
             .unwrap()
     };
     store::insert(&c, 1, &in_release("v1", 1000)).unwrap();
-    assert!(store::resolve(&c, 1, None, 2000).unwrap());
+    assert_eq!(resolve(&c, 1, None, 2000), Ok(()));
     store::insert(&c, 1, &in_release("v1", 3000)).unwrap();
     assert_eq!(status(), "resolved");
     store::insert(&c, 1, &in_release("v2", 3000)).unwrap();
     assert_eq!(status(), "unresolved");
-    assert!(!store::resolve(&c, 99, None, 0).unwrap());
+    assert_eq!(resolve(&c, 99, None, 0), Err("no issue 99".to_owned()));
 }
 #[test]
 fn a_new_and_a_regressed_issue_each_queue_one_notice() {
@@ -237,7 +249,7 @@ fn a_new_and_a_regressed_issue_each_queue_one_notice() {
     };
     store::insert(&c, 1, &in_release("v1", 1000)).unwrap();
     store::insert(&c, 1, &in_release("v1", 1500)).unwrap();
-    assert!(store::resolve(&c, 1, Some("v1"), 2000).unwrap());
+    assert_eq!(resolve(&c, 1, Some("v1"), 2000), Ok(()));
     store::insert(&c, 1, &in_release("v2", 3000)).unwrap();
     store::insert(&c, 1, &in_release("v2", 4000)).unwrap();
     let payloads: Vec<String> = c
@@ -288,7 +300,7 @@ fn migration_backfills_releases_from_old_events() {
     let version: i64 = c
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
 }
 #[test]
 fn storage_regression_duplicates_sampling_and_ignored() {

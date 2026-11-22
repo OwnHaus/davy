@@ -23,6 +23,7 @@ const PASSWORD: &str = "correct horse battery";
 struct Ui {
     app: Router,
     local: Arc<Local>,
+    reads: Arc<super::issues::Reads>,
     db: Connection,
     /// The memory budget of ingest bodies.
     ingest: Budget,
@@ -64,10 +65,18 @@ fn ui() -> Ui {
         ))),
     };
     let public_url = url::Url::parse("https://davy.example/").unwrap();
-    let routes = super::router(Arc::clone(&local), &public_url);
+    let reads = super::issues::Reads::new(
+        store::open(&data).unwrap(),
+        data.clone(),
+        ingest.clone(),
+        writer.ui.clone(),
+    );
+    let reads = Arc::new(reads);
+    let routes = super::router(Arc::clone(&local), Arc::clone(&reads), &public_url);
     Ui {
         app: crate::http::router(app, routes),
         local,
+        reads,
         db,
         ingest,
         _writer: writer,
@@ -415,8 +424,18 @@ async fn a_login_does_not_pay_from_the_ingest_budget() {
 fn without_writer(data: &std::path::Path, public_url: &str) -> Router {
     let (writes, gone) = crossbeam_channel::bounded(1);
     drop(gone);
-    let local = Arc::new(Local::new(store::open(data).unwrap(), writes));
-    super::router(local, &url::Url::parse(public_url).unwrap())
+    let local = Arc::new(Local::new(store::open(data).unwrap(), writes.clone()));
+    let reads = super::issues::Reads::new(
+        store::open(data).unwrap(),
+        data.to_owned(),
+        Budget::new(1 << 20),
+        writes,
+    );
+    super::router(
+        local,
+        Arc::new(reads),
+        &url::Url::parse(public_url).unwrap(),
+    )
 }
 
 #[tokio::test]
@@ -583,3 +602,6 @@ async fn ui_pages_fall_back_to_the_app_and_asset_misses_are_404() {
     let root = s.send(Request::get("/").body(Body::empty()).unwrap()).await;
     assert_eq!((root.status, root.header("location")), (303, "/ui/"));
 }
+
+#[path = "issues_tests.rs"]
+mod issues;

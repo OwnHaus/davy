@@ -706,15 +706,15 @@ Anyone with a project's public key can send an event, so every title, message, f
 
 ### Reads cost memory too
 
-- The issue view decompresses an event's payload and parses it. It pays for both from the memory budget, priced like an ingest body, and gets `429` when the budget is held.
-- `EventView` keeps at most 256 frames per exception, as symbolication does, 200 breadcrumbs, 200 tags and 64 KiB of any one string. Each cut shows how many more there were.
+- The issue view decompresses an event's payload and parses it. It pays for both from the memory budget, priced like an ingest body. It pays for the compressed blob, the decompressed JSON, then twice its parsed size, and gets `429` with `Retry-After: 1` when the budget is held.
+- `EventView` keeps at most 256 frames per exception, as symbolication does, 200 breadcrumbs, 200 tags and 64 KiB of any one string. Each cut shows how many more there were. It also keeps 32 exceptions of a chain, 32 contexts, 200 fields of the user, of a context or of a breadcrumb, and 32 source lines either side of a frame's line, so no list of an event is unbounded.
 - At most 8 log searches and histograms run at once, shared by every person. Another one gets `429` with `Retry-After: 1`, and the UI tries again.
 
 ### Writes go through the writer
 
-Inside the server only `store::Writer` writes SQLite. The writer queue gains these jobs, each answered when it commits, like `Resolve`:
+Inside the server only `store::Writer` writes SQLite. The writer queue gains these jobs, each answered when it commits:
 
-- `SetStatus { issues, status, at }` for resolve, resolve in a release, ignore and reopen, of one issue or up to 500 at once in one transaction, so a bulk change never half applies.
+- `SetStatus { issues, status }` for resolve, resolve in a release, ignore and reopen, of one issue or up to 500 at once in one transaction, so a bulk change never half applies. `issues` is sorted, without duplicates and holds 1 to 500 ids by construction. The time of a resolve is part of `status`, `Resolved { in_release, at }`, since only a resolve has one. One missing issue refuses the whole change with `no issue {id}`. It replaced `Resolve`, and the MCP tool `mark_fixed` and `davy resolve` use it too.
 - `Login { user, hash, at }`, `Logout { hash }`, `LogoutAll { user, except }`, `Welcome { invite, password, session, at }` and `SetPassword { user, password, keep }`.
 - `Touch { hash, at }`, which writes a session's `used_at` at most once an hour.
 
@@ -722,7 +722,22 @@ During an error storm the ingest queue is full, and that is when the team needs 
 
 ### Views
 
-The API pages with a cursor, never an offset, so a page costs the same at row 50 as at row 500,000.
+The API pages with a cursor, never an offset, so a page costs the same at row 50 as at row 500,000. A list cursor is the sort's letter, its key and the issue id, such as `e12.345`, and the list refuses a cursor made for another order. Times in the API are RFC 3339 strings in UTC with milliseconds. Only a log line also carries its nanoseconds, as a decimal string.
+
+The routes, all behind the session:
+
+| Route | Answer |
+|---|---|
+| `GET /ui/api/me` | `Me`, the person logged in |
+| `GET /ui/api/projects` | `Project[]`, by slug, each with its newest 50 releases |
+| `GET /ui/api/issues?sort&project&status&environment&release&q&cursor` | `IssuePage`, 50 issues with the hourly counts of the last 24 hours |
+| `POST /ui/api/issues/status` | `StatusChange` in, `204` out |
+| `GET /ui/api/issues/{id}` | `IssueView`, the issue, its hourly counts and its releases |
+| `GET /ui/api/issues/{id}/events?cursor` | `EventPage`, 50 events newest first, each saying whether its payload was kept |
+| `GET /ui/api/issues/{id}/event?event` | `EventView` of that event, or of the newest kept one |
+| `GET /ui/api/issues/{id}/logs?event` | `Logs` around that event, as `issue_context` finds them |
+
+A route takes only the query keys it names, each at most once, and answers `400` naming the keys it takes. The project filter takes a slug. Environment and release filter with `EXISTS` over the issue's events. There is no list of environments, since it would need a scan of every event, so environment is typed. Writes answer `404` when an issue is missing, without a read before the write, because the writer already refuses the whole change.
 
 **Issues** (`/ui/issues`). A list of issues sorted by last seen, event count or first seen. Filters are project, status, environment, release and a text match on title and culprit. Each row shows title, culprit, level, status, event count, first and last seen, and a bar chart of the last 24 hours from `issue_hourly`. Select several issues to resolve, ignore or reopen them at once. A new index `issues(project_id, status, last_seen DESC)` serves the default filter.
 

@@ -7,7 +7,7 @@ CREATE INDEX IF NOT EXISTS issues_last_seen ON issues(last_seen DESC);
 CREATE INDEX IF NOT EXISTS events_issue ON events(issue_id, id DESC);";
 /// Schema changes after the first release, applied in order. `PRAGMA
 /// user_version` counts how many ran.
-const MIGRATIONS: [&str; 5] = [
+const MIGRATIONS: [&str; 6] = [
     "CREATE TABLE releases(project_id INTEGER NOT NULL REFERENCES projects(id), version TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY(project_id, version));
 INSERT INTO releases SELECT project_id, release, min(received_at) FROM events WHERE release IS NOT NULL GROUP BY project_id, release;",
     "CREATE TABLE monitors(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), name TEXT NOT NULL, kind TEXT NOT NULL, url TEXT, expect TEXT, keyword TEXT, heartbeat_token TEXT UNIQUE, every_s INTEGER NOT NULL, timeout_s INTEGER, grace_s INTEGER, state TEXT NOT NULL, last_check_at INTEGER, last_ping_at INTEGER, created_at INTEGER NOT NULL);
@@ -25,6 +25,7 @@ CREATE TABLE sessions(hash BLOB PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES
 CREATE INDEX sessions_user ON sessions(user_id);
 CREATE TABLE invites(hash BLOB PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at INTEGER NOT NULL);
 CREATE INDEX invites_user ON invites(user_id);",
+    "CREATE INDEX IF NOT EXISTS issues_project_status ON issues(project_id, status, last_seen DESC);",
 ];
 use crate::{
     alert,
@@ -90,7 +91,7 @@ impl IssueStatus {
             _ => Self::Unresolved,
         }
     }
-    fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::Unresolved => "unresolved",
             Self::Resolved { .. } => "resolved",
@@ -222,15 +223,6 @@ pub fn insert(c: &Connection, project: i64, e: &ErrorEvent) -> Result<()> {
     }
     Ok(())
 }
-/// Marks an issue fixed in `release`, or in the next release Davy sees when
-/// `release` is `None`. Returns false when there is no such issue.
-pub fn resolve(c: &Connection, issue: i64, release: Option<&str>, at: Timestamp) -> Result<bool> {
-    let changed = c.execute(
-        "UPDATE issues SET status='resolved',resolved_in_release=?2,resolved_at=?3 WHERE id=?1",
-        params![issue, release, at],
-    )?;
-    Ok(changed == 1)
-}
 pub enum Job {
     Ingest {
         project: i64,
@@ -239,10 +231,10 @@ pub enum Job {
         /// when the writer is done with the job, not when the client hangs up.
         held: crate::http::body::Held,
     },
-    Resolve {
-        issue: i64,
-        release: Option<String>,
-        at: Timestamp,
+    /// A new status for one or more issues, all of them or none.
+    SetStatus {
+        issues: crate::issues::IssueIds,
+        status: IssueStatus,
     },
     Ping {
         monitor: i64,
@@ -289,12 +281,7 @@ fn apply(c: &Connection, job: &Job) -> Result<Outcome> {
             }
             Ok(Ok(()))
         }
-        Job::Resolve { issue, release, at } => {
-            let found = resolve(c, *issue, release.as_deref(), *at)?;
-            Ok(found
-                .then_some(())
-                .ok_or_else(|| format!("no issue {issue}")))
-        }
+        Job::SetStatus { issues, status } => crate::issues::set_status(c, issues, status),
         Job::Ping {
             monitor,
             at,
@@ -505,6 +492,7 @@ pub fn payload(c: &Connection, issue: i64) -> Result<Option<serde_json::Value>> 
     )?)?))
 }
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct IssueDetail {
     pub id: i64,
     pub project_id: i64,
@@ -512,7 +500,7 @@ pub struct IssueDetail {
     pub title: String,
     pub culprit: Option<String>,
     pub level: String,
-    pub status: String,
+    pub status: crate::issues::Status,
     pub resolved_in_release: Option<String>,
     pub resolved_at: Option<String>,
     pub regressed_at: Option<String>,
@@ -573,6 +561,7 @@ pub fn recent_events(c: &Connection, issue: i64) -> Result<Vec<EventRow>> {
     .collect::<rusqlite::Result<_>>()?)
 }
 #[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ReleaseCount {
     pub release: String,
     pub events: i64,
