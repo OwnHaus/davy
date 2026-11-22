@@ -4,11 +4,11 @@
 use super::{CheckUrl, Expect, Outcome, Reason, store};
 use crate::{
     net,
-    store::{Job, Write, queue_and_wait},
+    store::{Job, queue_and_wait},
     tasks, time,
 };
 use rusqlite::Connection;
-use std::{sync::mpsc, time::Duration, time::Instant};
+use std::{time::Duration, time::Instant};
 
 const MAX_CHECKS: usize = 16;
 const MAX_REDIRECTS: usize = 5;
@@ -101,7 +101,7 @@ pub async fn check(client: &net::Client, http: &Http) -> Checked {
 pub async fn run(
     c: Connection,
     client: net::Client,
-    writer: mpsc::SyncSender<Write>,
+    writer: crate::store::Sender,
     period: Duration,
 ) {
     tasks::poll(
@@ -115,7 +115,7 @@ pub async fn run(
     .await;
 }
 
-async fn check_and_store(client: net::Client, http: Http, writer: mpsc::SyncSender<Write>) {
+async fn check_and_store(client: net::Client, http: Http, writer: crate::store::Sender) {
     let at = time::now_ms();
     let checked = check(&client, &http).await;
     let job = Job::Check {

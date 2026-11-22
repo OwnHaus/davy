@@ -242,6 +242,7 @@ async fn the_scheduler_checks_a_new_monitor_and_stores_the_result() {
     scheduler.abort();
     assert!(scheduler.await.unwrap_err().is_cancelled());
     drop(writer.sender);
+    drop(writer.ui);
     tokio::task::spawn_blocking(move || writer.thread.join().unwrap())
         .await
         .unwrap();

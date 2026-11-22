@@ -144,15 +144,17 @@ fn grow(buf: &mut Vec<u8>, need: usize, limit: usize, held: &mut Held) -> Result
 struct Incoming {
     body: Body,
     deadline: Instant,
+    limit: usize,
     bytes: Vec<u8>,
     ended: bool,
 }
 
 impl Incoming {
-    fn new(body: Body) -> Self {
+    fn new(body: Body, limit: usize) -> Self {
         Self {
             body,
             deadline: Instant::now() + TIMEOUT,
+            limit,
             bytes: Vec::new(),
             ended: false,
         }
@@ -172,10 +174,10 @@ impl Incoming {
                 continue;
             };
             let need = self.bytes.len() + data.len();
-            if need > COMPRESSED {
+            if need > self.limit {
                 return Err(too_large("body too large"));
             }
-            grow(&mut self.bytes, need, COMPRESSED, held)?;
+            grow(&mut self.bytes, need, self.limit, held)?;
             self.bytes.extend_from_slice(&data);
             return Ok(true);
         }
@@ -184,7 +186,12 @@ impl Incoming {
 }
 
 pub async fn read(body: Body, held: &mut Held) -> Result<Vec<u8>, Failure> {
-    let mut incoming = Incoming::new(body);
+    read_at_most(body, COMPRESSED, held).await
+}
+
+/// Reads a body of at most `limit` bytes as sent, `413` beyond.
+pub async fn read_at_most(body: Body, limit: usize, held: &mut Held) -> Result<Vec<u8>, Failure> {
+    let mut incoming = Incoming::new(body, limit);
     while incoming.more(held).await? {}
     Ok(incoming.bytes)
 }
@@ -198,7 +205,7 @@ pub async fn read_envelope(
     encoding: &str,
     admit: impl FnOnce(&EnvelopeHeader) -> Result<(), Failure>,
 ) -> Result<Vec<u8>, Failure> {
-    let mut incoming = Incoming::new(body);
+    let mut incoming = Incoming::new(body, COMPRESSED);
     // Each try decompresses from the start, so tries wait for the body to
     // double, and a body sent a byte at a time costs a few tries, not one
     // per byte.

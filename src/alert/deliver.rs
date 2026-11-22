@@ -6,14 +6,9 @@ use super::{
     mail::Smtp,
     store::{self, Due},
 };
-use crate::{
-    event::Timestamp,
-    net,
-    store::{Job, Write},
-    tasks, time,
-};
+use crate::{event::Timestamp, net, store::Job, tasks, time};
 use rusqlite::Connection;
-use std::{sync::mpsc, time::Duration};
+use std::time::Duration;
 
 const NO_SMTP: &str = "no SMTP server, set DAVY_SMTP_URL";
 
@@ -81,7 +76,7 @@ pub async fn send(transports: &Transports, due: &Due, now: Timestamp) -> Result<
 pub async fn run(
     c: Connection,
     transports: Transports,
-    writer: mpsc::SyncSender<Write>,
+    writer: crate::store::Sender,
     period: Duration,
 ) {
     tasks::poll(
@@ -95,7 +90,7 @@ pub async fn run(
     .await;
 }
 
-async fn deliver(transports: Transports, due: Due, writer: mpsc::SyncSender<Write>) {
+async fn deliver(transports: Transports, due: Due, writer: crate::store::Sender) {
     let result = send(&transports, &due, time::now_ms()).await;
     let job = Job::Delivery {
         id: due.id,

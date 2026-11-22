@@ -262,7 +262,7 @@ fn migration_backfills_releases_from_old_events() {
     let e = event(json!({"message":"boom","release":"v1"}));
     store::insert(&c, 1, &e).unwrap();
     c.execute_batch(
-        "DROP TABLE releases; DROP TABLE checks; DROP TABLE incidents; DROP TABLE monitors; DROP TABLE notifications; DROP TABLE channels; DROP TABLE feedback; PRAGMA user_version=0;",
+        "DROP TABLE releases; DROP TABLE checks; DROP TABLE incidents; DROP TABLE monitors; DROP TABLE notifications; DROP TABLE channels; DROP TABLE feedback; DROP TABLE sessions; DROP TABLE invites; DROP TABLE users; PRAGMA user_version=0;",
     )
     .unwrap();
     store::init(&mut c).unwrap();
@@ -281,10 +281,14 @@ fn migration_backfills_releases_from_old_events() {
         .query_row("SELECT count(*) FROM channels", [], |r| r.get(0))
         .unwrap();
     assert_eq!(channels, 0);
+    let users: i64 = c
+        .query_row("SELECT count(*) FROM users", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(users, 0);
     let version: i64 = c
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
 }
 #[test]
 fn storage_regression_duplicates_sampling_and_ignored() {
@@ -376,7 +380,7 @@ mod http;
 
 #[tokio::test(start_paused = true)]
 async fn the_sweep_task_queues_a_sweep_every_period_until_the_writer_stops() {
-    let (sender, inbox) = std::sync::mpsc::sync_channel(8);
+    let (sender, inbox) = crossbeam_channel::bounded(8);
     let task = tokio::spawn(store::sweep_every(
         sender,
         std::time::Duration::from_secs(10),

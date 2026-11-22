@@ -9,7 +9,7 @@ use crate::{
         store::{LogQuery, search},
     },
     query,
-    store::{self, Job, Write},
+    store::{self, Job},
     time,
     token::{self, Token},
 };
@@ -28,7 +28,7 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, mpsc},
+    sync::Arc,
 };
 
 const MAX_LOGS: usize = 500;
@@ -49,12 +49,7 @@ Combine with AND, OR, NOT and parentheses. Levels are trace, debug, info, warn, 
 /// `/mcp`, behind the token. Requests must name loopback or the host of
 /// `public_url` in their `Host` header, and a browser page that sends one
 /// must come from loopback or `public_url`, which stops DNS rebinding.
-pub fn router(
-    data: PathBuf,
-    writes: mpsc::SyncSender<Write>,
-    token: Token,
-    public_url: &url::Url,
-) -> Router {
+pub fn router(data: PathBuf, writes: store::Sender, token: Token, public_url: &url::Url) -> Router {
     let public_host = public_url.host_str().unwrap_or("localhost");
     let public_origin = format!(
         "{}://{public_host}:{}",
@@ -89,7 +84,7 @@ pub fn router(
 #[derive(Clone)]
 struct Tools {
     data: Arc<Path>,
-    writes: mpsc::SyncSender<Write>,
+    writes: store::Sender,
     tool_router: ToolRouter<Self>,
 }
 
@@ -315,14 +310,14 @@ mod tests {
 
     struct Server {
         app: Router,
-        writes: mpsc::Receiver<Write>,
+        writes: crossbeam_channel::Receiver<store::Write>,
     }
 
     fn server() -> Server {
         let data = crate::test_support::scratch("mcp");
         let c = store::open(&data).unwrap();
         store::create_project(&c, "api").unwrap();
-        let (tx, writes) = mpsc::sync_channel(1);
+        let (tx, writes) = crossbeam_channel::bounded(1);
         Server {
             app: router(
                 data,
@@ -377,6 +372,20 @@ mod tests {
             let (status, body) = post(&s.app, "localhost", token, list.clone()).await;
             assert_eq!(status, expected, "{token:?}: {body}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_ui_session_cookie_is_no_token() {
+        let s = server();
+        let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+        let req = axum::http::Request::post("/mcp")
+            .header(header::HOST, "localhost")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, "application/json, text/event-stream")
+            .header(header::COOKIE, format!("__Host-davy_session={SECRET}"))
+            .body(Body::from(list.to_string()))
+            .unwrap();
+        assert_eq!(s.app.clone().oneshot(req).await.unwrap().status(), 401);
     }
 
     #[tokio::test]

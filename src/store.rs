@@ -7,7 +7,7 @@ CREATE INDEX IF NOT EXISTS issues_last_seen ON issues(last_seen DESC);
 CREATE INDEX IF NOT EXISTS events_issue ON events(issue_id, id DESC);";
 /// Schema changes after the first release, applied in order. `PRAGMA
 /// user_version` counts how many ran.
-const MIGRATIONS: [&str; 4] = [
+const MIGRATIONS: [&str; 5] = [
     "CREATE TABLE releases(project_id INTEGER NOT NULL REFERENCES projects(id), version TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY(project_id, version));
 INSERT INTO releases SELECT project_id, release, min(received_at) FROM events WHERE release IS NOT NULL GROUP BY project_id, release;",
     "CREATE TABLE monitors(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), name TEXT NOT NULL, kind TEXT NOT NULL, url TEXT, expect TEXT, keyword TEXT, heartbeat_token TEXT UNIQUE, every_s INTEGER NOT NULL, timeout_s INTEGER, grace_s INTEGER, state TEXT NOT NULL, last_check_at INTEGER, last_ping_at INTEGER, created_at INTEGER NOT NULL);
@@ -20,6 +20,11 @@ CREATE TABLE notifications(id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL R
 CREATE INDEX notifications_pending ON notifications(channel_id, id) WHERE sent_at IS NULL AND failed_at IS NULL;",
     "CREATE TABLE feedback(id INTEGER PRIMARY KEY, at INTEGER NOT NULL, client TEXT, tried TEXT NOT NULL, happened TEXT NOT NULL, fix TEXT);
 ALTER TABLE channels ADD COLUMN feedback INTEGER NOT NULL DEFAULT 0;",
+    "CREATE TABLE users(id INTEGER PRIMARY KEY, email TEXT UNIQUE NOT NULL, password TEXT, created_at INTEGER NOT NULL);
+CREATE TABLE sessions(hash BLOB PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at INTEGER NOT NULL, used_at INTEGER NOT NULL);
+CREATE INDEX sessions_user ON sessions(user_id);
+CREATE TABLE invites(hash BLOB PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at INTEGER NOT NULL);
+CREATE INDEX invites_user ON invites(user_id);",
 ];
 use crate::{
     alert,
@@ -28,12 +33,20 @@ use crate::{
     time,
 };
 use anyhow::Result;
+use crossbeam_channel::{Receiver, TrySendError, select_biased};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Serialize;
-use std::{path::Path, sync::mpsc, thread};
+use std::{path::Path, thread};
 use tokio::sync::oneshot;
 
 const QUEUE_FULL_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
+/// The queue of jobs from people in the web UI, apart from ingest, so a full
+/// ingest queue does not refuse a login.
+pub const UI_QUEUE: usize = 64;
+const BATCH: usize = 64;
+
+/// Where jobs for the writer go.
+pub type Sender = crossbeam_channel::Sender<Write>;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum IssueStatus {
@@ -256,6 +269,8 @@ pub enum Job {
         at: Timestamp,
         feedback: crate::feedback::Feedback,
     },
+    /// A login, a logout or a new password from the web UI.
+    Account(crate::accounts::store::Change),
 }
 pub type Outcome = std::result::Result<(), String>;
 pub struct Write {
@@ -292,6 +307,7 @@ fn apply(c: &Connection, job: &Job) -> Result<Outcome> {
         }
         Job::Sweep { at } => {
             crate::monitor::store::sweep(c, *at)?;
+            crate::accounts::store::sweep(c, *at)?;
             Ok(Ok(()))
         }
         Job::Check {
@@ -310,19 +326,23 @@ fn apply(c: &Connection, job: &Job) -> Result<Outcome> {
             crate::feedback::add(c, feedback, *at)?;
             Ok(Ok(()))
         }
+        Job::Account(change) => crate::accounts::store::apply(c, change),
     }
 }
 pub struct Writer {
-    pub sender: mpsc::SyncSender<Write>,
+    /// Ingest, checks, deliveries and sweeps.
+    pub sender: Sender,
+    /// Jobs from people in the web UI, [`UI_QUEUE`] deep and taken first.
+    pub ui: Sender,
     pub thread: thread::JoinHandle<()>,
 }
 impl Writer {
     pub fn start(mut c: Connection, capacity: usize) -> Self {
-        let (sender, receiver) = mpsc::sync_channel::<Write>(capacity);
+        let (sender, ingest) = crossbeam_channel::bounded::<Write>(capacity);
+        let (ui, people) = crossbeam_channel::bounded::<Write>(UI_QUEUE);
         let thread = thread::spawn(move || {
-            while let Ok(first) = receiver.recv() {
-                let mut batch = vec![first];
-                batch.extend(receiver.try_iter().take(63));
+            let mut queues = Queues::new(people, ingest);
+            while let Some(batch) = queues.next_batch() {
                 let outcomes = (|| -> Result<Vec<Outcome>> {
                     let tx = c.transaction()?;
                     let outcomes = batch
@@ -342,7 +362,47 @@ impl Writer {
                 }
             }
         });
-        Self { sender, thread }
+        Self { sender, ui, thread }
+    }
+}
+/// The writer's two queues. A queue whose senders are all gone is replaced by
+/// one that never yields, and the writer stops when both are gone.
+struct Queues {
+    ui: Receiver<Write>,
+    ingest: Receiver<Write>,
+    open: u8,
+}
+impl Queues {
+    fn new(ui: Receiver<Write>, ingest: Receiver<Write>) -> Self {
+        Self {
+            ui,
+            ingest,
+            open: 2,
+        }
+    }
+    /// Up to [`BATCH`] jobs, those of people first. Waits for the first one.
+    fn next_batch(&mut self) -> Option<Vec<Write>> {
+        let first = loop {
+            if self.open == 0 {
+                return None;
+            }
+            let got = select_biased! {
+                recv(self.ui) -> w => w.map_err(|_gone| &mut self.ui),
+                recv(self.ingest) -> w => w.map_err(|_gone| &mut self.ingest),
+            };
+            match got {
+                Ok(w) => break w,
+                Err(gone) => {
+                    *gone = crossbeam_channel::never();
+                    self.open -= 1;
+                }
+            }
+        };
+        let mut batch = vec![first];
+        batch.extend(self.ui.try_iter().take(BATCH - 1));
+        let room = BATCH - batch.len();
+        batch.extend(self.ingest.try_iter().take(room));
+        Some(batch)
     }
 }
 /// Why the writer did not apply a job given to [`submit`].
@@ -363,14 +423,11 @@ impl std::fmt::Display for Refused {
 }
 /// Queues `job` and waits until the writer has applied it. A full queue is
 /// refused at once, so a caller can answer `429`.
-pub async fn submit(
-    sender: &mpsc::SyncSender<Write>,
-    job: Job,
-) -> std::result::Result<(), Refused> {
+pub async fn submit(sender: &Sender, job: Job) -> std::result::Result<(), Refused> {
     let (done, outcome) = oneshot::channel();
     sender.try_send(Write { job, done }).map_err(|e| match e {
-        mpsc::TrySendError::Full(_) => Refused::Full,
-        mpsc::TrySendError::Disconnected(_) => Refused::Stopped,
+        TrySendError::Full(_) => Refused::Full,
+        TrySendError::Disconnected(_) => Refused::Stopped,
     })?;
     outcome
         .await
@@ -379,7 +436,7 @@ pub async fn submit(
 }
 /// Queues `job` and waits until the writer has applied it. A full queue is
 /// tried again every 50 ms. Returns without waiting when the writer is gone.
-pub async fn queue_and_wait(sender: &mpsc::SyncSender<Write>, mut job: Job) {
+pub async fn queue_and_wait(sender: &Sender, mut job: Job) {
     loop {
         let (done, applied) = oneshot::channel();
         match sender.try_send(Write { job, done }) {
@@ -387,25 +444,25 @@ pub async fn queue_and_wait(sender: &mpsc::SyncSender<Write>, mut job: Job) {
                 drop(applied.await);
                 return;
             }
-            Err(mpsc::TrySendError::Full(write)) => {
+            Err(TrySendError::Full(write)) => {
                 job = write.job;
                 tokio::time::sleep(QUEUE_FULL_WAIT).await;
             }
-            Err(mpsc::TrySendError::Disconnected(_)) => return,
+            Err(TrySendError::Disconnected(_)) => return,
         }
     }
 }
 
 /// Queues a [`Job::Sweep`] every `period`, the first one at once. A full
 /// queue skips a tick. The task ends when the writer stops.
-pub async fn sweep_every(sender: mpsc::SyncSender<Write>, period: std::time::Duration) {
+pub async fn sweep_every(sender: Sender, period: std::time::Duration) {
     let mut ticks = tokio::time::interval(period);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         ticks.tick().await;
         let (done, _) = oneshot::channel();
         let job = Job::Sweep { at: time::now_ms() };
-        if let Err(mpsc::TrySendError::Disconnected(_)) = sender.try_send(Write { job, done }) {
+        if let Err(TrySendError::Disconnected(_)) = sender.try_send(Write { job, done }) {
             return;
         }
     }
@@ -532,4 +589,35 @@ pub fn issue_releases(c: &Connection, issue: i64) -> Result<Vec<ReleaseCount>> {
         })
     })?
     .collect::<rusqlite::Result<_>>()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn job(n: i64) -> (Write, oneshot::Receiver<Outcome>) {
+        let (done, outcome) = oneshot::channel();
+        let job = Job::Sweep { at: n };
+        (Write { job, done }, outcome)
+    }
+
+    #[test]
+    fn a_job_from_a_person_goes_first_while_ingest_is_full() {
+        let (ingest_tx, ingest) = crossbeam_channel::bounded(2);
+        let (ui_tx, ui) = crossbeam_channel::bounded(UI_QUEUE);
+        for n in 1..=2 {
+            ingest_tx.try_send(job(n).0).unwrap();
+        }
+        assert!(ingest_tx.try_send(job(3).0).is_err(), "ingest is full");
+        ui_tx.try_send(job(99).0).unwrap();
+        let batch = Queues::new(ui, ingest).next_batch().unwrap();
+        let order: Vec<_> = batch
+            .iter()
+            .map(|w| match w.job {
+                Job::Sweep { at } => at,
+                _ => 0,
+            })
+            .collect();
+        assert_eq!(order, [99, 1, 2]);
+    }
 }

@@ -496,7 +496,7 @@ New tables, added by migration, so existing data directories keep opening:
 - `channels(id, project_id NULL for all, kind, url, secret, dropped, created_at)`
 - `notifications(id, channel_id, type, payload, created_at, attempts, next_at, sent_at, failed_at, last_error)` with an index on `(channel_id, id) WHERE sent_at IS NULL AND failed_at IS NULL`
 
-At most 1,000 monitors and 100 channels per data directory. The `sql` tool reads `monitors.heartbeat_token`, `monitors.url`, `channels.url` and `channels.secret` as `NULL`, because an agent has no use for a credential and a prompt-injected agent could leak it. A monitor URL counts, because its query string often holds a token.
+At most 1,000 monitors and 100 channels per data directory. The `sql` tool reads `monitors.heartbeat_token`, `monitors.url`, `channels.url` and `channels.secret` as `NULL`, and since the web UI `users.password`, `sessions.hash` and `invites.hash` too, because an agent has no use for a credential and a prompt-injected agent could leak it. A monitor URL counts, because its query string often holds a token.
 
 ### CLI
 
@@ -670,8 +670,9 @@ invites(hash BLOB PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON 
 ### Login under attack
 
 - A body sent to login or welcome is read only up to 4 KiB.
-- A hash pays its 19 MiB from the memory budget in "Hardening" before it starts, and at most two hashes run at once. A login that finds both slots busy, or not enough budget, gets `429` with `Retry-After: 1` at once. It never waits holding a connection.
-- After failed logins for one e-mail, the next try is refused with `429` and `Retry-After` for 2^n seconds, up to 15 minutes. Unknown e-mails count the same way, so the answer does not say whether an e-mail exists. The counts live in memory, at most 10,000 e-mails, the oldest dropped first.
+- At most two hashes run at once, so hashing never holds more than 38 MiB. A login that finds both slots busy gets `429` with `Retry-After: 1` at once. It never waits holding a connection.
+- The bodies of login, welcome and password changes pay from a 2 MiB budget of their own, not from the ingest budget in "Hardening". A sender with a public ingest key who holds that budget does not refuse a login.
+- After failed logins for one e-mail, the next try is refused with `429` and `Retry-After` for 2^n seconds, up to 15 minutes. Unknown e-mails count the same way, so the answer does not say whether an e-mail exists. The counts live in memory, at most 10,000 e-mails. When full, the e-mail with the fewest attempts goes first, so a flood of new e-mails does not reset the count of one under attack. A password change in an open session has a count of its own.
 - This slows a guesser to a few tries an hour, but it also lets anyone who knows a colleague's e-mail keep them from logging in for 15 minutes at a time. A session already open is not touched, and limits per client address are the reverse proxy's job. Both are written into `SECURITY.md`.
 
 ### Sessions and cookies
@@ -686,6 +687,9 @@ invites(hash BLOB PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON 
 - The whole `/ui/api/` router sits behind a `route_layer` that asks `Accounts` for a `Person`. Login, logout and welcome live on a separate router without it. A test lists every route of the app and fails if a `/ui/api/` route outside those three answers without a session.
 - A write must have `Content-Type: application/json` and an `Origin` that is exactly the public URL: scheme, host and port. Without a public URL, it is exactly the address Davy listens on. A write without `Origin` is refused. The loopback rule of `/mcp` (`http://localhost:*`) is not enough here, because a cookie is sent to every port of a host. Any dev server on the same machine could then act as the person.
 - The `Host` check of `/mcp` applies to `/ui/` too, against DNS rebinding. The `Access-Control-Allow-Origin: *` that ingest answers with is not sent under `/ui/`.
+- Logout writes only when its session exists, so a flood of made-up cookies does not fill the writer's UI queue.
+- The text of an internal error goes to the server log. A browser gets `500` with a fixed message.
+- `davy user add` refuses a public URL with plain `http` to a host other than this machine, because the browser would not keep the `Secure` cookie and the new password would cross the network in the clear.
 - The session cookie is not accepted on `/mcp` or the upload routes, and the admin token is not accepted under `/ui/api/`. Each caller keeps one credential, as in the table in `docs/architecture.md`.
 - Every `/ui/` response carries `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`, plus `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, `Cross-Origin-Opener-Policy: same-origin` and a `Permissions-Policy` that turns off camera, microphone and geolocation. `/ui/api/` and `/ui/welcome` answer with `Cache-Control: no-store`.
 - No script and no `<style>` element runs inline. React, Radix and Motion set styles through the CSSOM, which this policy allows. A primitive that inserts a `<style>` element, as Radix's scroll lock for modal dialogs does, is not used. The e2e suite fails on any CSP violation the browser reports.

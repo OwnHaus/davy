@@ -11,7 +11,7 @@ use crate::{
     monitor::{self, HeartbeatToken},
     net,
     sourcemaps::{self, symbolicate},
-    store::{self, Job, Write},
+    store::{self, Job},
     time,
     token::{Token, bearer},
     upload,
@@ -29,7 +29,7 @@ use body::Held;
 use serde_json::json;
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, RwLock, mpsc},
+    sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
 
@@ -90,7 +90,7 @@ impl Keys {
 #[derive(Clone)]
 pub struct App {
     pub keys: Arc<Keys>,
-    pub sender: mpsc::SyncSender<Write>,
+    pub sender: store::Sender,
     pub logs: LogQueue,
     pub sourcemaps: Arc<sourcemaps::Store>,
     /// The memory request bodies may hold while they are read and parsed.
@@ -111,16 +111,23 @@ fn ingest_routes(app: App) -> Router {
             post(envelope).options(preflight),
         )
         .route("/api/{project}/store/", post(legacy).options(preflight))
-        .route("/", post(logtail_ingest).options(preflight))
+        .route(
+            "/",
+            get(|| async { axum::response::Redirect::to("/ui/") })
+                .post(logtail_ingest)
+                .options(preflight),
+        )
         .route("/v1/logs", post(otlp_ingest).options(preflight))
         .route("/api/heartbeat/{token}", get(ping).post(ping))
         .route("/api/heartbeat/{token}/fail", get(fail).post(fail))
         .with_state(app)
         .layer(middleware::from_fn(headers))
 }
-/// Davy serves no pages, so a browser may not sniff, run, frame or cache
-/// anything it sends.
+/// Outside `/ui/` Davy serves no pages, so a browser may not sniff, run,
+/// frame or cache anything it sends. `/ui/` sets its own, looser headers,
+/// and only fills in what it left out.
 async fn protect(req: Request, next: Next) -> Response {
+    let ui = req.uri().path() == "/ui" || req.uri().path().starts_with("/ui/");
     let mut response = next.run(req).await;
     let h = response.headers_mut();
     let fixed = [
@@ -132,7 +139,12 @@ async fn protect(req: Request, next: Next) -> Response {
         (header::CACHE_CONTROL, "no-store"),
     ];
     for (name, value) in fixed {
-        h.insert(name, HeaderValue::from_static(value));
+        let value = HeaderValue::from_static(value);
+        if ui {
+            h.entry(name).or_insert(value);
+        } else {
+            h.insert(name, value);
+        }
     }
     response
 }
@@ -512,6 +524,7 @@ pub async fn serve(
         budget: body::Budget::new(body::MEMORY),
     };
     let maps = Arc::clone(&app.sourcemaps);
+    let ui = crate::ui::serve(data, writer.ui.clone(), public_url)?;
     let admin = match token {
         Some(token) => mcp::router(
             data.to_owned(),
@@ -522,7 +535,7 @@ pub async fn serve(
         .merge(upload::router(maps, token, public_url)),
         None => Router::new(),
     };
-    let routes = router(app, admin);
+    let routes = router(app, admin.merge(ui));
     let listener = tokio::net::TcpListener::bind(listen).await?;
     crate::ready::notify()?;
     let sweeper = tokio::spawn(store::sweep_every(writer.sender.clone(), SWEEP_EVERY));
@@ -565,6 +578,7 @@ pub async fn serve(
         }
     }
     drop(writer.sender);
+    drop(writer.ui);
     drop(log_writer.queue);
     for (name, thread) in [("writer", writer.thread), ("log writer", log_writer.thread)] {
         thread.join().map_err(|panic| {

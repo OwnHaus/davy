@@ -32,6 +32,8 @@ CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::se
 - `src/store.rs` owns the SQLite schema and its migrations (`PRAGMA user_version`), the issue status and regression rule, the single error writer thread and the read queries the CLI uses.
 - `src/query.rs` runs one read-only SQL statement for an agent, behind an authorizer, with row, text and time limits.
 - `src/context.rs` gathers one issue with its compacted latest event, recent events, releases and nearby logs.
+- `src/accounts/` holds the people of a self-hosted Davy: e-mail, password and secret rules and the `Accounts` trait the UI asks for the person (`mod.rs`), the user, invite and session rows and the changes the writer applies to them (`store.rs`), the per-e-mail login backoff (`backoff.rs`) and `davy user` (`cli.rs`).
+- `src/ui/` is the web UI boundary: the routes, the `Host` and `Origin` guard and the page headers (`mod.rs`), login, logout, welcome and a person's own password and sessions (`account.rs`), the cookie and the SQLite `Accounts` (`session.rs`), and the UI build that `build.rs` embeds from `ui/dist/` (`assets.rs`).
 - `src/token.rs` holds the admin token and the middleware that requires it.
 - `src/upload.rs` is the `sentry-cli` boundary: chunk upload and artifact bundle assembly behind the admin token.
 - `src/sourcemaps/` stores uploaded builds per debug ID (`mod.rs`), unpacks artifact bundles (`bundle.rs`) and rewrites minified frames in an event before it is parsed (`symbolicate.rs`, pure apart from the build lookup).
@@ -47,7 +49,7 @@ CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::se
 
 ## Trust boundaries
 
-Four kinds of caller reach the server. Each route belongs to exactly one.
+Five kinds of caller reach the server. Each route belongs to exactly one.
 
 | Caller | Credential | Routes | May do |
 |---|---|---|---|
@@ -55,14 +57,17 @@ Four kinds of caller reach the server. Each route belongs to exactly one.
 | Heartbeat sender, such as a cron job | Heartbeat token, secret, in the path | `/api/heartbeat/{token}`, `/api/heartbeat/{token}/fail` | Record a ping or a failure for the one monitor the token names |
 | Coding agent | Admin token, secret | `/mcp` | Read everything, mark issues fixed |
 | `sentry-cli` | Admin token, secret | `/api/0/organizations/{org}/chunk-upload/`, `.../artifactbundle/assemble/` | Write source map builds |
+| Person in a browser | Session cookie `__Host-davy_session`, secret, from a login or a welcome link | `/ui/api/*` but login, logout and welcome | Read everything, change their own password, end their own sessions |
 
-The CLI is a fifth caller. It runs on the host with file access to the data directory and needs no credential. The cloud service adds tenants above projects. A cloud feature must not let one tenant's key or token reach another tenant's data, so every query the cloud runs carries the tenant in its type, not in a string filter.
+The pages under `/ui/` and the login, logout and welcome routes need no credential. The admin token opens nothing under `/ui/`, and the session cookie opens nothing outside it. A UI write also needs `Content-Type: application/json` and the exact `Origin` of the public URL.
+
+The CLI is a sixth caller. `davy user add` prints the welcome link a person sets their password with. It runs on the host with file access to the data directory and needs no credential. The cloud service adds tenants above projects. A cloud feature must not let one tenant's key or token reach another tenant's data, so every query the cloud runs carries the tenant in its type, not in a string filter.
 
 ## Invariants
 
 - **Parsers are pure.** Everything that turns wire bytes into domain types takes bytes and returns a value or an error. No I/O, no clock reads except a passed-in `observed_at`, no global state. Each is tested on fixtures captured from real clients.
 - **Validation happens once, at the boundary.** `http.rs` and the parsers check input. Code behind them trusts the types and does not re-check.
-- **One writer thread per store.** Inside the server, only `store::Writer` writes SQLite and only `LogWriter` writes Tantivy. HTTP handlers and MCP tools queue work and never write directly. A full queue is a `429` or a tool error, never an unbounded buffer. CLI commands that write (`project create`, `resolve`) use their own connection, and SQLite's lock orders them with the writer.
+- **One writer thread per store.** Inside the server, only `store::Writer` writes SQLite and only `LogWriter` writes Tantivy. HTTP handlers and MCP tools queue work and never write directly. A full queue is a `429` or a tool error, never an unbounded buffer. The SQLite writer has a second queue for jobs from people in the UI and takes from it first, so a login commits while ingest fills the first queue. CLI commands that write (`project create`, `resolve`) use their own connection, and SQLite's lock orders them with the writer.
 - **Source maps are files, not rows.** `upload.rs` writes chunks and builds under `data/chunks/` and `data/sourcemaps/` by writing a temporary file and renaming it. A build is named by its debug ID, a content hash, so a second upload of the same build writes the same bytes and nothing needs a lock.
 - **Readers live in other processes.** The CLI opens the data directory while the server writes. SQLite WAL and Tantivy's segment files make that safe. Search retries once on a missing segment file.
 - **Lenient on fields, strict on framing.** A malformed envelope or body is an error status. A wrong field inside a valid record falls back to a default, and one bad record never fails a batch.

@@ -22,19 +22,24 @@ Every byte that arrives over the network is hostile until a parser accepts it. D
 
 - **Anyone on the internet with an ingest URL.** Ingest keys are public by design, because browser SDKs ship them. A key lets a sender write events and logs into one project and nothing else. Davy caps every body before and after decompression, prices what a body parses into before it parses it, pays for that from one memory budget, answers `429` when the budget or a writer queue is full and never buffers without a bound.
 - **Anyone without the admin token.** `/mcp` and the source map upload need `Authorization: Bearer <token>`. The server keeps only a hash of the token and compares in constant time. Without a token, `/mcp` and the upload routes are not mounted at all.
-- **A browser page that points at a local Davy.** `/mcp` accepts only known `Host` and `Origin` headers, which stops DNS rebinding. Every response forbids sniffing, framing and caching.
-- **An agent with the admin token that runs arbitrary SQL.** `query.rs` opens the database read-only behind an SQLite authorizer, and limits rows, text size and run time.
+- **A browser page that points at a local Davy.** `/mcp` and `/ui/` accept only known `Host` headers, which stops DNS rebinding. A UI write needs JSON and the exact `Origin` of the public URL, so a page on another site or on another port of the same host cannot send one. Every response forbids sniffing and framing. API responses forbid caching, and UI pages carry a strict content security policy.
+- **Anyone who guesses passwords.** Passwords are hashed with Argon2id. A login for an unknown e-mail checks a dummy hash, so it answers like a wrong password. After a failed attempt an e-mail waits 1 second, doubling up to 15 minutes. A password change in an open session counts apart, so failed logins do not lock out a person who is logged in. At most two hashes run at once, and a third login gets `429` at once instead of a queue. Login bodies pay from a small memory budget of their own, so ingest that holds its budget does not refuse a login. The session cookie is `__Host-`, `Secure`, `HttpOnly` and `SameSite=Lax`. The server keeps only a hash of each session and of each welcome link.
+- **An agent with the admin token that runs arbitrary SQL.** `query.rs` opens the database read-only behind an SQLite authorizer, and limits rows, text size and run time. Credential columns read as `NULL`, password hashes and session and welcome link hashes among them, so an agent that an event prompt-injects cannot leak them.
 - **Uploaded files that name paths.** Chunks and builds are stored under names Davy computes (a SHA-1 or a debug ID). Nothing from a request becomes a path.
 
 Out of scope:
 
 - An attacker with a shell on the host or write access to the data directory.
 - Denial of service by a sender with a valid key that stays under the caps. Rate limits per key are planned for the cloud service.
+- Limits per client address. The login backoff counts per e-mail. Davy does not trust `X-Forwarded-For`, so a limit per address belongs in the reverse proxy.
+- Keeping a person out by guessing for them. Anyone who knows a person's e-mail can keep them from logging in, for up to 15 minutes at a time. A session already open keeps working.
+- Other servers on the same host. A browser sends a cookie to every port of a host, so a server on another port of Davy's host receives the session cookie. Give Davy a host name of its own.
 - Secrets that the sending app puts into events. Scrubbing belongs in the SDK's `beforeSend`.
 
 ## Running it safely
 
-- Put Davy behind TLS. It speaks plain HTTP.
+- Put Davy behind TLS. It speaks plain HTTP. The session cookie is `Secure`, so the web UI needs HTTPS. Chrome and Firefox also keep it on `http://localhost`. Safari may not, so test the UI locally in one of the others or behind HTTPS.
+- Add people with `davy user add <email>` and send them the link it prints. The link works once and for 24 hours.
 - Generate the admin token with at least 32 random bytes, for example `openssl rand -hex 32`, and pass it through `DAVY_TOKEN`, not the command line.
 - Keep the data directory readable only by the user that runs Davy.
 

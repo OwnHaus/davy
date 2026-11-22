@@ -57,6 +57,11 @@ enum Command {
         #[command(subcommand)]
         command: Channel,
     },
+    /// The people who may sign in to the web UI.
+    User {
+        #[command(subcommand)]
+        command: davy::accounts::cli::User,
+    },
     Issues {
         #[arg(long)]
         data: PathBuf,
@@ -263,6 +268,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Monitor { command } => run_monitor(&mut out.lock(), command)?,
         Command::Channel { command } => run_channel(&mut out.lock(), command)?,
+        Command::User { command } => davy::accounts::cli::run(&mut out.lock(), command)?,
         Command::Issues {
             data,
             project,

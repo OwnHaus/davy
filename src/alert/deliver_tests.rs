@@ -152,6 +152,7 @@ async fn the_notifier_sends_a_channel_s_rows_in_order_and_marks_them_sent() {
     notifier.abort();
     assert!(notifier.await.unwrap_err().is_cancelled());
     drop(writer.sender);
+    drop(writer.ui);
     // Joining on the runtime's one thread would stop it from dropping the
     // aborted sends, which hold writer senders.
     tokio::task::spawn_blocking(move || writer.thread.join().unwrap())

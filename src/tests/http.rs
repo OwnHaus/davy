@@ -13,10 +13,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{HeaderMap, Request, header},
 };
-use std::{
-    sync::{Arc, mpsc},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 use tower::ServiceExt;
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef";
@@ -26,8 +23,8 @@ const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 /// slot deep and [`BUDGET`] for bodies.
 struct Server {
     app: Router,
-    errors: mpsc::SyncSender<store::Write>,
-    error_inbox: mpsc::Receiver<store::Write>,
+    errors: store::Sender,
+    error_inbox: crossbeam_channel::Receiver<store::Write>,
     logs: LogInbox,
     budget: Budget,
 }
@@ -62,7 +59,7 @@ fn server() -> Server {
         [],
     )
     .unwrap();
-    let (errors, error_inbox) = mpsc::sync_channel(1);
+    let (errors, error_inbox) = crossbeam_channel::bounded(1);
     let (logs, log_inbox) = LogQueue::bounded(3, 1 << 20);
     let budget = Budget::new(BUDGET);
     let app = router(

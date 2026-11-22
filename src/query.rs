@@ -30,6 +30,7 @@ const NOTES: &str = "Notes:
 - events.payload is the compressed Sentry event, kept for a sample of events. payload_json(payload) returns it as JSON text, so json_extract(payload_json(payload), '$.exception.values[0].type') works.
 - issues.status is unresolved, resolved or ignored. A resolved issue reopens when an event arrives without a release, in the release it was resolved in, or in a release first seen after resolved_at.
 - monitors.state is pending, up, failing or down. Times in monitors, checks and incidents are unix milliseconds. An incident with no resolved_at is open. monitors.heartbeat_token, monitors.url, channels.url and channels.secret read as NULL.
+- users.password, sessions.hash and invites.hash read as NULL.
 - Results stop at 500 rows, text at 4000 characters, payload_json at 16 MiB, and a query at 5 seconds.";
 
 #[derive(Debug, Serialize)]
@@ -83,12 +84,16 @@ pub fn open(data: &Path) -> Result<Connection> {
 
 /// Columns that hold a credential. An agent has no use for one, and a
 /// prompt-injected agent could leak it, so they read as NULL. A monitor URL
-/// often carries a token in its query string.
-const CREDENTIALS: [(&str, &str); 4] = [
+/// often carries a token in its query string. A password hash can be cracked
+/// offline, and the session and invite hashes are kept out the same way.
+const CREDENTIALS: [(&str, &str); 7] = [
     ("monitors", "heartbeat_token"),
     ("monitors", "url"),
     ("channels", "url"),
     ("channels", "secret"),
+    ("users", "password"),
+    ("sessions", "hash"),
+    ("invites", "hash"),
 ];
 
 /// SQLite counts ATTACH and most PRAGMAs as read-only, so `Statement::readonly`
@@ -285,6 +290,56 @@ mod tests {
         crate::monitor::store::add(&store::open(&data).unwrap(), 1, &site, 0).unwrap();
         let r = run(&c, "SELECT name, url FROM monitors WHERE kind = 'http'").unwrap();
         assert_eq!(r.rows, [vec![json!("Site"), Value::Null]]);
+    }
+
+    #[test]
+    fn password_session_and_invite_hashes_read_as_null() {
+        use crate::accounts::{Email, Secret, store as accounts};
+        let (data, _) = store_with_one_event();
+        let w = store::open(&data).unwrap();
+        let hash = || Secret::random().unwrap().hash();
+        let ann = Email::parse("ann@example.com").unwrap();
+        let invite = hash();
+        accounts::add(&w, &ann, &invite, 0).unwrap().unwrap();
+        let welcome = accounts::Change::Welcome {
+            invite,
+            password: "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA".to_owned(),
+            session: hash(),
+            at: 0,
+        };
+        assert_eq!(accounts::apply(&w, &welcome).unwrap(), Ok(()));
+        let bob = Email::parse("bob@example.com").unwrap();
+        accounts::add(&w, &bob, &hash(), 0).unwrap().unwrap();
+        let c = open(&data).unwrap();
+        let r = run(&c, "SELECT email, password IS NULL FROM users ORDER BY id").unwrap();
+        assert_eq!(
+            r.rows,
+            [
+                vec![json!("ann@example.com"), json!(1)],
+                vec![json!("bob@example.com"), json!(1)]
+            ]
+        );
+        let r = run(
+            &c,
+            "SELECT count(*) FROM users WHERE password LIKE '$argon2%'",
+        )
+        .unwrap();
+        assert_eq!(r.rows, [vec![json!(0)]]);
+        for table in ["sessions", "invites"] {
+            let r = run(&c, &format!("SELECT hash, length(hash) FROM {table}")).unwrap();
+            assert_eq!(r.rows, [vec![Value::Null, Value::Null]], "{table}");
+        }
+        let stored: Option<String> = w
+            .query_row(
+                "SELECT password FROM users WHERE email = 'ann@example.com'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            stored.is_some(),
+            "the hash is there, the agent just does not see it"
+        );
     }
 
     #[test]
