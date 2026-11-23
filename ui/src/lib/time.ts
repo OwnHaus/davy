@@ -74,3 +74,23 @@ export function span(from: number, to: number, millis: boolean): string {
   if (sameDay(from, to)) return `${day(from)}, ${hms(from, millis)} to ${hms(to, millis)} UTC`;
   return `${day(from)} ${hms(from, millis)} to ${day(to)} ${hms(to, millis)} UTC`;
 }
+
+/** A period in seconds in its largest whole unit: `30s`, `5m`, `1h`, `1d`. */
+export function every(s: number): string {
+  if (s > 0 && s % 86_400 === 0) return `${s / 86_400}d`;
+  if (s > 0 && s % 3600 === 0) return `${s / 3600}h`;
+  if (s > 0 && s % 60 === 0) return `${s / 60}m`;
+  return `${s}s`;
+}
+
+/** How long something took, in milliseconds: `40s`, `12m`, `3h 5m`, `2d 4h`. */
+export function lasted(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
+  const d = Math.floor(h / 24);
+  return h % 24 ? `${d}d ${h % 24}h` : `${d}d`;
+}

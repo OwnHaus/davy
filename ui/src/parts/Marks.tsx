@@ -1,4 +1,4 @@
-import type { Status } from "../api/types";
+import type { Delivery, State, Status } from "../api/types";
 import { shown } from "../lib/text";
 import { Icon, type IconName } from "./Icon";
 
@@ -34,3 +34,36 @@ export function Regressed() {
   );
 }
 
+
+const STATE_ICON: Record<State, IconName> = { up: "up", failing: "warning", down: "error", pending: "pending" };
+
+/** A monitor's state with its shape, so down never rests on color alone. */
+export function StateMark({ state }: { state: State }) {
+  return (
+    <span className={`stt ms-${state}`}>
+      <Icon name={STATE_ICON[state]} />
+      <span>{state}</span>
+    </span>
+  );
+}
+
+const DELIVERY_ICON: Record<Delivery, IconName> = { sent: "check", waiting: "pending", failed: "error" };
+
+export function DeliveryMark({ delivery }: { delivery: Delivery }) {
+  return (
+    <span className={`stt dl-${delivery}`}>
+      <Icon name={DELIVERY_ICON[delivery]} />
+      <span>{delivery}</span>
+    </span>
+  );
+}
+
+/** Whether one check passed. */
+export function CheckMark({ ok }: { ok: boolean }) {
+  return (
+    <span className={`stt ${ok ? "ck-ok" : "ck-failed"}`}>
+      <Icon name={ok ? "check" : "error"} />
+      <span>{ok ? "passed" : "failed"}</span>
+    </span>
+  );
+}

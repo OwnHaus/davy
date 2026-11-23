@@ -2,10 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
 import { get, post } from "../api/client";
-import type { Me, Project, Sort } from "../api/types";
+import type { Me, Project, Setup, Sort } from "../api/types";
 import { liveRegion } from "../lib/live";
 import { Legend, Tip } from "../parts/HeatStrip";
 import { Brand, Icon } from "../parts/Icon";
+import { Hatch } from "../parts/Uptime";
 import { lastList, saveSort, type IssuesSearch, type StatusFilter } from "../search";
 
 /** A key and what it does, for the footer. */
@@ -16,7 +17,7 @@ type ShellProps = {
   keys: KeyHint[];
   note?: string;
   /** The filters in the rail. `close` hides the rail where it is an overlay. */
-  rail: (close: () => void) => ReactNode;
+  rail?: ((close: () => void) => ReactNode) | undefined;
   /** Whether the page has its own inspector column. */
   inspector: boolean;
   children: ReactNode;
@@ -27,16 +28,18 @@ export function Shell({ crumb, keys, note, rail, inspector, children }: ShellPro
   return (
     <div className="app">
       <header className="top">
-        <button
-          type="button"
-          className="railbtn cp"
-          aria-label="Filters"
-          aria-expanded={railOpen}
-          aria-controls="rail"
-          onClick={() => setRailOpen((o) => !o)}
-        >
-          <Icon name="filters" size={14} />
-        </button>
+        {rail ? (
+          <button
+            type="button"
+            className="railbtn cp"
+            aria-label="Filters"
+            aria-expanded={railOpen}
+            aria-controls="rail"
+            onClick={() => setRailOpen((o) => !o)}
+          >
+            <Icon name="filters" size={14} />
+          </button>
+        ) : null}
         <Link className="brand" to="/issues" aria-label="Davy, issues">
           <Brand />
           <span>Davy</span>
@@ -48,6 +51,16 @@ export function Shell({ crumb, keys, note, rail, inspector, children }: ShellPro
           <Link to="/logs" data-text="Logs">
             Logs
           </Link>
+          <Link to="/monitors" data-text="Uptime">
+            Uptime
+          </Link>
+          <Link to="/alerts" data-text="Alerts">
+            Alerts
+          </Link>
+          <Link to="/projects" data-text="Projects">
+            Projects
+          </Link>
+          <SetupLink />
         </nav>
         {crumb ? (
           <nav className="crumb" aria-label="Location">
@@ -56,10 +69,12 @@ export function Shell({ crumb, keys, note, rail, inspector, children }: ShellPro
         ) : null}
         <Account />
       </header>
-      <div className={`body${inspector ? "" : " wide"}`}>
-        <aside id="rail" className={railOpen ? "open" : undefined} aria-label="Filters">
-          {rail(() => setRailOpen(false))}
-        </aside>
+      <div className={`body${rail ? (inspector ? "" : " wide") : " bare"}`}>
+        {rail ? (
+          <aside id="rail" className={railOpen ? "open" : undefined} aria-label="Filters">
+            {rail(() => setRailOpen(false))}
+          </aside>
+        ) : null}
         {children}
       </div>
       <footer className="foot">
@@ -73,6 +88,7 @@ export function Shell({ crumb, keys, note, rail, inspector, children }: ShellPro
         {note ? <span className="sp">{note}</span> : null}
       </footer>
       <Tip />
+      <Hatch />
       <div className="sr-only" role="status" aria-live="polite" ref={liveRegion} />
     </div>
   );
@@ -86,11 +102,32 @@ function Account() {
   };
   return (
     <div className="acct">
-      <span className="who">{me.data?.email}</span>
+      <Link to="/account" className="who" title="Account">
+        <span className="sr-only">Account, </span>
+        <span className="em">{me.data?.email}</span>
+        <span className="short" aria-hidden="true">
+          Account
+        </span>
+      </Link>
       <button type="button" className="btn" onClick={out}>
         Log out
       </button>
     </div>
+  );
+}
+
+/** The setup steps, while a required one is open. */
+export const setupQuery = { queryKey: ["setup"], queryFn: () => get<Setup>("/setup"), staleTime: 60_000 };
+
+export const setupOpen = (setup: Setup | undefined) => setup?.steps.some((s) => s.required && s.at === null) ?? false;
+
+function SetupLink() {
+  const setup = useQuery(setupQuery);
+  if (!setupOpen(setup.data)) return null;
+  return (
+    <Link to="/setup" data-text="Setup">
+      Setup
+    </Link>
   );
 }
 

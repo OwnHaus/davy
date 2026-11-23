@@ -61,6 +61,18 @@ const PATHS = {
   regress: <path d="m1.8 10.4 3.8-3.8 2.2 2.2 4.4-4.5M8.8 4.3h3.4v3.4" {...line} strokeWidth="1.7" />,
   sortd: <path d="M7 2.6v8M3.8 8 7 11.2 10.2 8" {...line} strokeWidth="1.7" />,
   filters: <path d="M2 3.5h10M4 7h6M6 10.5h2" {...line} strokeWidth="1.7" />,
+  up: (
+    <>
+      <circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <path d="m4.6 7.2 1.7 1.7 3.2-3.6" {...line} strokeWidth="1.7" />
+    </>
+  ),
+  pending: (
+    <>
+      <circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M7 4.3V7l1.9 1.3" {...line} strokeWidth="1.6" />
+    </>
+  ),
 } satisfies Record<string, ReactNode>;
 
 export type IconName = keyof typeof PATHS;

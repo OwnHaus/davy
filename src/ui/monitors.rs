@@ -63,7 +63,8 @@ pub struct MonitorRow {
     pub url: Option<String>,
     pub state: Health,
     pub every_s: i64,
-    pub last_check: Option<String>,
+    /// When Davy last checked an HTTP monitor, or a heartbeat last pinged.
+    pub last_heard: Option<String>,
     /// When the open incident started.
     pub open_since: Option<String>,
     /// Checks in each of the [`HOURS`] hours from `hours_from`.
@@ -166,7 +167,11 @@ fn stored(r: &Row<'_>) -> rusqlite::Result<Stored> {
             url: url.as_deref().and_then(shown_url),
             state: r.get(5)?,
             every_s: r.get(6)?,
-            last_check: r.get::<_, Option<Timestamp>>(7)?.map(rfc3339_ms),
+            last_heard: match kind {
+                MonitorKind::Http => r.get::<_, Option<Timestamp>>(7)?,
+                MonitorKind::Heartbeat => r.get::<_, Option<Timestamp>>(11)?,
+            }
+            .map(rfc3339_ms),
             open_since: r.get::<_, Option<Timestamp>>(8)?.map(rfc3339_ms),
             hourly: vec![Hour::default(); HOURS],
         },

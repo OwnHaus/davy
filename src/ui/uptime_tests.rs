@@ -70,7 +70,7 @@ async fn the_monitor_list_shows_each_hour_of_checks_and_hides_credentials() {
     assert_eq!(http["url"], "https://shop.example/health");
     assert_eq!(http["state"], "down");
     assert_eq!(http["every_s"], 60);
-    assert_eq!(http["last_check"], time::rfc3339_ms(now));
+    assert_eq!(http["last_heard"], time::rfc3339_ms(now));
     assert_eq!(http["open_since"], time::rfc3339_ms(now - HOUR));
     let hourly = http["hourly"].as_array().unwrap();
     assert_eq!(hourly.len(), 24);
@@ -81,6 +81,7 @@ async fn the_monitor_list_shows_each_hour_of_checks_and_hides_credentials() {
     let heartbeat = &monitors[0];
     assert_eq!(heartbeat["kind"], "heartbeat");
     assert_eq!(heartbeat["url"], Value::Null);
+    assert_eq!(heartbeat["last_heard"], "2023-11-14T22:13:20Z");
     let text = r.body.to_string();
     for secret in ["s3cret", "ann:pw", "hb-secret-token"] {
         assert!(!text.contains(secret), "{secret} is in {text}");

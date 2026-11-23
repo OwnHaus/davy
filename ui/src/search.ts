@@ -1,6 +1,7 @@
 // The state of every view lives in the URL, so a link shows what its sender saw.
 
 import type { LogLevel, Sort, Status } from "./api/types";
+import { SDKS, type Sdk } from "./parts/snippets";
 
 export type StatusFilter = Status | "all";
 
@@ -74,6 +75,20 @@ export function logsSearch(s: Record<string, unknown>): LogsSearch {
     live: !zoomed && s.live === "1" ? "1" : undefined,
   };
 }
+
+export type MonitorsSearch = { project?: string | undefined };
+export const monitorsSearch = (s: Record<string, unknown>): MonitorsSearch => ({ project: text(s.project) });
+
+export type AlertsSearch = { channel?: string | undefined };
+export const alertsSearch = (s: Record<string, unknown>): AlertsSearch => ({
+  channel: typeof s.channel === "string" && /^\d{1,18}$/.test(s.channel) ? s.channel : undefined,
+});
+
+export type ProjectsSearch = { project?: string | undefined; sdk?: Sdk | undefined };
+export const projectsSearch = (s: Record<string, unknown>): ProjectsSearch => ({
+  project: text(s.project),
+  sdk: oneOf(s.sdk, SDKS),
+});
 
 export const loginSearch = (s: Record<string, unknown>) => ({ next: text(s.next) });
 

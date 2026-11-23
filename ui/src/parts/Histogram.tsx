@@ -50,7 +50,8 @@ function bar(x: number, w: number, h: number): string {
   return `M${x},${TOP + PLOT}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${TOP + PLOT}Z`;
 }
 
-function useWidth() {
+/** A ref for a box and its width in whole pixels, kept up to date. */
+export function useWidth() {
   const ref = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   useEffect(() => {

@@ -133,7 +133,11 @@ export type MonitorRow = { id: number, project: string, name: string, kind: Moni
  * login may hold a credential, so they stay out, and a heartbeat's ping
  * URL is one, so it has none.
  */
-url: string | null, state: State, every_s: number, last_check: string | null, 
+url: string | null, state: State, every_s: number, 
+/**
+ * When Davy last checked an HTTP monitor, or a heartbeat last pinged.
+ */
+last_heard: string | null, 
 /**
  * When the open incident started.
  */

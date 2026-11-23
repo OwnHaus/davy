@@ -86,7 +86,7 @@ echo 'logs: wrong bearer 403, Logtail JSON 202'
 # The web UI test resolves the sentry-node-7 TypeError. The steps below use
 # the other three issues.
 (cd "$ROOT/e2e" && pnpm exec playwright install chromium --only-shell && DAVY_BIN="$BIN" DAVY_URL="$URL" DAVY_DATA="$SCRATCH/data" pnpm exec playwright test ui.spec.ts --reporter=line --output "$SCRATCH/playwright")
-echo 'web UI: verified sign-in, the list, the in-app frame, resolve, login, logs search, zoom and live, axe and CSP'
+echo 'web UI: verified sign-in, the list, the in-app frame, resolve, login, logs search, zoom and live, uptime, alerts, projects, setup, a password change, axe and CSP'
 DSN=$("$BIN" project create legacy --data "$SCRATCH/data" --public-url "$URL")
 KEY="${DSN#*://}"; KEY="${KEY%%@*}"
 PROJECT="${DSN##*/}"

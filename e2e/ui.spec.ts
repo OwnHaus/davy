@@ -40,7 +40,9 @@ async function scheme(page: Page, colorScheme: "light" | "dark") {
   await page.waitForFunction(() => document.getAnimations().length === 0);
 }
 
-test("a person signs in, finds the SDK's issue, reads its frame and resolves it", async ({ page }) => {
+test("a person signs in, finds the SDK's issue, reads its frame and resolves it", async ({ page, browser }) => {
+  // One journey through every page, with axe in both schemes on each.
+  test.setTimeout(120_000);
   watch(page);
   await page.addInitScript(() =>
     document.addEventListener("securitypolicyviolation", (e) => console.error(`Content Security Policy: ${e.violatedDirective} ${e.blockedURI}`)),
@@ -155,6 +157,94 @@ test("a person signs in, finds the SDK's issue, reads its frame and resolves it"
     await scheme(page, "dark");
     await noAxeViolations(page, "logs, dark");
     await scheme(page, "light");
+  });
+
+  const views = page.getByRole("navigation", { name: "Views" });
+  const both = async (view: string) => {
+    await noAxeViolations(page, view);
+    await scheme(page, "dark");
+    await noAxeViolations(page, `${view}, dark`);
+    await scheme(page, "light");
+  };
+
+  await test.step("Uptime lists the monitors and a heartbeat's page shows its ping", async () => {
+    davy("monitor", "add", "logs", "login page", "--url", `${URL}/ui/login`);
+    const pingPath = davy("monitor", "add", "logs", "nightly", "--heartbeat").trim().split("\t")[1]!;
+    expect((await page.request.post(`${URL}${pingPath}`)).status()).toBe(200);
+    await views.getByRole("link", { name: "Uptime" }).click();
+    await expect(page).toHaveURL(`${URL}/ui/monitors`);
+    await expect(page.locator("tr.row")).toHaveCount(2);
+    const nightly = page.locator("tr.row", { hasText: "nightly" });
+    await expect(nightly).toContainText("heartbeat, a ping every 1h");
+    await expect(nightly.locator(".stt")).toHaveText("up");
+    await both("uptime");
+    await nightly.getByRole("link", { name: "nightly" }).click();
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("nightly");
+    await expect(page.locator(".ihead .sub")).toHaveText("Heartbeat. A ping every 1h, late after 5m more");
+    await expect(page.locator(".kv")).toContainText("Last ping");
+    await both("monitor");
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(`${URL}/ui/monitors`);
+  });
+
+  await test.step("Alerts shows a channel and the test notice queued for it", async () => {
+    const id = davy("channel", "add", "webhook", "http://127.0.0.1:9/hook", "--all").trim().split("\t")[0]!;
+    davy("channel", "test", id);
+    await views.getByRole("link", { name: "Alerts" }).click();
+    await expect(page.locator("#channels + div tbody tr")).toHaveCount(1);
+    await expect(page.locator("#channels + div tbody tr")).toContainText("127.0.0.1");
+    await expect(page.locator("#sent + div tbody tr").filter({ hasText: "test" })).toHaveCount(1);
+    await both("alerts");
+  });
+
+  await test.step("Projects shows the DSN and the Python setup for a project", async () => {
+    await views.getByRole("link", { name: "Projects" }).click();
+    await page.getByRole("button", { name: "logs", exact: true }).click();
+    const dsn = JSON.parse(davy("sql", "--json", "SELECT public_key FROM projects WHERE slug = 'logs'")).rows[0][0] as string;
+    await expect(page.locator(".kv.copyable").nth(1)).toContainText(dsn);
+    await page.getByRole("tab", { name: "Node" }).focus();
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("ArrowRight");
+    await expect(page.getByRole("tab", { name: "Python" })).toBeFocused();
+    await expect(page.getByRole("tabpanel")).toContainText("sentry_sdk.init(");
+    await expect(page).toHaveURL(/sdk=python/);
+    await both("projects");
+  });
+
+  await test.step("Setup shows the done steps and the open ones", async () => {
+    await views.getByRole("link", { name: "Setup" }).click();
+    const step = (title: string) => page.locator(".steps li", { has: page.getByRole("heading", { name: title }) });
+    await expect(step("Create a project")).toContainText("Done");
+    await expect(step("Send the first error")).toContainText("Done");
+    await expect(step("Connect an agent")).toContainText("Not done yet.");
+    await expect(step("Connect an agent")).toContainText(`davy mcp-config --client claude-code --url ${URL}`);
+    await both("setup");
+  });
+
+  await test.step("a password change logs out every other session", async () => {
+    const other = await browser.newContext();
+    const second = await other.newPage();
+    await second.goto(`${URL}/ui/login`);
+    await second.fill("#email", EMAIL);
+    await second.fill("#password", PASSWORD);
+    await second.click("button[type=submit]");
+    await expect(second).toHaveURL(`${URL}/ui/issues`);
+
+    await page.getByRole("link", { name: /^Account/ }).click();
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Account");
+    await both("account");
+    await page.fill("#current", PASSWORD);
+    await page.fill("#new", "short");
+    await page.fill("#again", "short");
+    await page.getByRole("button", { name: "Change password" }).click();
+    await expect(page.locator(".problem")).toHaveText("The new password needs at least 12 characters.");
+    await page.fill("#new", `${PASSWORD} two`);
+    await page.fill("#again", `${PASSWORD} two`);
+    await page.getByRole("button", { name: "Change password" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Password changed" })).toHaveText("Password changed. Every other session is logged out.");
+    expect((await second.request.get(`${URL}/ui/api/me`)).status()).toBe(401);
+    expect((await page.request.get(`${URL}/ui/api/me`)).status()).toBe(200);
+    await other.close();
   });
 
   expect(problems, "page errors and CSP violations").toEqual([]);

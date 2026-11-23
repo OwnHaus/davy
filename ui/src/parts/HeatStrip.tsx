@@ -174,7 +174,8 @@ type Cell = HTMLElement | SVGElement;
 
 /**
  * Shows the readout over `cell`. A cell says its count in `data-n`, and its
- * time in `data-when` or as the hour that starts at `data-start`.
+ * time in `data-when` or as the hour that starts at `data-start`. `data-also`
+ * follows the count, such as `, 1 failed`.
  */
 export function readout(cell: Cell, x?: number) {
   const el = tip();
@@ -184,7 +185,7 @@ export function readout(cell: Cell, x?: number) {
   const [when, count, word] = el.children;
   if (when) when.textContent = cell.dataset.when ?? hourRange(Number(cell.dataset.start));
   if (count) count.textContent = n.toLocaleString("en-US");
-  if (word) word.textContent = ` ${n === 1 ? unit : `${unit}s`}`;
+  if (word) word.textContent = ` ${n === 1 ? unit : `${unit}s`}${cell.dataset.also ?? ""}`;
   el.classList.add("show");
   const r = cell.getBoundingClientRect();
   const left = Math.min(window.innerWidth - el.offsetWidth - 8, Math.max(8, (x ?? r.left + r.width / 2) - el.offsetWidth / 2));
@@ -204,7 +205,7 @@ export function hot(i: number, cell?: Cell) {
   for (const c of document.querySelectorAll(".cell.col, .cell.on")) c.classList.remove("col", "on");
   if (i < 0) return;
   const start = cell?.dataset.start;
-  if (start) for (const c of document.querySelectorAll(`.strip.sm .cell[data-start="${start}"]`)) c.classList.add("col");
+  if (start) for (const c of document.querySelectorAll(`.strip.sm .cell[data-start="${start}"], .ustrip.sm .cell[data-start="${start}"]`)) c.classList.add("col");
   cell?.classList.add("on");
 }
 

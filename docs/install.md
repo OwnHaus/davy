@@ -159,6 +159,14 @@ sudo runuser -u davy -- davy doctor --data /var/lib/davy
 
 Every line starts with `ok`. A line that starts with `fail` or `warn` has a `fix:` line under it. Run the fix, then run doctor again until no line fails. `--json` prints the same checks as JSON.
 
+Then give the person the web UI, before the steps below, so they can watch them happen. Ask for their e-mail and create their user:
+
+```sh
+sudo runuser -u davy -- davy user add person@example.com --data /var/lib/davy
+```
+
+It prints a link such as `https://davy.example.com/ui/welcome#...`. The link works once and for 24 hours. Give it to the person. They set a password there and land on the setup page, which shows each of the next steps as done when Davy sees it happen. The command refuses a plain `http` public URL to another machine, because the browser would not keep the login. Run step 7 first in that case.
+
 ## 9. Connect the app
 
 Create a project for the app. It prints the DSN, the address the app's Sentry SDK sends errors to:
