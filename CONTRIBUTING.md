@@ -11,6 +11,8 @@ brew install cargo-deny zizmor osv-scanner
 
 The web UI needs Node 24 and pnpm 11. `scripts/ui` builds it into `ui/dist/`, which the next `cargo build` embeds. Without Node, `scripts/check` skips the UI and CI still runs it. While you work on the UI, `cd ui && pnpm exec vite` serves it with hot reload and sends the API to the Davy at `DAVY_URL` (default `http://127.0.0.1:8000`).
 
+A change that shows in the UI renews the README screenshots: `scripts/screenshots` starts a Davy on empty data, fills it with a day of the made-up app in `e2e/demo/seed.mjs` and saves each view in light and dark to `docs/images/`. It needs a release build with the UI.
+
 The pre-commit hook runs `scripts/check`. The commit-msg hook runs `scripts/commit-msg`.
 
 ## The flow

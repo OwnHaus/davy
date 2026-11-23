@@ -1,0 +1,36 @@
+#!/bin/bash
+# Takes the README screenshots: starts a Davy on an empty data directory,
+# fills it with a day of the made-up app in e2e/demo/seed.mjs and saves each
+# view in light and dark to docs/images/. Needs a release build with the UI
+# (scripts/ui, then cargo build --release), Node and pnpm.
+# Usage: scripts/screenshots
+set -euo pipefail
+cd "$(dirname "$0")/.."
+root=$PWD
+bin=$root/target/release/davy
+port=${DAVY_SCREENSHOT_PORT:-8123}
+url=http://127.0.0.1:$port
+scratch=$(mktemp -d)
+pid=
+stop() {
+    if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
+    rm -rf "$scratch"
+}
+trap stop EXIT
+
+"$bin" setup --data "$scratch/data" --public-url "$url" --listen "127.0.0.1:$port" >/dev/null
+dsns=()
+for project in pantry-api pantry-web pantry-worker; do
+    dsns+=("$("$bin" project create "$project" --data "$scratch/data")")
+done
+"$bin" serve --data "$scratch/data" >"$scratch/serve.log" 2>&1 &
+pid=$!
+for _ in $(seq 50); do curl -fs -o /dev/null "$url/ui/" && break; python3 -c 'import time; time.sleep(0.1)'; done
+
+cd "$root/e2e"
+pnpm install --frozen-lockfile --silent
+pnpm exec playwright install chromium --only-shell >/dev/null
+node demo/seed.mjs "$url" "${dsns[@]}"
+link=$("$bin" user add demo@example.com --data "$scratch/data" | grep -o 'http[^ ]*/ui/welcome#[^ ]*')
+mkdir -p "$root/docs/images"
+node demo/screenshots.mjs "$link" "$root/docs/images"
