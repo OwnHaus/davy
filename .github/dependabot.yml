@@ -7,6 +7,11 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
+    ignore:
+      # tantivy pins fs4 0.13, so fs4 1.x would only add a second copy.
+      # Drop this once tantivy moves to fs4 1.
+      - dependency-name: fs4
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: cargo
     directory: /fuzz
     schedule:
