@@ -4,6 +4,8 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 
 ## Unreleased
 
+## 0.1.0 (2026-11-23)
+
 ### Added
 
 - Error ingest from the Sentry SDKs through the envelope and `/store/` routes, grouped into issues that reopen on a regression in the fix release or a newer one.
