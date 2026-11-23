@@ -49,6 +49,7 @@ pub enum Disposition {
     StoreLogs,
     /// Kept in SQLite through [`crate::items`].
     SdkItem,
+    CheckIn,
     Drop,
 }
 pub fn disposition(kind: &ItemKind) -> Disposition {
@@ -60,6 +61,7 @@ pub fn disposition(kind: &ItemKind) -> Disposition {
         | ItemKind::UserReport
         | ItemKind::Session
         | ItemKind::Sessions => Disposition::SdkItem,
+        ItemKind::CheckIn => Disposition::CheckIn,
         _ => Disposition::Drop,
     }
 }

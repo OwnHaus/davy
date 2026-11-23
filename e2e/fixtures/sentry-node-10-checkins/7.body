@@ -1,0 +1,3 @@
+{"sent_at":"2026-11-23T16:11:57.758Z","sdk":{"name":"sentry.javascript.node","version":"10.78.0"},"trace":{"environment":"production","release":"jobs@1.2.0","public_key":"tok123","trace_id":"889a5582eb784b4e97614c2b5d00df52"}}
+{"type":"check_in"}
+{"check_in_id":"ebb5cb198cf240999abe330fafee09fa","monitor_slug":"billing-sync","status":"error","release":"jobs@1.2.0","environment":"production","contexts":{"trace":{"trace_id":"889a5582eb784b4e97614c2b5d00df52","span_id":"8345633464ca88c7"}}}

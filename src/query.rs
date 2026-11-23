@@ -31,6 +31,7 @@ const NOTES: &str = "Notes:
 - issues.status is unresolved, resolved or ignored. A resolved issue reopens when an event arrives without a release, in the release it was resolved in, or in a release first seen after resolved_at.
 - issue_tags holds each environment and release that an issue's events named. issues_text is a trigram full-text index of issues.title and issues.culprit: SELECT rowid FROM issues_text WHERE issues_text MATCH '\"timed out\"' finds issues whose title or culprit contains the phrase, ignoring case, for phrases of three characters or more.
 - monitors.state is pending, up, failing or down. Times in monitors, checks and incidents are unix milliseconds. An incident with no resolved_at is open. monitors.heartbeat_token, monitors.url, channels.url and channels.secret read as NULL.
+- A heartbeat with monitors.slug also takes Sentry SDK check-ins for that slug. monitors.source is cli for a monitor made by davy monitor add and sdk for one made by a check-in. A heartbeat expects every every_s seconds, or every months calendar months, or at the times of the crontab cron, both in the IANA zone; due_at is when the sweep marks it down. run_id and run_started_at belong to a run started by an in_progress check-in. Refused check-ins are counted in client_reports with category monitor and reason davy_too_large, davy_invalid, davy_bad_slug, davy_unknown_monitor, davy_bad_config, davy_monitor_cap or davy_rate.
 - users.password, sessions.hash and invites.hash read as NULL.
 - client_reports counts what the SDKs dropped before sending, per UTC day (unix milliseconds at midnight), project, reason and category, such as before_send and error, or sample_rate and transaction. reason davy_daily_cap counts user feedback Davy refused past 1000 per project and day, and with category session the sessions refused past 1000000 per project and day. reason davy_out_of_window counts sessions that started more than 5 days ago or over an hour ahead. Rows are kept 90 days. When an app reports no errors, check here that its SDK did not drop them.
 - release_sessions counts the sessions SDKs report, per project, hour the session started (unix milliseconds), release and environment. started is every session, errored the ones with an error (crashed ones too), crashed and abnormal the ones that ended so. Crash-free sessions are 100 * (started - crashed) / started. release_users holds one row per UTC day, project, release, environment and user, where user is a hash of the SDK's user id and flags has bit 2 for errored and bit 4 for crashed. Both are kept 90 days. The release_health tool reads them. session_seen is how Davy counts each session once.
@@ -267,6 +268,7 @@ mod tests {
             "Backup",
             crate::monitor::Target::Heartbeat {
                 grace: Duration::from_secs(300),
+                slug: None,
             },
             None,
         )

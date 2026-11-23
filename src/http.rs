@@ -282,6 +282,8 @@ struct Parsed {
     logs: Vec<LogRecord>,
     /// Client reports and user feedback.
     items: Vec<SdkItem>,
+    /// The first check-in, as Sentry allows one per envelope.
+    check_in: Option<monitor::checkin::Item>,
 }
 fn too_many_records() -> Failure {
     (
@@ -328,6 +330,20 @@ fn sdk_item(item: &envelope::Item<'_>, held: &mut Held) -> Result<Option<SdkItem
     held.release(cost);
     Ok(parsed)
 }
+/// A check-in's config is a JSON tree while it is read, so it is paid for.
+fn check_in(payload: &[u8], held: &mut Held) -> Result<monitor::checkin::Item, Failure> {
+    use monitor::checkin::{Dropped, MAX_ITEM, parse};
+    if payload.len() > MAX_ITEM {
+        return Ok(Err(Dropped::TooLarge));
+    }
+    let Ok(cost) = heap::json(payload, 0) else {
+        return Ok(Err(Dropped::Invalid));
+    };
+    held.take(cost)?;
+    let item = parse(payload);
+    held.release(cost);
+    Ok(item)
+}
 fn parse_sentry(
     bytes: &[u8],
     project: i64,
@@ -345,6 +361,7 @@ fn parse_sentry(
             },
             logs: Vec::new(),
             items: Vec::new(),
+            check_in: None,
         });
     }
     let envelope = Envelope::parse(bytes).map_err(bad)?;
@@ -354,6 +371,7 @@ fn parse_sentry(
         event: None,
         logs: Vec::new(),
         items: Vec::new(),
+        check_in: None,
     };
     for item in envelope
         .items
@@ -367,7 +385,13 @@ fn parse_sentry(
             Disposition::SdkItem if parsed.items.len() < MAX_SDK_ITEMS => {
                 parsed.items.extend(sdk_item(&item, held)?);
             }
-            Disposition::StoreError | Disposition::Drop | Disposition::SdkItem => {}
+            Disposition::CheckIn if parsed.check_in.is_none() => {
+                parsed.check_in = Some(check_in(item.payload, held)?);
+            }
+            Disposition::StoreError
+            | Disposition::Drop
+            | Disposition::SdkItem
+            | Disposition::CheckIn => {}
             Disposition::StoreLogs => {
                 // An item that does not parse is dropped, as Sentry drops it.
                 let Ok(cost) = logs::sentry::cost(item.payload) else {
@@ -442,6 +466,10 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
             items: parsed.items,
         };
         store::submit(&app.sender, job).await?;
+    }
+    if let Some(item) = parsed.check_in {
+        let at = time::now_ms();
+        store::submit(&app.sender, Job::CheckIn { project, at, item }).await?;
     }
     Ok(json_response(&json!({"id":id.0})))
 }

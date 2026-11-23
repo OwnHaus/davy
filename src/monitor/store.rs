@@ -3,6 +3,7 @@
 use super::{
     Change, CheckUrl, Expect, HeartbeatToken, NewMonitor, Outcome, Reason, State, Target,
     check::{Checked, Http},
+    checkin::MonitorSlug,
 };
 use crate::{
     alert::{self, Incident, Notice},
@@ -31,10 +32,24 @@ pub struct Added {
     pub target: String,
 }
 
+/// Errs when a monitor of `project` already takes check-ins for `slug`.
+fn slug_free(c: &Connection, project: i64, slug: &str) -> Result<()> {
+    let in_use: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM monitors WHERE project_id=?1 AND slug=?2)",
+        params![project, slug],
+        |r| r.get(0),
+    )?;
+    anyhow::ensure!(
+        !in_use,
+        "the project already has a monitor with slug {slug}"
+    );
+    Ok(())
+}
+
 /// Stores `m` for `project` in the `Pending` state.
 pub fn add(c: &Connection, project: i64, m: &NewMonitor, now: Timestamp) -> Result<Added> {
     let secs = |d: std::time::Duration| d.as_secs().cast_signed();
-    let (kind, url, expect, keyword, token, timeout, grace, target) = match &m.target {
+    let (kind, url, expect, keyword, token, timeout, grace, target, slug) = match &m.target {
         Target::Http {
             url,
             expect,
@@ -56,9 +71,10 @@ pub fn add(c: &Connection, project: i64, m: &NewMonitor, now: Timestamp) -> Resu
                 timeout,
                 None,
                 target,
+                None,
             )
         }
-        Target::Heartbeat { grace } => {
+        Target::Heartbeat { grace, slug } => {
             let token = HeartbeatToken::random();
             let target = format!("/api/heartbeat/{}", token.as_str());
             let grace = Some(secs(*grace));
@@ -71,12 +87,18 @@ pub fn add(c: &Connection, project: i64, m: &NewMonitor, now: Timestamp) -> Resu
                 None,
                 grace,
                 target,
+                slug.as_ref().map(MonitorSlug::as_str),
             )
         }
     };
+    if let Some(slug) = slug {
+        slug_free(c, project, slug)?;
+    }
+    // Monitors made by check-ins have a cap of their own, so a sender with
+    // the public DSN cannot use up the room the operator needs.
     let inserted = c.execute(
-        "INSERT INTO monitors(project_id,name,kind,url,expect,keyword,heartbeat_token,every_s,timeout_s,grace_s,state,created_at)
-         SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'pending',?11 WHERE (SELECT count(*) FROM monitors) < ?12",
+        "INSERT INTO monitors(project_id,name,kind,url,expect,keyword,heartbeat_token,every_s,timeout_s,grace_s,state,created_at,slug)
+         SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'pending',?11,?13 WHERE (SELECT count(*) FROM monitors WHERE source='cli') < ?12",
         params![
             project,
             m.name,
@@ -89,7 +111,8 @@ pub fn add(c: &Connection, project: i64, m: &NewMonitor, now: Timestamp) -> Resu
             timeout,
             grace,
             now,
-            MAX_MONITORS
+            MAX_MONITORS,
+            slug
         ],
     )?;
     anyhow::ensure!(
@@ -123,27 +146,46 @@ pub fn ping(c: &Connection, monitor: i64, at: Timestamp, failed: bool) -> Result
     let found = record(c, monitor, at, outcome, None, None)?;
     if found {
         c.execute(
-            "UPDATE monitors SET last_ping_at=?2 WHERE id=?1",
+            "UPDATE monitors SET last_ping_at=?2,due_at=?2+(every_s+coalesce(grace_s,0))*1000 WHERE id=?1",
             params![monitor, at],
         )?;
     }
     Ok(found)
 }
 
-/// Opens an incident for each heartbeat that is up and got no ping within
-/// its interval plus grace before `at`, and deletes up to 1,000 check rows
-/// older than 30 days.
+/// Opens an incident for each heartbeat that is not down and is past its
+/// `due_at` at `at`, and deletes up to 1,000 check rows older than 30 days.
+/// A run that outlived its maximum runtime times out, a monitor with a slug
+/// missed a check-in, and any other heartbeat is late.
 pub fn sweep(c: &Connection, at: Timestamp) -> Result<()> {
-    let late: Vec<i64> = c
+    let late: Vec<(i64, Option<i64>, bool)> = c
         .prepare(
-            "SELECT id FROM monitors WHERE kind='heartbeat' AND state='up'
-             AND last_ping_at+(every_s+grace_s)*1000<?1",
+            "SELECT id,CASE WHEN run_started_at+coalesce(max_runtime_s,?2)*1000<?1 THEN coalesce(max_runtime_s,?2) END,
+             slug IS NOT NULL FROM monitors WHERE kind='heartbeat' AND state<>'down' AND due_at<?1",
         )?
-        .query_map([at], |r| r.get(0))?
+        .query_map(params![at, super::checkin_store::default_max_runtime_s()], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?
         .collect::<rusqlite::Result<_>>()?;
-    for monitor in late {
-        record(c, monitor, at, Outcome::Down(Reason::Late), None, None)?;
+    for (monitor, timed_out, slug) in late {
+        let reason = match (timed_out, slug) {
+            (Some(secs), _) => Reason::TimedOut(secs.cast_unsigned() / 60),
+            (None, true) => Reason::Missed,
+            (None, false) => Reason::Late,
+        };
+        record(c, monitor, at, Outcome::Down(reason), None, None)?;
+        c.execute(
+            "UPDATE monitors SET due_at=NULL,run_id=NULL,run_started_at=NULL WHERE id=?1",
+            [monitor],
+        )?;
     }
+    // A down monitor is not swept above, so a run left open while it is down
+    // would block new runs and config until a matching end arrived.
+    c.execute(
+        "UPDATE monitors SET run_id=NULL,run_started_at=NULL WHERE state='down'
+         AND run_started_at+coalesce(max_runtime_s,?2)*1000<?1",
+        params![at, super::checkin_store::default_max_runtime_s()],
+    )?;
     // CROSS JOIN keeps monitors as the outer loop, so each monitor's old rows
     // are a range of checks_monitor_at instead of a scan of every check.
     c.execute(
@@ -151,6 +193,7 @@ pub fn sweep(c: &Connection, at: Timestamp) -> Result<()> {
          CROSS JOIN checks c ON c.monitor_id=m.id AND c.at<?1 LIMIT ?2)",
         params![at.saturating_sub(KEEP_CHECKS_MS), PRUNE_BATCH],
     )?;
+    super::retention::prune(c, at)?;
     Ok(())
 }
 
@@ -213,7 +256,7 @@ pub fn checked(c: &Connection, monitor: i64, at: Timestamp, checked: &Checked) -
 
 /// Stores one check row, moves the monitor to its next state and opens or
 /// closes its incident with a notice. False when the monitor is gone.
-fn record(
+pub(super) fn record(
     c: &Connection,
     monitor: i64,
     at: Timestamp,
@@ -299,8 +342,17 @@ pub struct Listed {
     pub id: i64,
     pub project: String,
     pub name: String,
-    /// The URL of an HTTP monitor, or the ping path of a heartbeat.
+    /// The URL of an HTTP monitor, the ping path of a heartbeat, or
+    /// `check-in <slug>` for a monitor made by check-ins.
     pub target: String,
+    /// The slug that check-ins for this monitor carry.
+    pub slug: Option<String>,
+    /// `cli` for a monitor made by `davy monitor add`, `sdk` for one made by
+    /// check-ins.
+    pub source: String,
+    pub config_changes: i64,
+    /// What a heartbeat expects, `every 1h` or `cron 0 * * * *, UTC`.
+    pub schedule: Option<String>,
     pub state: State,
     pub last_check_at: Option<Timestamp>,
     /// When the open incident started.
@@ -310,16 +362,25 @@ pub struct Listed {
 /// Every monitor, oldest first.
 pub fn list(c: &Connection) -> Result<Vec<Listed>> {
     let mut q = c.prepare(
-        "SELECT m.id,p.slug,m.name,coalesce(m.url,'/api/heartbeat/'||m.heartbeat_token),m.state,m.last_check_at,
-         (SELECT started_at FROM incidents i WHERE i.monitor_id=m.id AND i.resolved_at IS NULL)
+        "SELECT m.id,p.slug,m.name,coalesce(m.url,'/api/heartbeat/'||m.heartbeat_token,'check-in '||m.slug),m.state,m.last_check_at,
+         (SELECT started_at FROM incidents i WHERE i.monitor_id=m.id AND i.resolved_at IS NULL),
+         m.slug,m.source,m.kind,m.every_s,m.months,m.cron,m.zone,m.config_changes
          FROM monitors m JOIN projects p ON p.id=m.project_id ORDER BY m.id",
     )?;
     let rows = q.query_map([], |r| {
+        let schedule = (r.get::<_, String>(9)? == "heartbeat").then(|| {
+            super::checkin_store::schedule_at(r, 10)
+                .map_or_else(|_| "invalid stored schedule".to_owned(), |s| s.to_string())
+        });
         Ok(Listed {
             id: r.get(0)?,
             project: r.get(1)?,
             name: r.get(2)?,
             target: r.get(3)?,
+            slug: r.get(7)?,
+            source: r.get(8)?,
+            config_changes: r.get(14)?,
+            schedule,
             state: r.get(4)?,
             last_check_at: r.get(5)?,
             open_since: r.get(6)?,

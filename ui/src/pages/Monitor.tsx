@@ -88,7 +88,7 @@ export function Monitor() {
                     </>
                   ) : (
                     <span>
-                      Heartbeat. A ping every {every(m.every_s)}
+                      {m.slug === null ? `Heartbeat. A ping every ${every(m.every_s)}` : `Check-ins for ${shown(m.slug)}, ${m.schedule === null ? "no schedule" : shown(m.schedule)}`}
                       {view.data.grace_s === null ? "" : `, late after ${every(view.data.grace_s)} more`}
                     </span>
                   )}

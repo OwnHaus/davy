@@ -1,0 +1,9 @@
+{
+  "method": "POST",
+  "url": "/api/1/envelope/?sentry_key=tok123&sentry_version=7&sentry_client=sentry.javascript.node%2F7.107.0",
+  "headers": {
+    "host": "127.0.0.1:51604",
+    "connection": "keep-alive",
+    "transfer-encoding": "chunked"
+  }
+}

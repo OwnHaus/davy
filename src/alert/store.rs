@@ -201,10 +201,12 @@ fn queue(
     notice: &Notice,
     at: Timestamp,
 ) -> Result<()> {
+    let sdk = super::monitor_digest::sdk(c, notice)?;
+    let lane = if sdk { "monitor.digest" } else { notice.kind() };
     let unsent: i64 = c.query_row(
         "SELECT count(*) FROM notifications WHERE channel_id=?1 AND sent_at IS NULL AND failed_at IS NULL
-           AND (?2='feedback' OR type<>'feedback')",
-        params![channel, notice.kind()],
+           AND ((?2='monitor.digest' AND type='monitor.digest') OR (?2<>'monitor.digest' AND type<>'monitor.digest' AND (?2='feedback' OR type<>'feedback')))",
+        params![channel, lane],
         |r| r.get(0),
     )?;
     if unsent >= MAX_UNSENT {
@@ -226,15 +228,18 @@ fn queue(
         .transpose()?;
     c.execute(
         "INSERT INTO notifications(channel_id,type,payload,created_at,next_at,issue)
-         VALUES (?1,?2,'',?3,CASE WHEN ?4 IS NULL THEN ?3 ELSE coalesce((SELECT max(next_at)
+         VALUES (?1,?2,'',?3,CASE WHEN ?2='monitor.digest' THEN coalesce((SELECT min(next_at) FROM notifications WHERE channel_id=?1 AND type='monitor.digest' AND sent_at IS NULL AND failed_at IS NULL AND attempts=0),?3+?5) WHEN ?4 IS NULL THEN ?3 ELSE coalesce((SELECT max(next_at)
            FROM notifications WHERE channel_id=?1 AND issue IS NOT NULL AND attempts=0
            AND sent_at IS NULL AND failed_at IS NULL AND next_at>?3),?3+?5) END,?4)",
-        params![channel, notice.kind(), at, held, WINDOW_MS],
+        params![channel, lane, at, held, WINDOW_MS],
     )?;
     let id = c.last_insert_rowid();
     c.execute(
         "UPDATE notifications SET payload=?2 WHERE id=?1",
-        params![id, notice.render(kind, id, project, at)?],
+        params![
+            id,
+            notice.render(if sdk { Kind::Webhook } else { kind }, id, project, at)?
+        ],
     )?;
     Ok(())
 }
@@ -259,10 +264,11 @@ pub struct Due {
 /// several, with links that start at `public_url`.
 pub fn due(c: &Connection, now: Timestamp, public_url: &Url) -> Result<Vec<Due>> {
     let mut q = c.prepare(
-        "SELECT n.id,ch.id,ch.kind,ch.url,ch.secret,n.payload,n.attempts,n.issue IS NOT NULL
+        "SELECT n.id,ch.id,ch.kind,ch.url,ch.secret,n.payload,n.attempts,n.issue IS NOT NULL,n.type='monitor.digest'
          FROM channels ch JOIN notifications n ON n.id=(SELECT id FROM notifications
            WHERE channel_id=ch.id AND sent_at IS NULL AND failed_at IS NULL
-           ORDER BY issue IS NOT NULL AND attempts=0 AND next_at>?1,type='feedback',id LIMIT 1)
+           AND (type<>'monitor.digest' OR (next_at<=?1 AND ch.sdk_next_at<=?1))
+           ORDER BY issue IS NOT NULL AND attempts=0 AND next_at>?1,type='monitor.digest',type='feedback',id LIMIT 1)
          WHERE n.next_at<=?1 ORDER BY n.id",
     )?;
     let rows = q.query_map([now], |r| {
@@ -273,10 +279,11 @@ pub fn due(c: &Connection, now: Timestamp, public_url: &Url) -> Result<Vec<Due>>
             r.get::<_, Option<String>>(4)?,
             r.get::<_, String>(5)?,
             r.get::<_, bool>(7)?,
+            r.get::<_, bool>(8)?,
         ))
     })?;
     rows.map(|row| {
-        let ([id, channel, attempts], kind, url, secret, payload, issue) = row?;
+        let ([id, channel, attempts], kind, url, secret, payload, issue, sdk) = row?;
         let mut due = Due {
             id,
             merged: Vec::new(),
@@ -287,6 +294,9 @@ pub fn due(c: &Connection, now: Timestamp, public_url: &Url) -> Result<Vec<Due>>
         if issue && let Some((digest, merged)) = digest(c, channel, attempts, now)? {
             due.payload = digest.render(kind, public_url)?;
             due.merged = merged;
+        }
+        if sdk {
+            super::monitor_digest::render(c, &mut due, kind, now)?;
         }
         Ok(due)
     })
@@ -374,6 +384,7 @@ pub fn delivered(
 }
 
 fn attempted(c: &Connection, id: i64, at: Timestamp, result: &Result<(), String>) -> Result<()> {
+    super::monitor_digest::attempted(c, id, at)?;
     let error = match result {
         Ok(()) => {
             c.execute(

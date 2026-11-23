@@ -197,3 +197,17 @@ fn logs_count_prints_the_buckets_that_have_logs() {
     );
     std::fs::remove_dir_all(&data).unwrap();
 }
+
+#[test]
+fn slug_help_names_the_public_dsn_authority() {
+    let help = Cli::command()
+        .find_subcommand_mut("monitor")
+        .unwrap()
+        .find_subcommand_mut("add")
+        .unwrap()
+        .render_long_help()
+        .to_string();
+    assert!(help.contains("Anyone with the"));
+    assert!(help.contains("public project DSN can ping a guessable slug"));
+    assert!(help.contains("token-only access"));
+}

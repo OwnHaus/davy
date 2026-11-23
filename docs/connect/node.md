@@ -51,3 +51,26 @@ The last command prints a line with `Error: Davy test error`. If it prints nothi
 ## Logs
 
 To send logs too, add `enableLogs: true` to `Sentry.init` and call `Sentry.logger.info(...)`. For pino, see [logtail.md](logtail.md).
+
+## Cron jobs
+
+A job wrapped in `Sentry.withMonitor` becomes a heartbeat monitor in Davy, with the same incidents and alerts as one made with `davy monitor add --heartbeat`:
+
+```js
+await Sentry.withMonitor('nightly-report', () => buildReport(), {
+  schedule: { type: 'crontab', value: '0 3 * * *' },
+  checkinMargin: 5,
+  maxRuntime: 30,
+  timezone: 'Europe/Prague',
+})
+```
+
+The first check-in with a `schedule` creates the monitor `nightly-report` in the project of the DSN, and a later one with a different schedule updates it. A schedule is a crontab of 5 fields or `{ type: 'interval', value: 2, unit: 'hour' }`. Davy opens an incident when no check-in arrives by the scheduled time plus `checkinMargin` minutes (default 1), when a run does not end within `maxRuntime` minutes (default 30), or when the job throws. The next run that ends well resolves it. `Sentry.captureCheckIn` works the same way for a job that reports its own start and end.
+
+Check-ins can create up to 100 monitors per project, and each monitor takes 6 results a minute. A check-in that Davy refuses, such as one for a slug with no monitor and no schedule, is counted in the `client_reports` table under the category `monitor`, with the reason, for example `davy_unknown_monitor`.
+
+A monitor whose schedule you want to own, so that no check-in changes it, is made from the CLI with a slug. Its check-ins ping it, and their schedules are ignored:
+
+```sh
+sudo runuser -u davy -- davy monitor add my-app backup --heartbeat --every 1d --slug backup --data /var/lib/davy
+```

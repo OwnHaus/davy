@@ -9,6 +9,7 @@ mod digest_tests;
 pub mod mail;
 #[cfg(test)]
 mod mail_tests;
+mod monitor_digest;
 mod notice;
 pub mod store;
 #[cfg(test)]

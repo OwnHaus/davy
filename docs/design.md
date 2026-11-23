@@ -472,7 +472,8 @@ A host name goes through a resolver that keeps only the public addresses DNS ret
 - A channel belongs to one project or to all projects and receives every notice kind for them. Channels are a webhook, a Slack incoming webhook URL or an e-mail address.
 - **Outbox.** When the writer opens a new issue, regresses one, opens or closes an incident, it inserts one `notifications` row per matching channel in the same transaction. A crash cannot lose a notice or send one for a change that did not commit. The body is rendered when the row is stored, so delivery only signs and sends it. A digest is the exception: it is rendered from its rows when they are due. A new issue is noticed once, by the event that created it, and a regression once, by the event that reopened it.
 - **Delivery.** One notifier task looks for due rows every second and sends the oldest unsent alert of each channel, or its oldest feedback when no alert waits, one at a time per channel, so `monitor.down` never arrives after its `monitor.up`. A row waiting for its retry holds back the newer alerts of its channel. Feedback never holds back an alert, and issue rows waiting for their window hold back nothing. A channel stays busy until the writer has stored the result, so one server never sends a row twice in a row. A send has 10 s, carries `User-Agent: Davy/<version>` and follows no redirect, so a receiver cannot bounce a signed body elsewhere and a `3xx` is a failure. A `2xx` marks the row sent. Anything else retries after 30 s, 1, 2, 4 and 8 min, then the row is marked failed and the channel moves on. `last_error` keeps the status (`HTTP 500`) or the connection error, cut to 200 characters and never with the URL, because the URL is a credential. An `https` URL is checked against the operating system's trust store, so a host without root certificates (a bare container image) needs its CA bundle installed. An invalid or expired certificate fails the send. Delivery is at least once, so a row in flight at shutdown is sent again on the next start. Each payload carries its `id` so a receiver can drop a repeat.
-- **Digest.** An issue notice (`issue.new` or `issue.regressed`) waits up to 30 s, so the issues of a broken deploy or of a batch of test events reach a channel as one message, not one each. The first issue notice of a channel opens a window of 30 s, and every issue notice for that channel until it ends joins it, from any project the channel covers. The window does not grow, so a long burst sends one message every 30 s. When it ends, one waiting notice goes out with the body it would have alone, and two or more go out as one digest. Monitor, feedback and test notices never wait and pass the waiting issue notices. Each notice keeps its own row, with its project and issue in the row's `issue` column, so the window survives a restart. A digest's rows are marked together: a failed digest retries as a whole, with the same rows, `id` and `Message-ID`, and the notices of a later window wait behind it. The window is a constant: 30 s holds the burst of one deploy or one test run and still tells a team about a new issue within a minute.
+- **Digest.** An issue notice (`issue.new` or `issue.regressed`) waits up to 30 s, so the issues of a broken deploy or of a batch of test events reach a channel as one message, not one each. The first issue notice of a channel opens a window of 30 s, and every issue notice for that channel until it ends joins it, from any project the channel covers. The window does not grow, so a long burst sends one message every 30 s. When it ends, one waiting notice goes out with the body it would have alone, and two or more go out as one digest. CLI monitor, HTTP monitor, feedback and test notices never wait and pass the waiting issue notices. Each notice keeps its own row, with its project and issue in the row's `issue` column, so the window survives a restart. A digest's rows are marked together: a failed digest retries as a whole, with the same rows, `id` and `Message-ID`, and the notices of a later window wait behind it. The window is a constant: 30 s holds the burst of one deploy or one test run and still tells a team about a new issue within a minute.
+- **SDK monitor digest.** SDK monitor transitions use a separate 100-row outbox budget per channel. Excess SDK transitions increment the channel's dropped counter. They never consume the 100 places for operator monitor and issue alerts. The first SDK transition waits 30 seconds; later transitions join that window. Delivery groups ready SDK rows into one `monitor.digest` message, even for one row. Every attempt, including a failed attempt, starts a persisted 30-second channel cooldown. Operator alerts and due issue digests take priority, so SDK retries cannot hold them back. The resulting SDK send rate is at most two attempts per minute per channel, across all projects it covers. The tests drive 100 flapping monitors, webhook, Slack and email channels, and assert that CLI alerts go out immediately and issues at 30 seconds. A webhook receives `{"id":21,"type":"monitor.digest","notices":[...]}`. Each entry in `notices` has the existing `monitor.down` or `monitor.up` webhook shape, including its own id, time and project. Existing types retain their payloads. Slack and email receive the number of changes and a pointer to `/ui/monitors`. A retry includes ready rows at that attempt; a receiver can deduplicate individual entries by id. This is a bounded notification summary, not an audit stream; incidents remain the source of uptime history.
 - A digest links each issue to its page in the web UI, `<public URL>/ui/issues/<id>`. A webhook gets every issue of the digest, because a receiver may act on each one. The bound on unsent rows keeps that to 100. `id` and `at` are those of the oldest row, and `project` is set when every issue is of one project:
 
 ```json
@@ -976,6 +977,109 @@ session_seen(project_id INTEGER, sid BLOB, flags INTEGER, started INTEGER,
 - `session_seen` holds one row per session counted and drops it 5 days after the session started, so a project holds at most about 6 million rows, the daily cap over the window.
 
 What it cannot stop is someone who sends crashes for a release that exists. The counts are what SDKs claimed, as with client reports.
+
+## Cron check-ins
+
+A cron job instrumented with a Sentry SDK (`Sentry.withMonitor`, `Sentry.captureCheckIn`) sends `check_in` envelope items. Davy maps them onto heartbeat monitors, so the job gets the same incidents and alerts as a job that pings `/api/heartbeat/<token>`. The reference is Sentry's docs (develop.sentry.dev, Check-Ins; docs.sentry.io, Crons). The fixtures in `e2e/fixtures/sentry-node-10-checkins/` and `sentry-node-7-checkins/` are what the SDKs send.
+
+### Wire protocol (what we accept)
+
+```json
+{"check_in_id": "570f34923dae4c8cbd32c19651a1e363", "monitor_slug": "nightly-report", "status": "in_progress",
+ "release": "jobs@1.2.0", "environment": "production",
+ "monitor_config": {"schedule": {"type": "crontab", "value": "0 * * * *"}, "checkin_margin": 2, "max_runtime": 10, "timezone": "Europe/Prague"}}
+{"check_in_id": "570f34923dae4c8cbd32c19651a1e363", "monitor_slug": "nightly-report", "status": "ok", "duration": 0.0000236}
+```
+
+- `status` is `in_progress`, `ok` or `error`. `duration` is in seconds. `schedule` is a crontab of 5 fields or `{"type": "interval", "value": 2, "unit": "hour"}` with unit `minute`, `hour`, `day`, `week`, `month` or `year`. `checkin_margin` and `max_runtime` are minutes. `timezone` is an IANA name.
+- `release`, `environment`, `contexts` and the alert thresholds (`failure_issue_threshold`, `recovery_threshold`) are ignored. One monitor per slug serves every environment.
+- An all-zero, missing or malformed `check_in_id` means "the open run, whichever it is".
+
+### Data shapes
+
+```rust
+struct CheckIn { slug: MonitorSlug, status: Status, id: Option<CheckInId>, duration: Option<Duration>, config: Config }
+enum Status { InProgress, Ok, Error }
+enum Config { Absent, Valid(MonitorConfig), Invalid }          // Invalid still pings a known monitor
+struct MonitorConfig { schedule: Schedule, margin: Duration, max_runtime: Duration }
+
+// The one shape a heartbeat's expectation can take. Stored as every_s, or months and zone, or cron and zone.
+enum Schedule {
+    Every(Duration),                                     // minute, hour, day, week intervals, and CLI heartbeats
+    Months { n: u32, zone: Zone },                       // month and year intervals, calendar months in the zone
+    Cron { spec: Crontab, zone: Zone },
+}
+enum Source { Cli, Sdk }                                 // who owns the monitor's settings
+```
+
+`Crontab` is a parsed 5-field expression: minute, hour, day of month, month, day of week. Each field is `*`, a number, a range `a-b`, a step `*/n` or `a-b/n`, or a comma list of those. Months take `JAN`..`DEC`, days `SUN`..`SAT`, and day 7 is Sunday like 0. `@yearly`, `@annually`, `@monthly`, `@weekly`, `@daily`, `@midnight` and `@hourly` stand for their expressions. When both day fields are restricted, a day matches either one, as in Vixie cron. An expression that can never match, such as `0 0 31 2 *`, is refused when it is parsed. The parser is pure and the schedule computes times without a clock: `Schedule::next(after)` is the first scheduled instant after `after`.
+
+A crontab time that a DST change skips runs at the same offset as before the change (02:30 on the spring day in Europe/Prague is 03:30 CEST), and a time that happens twice runs once, at the first. That is what jiff calls the compatible conversion and what most cron daemons do.
+
+### Monitors from check-ins
+
+- A check-in for a slug that the project has no monitor for creates one when it carries a valid `monitor_config`: a heartbeat monitor named after the slug, owned by `Source::Sdk`, with no token. A later check-in with a config updates the schedule, margin and maximum runtime of an `Sdk` monitor.
+- `davy monitor add <project> <name> --heartbeat --slug <slug>` makes a `Cli` monitor that takes check-ins for that slug. Check-ins ping it but never change it: its expectation stays `--every` and `--grace`, and a `monitor_config` is ignored. An operator who wants senders unable to change a monitor makes it this way.
+- `ok` is a ping, `error` a failure ping, as on the heartbeat route. `in_progress` starts a run and records no check, so it neither raises nor resolves an incident.
+- The expectation after an `ok` or `error` at time `t`: `Every(d)` expects the next by `t + d + margin`, `Months` by `t` plus `n` calendar months in the zone plus margin, and `Cron` by `next(t + margin) + margin`. The `+ margin` inside `next` makes a run that starts up to `margin` early count for that scheduled time, not the one after it. A `Cli` monitor uses its grace as the margin.
+- A run started with `in_progress` must end with `ok` or `error` within `max_runtime`. An `ok` or `error` ends the run when its `check_in_id` is the run's or is absent. The SDKs send a run's `in_progress` and its end at the same moment, so for a short job the end can arrive first: an `in_progress` whose `check_in_id` names the last run that ended is ignored, or it would open a run that never ends. When the run's time is up first, the sweep opens an incident with the reason `run timed out after <n> min`. When the next check-in is not there by the expected time, the reason is `missed check-in`. A `Cli` heartbeat keeps `no ping in time`. Each opens the incident at once, like a late heartbeat, and the next `ok` resolves it.
+- A monitor that has never had a check-in is `Pending` and expects nothing, as a heartbeat does before its first ping. An `in_progress` as the first check-in starts the run clock, so a first run that never ends is noticed. The one race this leaves: when a new monitor's first run ends before its `in_progress` arrives, the end has no monitor yet and is dropped as `davy_unknown_monitor`, and the run times out once. A job that runs longer than one request to Davy does not hit it.
+- A monitor does not go down twice for one miss: after the sweep opens the incident, the monitor stays down without a new expectation until the next check-in.
+- A failure check-in (`error`) with a duration stores it as the check's `ms`. An `ok` without a duration takes the time since its run started.
+
+### Bounds
+
+The DSN is public, so anyone who has it can send check-ins. Every count and size has a limit, and every refused check-in is counted in `client_reports` (see [What else the SDKs send](#what-else-the-sdks-send)) with the category `monitor` and a reason from the table below, so what the SDKs dropped and what Davy refused are in one table that `davy sql` and the `sql` MCP tool read. Nothing is logged per drop, so a flood cannot fill the log. The config is read as a JSON tree, and the request's memory budget pays for that tree while it is read, as it does for an event.
+
+| Input | Limit | Over the limit (`reason`) |
+|---|---|---|
+| Check-in item | 100 KiB (Sentry's limit) | dropped (`davy_too_large`) |
+| Check-in items per envelope | 1, the first | later ones are ignored, like extra events |
+| Item that is not a check-in object, or has no valid status | | dropped (`davy_invalid`) |
+| Slug | 1 to 50 characters of `A-Z a-z 0-9 _ -`, stored in lower case | dropped (`davy_bad_slug`) |
+| Unknown slug without a valid config | | dropped (`davy_unknown_monitor`, or `davy_bad_config` when a config came but was invalid) |
+| Monitors created from check-ins | 100 per project | dropped (`davy_monitor_cap`) |
+| Interval | 1 minute to 1 year (12 months) | config invalid |
+| Crontab | 5 fields, at most 200 bytes, values in range | config invalid |
+| Time zone | an IANA name in the bundled database, at most 64 bytes; absent is UTC | config invalid |
+| `checkin_margin` | 0 to 1,440 minutes, default 1 | clamped |
+| `max_runtime` | 1 to 10,080 minutes (7 days, Sentry's cap), default 30 | clamped |
+| `duration` | 0 to 7 days | the duration is ignored |
+| All check-ins per monitor, including `in_progress` | 6 a minute (Sentry's limit) | dropped (`davy_rate`) |
+
+Starts share the six-per-minute budget with completions. A CLI monitor ignores starts.
+A repeated start never resets an open run's clock. SDK config updates are
+authorized by the public DSN: a sender can silence a job by changing its
+schedule. The monitor list exposes `config_changes`, counting actual config
+changes after creation. Use a CLI monitor to fix the schedule, and omit
+`--slug` for token-only access.
+
+Unreadable stored schedules are flagged as `invalid stored schedule` in
+the monitor list and their check-ins are dropped as `davy_bad_config`.
+They do not break listing or check-ins for other monitors.
+
+Resolved incidents and sent or permanently failed notifications expire after
+30 days, matching checks retention. Each sweep deletes at most 1,000 rows
+from each class. Open incidents and incidents overlapping the 30-day uptime
+window remain. Starts expire after one minute, at most 1,000 per sweep.
+Incidents are not capped per day: dropping spans would inflate uptime.
+The six-per-minute check-in budget bounds their creation instead.
+Monitors created by check-ins do not count toward the 1,000 monitors of
+`davy monitor add`, so a sender cannot use up the room an operator needs.
+
+### Storage
+
+Migration 12 adds to `monitors`: `slug` (unique per project when set), `source` (`cli` or `sdk`, existing rows `cli`), `months`, `cron`, `zone`, `max_runtime_s`, `run_id`, `run_started_at`, `ended_run_id` and `due_at`. A `CHECK` makes the schedule one of the three forms: `every_s > 0` with neither `cron` nor `months`, or `months` with a zone, or `cron` with a zone. `due_at` is the instant the sweep compares with the clock, for every heartbeat: a ping sets it, so the sweep is one indexed comparison and the schedule is computed once per check-in, not per sweep. Existing heartbeats get it from their last ping.
+
+### Time zones
+
+A zone name from a sender goes through jiff's bundled copy of the IANA database (`tzdb-bundle-always`), not the host's `/usr/share/zoneinfo`. The binary is static and may run in a container without zoneinfo, and the same name must mean the same rules on every host. The bundle adds about 230 KB: 207 KB of zone data and the table of names.
+
+### Not in this feature
+
+- The HTTP check-in route (`/api/<project>/cron/<slug>/<key>/`). The SDKs send envelopes, and a shell script can ping a heartbeat. It adds a route with its own credential tests, so it waits for someone who asks.
+- `--cron` for `davy monitor add`. A `Cli` monitor expects a ping every `--every`.
+- Failure and recovery thresholds, monitor owners and per-environment monitors.
 
 ## Hardening
 

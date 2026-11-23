@@ -1,0 +1,3 @@
+{"sent_at":"2026-11-23T16:11:57.747Z","sdk":{"name":"sentry.javascript.node","version":"10.78.0"},"trace":{"environment":"production","release":"jobs@1.2.0","public_key":"tok123","trace_id":"889a5582eb784b4e97614c2b5d00df52"}}
+{"type":"check_in"}
+{"check_in_id":"4c6f05a21b444656a4ae604d69d3e1f1","monitor_slug":"import-feed","status":"in_progress","release":"jobs@1.2.0","environment":"production","monitor_config":{"schedule":{"type":"interval","value":2,"unit":"hour"}},"contexts":{"trace":{"trace_id":"889a5582eb784b4e97614c2b5d00df52","span_id":"92bf8ac93d736789"}}}

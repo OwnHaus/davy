@@ -16,8 +16,8 @@ fn monitored(now: i64) -> (Ui, String) {
     s.db.execute_batch(&format!(
         "INSERT INTO monitors(id,project_id,name,kind,url,expect,every_s,timeout_s,state,last_check_at,created_at)
          VALUES (1,1,'checkout','http','https://ann:pw@shop.example/health?token=s3cret#top','status',60,10,'down',{now},{created});
-         INSERT INTO monitors(id,project_id,name,kind,heartbeat_token,every_s,grace_s,state,last_ping_at,created_at)
-         VALUES (2,1,'backup','heartbeat','hb-secret-token',3600,300,'up',1700000000000,{created});",
+         INSERT INTO monitors(id,project_id,name,kind,heartbeat_token,every_s,grace_s,state,last_ping_at,due_at,created_at)
+         VALUES (2,1,'backup','heartbeat','hb-secret-token',3600,300,'up',1700000000000,1700003900000,{created});",
         created = now - 10 * DAY,
     ))
     .unwrap();
@@ -88,6 +88,9 @@ async fn the_monitor_list_shows_each_hour_of_checks_and_hides_credentials() {
     assert_eq!(heartbeat["kind"], "heartbeat");
     assert_eq!(heartbeat["url"], Value::Null);
     assert_eq!(heartbeat["last_heard"], "2023-11-14T22:13:20Z");
+    assert_eq!(heartbeat["schedule"], "every 1h");
+    assert_eq!(heartbeat["slug"], Value::Null);
+    assert_eq!(monitors[1]["schedule"], Value::Null);
     let text = r.body.to_string();
     for secret in ["s3cret", "ann:pw", "hb-secret-token"] {
         assert!(!text.contains(secret), "{secret} is in {text}");

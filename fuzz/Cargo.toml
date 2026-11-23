@@ -41,6 +41,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "check_in"
+path = "fuzz_targets/check_in.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "logtail_json"
 path = "fuzz_targets/logtail_json.rs"
 test = false

@@ -210,9 +210,9 @@ function Row({ row, from, now, cur, onCursor, onOpen }: RowProps) {
         </div>
       </td>
       <td title={row.url ?? undefined}>
-        {row.url ? <span className="fn">{shown(row.url)}</span> : <span className="dim">heartbeat, a ping every {every(row.every_s)}</span>}
+        {row.url ? <span className="fn">{shown(row.url)}</span> : <span className="dim">{heartbeatTarget(row)}</span>}
       </td>
-      <td className="r">{every(row.every_s)}</td>
+      <td className="r">{row.every_s > 0 ? every(row.every_s) : "calendar"}</td>
       <td className="r rel" title={row.last_heard ? stamp(row.last_heard) : undefined}>
         {row.last_heard ? ago(row.last_heard, now) : "never"}
       </td>
@@ -221,4 +221,10 @@ function Row({ row, from, now, cur, onCursor, onOpen }: RowProps) {
       </td>
     </tr>
   );
+}
+
+/** A heartbeat pinged by URL, or one that takes Sentry SDK check-ins. */
+function heartbeatTarget(row: MonitorRow): string {
+  if (row.slug === null) return `heartbeat, a ping every ${every(row.every_s)}`;
+  return `check-ins for ${shown(row.slug)}, ${row.schedule === null ? "no schedule" : shown(row.schedule)}`;
 }

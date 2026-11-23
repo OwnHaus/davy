@@ -151,6 +151,7 @@ fn an_http_monitor_is_held_to_its_limits() {
 fn a_heartbeat_monitor_is_held_to_its_limits() {
     let heartbeat = |grace| Target::Heartbeat {
         grace: Duration::from_secs(grace),
+        slug: None,
     };
     assert_eq!(every("Backup", heartbeat(300), None), Ok(3600));
     assert_eq!(every("Backup", heartbeat(0), Some(60)), Ok(60));
@@ -182,6 +183,7 @@ fn monitors_are_added_listed_and_removed() {
         "Backup",
         Target::Heartbeat {
             grace: Duration::from_secs(300),
+            slug: None,
         },
         None,
     )
@@ -294,6 +296,8 @@ fn a_reason_reads_as_a_short_phrase() {
         (Reason::NotPublic, "address is not public"),
         (Reason::Late, "no ping in time"),
         (Reason::Failed, "failure ping"),
+        (Reason::Missed, "missed check-in"),
+        (Reason::TimedOut(30), "run timed out after 30 min"),
     ] {
         assert_eq!(reason.to_string(), text);
     }
@@ -302,6 +306,7 @@ fn a_reason_reads_as_a_short_phrase() {
 fn backup(c: &rusqlite::Connection) -> i64 {
     let target = Target::Heartbeat {
         grace: Duration::from_secs(300),
+        slug: None,
     };
     let m = NewMonitor::new("Backup", target, None).unwrap();
     store::add(c, 1, &m, 0).unwrap().id

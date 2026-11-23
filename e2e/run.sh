@@ -80,6 +80,35 @@ assert json.loads((p/'sessions.json').read_text())['rows']==[['e2e@2','e2e',6,3,
 assert json.loads((p/'users.json').read_text())['rows']==[[2],[6]],(p/'users.json').read_text()
 print('release health: verified 6 sessions, 3 errored, 1 crashed, 2 users of whom 1 crashed')
 PY
+for SDK in sentry-node-7 sentry-node-10; do
+  P="checkins-${SDK#sentry-node-}"
+  DSN=$("$BIN" project create "$P" --data "$SCRATCH/data" --public-url "$URL")
+  "$BIN" monitor add "$P" backup --heartbeat --every 1d --slug backup --data "$SCRATCH/data" > /dev/null
+  node "$ROOT/e2e/send-checkins.mjs" "$SDK" "$DSN"
+  "$BIN" sql --data "$SCRATCH/data" --json "SELECT r.reason, r.category, r.quantity FROM client_reports r JOIN projects p ON p.id = r.project_id WHERE p.slug = '$P' AND r.category = 'monitor'" > "$SCRATCH/dropped.json"
+  "$BIN" sql --data "$SCRATCH/data" --json "SELECT m.slug, c.ok, c.ms, c.reason FROM checks c JOIN monitors m ON m.id = c.monitor_id JOIN projects p ON p.id = m.project_id WHERE p.slug = '$P' ORDER BY m.slug" > "$SCRATCH/checks.json"
+  "$BIN" monitor list --data "$SCRATCH/data" --json > "$SCRATCH/monitors.json"
+  python3 - "$SCRATCH" "$P" <<'PY'
+import json,pathlib,sys
+p,project=pathlib.Path(sys.argv[1]),sys.argv[2]
+monitors={m['slug']:m for m in json.loads((p/'monitors.json').read_text()) if m['project']==project}
+got={s:(m['source'],m['schedule'],m['state'],m['open_since'] is not None) for s,m in monitors.items()}
+assert got=={
+  'backup':('cli','every 1d','up',False),
+  'billing-sync':('sdk','every 30m','up',False),
+  'import-feed':('sdk','every 2h','down',True),
+  'nightly-report':('sdk','cron 0 * * * *, Europe/Prague','up',False),
+},got
+assert monitors['nightly-report']['target']=='check-in nightly-report',monitors['nightly-report']
+assert monitors['backup']['target'].startswith('/api/heartbeat/'),monitors['backup']
+checks=json.loads((p/'checks.json').read_text())['rows']
+by={slug:(ok,reason) for slug,ok,ms,reason in checks}
+assert by=={'backup':(1,None),'billing-sync':(1,None),'import-feed':(0,'failure ping'),'nightly-report':(1,None)},checks
+assert [ms for slug,ok,ms,reason in checks if slug=='billing-sync']==[12500],checks
+assert json.loads((p/'dropped.json').read_text())['rows']==[['davy_unknown_monitor','monitor',1]],(p/'dropped.json').read_text()
+print(project+': verified 3 monitors made by check-ins, the CLI monitor unchanged, a failure ping and an unknown slug counted')
+PY
+done
 DSN=$("$BIN" project create logs --data "$SCRATCH/data" --public-url "$URL")
 KEY="${DSN#*://}"; KEY="${KEY%%@*}"
 node "$ROOT/e2e/send-logs.mjs" "$DSN"

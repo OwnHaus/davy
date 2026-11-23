@@ -5,7 +5,7 @@ use super::{Refusal, issues::Query, issues::Reads, json};
 use crate::{
     event::Timestamp,
     issues::{HOURS, hours_from},
-    monitor::State as Health,
+    monitor::{State as Health, checkin_store::schedule_at},
     time::{now_ms, rfc3339_ms},
 };
 use anyhow::Result;
@@ -65,7 +65,14 @@ pub struct MonitorRow {
     /// URL is one, so it has none.
     pub url: Option<String>,
     pub state: Health,
+    /// How often an HTTP monitor is checked, or the interval of a
+    /// heartbeat; 0 for a heartbeat on a calendar schedule.
     pub every_s: i64,
+    /// What a heartbeat expects, such as `every 1h` or
+    /// `cron 0 * * * *, Europe/Prague`.
+    pub schedule: Option<String>,
+    /// The slug of a heartbeat that takes Sentry SDK check-ins.
+    pub slug: Option<String>,
     /// When Davy last checked an HTTP monitor, or a heartbeat last pinged.
     pub last_heard: Option<String>,
     /// When the open incident started.
@@ -114,7 +121,9 @@ pub struct MonitorDetail {
     pub timeout_s: Option<i64>,
     pub grace_s: Option<i64>,
     pub last_ping: Option<String>,
-    /// When a heartbeat that gets no ping opens an incident.
+    /// When a heartbeat that gets no ping opens an incident: after its
+    /// interval and grace, at its next scheduled time plus margin, or at the
+    /// end of the maximum runtime of an open run. None before its first ping.
     pub expected_by: Option<String>,
     /// The [`NEWEST`] newest incidents.
     pub incidents: Vec<Incident>,
@@ -143,7 +152,7 @@ async fn detail(
 
 const COLUMNS: &str = "SELECT m.id,p.slug,m.name,m.kind,m.url,m.state,m.every_s,m.last_check_at,
     (SELECT started_at FROM incidents i WHERE i.monitor_id=m.id AND i.resolved_at IS NULL),
-    m.timeout_s,m.grace_s,m.last_ping_at,m.created_at
+    m.timeout_s,m.grace_s,m.last_ping_at,m.created_at,m.every_s,m.months,m.cron,m.zone,m.slug,m.due_at
     FROM monitors m JOIN projects p ON p.id=m.project_id";
 
 /// A monitor row and the columns only its own page shows.
@@ -153,6 +162,7 @@ struct Stored {
     grace_s: Option<i64>,
     last_ping_at: Option<Timestamp>,
     created_at: Timestamp,
+    due_at: Option<Timestamp>,
 }
 
 fn stored(r: &Row<'_>) -> rusqlite::Result<Stored> {
@@ -170,6 +180,11 @@ fn stored(r: &Row<'_>) -> rusqlite::Result<Stored> {
             url: url.as_deref().and_then(shown_url),
             state: r.get(5)?,
             every_s: r.get(6)?,
+            schedule: match kind {
+                MonitorKind::Http => None,
+                MonitorKind::Heartbeat => Some(schedule_at(r, 13)?.to_string()),
+            },
+            slug: r.get(17)?,
             last_heard: match kind {
                 MonitorKind::Http => r.get::<_, Option<Timestamp>>(7)?,
                 MonitorKind::Heartbeat => r.get::<_, Option<Timestamp>>(11)?,
@@ -182,6 +197,7 @@ fn stored(r: &Row<'_>) -> rusqlite::Result<Stored> {
         grace_s: r.get(10)?,
         last_ping_at: r.get(11)?,
         created_at: r.get(12)?,
+        due_at: r.get(18)?,
     })
 }
 
@@ -353,11 +369,6 @@ pub fn one(c: &Connection, id: i64, now: Timestamp) -> Result<Option<MonitorDeta
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
-    let heartbeat = s.row.kind == MonitorKind::Heartbeat;
-    let expected_by = heartbeat.then(|| {
-        let last = s.last_ping_at.unwrap_or(s.created_at);
-        last + (s.row.every_s + s.grace_s.unwrap_or(0)) * 1000
-    });
     Ok(Some(MonitorDetail {
         hours_from: rfc3339_ms(from),
         uptime_7d: uptime(7),
@@ -365,7 +376,7 @@ pub fn one(c: &Connection, id: i64, now: Timestamp) -> Result<Option<MonitorDeta
         timeout_s: s.timeout_s,
         grace_s: s.grace_s,
         last_ping: s.last_ping_at.map(rfc3339_ms),
-        expected_by: expected_by.map(rfc3339_ms),
+        expected_by: s.due_at.map(rfc3339_ms),
         incidents,
         checks,
         monitor: s.row,

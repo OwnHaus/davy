@@ -178,8 +178,12 @@ test("a person signs in, finds the SDK's issue, reads its frame and resolves it"
     expect((await page.request.post(`${URL}${pingPath}`)).status()).toBe(200);
     await views.getByRole("link", { name: "Uptime" }).click();
     await expect(page).toHaveURL(`${URL}/ui/monitors`);
-    await expect(page.locator("tr.row")).toHaveCount(2);
-    const nightly = page.locator("tr.row", { hasText: "nightly" });
+    const logsRows = page.locator("tr.row").filter({ has: page.locator(".pj", { hasText: /^logs$/ }) });
+    await expect(logsRows).toHaveCount(2);
+    const checkIns = page.locator("tr.row", { hasText: "check-ins for nightly-report" });
+    await expect(checkIns).toHaveCount(2);
+    await expect(checkIns.first()).toContainText("cron 0 * * * *, Europe/Prague");
+    const nightly = logsRows.filter({ hasText: "nightly" });
     await expect(nightly).toContainText("heartbeat, a ping every 1h");
     await expect(nightly.locator(".stt")).toHaveText("up");
     await both("uptime");

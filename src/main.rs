@@ -218,6 +218,11 @@ struct MonitorAdd {
     /// How late a ping may be before the monitor is down. Default 5m.
     #[arg(long, value_parser = duration, conflicts_with = "url")]
     grace: Option<Duration>,
+    /// Also take Sentry SDK check-ins for this monitor slug. They ping the
+    /// monitor but never change its --every or --grace. Anyone with the
+    /// public project DSN can ping a guessable slug; keep it unset for token-only access.
+    #[arg(long, conflicts_with = "url")]
+    slug: Option<String>,
 }
 #[derive(Subcommand)]
 enum Channel {
@@ -413,6 +418,14 @@ fn run_monitor(out: &mut impl Write, command: Monitor) -> anyhow::Result<()> {
                 },
                 None => Target::Heartbeat {
                     grace: args.grace.unwrap_or(monitor::DEFAULT_GRACE),
+                    slug: args
+                        .slug
+                        .map(|s| {
+                            monitor::checkin::MonitorSlug::parse(&s).ok_or_else(|| {
+                                anyhow::anyhow!("a slug is 1 to 50 characters of A-Z a-z 0-9 _ -")
+                            })
+                        })
+                        .transpose()?,
                 },
             };
             let m = NewMonitor::new(&args.name, target, args.every).map_err(anyhow::Error::msg)?;

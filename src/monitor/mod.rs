@@ -4,6 +4,16 @@
 pub mod check;
 #[cfg(test)]
 mod check_tests;
+pub mod checkin;
+pub mod checkin_store;
+#[cfg(test)]
+mod checkin_store_tests;
+#[cfg(test)]
+mod checkin_tests;
+mod retention;
+pub mod schedule;
+#[cfg(test)]
+mod schedule_tests;
 pub mod store;
 #[cfg(test)]
 mod tests;
@@ -76,6 +86,7 @@ pub enum Expect {
 }
 
 /// What a monitor watches. A heartbeat's token is made when it is stored.
+/// A heartbeat with a slug also takes the SDK check-ins for that slug.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
     Http {
@@ -85,6 +96,7 @@ pub enum Target {
     },
     Heartbeat {
         grace: Duration,
+        slug: Option<checkin::MonitorSlug>,
     },
 }
 
@@ -126,7 +138,7 @@ impl NewMonitor {
                 }
                 every
             }
-            Target::Heartbeat { grace } => {
+            Target::Heartbeat { grace, .. } => {
                 let every = every.unwrap_or(Duration::from_hours(1));
                 if !within(every, HEARTBEAT_EVERY) {
                     return Err("a heartbeat expects a ping every 1m to 31d".into());
@@ -158,6 +170,11 @@ pub enum Reason {
     Late,
     /// A heartbeat got a ping to `/fail`.
     Failed,
+    /// A monitor that takes check-ins got none by its expected time.
+    Missed,
+    /// A run started by an `in_progress` check-in did not end within its
+    /// maximum runtime, in minutes.
+    TimedOut(u64),
 }
 
 impl std::fmt::Display for Reason {
@@ -171,6 +188,8 @@ impl std::fmt::Display for Reason {
             Self::NotPublic => f.write_str("address is not public"),
             Self::Late => f.write_str("no ping in time"),
             Self::Failed => f.write_str("failure ping"),
+            Self::Missed => f.write_str("missed check-in"),
+            Self::TimedOut(minutes) => write!(f, "run timed out after {minutes} min"),
         }
     }
 }
@@ -179,7 +198,10 @@ impl Reason {
     /// A heartbeat's grace period is its confirmation, so its failures open an
     /// incident without a second check.
     fn confirmed(&self) -> bool {
-        matches!(self, Self::Late | Self::Failed)
+        matches!(
+            self,
+            Self::Late | Self::Failed | Self::Missed | Self::TimedOut(_)
+        )
     }
 }
 
@@ -234,3 +256,7 @@ impl State {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "security_tests.rs"]
+mod security_tests;

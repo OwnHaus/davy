@@ -7,6 +7,7 @@ One `cargo fuzz` target per parser that reads untrusted bytes, as `SECURITY.md` 
 | `envelope` | `Envelope::parse`, then each item as an event and its grouping |
 | `event` | `ErrorEvent::parse` on JSON, then its grouping |
 | `sentry_log` | the Sentry `log` item |
+| `check_in` | the Sentry `check_in` item and its schedule, stored and read back, and bytes as a crontab |
 | `logtail_json` | Logtail JSON and NDJSON bodies |
 | `logtail_msgpack` | Logtail msgpack bodies |
 | `otlp_protobuf`, `otlp_json` | OTLP log export requests |

@@ -38,6 +38,7 @@ Out of scope:
 - Secrets that the sending app puts into events. Scrubbing belongs in the SDK's `beforeSend`.
 - Made-up user feedback and client reports. A browser app's DSN is public, so anyone can send feedback in its name and claim counts of dropped events. Davy keeps at most 1,000 feedback messages and 100 report reasons per project and day, and treats both as what a client said, not as fact.
 - Made-up sessions. The same public DSN lets anyone send sessions and lower a release's crash-free rate. Davy counts at most 1,000,000 sessions and 100 release and environment pairs per project, per day and per hour, and `release_health` reports what SDKs claimed.
+- Made-up cron check-ins. Anyone with a project's DSN can create monitors in it, open and resolve their incidents and so send alerts. Davy lets check-ins create at most 100 monitors per project, takes 6 results per monitor and minute, and never lets them change a monitor made with `davy monitor add`. Send a job's check-ins to a project whose DSN no browser app holds.
 
 ## Running it safely
 
@@ -60,7 +61,7 @@ What runs when. Items marked planned have a milestone in `docs/design.md`.
 
 **Before release 0.1.0 (planned).**
 
-- Fuzz targets with `cargo fuzz` for every parser: the envelope, the event, Logtail JSON and msgpack, OTLP protobuf and JSON, the Sentry log item, artifact bundles and source maps. Each runs for at least an hour before the release, and CI runs each for a few minutes every night. A crash becomes a fixture and a unit test.
+- Fuzz targets with `cargo fuzz` for every parser: the envelope, the event, Logtail JSON and msgpack, OTLP protobuf and JSON, the Sentry log and check-in items, crontabs, artifact bundles and source maps. Each runs for at least an hour before the release, and CI runs each for a few minutes every night. A crash becomes a fixture and a unit test.
 - An internal penetration test of a running server, against OWASP ASVS 5.0 level 2 and the OWASP API Security Top 10, with a written report. Open findings stay private until fixed. Fixed ones are summarized under Security in the changelog.
 - Signed releases with SBOM and build provenance, as described in `RELEASING.md`.
 
@@ -76,3 +77,9 @@ What runs when. Items marked planned have a milestone in `docs/design.md`.
 - A bug bounty program opens once the cloud has paying customers.
 
 **EU Cyber Resilience Act.** Selling Davy under a commercial license makes the binary a product with digital elements under the CRA. The duty to report an actively exploited vulnerability to ENISA applies from 11 September 2026. The full duties, among them an SBOM, vulnerability handling and security updates for the support period, apply from 11 December 2027. The release pipeline and this program are built to meet them. A lawyer confirms the scope before the first commercial sale.
+
+## Public DSNs and cron monitors
+
+Anyone holding a public project DSN can create SDK cron monitors and change their schedules, including extending them enough to silence missed-run alerts. The monitor list exposes a config change count for investigation. Create a CLI heartbeat to fix its schedule. With `--slug`, anyone with the DSN can ping or fail that heartbeat by guessing the slug. Its down and up notices are operator alerts that skip the SDK digest, so a sender who guessed the slug can make up to six a minute reach the channel. Omit the slug to require the random heartbeat token. A DSN holder can also take a slug first by sending a check-in for it, and `davy monitor add --slug` then refuses that slug. Remove the SDK monitor with `davy monitor remove` and pick a slug that is hard to guess, or use the token.
+
+Check-ins, including starts, share six accepted requests per minute per monitor. Starts cannot extend an open run or change a CLI expectation, and a run left open on a monitor that is down ends at its maximum runtime. Resolved incident and completed notification history expires after 30 days; open incidents remain.

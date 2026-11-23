@@ -138,7 +138,21 @@ export type MonitorRow = { id: number, project: string, name: string, kind: Moni
  * login may hold a credential, so they stay out, and a heartbeat's ping
  * URL is one, so it has none.
  */
-url: string | null, state: State, every_s: number, 
+url: string | null, state: State, 
+/**
+ * How often an HTTP monitor is checked, or the interval of a
+ * heartbeat; 0 for a heartbeat on a calendar schedule.
+ */
+every_s: number, 
+/**
+ * What a heartbeat expects, such as `every 1h` or
+ * `cron 0 * * * *, Europe/Prague`.
+ */
+schedule: string | null, 
+/**
+ * The slug of a heartbeat that takes Sentry SDK check-ins.
+ */
+slug: string | null, 
 /**
  * When Davy last checked an HTTP monitor, or a heartbeat last pinged.
  */
@@ -170,7 +184,9 @@ export type MonitorDetail = { monitor: MonitorRow, hours_from: string,
  */
 uptime_7d: number | null, uptime_30d: number | null, timeout_s: number | null, grace_s: number | null, last_ping: string | null, 
 /**
- * When a heartbeat that gets no ping opens an incident.
+ * When a heartbeat that gets no ping opens an incident: after its
+ * interval and grace, at its next scheduled time plus margin, or at the
+ * end of the maximum runtime of an open run. None before its first ping.
  */
 expected_by: string | null, 
 /**

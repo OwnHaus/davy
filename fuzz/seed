@@ -46,6 +46,8 @@ for p in envelopes:
             put("event", f"{name}-{i}", payload)
         elif kind == "log":
             put("sentry_log", f"{name}-{i}", payload)
+        elif kind == "check_in":
+            put("check_in", f"{name}-{i}", payload)
 
 for p in sorted(fixtures.glob("otlp-proto/*.body")):
     put("otlp_protobuf", p.stem, p.read_bytes())
@@ -53,6 +55,8 @@ for p in sorted(fixtures.glob("otlp-json/*.body")):
     put("otlp_json", p.stem, p.read_bytes())
 for p in sorted(fixtures.glob("logtail-pino/*.body")):
     put("logtail_msgpack", p.stem, gzip.decompress(p.read_bytes()))
+for i, spec in enumerate(["0 3 * * 1-5", "*/15 9-17 1,15 JAN-JUN MON", "30 2 * 3 SUN", "@monthly", "0 0 29 2 *"]):
+    put("check_in", f"crontab-{i}", spec.encode())
 put("logtail_json", "object", b'{"dt":"2026-11-20T10:00:00Z","level":"error","message":"boom"}')
 put("logtail_json", "array", b'[{"message":"a","level":"info"},{"msg":"b","nested":{"k":[1,2]}}]')
 put("logtail_json", "ndjson", b'{"message":"a"}\n{"message":"b","level":"warn"}\n')
