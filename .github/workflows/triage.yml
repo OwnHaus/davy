@@ -1,0 +1,41 @@
+name: triage
+
+# Feature ideas start as issues (CONTRIBUTING.md, "What to send"). This job
+# asks the author of a feat pull request that links no issue to open one.
+# pull_request_target lets it comment on pull requests from forks. It never
+# checks out or runs their code, and reads the title and body only as data
+# through the environment.
+on:
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
+    types: [opened, reopened, edited]
+
+permissions: {}
+
+jobs:
+  feature-needs-issue:
+    if: github.event.pull_request.user.login != github.repository_owner && github.event.pull_request.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Ask for an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$TITLE" | grep -qiE '^feat(\(|!|:)'; then exit 0; fi
+          if printf '%s' "$BODY" | grep -qE '(#[0-9]+|github\.com/[^ ]+/issues/[0-9]+)'; then exit 0; fi
+          marker='<!-- davy-triage: feature-needs-issue -->'
+          if gh pr view "$NUMBER" --repo "$REPO" --json comments --jq '.comments[].body' | grep -qF "$marker"; then exit 0; fi
+          cat > "$RUNNER_TEMP/comment.md" <<EOF
+          $marker
+          Thanks for the pull request. Davy takes new features as issues first, so the idea can be agreed on before code is written. See "What to send" in CONTRIBUTING.md.
+
+          Could you open a "Feature idea" issue that says what you were trying to do, and link it here? If this fixes something that broke for you, say what you were doing when it broke and retitle the pull request \`fix(...)\`.
+          EOF
+          gh pr comment "$NUMBER" --repo "$REPO" --body-file "$RUNNER_TEMP/comment.md"
