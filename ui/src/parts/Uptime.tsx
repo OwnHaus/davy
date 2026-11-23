@@ -1,7 +1,8 @@
 // A monitor's last 24 hours: one bar per hour. A bar's height is the mean
-// response of the hour's checks when all passed. An hour with a failed check
-// is a full hatched bar, so it reads without color, and an hour with no check
-// is a stub on the baseline.
+// response of the hour's checks. The top of the bar is red for the share of
+// the hour's checks that failed. An hour an incident
+// was open in is a full hatched bar, so it reads without color, and an hour
+// with no check is a stub on the baseline.
 
 import { useRef, useState, type KeyboardEvent } from "react";
 import type { Hour } from "../api/types";
@@ -42,9 +43,26 @@ export function responseSummary(hourly: Hour[], from: string): string {
   return `${checks} ${plural(checks, "check")} in the last 24 hours, ${failed} failed${slow ? `, ${slow}` : ""}`;
 }
 
-/** `, 1 failed, mean 151 ms`, after the count in the readout. */
+/** ` failed, mean 151 ms, incident open`, after `1 of 60 checks` in the readout. */
 function also(h: Hour): string {
-  return `${h.failed ? `, ${h.failed} failed` : ""}${h.ms === null ? "" : `, mean ${h.ms} ms`}`;
+  return `${h.failed ? " failed" : ""}${h.ms === null ? "" : `, mean ${h.ms} ms`}${h.down ? ", incident open" : ""}`;
+}
+
+/** The hour's bar: hatched when down, else mean response with the failed share red at its top. */
+function Mark({ h, x, w, height, max }: { h: Hour; x: number; w: number; height: number; max: number }) {
+  if (h.down) return <path className="u-fail" d={bar(x, w, height, height)} fill="url(#hatch)" />;
+  if (h.checks === 0) return <rect className="u-none" x={x} y={height - 2} width={w} height={2} rx={1} />;
+  const all = h.ms === null ? height / 2 : Math.max(3, (h.ms / max) * height);
+  if (h.failed === 0) return <path className="u-ok" d={bar(x, w, all, height)} />;
+  let part = Math.min(all, Math.max(2, Math.round((h.failed / h.checks) * all)));
+  const ok = all - part - 1;
+  if (ok < 1) part = all;
+  return (
+    <>
+      {ok >= 1 ? <rect className="u-ok" x={x} y={height - ok} width={w} height={ok} /> : null}
+      <path className="u-part" d={bar(x, w, part, height - all + part)} />
+    </>
+  );
 }
 
 export function ResponseStrip({ hourly, from, size }: { hourly: Hour[]; from: string; size: "sm" | "lg" }) {
@@ -75,19 +93,18 @@ export function ResponseStrip({ hourly, from, size }: { hourly: Hour[]; from: st
 
   const cells = hourly.map((h, i) => {
     const x = i * (bw + GAP);
-    let mark;
-    if (h.checks === 0) {
-      mark = <rect className="u-none" x={x} y={height - 2} width={bw} height={2} rx={1} />;
-    } else if (h.failed > 0) {
-      mark = <path className="u-fail" d={bar(x, bw, height, height)} fill="url(#hatch)" />;
-    } else {
-      const bh = h.ms === null ? height / 2 : Math.max(3, (h.ms / max) * height);
-      mark = <path className="u-ok" d={bar(x, bw, bh, height)} />;
-    }
     return (
-      <g key={i} className="cell" data-start={start + i * HOUR} data-n={h.checks} data-unit="check" data-also={also(h)}>
+      <g
+        key={i}
+        className="cell"
+        data-start={start + i * HOUR}
+        data-n={h.checks}
+        data-part={h.failed || undefined}
+        data-unit="check"
+        data-also={also(h)}
+      >
         <rect className="hit" x={x - 1} y={0} width={bw + 2} height={height} />
-        {mark}
+        <Mark h={h} x={x} w={bw} height={height} max={max} />
       </g>
     );
   });
@@ -134,6 +151,7 @@ export function ResponseTable({ hourly, from, label }: { hourly: Hour[]; from: s
           <th scope="col">Checks</th>
           <th scope="col">Failed</th>
           <th scope="col">Mean response</th>
+          <th scope="col">Incident</th>
         </tr>
       </thead>
       <tbody>
@@ -143,6 +161,7 @@ export function ResponseTable({ hourly, from, label }: { hourly: Hour[]; from: s
             <td>{h.checks}</td>
             <td>{h.failed}</td>
             <td>{h.ms === null ? "none" : `${h.ms} ms`}</td>
+            <td>{h.down ? "open" : "none"}</td>
           </tr>
         ))}
       </tbody>
@@ -159,13 +178,20 @@ export function UptimeLegend() {
           <svg width="10" height="14" aria-hidden="true">
             <path className="u-ok" d={bar(0, 10, 9, 14)} />
           </svg>
-          All passed, height is mean response
+          Height is mean response
+        </li>
+        <li>
+          <svg width="10" height="14" aria-hidden="true">
+            <rect className="u-ok" x={0} y={8} width={10} height={6} />
+            <path className="u-part" d={bar(0, 10, 4, 7)} />
+          </svg>
+          Red top is the failed share
         </li>
         <li>
           <svg width="10" height="14" aria-hidden="true">
             <path className="u-fail" d={bar(0, 10, 14, 14)} fill="url(#hatch)" />
           </svg>
-          A check failed
+          An incident was open
         </li>
         <li>
           <svg width="10" height="14" aria-hidden="true">
@@ -178,7 +204,7 @@ export function UptimeLegend() {
   );
 }
 
-/** The hatch a failed hour is filled with. Render once, in the shell. */
+/** The hatch a down hour is filled with. Render once, in the shell. */
 export function Hatch() {
   return (
     <svg className="defs" width="0" height="0" aria-hidden="true">

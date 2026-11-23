@@ -125,7 +125,12 @@ export type Hour = { checks: number, failed: number,
 /**
  * The mean response time of the checks that have one, in milliseconds.
  */
-ms: number | null, };
+ms: number | null, 
+/**
+ * An incident was open during some of the hour. A failed check alone
+ * does not make an hour down, as it does not lower the uptime.
+ */
+down: boolean, };
 
 export type MonitorRow = { id: number, project: string, name: string, kind: MonitorKind, 
 /**

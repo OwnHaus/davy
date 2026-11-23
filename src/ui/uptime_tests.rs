@@ -74,8 +74,14 @@ async fn the_monitor_list_shows_each_hour_of_checks_and_hides_credentials() {
     assert_eq!(http["open_since"], time::rfc3339_ms(now - HOUR));
     let hourly = http["hourly"].as_array().unwrap();
     assert_eq!(hourly.len(), 24);
-    assert_eq!(hourly[23], json!({"checks": 3, "failed": 1, "ms": 151}));
-    assert_eq!(hourly[21], json!({"checks": 1, "failed": 0, "ms": 90}));
+    assert_eq!(
+        hourly[23],
+        json!({"checks": 3, "failed": 1, "ms": 151, "down": true})
+    );
+    assert_eq!(
+        hourly[21],
+        json!({"checks": 1, "failed": 0, "ms": 90, "down": false})
+    );
     let checked: u64 = hourly.iter().map(|h| h["checks"].as_u64().unwrap()).sum();
     assert_eq!(checked, 4, "the check two days ago is outside the chart");
     let heartbeat = &monitors[0];
@@ -154,6 +160,33 @@ async fn one_monitor_has_its_uptime_incidents_and_newest_checks() {
             s.get(uri, &[("cookie", &cookie)]).await.status,
             status,
             "{uri}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_hour_is_down_only_when_an_incident_was_open_in_it() {
+    let now = time::now_ms();
+    let hour = |i: i64| now.div_euclid(HOUR) * HOUR - (23 - i) * HOUR;
+    let (s, cookie) = monitored(now);
+    for i in 0..60 {
+        check(&s, hour(5) + i * 60_000, i != 30, Some(100));
+    }
+    incident(&s, hour(9) + 59 * 60_000, Some(hour(11) + 60_000));
+    incident(&s, now - 3 * DAY, Some(hour(1) + 1));
+    incident(&s, hour(22) + 1, None);
+    let one = s.get("/ui/api/monitors/1", &[("cookie", &cookie)]).await;
+    let list = s.get("/ui/api/monitors", &[("cookie", &cookie)]).await;
+    for hourly in [
+        &one.body["monitor"]["hourly"],
+        &list.body["monitors"][1]["hourly"],
+    ] {
+        let down: Vec<usize> = (0..24).filter(|&i| hourly[i]["down"] == true).collect();
+        assert_eq!(down, [0, 1, 9, 10, 11, 22, 23]);
+        assert_eq!(
+            hourly[5],
+            json!({"checks": 60, "failed": 1, "ms": 100, "down": false}),
+            "one failed check without an incident is not down"
         );
     }
 }

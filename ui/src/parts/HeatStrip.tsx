@@ -175,7 +175,8 @@ type Cell = HTMLElement | SVGElement;
 /**
  * Shows the readout over `cell`. A cell says its count in `data-n`, and its
  * time in `data-when` or as the hour that starts at `data-start`. `data-also`
- * follows the count, such as `, 1 failed`.
+ * follows the count, such as `, mean 151 ms`. A cell that counts a part of
+ * `data-n` says it in `data-part`, which reads `1 of 60`.
  */
 export function readout(cell: Cell, x?: number) {
   const el = tip();
@@ -184,7 +185,8 @@ export function readout(cell: Cell, x?: number) {
   const unit = cell.dataset.unit ?? "event";
   const [when, count, word] = el.children;
   if (when) when.textContent = cell.dataset.when ?? hourRange(Number(cell.dataset.start));
-  if (count) count.textContent = n.toLocaleString("en-US");
+  const part = cell.dataset.part;
+  if (count) count.textContent = `${part ? `${Number(part).toLocaleString("en-US")} of ` : ""}${n.toLocaleString("en-US")}`;
   if (word) word.textContent = ` ${n === 1 ? unit : `${unit}s`}${cell.dataset.also ?? ""}`;
   el.classList.add("show");
   const r = cell.getBoundingClientRect();

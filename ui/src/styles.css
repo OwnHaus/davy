@@ -427,6 +427,7 @@ table.iss th.lead, table.iss td.lead { padding-left: 14px; }
 .ustrip .cell.on .hit { stroke: var(--ink); stroke-width: 2; }
 .u-ok { fill: var(--h3); }
 .u-none { fill: var(--btn-hover); }
+.u-part { fill: var(--lv-error); }
 .hb { fill: var(--down-soft); }
 .hs { fill: var(--lv-error); }
 .defs { position: absolute; width: 0; height: 0; overflow: hidden; }

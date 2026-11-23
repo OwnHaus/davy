@@ -48,6 +48,9 @@ pub struct Hour {
     pub failed: u32,
     /// The mean response time of the checks that have one, in milliseconds.
     pub ms: Option<u32>,
+    /// An incident was open during some of the hour. A failed check alone
+    /// does not make an hour down, as it does not lower the uptime.
+    pub down: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -200,16 +203,60 @@ pub fn page(c: &Connection, now: Timestamp) -> Result<MonitorPage> {
         .query_map([], stored)?
         .map(|s| s.map(|s| s.row))
         .collect::<rusqlite::Result<_>>()?;
-    let at: HashMap<i64, usize> = rows.iter().enumerate().map(|(i, r)| (r.id, i)).collect();
-    for (monitor, hour, cell) in hours(c, None, from)? {
-        if let Some(row) = at.get(&monitor).and_then(|i| rows.get_mut(*i)) {
-            place(&mut row.hourly, hour, from, cell);
+    let mut hourly = hourly(c, None, from, now)?;
+    for row in &mut rows {
+        if let Some(cells) = hourly.remove(&row.id) {
+            row.hourly = cells;
         }
     }
     Ok(MonitorPage {
         monitors: rows,
         hours_from: rfc3339_ms(from),
     })
+}
+
+/// The [`HOURS`] hours from `from` of one monitor or of all, by monitor.
+/// A monitor with no check and no incident in them is not in the map.
+fn hourly(
+    c: &Connection,
+    monitor: Option<i64>,
+    from: Timestamp,
+    now: Timestamp,
+) -> Result<HashMap<i64, Vec<Hour>>> {
+    let mut by = HashMap::new();
+    for (m, hour, cell) in hours(c, monitor, from)? {
+        place(cells(&mut by, m), hour, from, cell);
+    }
+    let mut q = c.prepare(
+        "SELECT monitor_id, started_at, resolved_at FROM incidents
+         WHERE (?2 IS NULL OR monitor_id=?2) AND (resolved_at IS NULL OR resolved_at>?1)",
+    )?;
+    let spans = q.query_map(rusqlite::params![from, monitor], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    })?;
+    for span in spans {
+        let (m, started, resolved): (i64, Timestamp, Option<Timestamp>) = span?;
+        let cells = cells(&mut by, m);
+        // An incident resolved in the millisecond it opened still covers
+        // that millisecond.
+        let end = resolved.unwrap_or(now).min(now).max(started + 1);
+        let mut at = started.max(from);
+        while at < end {
+            if let Some(cell) = usize::try_from((at - from) / HOUR_MS)
+                .ok()
+                .and_then(|i| cells.get_mut(i))
+            {
+                cell.down = true;
+            }
+            at = (at.div_euclid(HOUR_MS) + 1) * HOUR_MS;
+        }
+    }
+    Ok(by)
+}
+
+fn cells(by: &mut HashMap<i64, Vec<Hour>>, monitor: i64) -> &mut Vec<Hour> {
+    by.entry(monitor)
+        .or_insert_with(|| vec![Hour::default(); HOURS])
 }
 
 /// The checks per hour since `from`, of one monitor or of all.
@@ -231,6 +278,7 @@ fn hours(
                 checks: r.get(2)?,
                 failed: r.get(3)?,
                 ms: mean.map(rounded),
+                down: false,
             },
         ))
     })?;
@@ -263,8 +311,8 @@ pub fn one(c: &Connection, id: i64, now: Timestamp) -> Result<Option<MonitorDeta
         return Ok(None);
     };
     let from = hours_from(now);
-    for (_, hour, cell) in hours(c, Some(id), from)? {
-        place(&mut s.row.hourly, hour, from, cell);
+    if let Some(cells) = hourly(c, Some(id), from, now)?.remove(&id) {
+        s.row.hourly = cells;
     }
     let spans: Vec<(Timestamp, Option<Timestamp>)> = c
         .prepare(
