@@ -26,6 +26,8 @@ enum Command {
     /// Prepares a data directory, an admin token and a service file, and
     /// prints the next commands as JSON. Safe to run again.
     Setup(install::setup::Args),
+    /// Creates or reuses a project and prints SDK connection instructions as JSON.
+    Connect(davy::connect::Args),
     /// Checks a running install. Each check that is not ok prints its fix. The
     /// exit code is 1 when a check fails.
     Doctor(install::doctor::Args),
@@ -149,6 +151,11 @@ fn level(s: &str) -> Result<LogLevel, String> {
 }
 #[derive(Subcommand)]
 enum Project {
+    /// Prints project IDs and slugs as JSON.
+    List {
+        #[arg(long)]
+        data: PathBuf,
+    },
     /// Creates a project and prints its DSN. For an existing slug it prints
     /// the DSN it already has.
     Create {
@@ -288,6 +295,10 @@ async fn main() -> anyhow::Result<()> {
     let mut out = std::io::stdout();
     let parsed = Cli::from_arg_matches(&cli().get_matches()).unwrap_or_else(|e| e.exit());
     match parsed.command {
+        Command::Connect(args) => davy::connect::run(&mut out.lock(), &args)?,
+        Command::Project {
+            command: Project::List { data },
+        } => davy::connect::list(&mut out.lock(), &data)?,
         Command::Serve(args) => davy::serve::run(args).await?,
         Command::SystemdUnit(args) => install::unit::run(&mut out.lock(), &args)?,
         Command::Setup(args) => install::setup::run(&mut out.lock(), &args)?,

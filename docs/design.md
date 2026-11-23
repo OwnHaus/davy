@@ -285,6 +285,8 @@ A coding agent should get from "there is an error" to a fix without a human copy
 | `sql` | `query` | `{columns, rows, truncated}`. One read-only statement. |
 | `search_logs` | `query?`, `project?`, `since?`, `until?`, `level?`, `limit?` | Hits as `davy logs --json` prints them, oldest first. When more match than `limit`, the newest win. |
 | `count_logs` | `query?`, `project?`, `since?`, `until?`, `level?` | `{total, step, buckets}` as `davy logs --count --json` prints it. At most 200 buckets of a round width, and only those with logs, as `[start, count]`. |
+| `connect_project` | `slug`, `sdk?` | Existing project DSN, SDK instructions and test command. New projects require local CLI access. |
+| `project_status` | `slug` | Event count, last event time (ms), issue count and last log time (ns). |
 | `release_health` | `project?`, `since?` | Per release and environment, newest first, at most 50: `sessions`, `errored`, `crashed`, `abnormal`, `crash_free_sessions`, `users`, `crashed_users`, `crash_free_users`, `first_hour`, `last_hour`. `since` defaults to `7d`. |
 | `issue_context` | `issue_id` | The issue, its latest event made compact, its recent events and releases, and the logs around the latest event. |
 | `mark_fixed` | `issue_id`, `release?` | A sentence that says which release the fix is expected in. |
@@ -350,7 +352,7 @@ The same library functions back three commands, for agents that run shell comman
 - Unit tests with literal values: `on_event` for every row of the regression rule; `sql` returns exact rows, refuses a write, refuses two statements, cuts at 500 rows, decompresses with `payload_json`, and interrupts a runaway recursive query; compaction of the `sentry-node-10` error fixture gives the exact exception, frames and context lines.
 - A store test resolves an issue in a release and asserts that an event from an older release keeps it resolved and one from a newer release reopens it.
 - HTTP contract tests: `/mcp` is 401 without the token or with a wrong one and 403 for a `Host` or `Origin` it does not serve; with the right one `tools/list` and `tools/call` of `sql` and `mark_fixed` answer. Without a configured token `serve` does not merge the MCP router, so there is no route to test.
-- `e2e/run.sh` connects with the official MCP TypeScript client (`@modelcontextprotocol/sdk`) over Streamable HTTP with the bearer token, lists the eight tools, calls `issue_context` on an issue the Sentry SDKs created and asserts the exception type and an in-app frame, finds a log with `search_logs` and counts it with `count_logs`, calls `mark_fixed` and reads the status back with `sql`.
+- `e2e/run.sh` connects with the official MCP TypeScript client (`@modelcontextprotocol/sdk`) over Streamable HTTP with the bearer token, lists the ten tools, calls `issue_context` on an issue the Sentry SDKs created and asserts the exception type and an in-app frame, finds a log with `search_logs` and counts it with `count_logs`, calls `mark_fixed` and reads the status back with `sql`.
 - `scripts/check` passes.
 
 ## Milestone 5: source maps
@@ -1048,3 +1050,27 @@ These are fine for one team on its own server and must change before tenants sha
 ## Log storage (decided by benchmark)
 
 Logs go into Tantivy, one index per day, documents stored zstd-compressed. At 10M rows it took 0.67× the raw size on disk against 1.80× for SQLite FTS5, and counted by level in 4.2 ms against 98 ms. Numbers, method and tradeoffs are in `docs/storage-benchmark.md`.
+
+## Connect a new app
+
+`davy connect SLUG --data DATA [--sdk SDK] [--local]` prints a JSON object
+with `project: {id, slug, dsn}`, `supported_sdks`, and, when an SDK is named,
+`sdk: {package, install, init, dsn_location}` and `test_event` (a POSIX shell
+command posting an error without an SDK). Retrying reuses the project key.
+SDK names are android, rust, go, node, python, dotnet and browser.
+`project list --data DATA` prints JSON objects with id and slug.
+
+Public DSNs use setup.json's public URL. Local DSNs use HTTP and the saved
+listener's port and address family: wildcard binds become loopback; a
+non-loopback specific bind is refused because it does not listen on loopback.
+The CLI requires saved settings; serve flag overrides must also be saved with
+setup before using CLI connect. MCP uses the running server's public URL.
+
+MCP keeps its existing authority: `connect_project(slug, sdk?)` only reads an
+existing project. A missing project names the local CLI command to create it.
+It cannot mint ingest keys. `project_status(slug)` returns `event_count`,
+`last_event_time`, `issue_count` and `last_log_time`, with RFC 3339 times
+that are null before the first record. The event count and time come from
+the issues index, since `events` has no index by project, so they count
+events retention has deleted too. Logs become visible after the log writer commits. The two tools bring the
+MCP tool count to ten. No schema migration is needed.

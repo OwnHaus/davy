@@ -6,6 +6,10 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 
 ### Added
 
+- Connect an app with `davy connect` JSON SDK instructions and a test-event command; list projects with `davy project list`.
+
+### Added
+
 - Release health. Davy counts the sessions the Sentry SDKs send, per release, environment and hour, and the `release_health` MCP tool returns crash-free sessions and users per release, newest first. Browser and mobile SDKs send a session per visit, server SDKs count requests. Each session counts once however many updates its SDK sends, users are stored as a hash of the SDK's user id, and the counts are kept 90 days. Davy counts at most 1,000,000 sessions per project and day, because the DSN of a browser app is public.
 - `count_logs`, an MCP tool that counts the logs matching the filters of `search_logs` per time bucket, so an agent sees how often something happens and since when without reading the logs. The CLI has the same as `davy logs --count`.
 - User feedback from the Sentry SDKs' feedback widget, `Sentry.captureFeedback` and the older `user_report` item. `issue_context` shows the newest 10 messages about an issue, and the `user_feedback` table holds all of them. Davy keeps up to 1,000 per project and day, because the DSN of a browser app is public.
