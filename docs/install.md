@@ -36,7 +36,7 @@ gh attestation verify "$FILE" --repo dominikzabcik/davy
 
 If either check fails, stop and tell the person. Do not run the file.
 
-Until the first release is out, build from source instead (needs Rust): `git clone https://github.com/dominikzabcik/davy && cd davy && cargo build --release`, then use `target/release/davy` as the file.
+For a machine without a release build, build from source instead (needs Rust, Node and pnpm): `git clone https://github.com/dominikzabcik/davy && cd davy && scripts/ui && cargo build --release`, then use `target/release/davy` as the file.
 
 ## 2. Put it on the path
 

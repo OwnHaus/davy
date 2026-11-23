@@ -6,33 +6,36 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 
 ## 0.1.0 (2026-11-23)
 
+The first release. One binary takes errors from the Sentry SDKs and logs from Logtail shippers and OpenTelemetry, checks uptime, sends alerts, serves a web UI for one team and gives coding agents MCP tools. Install it with [docs/install.md](docs/install.md) or the Docker quick start in the [README](README.md).
+
 ### Added
 
-- Error ingest from the Sentry SDKs through the envelope and `/store/` routes, grouped into issues that reopen on a regression in the fix release or a newer one.
-- Log ingest from Logtail shippers (JSON and msgpack), OTLP/HTTP and the Sentry `log` item, with full-text search kept per UTC day and a retention in days.
-- Source map upload from `sentry-cli` and symbolication of minified stack frames by debug ID.
-- An MCP server for coding agents with the tools `schema`, `sql`, `search_logs`, `issue_context` and `mark_fixed`, behind an admin token from `DAVY_TOKEN`.
-- HTTP uptime monitors with status and keyword checks, and heartbeat monitors for cron jobs with a failure ping.
-- Alerts for new issues, regressions and monitor incidents to signed webhooks, Slack and e-mail over SMTP, with retries.
-- The admin token and the SMTP URL can come from files named by `DAVY_TOKEN_FILE` and `DAVY_SMTP_URL_FILE`, the way systemd credentials and container secrets hand them over.
-- `davy setup` prepares a machine in one command: a private data directory, a random admin token in `DATA/token`, its settings in `DATA/setup.json` and a launchd job when asked. It prints the next commands as JSON and can run again safely.
-- `davy systemd-unit --data DIR --user USER` prints a hardened systemd unit for `sudo tee`. It holds nothing from the data directory, so the service user cannot change what root installs. The command `davy setup` prints writes the unit only when generating it worked, so a failed run leaves an installed unit as it was.
-- `davy serve --data DIR` takes the address, the public URL and the sender from `DIR/setup.json`, and the admin token and SMTP URL from `DIR/token` and `DIR/smtp-url`, when they are not given.
-- The systemd unit waits until the server listens (`Type=notify`), so `systemctl restart davy` returns only when Davy answers.
-- `davy doctor` checks a running install: permissions of the data directory and token, TLS, that the server answers and that its MCP endpoint takes the token, the SMTP server and free disk space. Every check that is not ok prints the command that fixes it, and `--json` gives the same for an agent. Control characters in what an SMTP server answers are printed as `�`, so the reply cannot write to the terminal.
-- `davy mcp-config --client claude-code|codex|cursor` prints the MCP config for that client. It reads the token from `DAVY_TOKEN`, so the file can be committed, and refuses a plain `http` URL unless its host is a loopback address such as `127.0.0.1`. The name `localhost` does not count, since a resolver can send it elsewhere.
-- The MCP tool `submit_feedback` lets an agent report a tool that was missing, wrong or needed a workaround. `davy feedback` lists the reports, and a channel added with `--feedback` receives each one. Davy sends them nowhere else, and at most 5 wait unsent per channel. They have places of their own and go after every waiting alert, so they neither push out nor delay one.
-- `davy project create` takes the public URL from `davy setup` and prints the existing DSN when the project is already there, so it can run again safely.
-- An install guide for coding agents in `docs/install.md`, one page per SDK in `docs/connect/` and an index in `llms.txt`.
-- The CLI commands `project`, `issues`, `event`, `logs`, `sql`, `context`, `resolve`, `monitor` and `channel`.
-- The web UI's issue API under `/ui/api/`: the issue list with filters, sorts, cursors and 24-hour counts, an issue with its events, the view of one event with every list cut to a limit, the logs around an event, and a status change of up to 500 issues at once that applies to all or none. The list answers in under 30 ms at the 95th percentile with 100,000 issues, most cases under 10 ms, from two covering indexes, a trigram index of titles and culprits, and a table of each issue's environments and releases. The first start after upgrading builds them, about 3 s for 100,000 issues.
-- The web UI's log search under `/ui/api/logs`: 100 logs per page newest first with a cursor that pages back without repeating logs of the same nanosecond, the logs newer than a time for live, and `/ui/api/logs/histogram` with the matches in at most 200 round buckets, exact to the nanosecond. With 10 million logs a page answers in under 35 ms and a histogram of the whole day in under 50 ms at the 95th percentile. At most 8 searches run at once, so open tabs cannot take every core from ingest.
-- The web UI at `/ui/`: log in, or set a password from the link `davy user add` prints, then triage issues from the keyboard in a list with a 24-hour strip per issue and an inspector, and read an issue's events with their stack traces, breadcrumbs, context and the logs around them. Resolve, resolve in a release, ignore and reopen work on one issue or many. It follows the system's light or dark setting and is served compressed with Brotli.
-- The Logs page in the web UI: search with the query syntax of `davy logs`, filter by range, project and level, and zoom by dragging across a histogram of the matches. A row opens to every attribute, and one button searches for an attribute's value. Live shows new logs every 2 seconds while the tab is visible. `j` and `k` move, `/` searches, `l` turns live on and off.
-- The Uptime, Alerts, Projects, Setup and Account pages in the web UI. Uptime lists the monitors with the response times of the last 24 hours, and a monitor's page adds its 7 and 30 day uptime, incidents and checks. Alerts shows the channels and every notification with its delivery, tries and last error. Projects shows the server's endpoints, each project's DSN and key with copy buttons, and the code for each SDK. Setup shows which install steps Davy has seen happen and checks again every 2 seconds, and a new server opens on it until the first error arrives. Account changes the password and logs out every other session.
-- Release downloads: static Linux binaries for x86_64 and aarch64 and macOS binaries for both architectures, each with a CycloneDX SBOM, build provenance and `SHA256SUMS`, and a signed multi-arch image `ghcr.io/dominikzabcik/davy` on distroless as a non-root user. `RELEASING.md` shows how to verify them.
+- **Errors.** Ingest from the Sentry SDKs through the envelope and `/store/` routes. Events group into issues, and a fixed issue reopens only when the error comes back in the fix release or a newer one.
+- **Source maps.** `sentry-cli` uploads maps as it would to Sentry, and minified frames turn back into source by debug ID.
+- **Logs.** Ingest from Logtail shippers (JSON and msgpack), OTLP/HTTP and Sentry's `log` item. Full-text search per UTC day, kept 30 days by default (`--log-retention-days`).
+- **Uptime.** HTTP monitors with status and keyword checks, and heartbeats for cron jobs with a failure ping.
+- **Alerts.** New issues, regressions and monitor incidents go to signed webhooks, Slack and e-mail over SMTP, with retries. Never one notice per event.
+- **Agents.** An MCP server at `/mcp` with `schema`, `sql`, `search_logs`, `issue_context`, `mark_fixed` and `submit_feedback`, behind the admin token. `davy mcp-config` prints the config for Claude Code, Codex and Cursor. `davy feedback` lists what agents reported.
+- **Web UI** at `/ui/`, for the people `davy user add` invites:
+  - Issues: triage from the keyboard, a 24-hour strip per issue, resolve, ignore and reopen one issue or many.
+  - An issue's events with stack traces, breadcrumbs, context and the logs around them.
+  - Logs: search, filter by range, project and level, zoom on the histogram, live tail.
+  - Uptime, Alerts with every delivery and its last error, Projects with each DSN and the code per SDK, Setup with the install steps Davy has seen, Account.
+  - Light and dark, following the system.
+- **Install.** `davy setup` prepares the data directory, the admin token and a launchd job or systemd unit in one command and can run again safely. `davy doctor` checks a running install and prints the fix for each problem, also as `--json`. `docs/install.md` is written for a coding agent to follow, with one page per SDK in `docs/connect/` and an index in `llms.txt`.
+- **CLI.** `project`, `user`, `issues`, `event`, `context`, `resolve`, `logs`, `sql`, `monitor`, `channel` and `feedback`, each with `--json` where it prints data.
+- **Downloads.** Static Linux binaries for x86_64 and aarch64, macOS binaries for Apple silicon and Intel, and the multi-arch image `ghcr.io/dominikzabcik/davy` on distroless as a non-root user. Each binary has a CycloneDX SBOM and build provenance, and the image is signed. [RELEASING.md](RELEASING.md) shows how to verify them.
+
+### Performance
+
+Measured on the release build:
+
+- The issue list answers in under 30 ms at the 95th percentile with 100,000 issues.
+- A page of logs answers in under 35 ms and a histogram of a whole day in under 50 ms at the 95th percentile with 10 million logs.
+- When the ingest queue is full Davy answers 429 and the SDKs back off, and UI writes leave half of each write batch to ingest.
 
 ### Security
 
-- An internal penetration test before the release found one high, two medium, seven low and six informational findings. The high and both mediums are fixed. A security read of the fixes by a second model found one high, five medium and one low finding. Five are fixed, one is partly fixed with the rest accepted, and one, slow envelopes from clients without a key, is accepted as the reverse proxy's job. A third read of those fixes found two high and two medium findings. Three are fixed and one is partly fixed. Source maps are now priced before they parse: one parse may take at most 256 MiB, and the cache of parsed builds is bounded by bytes as well as by count. `docs/security/pentest-0.1.0.md` lists what became of each finding.
-- An internal penetration test of the web UI found one medium, three low and seven informational findings. Slow login bodies no longer refuse other logins, logins wait up to 3 seconds for a hash slot instead of failing at once, and paging back through logs no longer reads the logs it skips. A new password may not be one of the 3,000 most common, the login backoff counts users apart from made-up e-mails, so a flood of them no longer resets a user's count, Davy creates its files readable by its own user only, and a Brotli copy is served only as an encoding. A security read of the fixes by a second model found three medium and three low findings, among them that the first backoff fix did not hold. Five are fixed and one is partly fixed: UI writes now leave half of each writer batch to ingest, and the body of a status change must arrive within 5 seconds. A third read found no critical or high finding. A login in its backoff wait is now refused before it takes a place in the hash queue, and paging back through more than 10,000 logs at one nanosecond no longer stops. `docs/security/pentest-ui-0.1.0.md` lists what became of each finding.
+- An internal penetration test of the server found 1 high, 2 medium, 7 low and 6 informational findings. Two security reads of the fixes by other models followed. Every high is fixed. [The report](docs/security/pentest-0.1.0.md) lists each finding and what became of it.
+- An internal penetration test of the web UI found 1 medium, 3 low and 7 informational findings, with two reads of the fixes after it. [The report](docs/security/pentest-ui-0.1.0.md) lists each finding and what became of it.
+- Davy creates its files readable by its own user only, keeps the admin token and SMTP URL in files (`DAVY_TOKEN_FILE`, `DAVY_SMTP_URL_FILE`) and refuses a plain `http` MCP URL unless the host is a loopback address.

@@ -23,8 +23,8 @@ This document fixes the data shapes and the order of work.
 5. **Source maps**: the `sentry-cli` upload endpoints and debug ID lookup (done).
 6. Uptime checks and alerts: HTTP monitors, heartbeats, webhooks, Slack and e-mail (done).
 7. **Install by prompt** (done). A person pastes one prompt into a coding agent, and the agent installs Davy, connects the app and checks that errors arrive. See "Milestone 7" below.
-8. **Release 0.1.0**: signed releases with SBOM and provenance, fuzzing, an internal penetration test. See "Milestone 8" below.
-9. **Web UI for one team.** *Next.* See "Milestone 9" below.
+8. **Release 0.1.0**: signed releases with SBOM and provenance, fuzzing, an internal penetration test (done). See "Milestone 8" below.
+9. **Web UI for one team** (done). See "Milestone 9" below.
 10. Managed cloud (closed, see "License and open core"). Outside users come in only after the external penetration test in `SECURITY.md`.
 
 How code reaches `main` is in `CONTRIBUTING.md`, how a version ships in `RELEASING.md`, and what security work runs when in `SECURITY.md`.
