@@ -238,6 +238,7 @@ pub fn search(data: &Path, q: &LogQuery) -> anyhow::Result<Vec<LogHit>>   // new
 ```
 
 - Opens only the day indexes that overlap `since..until`, newest first, sorts by the `ts` fast field and stops once it has `limit` hits.
+- Keeps each day it opened open for the next search (`logs/days.rs`). Opening a day costs about 1 ms, so a rare needle over 90 days took 86 to 101 ms before and 2.3 to 6.0 ms after (measured, `docs/storage-benchmark.md`). A day is reopened when the size, mtime or inode of its `meta.json` changed, because every commit replaces that file, so only today's day reopens. At most 400 days stay open, least recently searched closed first, so the memory maps stay well under Linux's 65,530 per process. Each segment caches 8 decompressed doc store blocks instead of Tantivy's 100. Retention drops a day from the cache before it moves the directory to the trash.
 - `text` goes through Tantivy's `QueryParser` with `message` and `values` as default fields, or `message` and `attributes` in a day without `values`. So `timeout`, `r-3fa9c2d1`, `"connection reset"`, boolean queries such as `timeout AND db` and `attributes.user_id:42` all work. A parse error is shown to the user, not a panic.
 - The CLI reads the indexes from its own process while the server writes. The writer's segment cleanup can delete a file just as the CLI opens it. Retry the search once on a missing-file error. The MCP server in milestone 4 runs inside the server process and avoids this.
 

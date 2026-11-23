@@ -89,6 +89,38 @@ Sustained means 1M rows over accept time plus commit time. Disk is 125 MB for 26
 
 **A bug found by this benchmark.** In the first 100k run the server accepted every batch, but nothing was ever committed, and the process ignored SIGTERM. A stack sample showed the log writer blocked in `IndexWriter::add_document`, with no Tantivy indexing thread left. When a Tantivy indexing worker fails, `prepare_commit` returns the error before it starts a new worker, and `add_document` then blocks on the full channel. The writer now drops a failing `IndexWriter` and opens a new one, and `store_recovers_when_a_day_index_breaks` reproduces the failure by deleting the day directory under an open writer. Without the fix that test hangs. What made the worker fail in that run is unknown, because its server log was lost. None of the eight later runs hit it.
 
+## Agent search over 90 days
+
+Measured on 2026-11-23 with `bench/agent-search.sh`, the defaults: 18M logs spread evenly over 90 days in 4 projects (`examples/fill_logs.rs`), 20,000 issues with 20 events each over the same days, 20 timed calls per case after one first call. It calls the MCP tools over HTTP the way an agent does. The data was just written, so the OS still cached it, and a first call measures opening the day indexes, not a cold disk. The shared dev Mac had a load average of 9 to 10 throughout.
+
+The store held 3.3 GB of logs in 91 day indexes, at most 31 files per day, and 80 MB of SQLite. Writing the logs took 204.6 s, 88k rows/s.
+
+The last column is the same case before day indexes stayed open between searches (the run before, same data and machine).
+
+| Tool | Case | Rows | First | p50 | p95 | p50 before |
+|---|---|---|---|---|---|---|
+| `search_logs` | last hour, newest 100 | 100 | 3.7 ms | 1.6 ms | 1.8 ms | 2.3 ms |
+| `search_logs` | last 24 h, `timeout` | 100 | 5.9 ms | 1.9 ms | 2.1 ms | 3.3 ms |
+| `search_logs` | last 7 days, errors | 100 | 2.7 ms | 2.0 ms | 2.1 ms | 3.4 ms |
+| `search_logs` | 30 days, two attributes | 100 | 3.5 ms | 2.3 ms | 2.5 ms | 3.7 ms |
+| `search_logs` | one old day, 80 days back | 100 | 3.0 ms | 1.5 ms | 1.7 ms | 3.5 ms |
+| `search_logs` | 90 days, one request ID logged 60 days ago | 1 | 792.3 ms | 2.3 ms | 2.9 ms | 87.9 ms |
+| `search_logs` | 90 days, one trace ID logged 50 days ago | 1 | 216.6 ms | 2.7 ms | 3.0 ms | 92.6 ms |
+| `search_logs` | 90 days, a rare hostname part | 260 | 184.5 ms | 6.0 ms | 6.9 ms | 101.3 ms |
+| `search_logs` | 90 days, no hit | 0 | 19.8 ms | 2.6 ms | 2.8 ms | 86.3 ms |
+| `sql` | open issues by last seen | 20 | 0.8 ms | 0.7 ms | 0.8 ms | 0.6 ms |
+| `sql` | issue titles `LIKE '%timed out%'` | 50 | 0.7 ms | 0.7 ms | 0.7 ms | 0.7 ms |
+| `sql` | one issue, events per day | 15 | 1.0 ms | 0.6 ms | 0.7 ms | 0.6 ms |
+| `sql` | events per day over all 400k | 91 | 95.4 ms | 95.9 ms | 101.3 ms | 102.8 ms |
+| `sql` | events per release in production | 100 | 97.8 ms | 95.8 ms | 99.9 ms | 102.8 ms |
+| `issue_context` | newest unresolved issue | 1 | 1.2 ms | 0.8 ms | 1.0 ms | 1.7 ms |
+
+- **Every log search answers in under 7 ms at p50 and p95, over any window of the 90 days.** A query that fills its limit from recent days opens few days, because search walks the days newest first and stops at `limit` hits. A rare needle has to search all 91 days, which now costs at most about 0.03 ms per day (inferred from 2.3 ms for 91 days, HTTP included).
+- **Opening a day costs about 1 ms, so the server keeps days open.** Before, every search opened each day it touched, and a needle over 90 days took 86 to 101 ms at p50. Now a day stays open until its `meta.json` changes, which only today's day does, and the needle takes 2.3 to 6.0 ms. The first search after the server starts still opens every day it needs: 184 to 792 ms for the 90-day cases. The no-hit case came after them and opened nothing new (19.8 ms). The rows of the rare hostname part differ between runs (281 and 260) because the hostname is picked at random per run.
+- **At most 400 days stay open**, the least recently searched closed first. Each open day maps its files, at most 31 here, so 400 days stay near 12,400 maps, under Linux's default limit of 65,530 per process (`vm.max_map_count`).
+- **The benchmark found a search bug.** In the first run the request ID and hostname cases returned 0 rows. A bare word was parsed against the `attributes` JSON field, which matches only its root path, so no attribute value was ever found by a bare word. The `values` field fixed it (see the log storage section in `docs/design.md`). It costs 32% more disk (2.5 GB before, 3.3 GB after) and 21% more write time (172.1 s before, 208.9 s after). Query latency stayed within noise of the first run (measured).
+- **SQL over 400k events is about 100 ms when it reads every event.** The events table has no index for a group by day or release, and an agent asking that once per triage is fine. Indexed lookups stay under 1 ms.
+
 ## Rerun
 
 ```sh
@@ -97,4 +129,5 @@ cargo build --release
 ./run.sh > results.txt 2>&1      # about 45 minutes; data goes to ../../.scratch/bench-data
 cd ../..
 bash bench/load-logs.sh 1000000 1000 4   # logs ingest through the server, about 1 minute
+bash bench/agent-search.sh               # agent search over 90 days, about 5 minutes and 4 GB of scratch
 ```

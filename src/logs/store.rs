@@ -3,7 +3,7 @@ use crate::{
     heap,
     time::{day_of, now_ns, rfc3339},
 };
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use jiff::civil::Date;
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -20,8 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tantivy::{
-    Document, Index, IndexReader, IndexSettings, IndexWriter, Order, ReloadPolicy, Searcher,
-    TantivyDocument, Term,
+    Document, Index, IndexSettings, IndexWriter, Order, TantivyDocument, Term,
     collector::TopDocs,
     query::{BooleanQuery, Occur, Query, QueryParser, RangeQuery, TermQuery},
     schema::{FAST, Field, INDEXED, IndexRecordOption, STORED, STRING, Schema, TEXT},
@@ -285,6 +284,7 @@ impl State {
                 continue;
             }
             self.close(day)?;
+            days::forget(&self.root, day);
             std::fs::create_dir_all(&trash)?;
             let target = trash.join(format!("{name}-{}", now_ns()));
             std::fs::rename(entry.path(), &target)?;
@@ -497,42 +497,7 @@ fn retrying<T>(f: impl Fn() -> Result<T>) -> Result<T> {
     })
 }
 
-/// The searcher of each day index from `since` to `until`, newest first.
-fn days(root: &Path, since: i64, until: i64) -> Result<impl Iterator<Item = Result<Day>>> {
-    let (first, last) = (day_of(since), day_of(until));
-    let mut days: Vec<Date> = match std::fs::read_dir(root) {
-        Ok(entries) => entries
-            .filter_map(|e| parse_day(&e.ok()?.file_name().to_string_lossy()))
-            .filter(|d| (first..=last).contains(d))
-            .collect(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(e.into()),
-    };
-    days.sort_unstable_by(|a, b| b.cmp(a));
-    let root = root.to_owned();
-    Ok(days.into_iter().filter_map(move |day| {
-        let dir = root.join(day.to_string());
-        dir.join("meta.json").exists().then(|| Day::open(&dir))
-    }))
-}
-
-/// One day index, read as it was when opened.
-struct Day {
-    index: Index,
-    searcher: Searcher,
-}
-
 impl Day {
-    fn open(dir: &Path) -> Result<Self> {
-        let index = Index::open_in_dir(dir).with_context(|| format!("open {}", dir.display()))?;
-        let reader: IndexReader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::Manual)
-            .try_into()?;
-        let searcher = reader.searcher();
-        Ok(Self { index, searcher })
-    }
-
     /// What `q` matches in this day, the limit aside.
     fn matching(&self, f: &Fields, q: &LogQuery) -> Result<BooleanQuery> {
         let mut clauses: Vec<(Occur, Box<dyn Query>)> = vec![(
@@ -648,6 +613,10 @@ fn hit(schema: &Schema, f: &Fields, doc: &TantivyDocument) -> Result<LogHit> {
         },
     })
 }
+
+#[path = "days.rs"]
+mod days;
+use days::{Day, days};
 
 #[path = "histogram.rs"]
 mod histogram;
