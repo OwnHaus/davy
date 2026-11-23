@@ -391,3 +391,35 @@ async fn both_log_tools_show_every_filter_in_their_schema() {
         ["level", "project", "query", "since", "until"]
     );
 }
+
+#[tokio::test]
+async fn release_health_reads_the_sessions_of_one_project() {
+    let s = server();
+    let at = time::now_ms();
+    let c = store::open(&s.data).unwrap();
+    let crashed = crate::items::session::Session {
+        sid: [1; 16],
+        started: at,
+        flags: 2 | 4,
+        user: None,
+        release: "api@2".to_owned(),
+        environment: "production".to_owned(),
+    };
+    crate::items::session::add_session(&c, 1, at, &crashed).unwrap();
+    let (text, is_error) = tool(&s.app, "release_health", json!({"project": "api"})).await;
+    assert!(!is_error, "{text}");
+    let rows: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        (
+            &rows[0]["release"],
+            &rows[0]["sessions"],
+            &rows[0]["crash_free_sessions"]
+        ),
+        (&json!("api@2"), &json!(1), &json!(0.0))
+    );
+    let (text, is_error) = tool(&s.app, "release_health", json!({"since": "40d"})).await;
+    let every: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!((every.as_array().unwrap().len(), is_error), (1, false));
+    let (text, is_error) = tool(&s.app, "release_health", json!({"project": "nope"})).await;
+    assert!(is_error, "{text}");
+}

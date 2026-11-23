@@ -47,16 +47,19 @@ impl ItemKind {
 pub enum Disposition {
     StoreError,
     StoreLogs,
-    ClientReport,
-    UserFeedback,
+    /// Kept in SQLite through [`crate::items`].
+    SdkItem,
     Drop,
 }
 pub fn disposition(kind: &ItemKind) -> Disposition {
     match kind {
         ItemKind::Event => Disposition::StoreError,
         ItemKind::Log => Disposition::StoreLogs,
-        ItemKind::ClientReport => Disposition::ClientReport,
-        ItemKind::Feedback | ItemKind::UserReport => Disposition::UserFeedback,
+        ItemKind::ClientReport
+        | ItemKind::Feedback
+        | ItemKind::UserReport
+        | ItemKind::Session
+        | ItemKind::Sessions => Disposition::SdkItem,
         _ => Disposition::Drop,
     }
 }

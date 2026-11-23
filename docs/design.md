@@ -63,10 +63,10 @@ struct Item<'a> { kind: ItemKind, payload: &'a [u8] }   // borrows the decoded b
 enum ItemKind { Event, Transaction, Span, Session, Sessions, ClientReport, Attachment, Log,
                 ReplayEvent, ReplayRecording, Profile, ProfileChunk, CheckIn, Feedback, UserReport, Other }
 
-enum Disposition { StoreError, StoreLogs, ClientReport, UserFeedback, Drop }   // one table: fn disposition(&ItemKind) -> Disposition
+enum Disposition { StoreError, StoreLogs, SdkItem, Drop }   // one table: fn disposition(&ItemKind) -> Disposition
 ```
 
-`Session` and `Sessions` are accepted and dropped (release health comes later). `Log` was dropped until milestone 3. `ClientReport`, `Feedback` and `UserReport` were dropped in 0.1.0 and are kept since, see [What else the SDKs send](#what-else-the-sdks-send). Unknown types are skipped, never an error.
+`SdkItem` is every small item Davy keeps in SQLite through one writer job: `ClientReport`, `Feedback`, `UserReport`, `Session` and `Sessions`. `Log` was dropped until milestone 3. The `SdkItem` kinds were dropped in 0.1.0 and are kept since, see [What else the SDKs send](#what-else-the-sdks-send). Unknown types are skipped, never an error.
 
 ```rust
 struct ErrorEvent {
@@ -285,6 +285,7 @@ A coding agent should get from "there is an error" to a fix without a human copy
 | `sql` | `query` | `{columns, rows, truncated}`. One read-only statement. |
 | `search_logs` | `query?`, `project?`, `since?`, `until?`, `level?`, `limit?` | Hits as `davy logs --json` prints them, oldest first. When more match than `limit`, the newest win. |
 | `count_logs` | `query?`, `project?`, `since?`, `until?`, `level?` | `{total, step, buckets}` as `davy logs --count --json` prints it. At most 200 buckets of a round width, and only those with logs, as `[start, count]`. |
+| `release_health` | `project?`, `since?` | Per release and environment, newest first, at most 50: `sessions`, `errored`, `crashed`, `abnormal`, `crash_free_sessions`, `users`, `crashed_users`, `crash_free_users`, `first_hour`, `last_hour`. `since` defaults to `7d`. |
 | `issue_context` | `issue_id` | The issue, its latest event made compact, its recent events and releases, and the logs around the latest event. |
 | `mark_fixed` | `issue_id`, `release?` | A sentence that says which release the fix is expected in. |
 | `submit_feedback` | `tried`, `happened`, `fix?` | A sentence that says the feedback is stored. |
@@ -349,7 +350,7 @@ The same library functions back three commands, for agents that run shell comman
 - Unit tests with literal values: `on_event` for every row of the regression rule; `sql` returns exact rows, refuses a write, refuses two statements, cuts at 500 rows, decompresses with `payload_json`, and interrupts a runaway recursive query; compaction of the `sentry-node-10` error fixture gives the exact exception, frames and context lines.
 - A store test resolves an issue in a release and asserts that an event from an older release keeps it resolved and one from a newer release reopens it.
 - HTTP contract tests: `/mcp` is 401 without the token or with a wrong one and 403 for a `Host` or `Origin` it does not serve; with the right one `tools/list` and `tools/call` of `sql` and `mark_fixed` answer. Without a configured token `serve` does not merge the MCP router, so there is no route to test.
-- `e2e/run.sh` connects with the official MCP TypeScript client (`@modelcontextprotocol/sdk`) over Streamable HTTP with the bearer token, lists the seven tools, calls `issue_context` on an issue the Sentry SDKs created and asserts the exception type and an in-app frame, finds a log with `search_logs` and counts it with `count_logs`, calls `mark_fixed` and reads the status back with `sql`.
+- `e2e/run.sh` connects with the official MCP TypeScript client (`@modelcontextprotocol/sdk`) over Streamable HTTP with the bearer token, lists the eight tools, calls `issue_context` on an issue the Sentry SDKs created and asserts the exception type and an in-app frame, finds a log with `search_logs` and counts it with `count_logs`, calls `mark_fixed` and reads the status back with `sql`.
 - `scripts/check` passes.
 
 ## Milestone 5: source maps
@@ -828,7 +829,7 @@ npm is a supply chain of its own, and Davy is a security product. The rules:
 
 ### Not in this milestone
 
-Creating monitors, channels, projects and users from the UI, which needs roles and a public-only `Reach` for URLs typed in a browser. Dashboards and saved queries, alert rules beyond channels, release health, traces, more than one team, roles, SSO, an audit log, translations, and a mobile layout beyond a readable single column.
+Creating monitors, channels, projects and users from the UI, which needs roles and a public-only `Reach` for URLs typed in a browser. Dashboards and saved queries, alert rules beyond channels, traces, more than one team, roles, SSO, an audit log, translations, and a mobile layout beyond a readable single column.
 
 ### Done means
 
@@ -888,7 +889,7 @@ The worst case is 46.4 ms, counting every log of the day. A page sorts by the `t
 
 ## What else the SDKs send
 
-The SDKs send more than errors and logs. Two of those items say something an agent cannot learn elsewhere, so Davy keeps them in SQLite, where `sql` reads them.
+The SDKs send more than errors and logs. Three of those items say something an agent cannot learn elsewhere, so Davy keeps them in SQLite, where `sql` reads them.
 
 **Client reports.** An SDK counts what it threw away before sending, per reason and category, and sends the counts in a `client_report` item every minute or so and on flush: errors `before_send` returned `null` for, transactions the sample rate skipped, logs a full queue lost, envelopes refused with `429`. Without them, an app that reports no errors looks healthy even when its `before_send` drops everything. Davy adds the counts up per project and UTC day:
 
@@ -916,6 +917,35 @@ user_feedback(id INTEGER PRIMARY KEY, project_id INTEGER, received_at INTEGER, e
 
 Both items count against the request memory budget while they are parsed, like events. The writer stores them after the envelope's event, so a full queue costs a report or feedback, not an error. The e-mail and name a user typed are personal data. The `sql` tool and `issue_context` show them to whoever holds the admin token, the same people who can already read event payloads with user data in them.
 
+**Sessions.** Release health asks how many sessions of a release crashed. Browser and mobile SDKs send a `session` item when a visit or an app run starts, again on its first error or a crash, and when it ends. Server SDKs count requests instead and send a `sessions` item with counts per minute (`exited`, `errored`, `crashed`, `abnormal`) about once a minute and on flush. Both name a `release` and an `environment`, and a session names the user as `did`. Davy adds them up per project, hour, release and environment:
+
+```sql
+release_sessions(project_id INTEGER, hour INTEGER, release TEXT, environment TEXT,
+                 started INTEGER, errored INTEGER, crashed INTEGER, abnormal INTEGER,
+                 PRIMARY KEY(project_id, hour, release, environment)) WITHOUT ROWID
+release_users(day INTEGER, project_id INTEGER, release TEXT, environment TEXT, user INTEGER, flags INTEGER,
+              PRIMARY KEY(day, project_id, release, environment, user)) WITHOUT ROWID
+session_seen(project_id INTEGER, sid BLOB, flags INTEGER, started INTEGER,
+             PRIMARY KEY(project_id, sid)) WITHOUT ROWID
+```
+
+- **Each session counts once.** One session arrives as several updates, each with the whole state so far. `session_seen` keeps the flags already counted for each session id (started, errored, crashed, abnormal), and an update adds only the new ones. A session first seen in a later update still counts as started, so a lost first update costs nothing. The row keeps the start the first update named, and later updates cannot change it, so they can neither move the session to another hour nor keep its row alive. The row goes when that start is more than 5 days old, the same moment the session stops being accepted, so a replay after that is refused instead of counted again.
+- **The hour is when the session started**, not when the update came, so a crash an hour into a session lands in the session's hour. A session that started more than 5 days ago or over an hour ahead is refused and counted in `client_reports` as `davy_out_of_window`.
+- **`errored` includes `crashed`**, as the SDKs count them. Crash-free sessions are `100 * (started - crashed) / started`, floored to two decimals.
+- **Users** come only from `did`. Davy stores the first 8 bytes of BLAKE3 over the project id and the id, so the table holds no e-mail or user name and the same person in two projects is two values. A user counts once per release however many days they come back. `flags` remembers whether any of their sessions errored or crashed that day.
+- **Retention** is 90 days for `release_sessions` and `release_users`. The sweep deletes older rows.
+
+`release_health` sums these per release and environment since `since` and joins the users of the same days. A release with sessions from a server SDK only has no users and `crash_free_users: null`.
+
+**Safety of sessions.** The DSN of a browser app is public, so anyone can send sessions and lower a release's crash-free rate. Davy bounds what that costs:
+
+- At most 1,000,000 started sessions per project and UTC day, summed over `release_sessions`. Past that, new sessions are refused and counted in `client_reports` as `davy_daily_cap` with category `session`. Updates to sessions already counted, an error or a crash, still land.
+- At most 100 release and environment pairs per project and hour, so made-up release names cannot grow the table without end. A pair that exists keeps counting.
+- At most 100 counts per `sessions` item and 1,000,000 per count, and a release of at most 200 printable characters, an environment of at most 64.
+- `session_seen` holds one row per session counted and drops it 5 days after the session started, so a project holds at most about 6 million rows, the daily cap over the window.
+
+What it cannot stop is someone who sends crashes for a release that exists. The counts are what SDKs claimed, as with client reports.
+
 ## Hardening
 
 A security review of `370e4cd` showed that a client without a key could make the server allocate 4.4 GB with one 194 KB request (measured with a release build on a developer laptop: a gzip body that inflates to 190 MiB of `[0,0,...]` sent to `/store/`). The rules below close that class. Each has a test that a request over the limit is refused.
@@ -941,8 +971,9 @@ Sentry's own limits (develop.sentry.dev, Envelopes, Size Limits) are 200 MiB for
 | Log item in an envelope | 1 MiB | the item is dropped |
 | Items per envelope | 1,000 | `400` |
 | Event items per envelope | 1 (develop.sentry.dev, Envelope Items) | later event items are dropped |
-| Client report and feedback items per envelope | 10 that parse | the rest are dropped |
+| Client report, feedback and session items per envelope | 10 that parse | the rest are dropped |
 | Client report entries | 100 per report, 1,000,000 per entry, 100 reason and category pairs per project and day | later entries are dropped, a larger quantity counts as 1,000,000, a new pair is not counted |
+| Sessions | 1,000,000 started per project and UTC day, 100 release and environment pairs per project and hour, 100 counts per `sessions` item, 1,000,000 per count, started within the last 5 days and at most 1 h ahead | counted in `client_reports` as `davy_daily_cap` or `davy_out_of_window`, a larger count counts as 1,000,000 |
 | User feedback | 1,000 per project and UTC day, message 4,096 characters, name 128, e-mail 256, URL 2,048 | counted in `client_reports` as `davy_daily_cap`, longer text is cut |
 | Frames symbolicated per event | 256, from the frame that threw outward | older frames stay minified |
 | Source line kept per context line | 256 bytes around the column | the rest is cut, marked `…` |

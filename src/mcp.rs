@@ -46,7 +46,7 @@ const MAX_LOGS: usize = 500;
 const INSTRUCTIONS: &str = "Davy stores the errors that Sentry SDKs report and the logs that services ship. \
 To triage, list open issues with `sql` (SELECT id,title,event_count,last_seen FROM issues WHERE status='unresolved' ORDER BY last_seen DESC LIMIT 20), \
 then call `issue_context` on one issue. It returns the stack with source lines, breadcrumbs, releases, the logs around the error and what users wrote about it. \
-Call `schema` before writing other SQL. To see how often a log line happens and since when, call `count_logs` before `search_logs`. After a fix ships, call `mark_fixed`. \
+Call `schema` before writing other SQL. To see how often a log line happens and since when, call `count_logs` before `search_logs`. To see whether a release crashes more than the one before, call `release_health`. After a fix ships, call `mark_fixed`. \
 When a tool was missing, returned the wrong thing or needed a workaround, call `submit_feedback`.";
 
 const LOG_NOTES: &str = "
@@ -211,12 +211,21 @@ struct SubmitFeedback {
     fix: Option<String>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ReleaseHealth {
+    /// Project slug. Leave out for every project.
+    project: Option<String>,
+    /// RFC 3339 timestamp or a duration back from now: 1h, 2d, 30d. Default 7d. Davy keeps 90 days.
+    since: Option<String>,
+}
+
 type Reply = Result<String, String>;
 
 #[tool_router]
 impl Tools {
     #[tool(
-        description = "The SQL tables (projects, issues, events, releases, issue_hourly), what their columns mean, and how to search logs. Read it before writing SQL."
+        description = "The SQL tables (projects, issues, events, releases, issue_hourly, release_sessions, client_reports, user_feedback), what their columns mean, and how to search logs. Read it before writing SQL."
     )]
     async fn schema(&self) -> Reply {
         self.blocking(|data| Ok(query::schema(&query::open(data)?)? + LOG_NOTES))
@@ -249,6 +258,24 @@ impl Tools {
         self.blocking(move |data| {
             let q = filter.query(data, 0)?;
             json(&LogCounts::from(histogram(&logs::dir(data), &q)?))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Crash-free sessions and users per release and environment, from the sessions Sentry SDKs send. Returns, newest release first, sessions, errored (with an error, crashed ones too), crashed, abnormal, crash_free_sessions and crash_free_users in percent, users and the first and last hour. Use it to tell whether a new release crashes more than the one before. Server SDKs count requests as sessions and name no users."
+    )]
+    async fn release_health(&self, Parameters(req): Parameters<ReleaseHealth>) -> Reply {
+        self.blocking(move |data| {
+            let c = query::open(data)?;
+            let project = match &req.project {
+                Some(slug) => Some(store::project_by_slug(&c, slug)?),
+                None => None,
+            };
+            let since = time::instant(req.since.as_deref().unwrap_or("7d"), time::now_ns())
+                .map_err(anyhow::Error::msg)?
+                / 1_000_000;
+            json(&crate::items::health::releases(&c, project, since)?)
         })
         .await
     }

@@ -37,6 +37,7 @@ Out of scope:
 - Other servers on the same host. A browser sends a cookie to every port of a host, so a server on another port of Davy's host receives the session cookie. Give Davy a host name of its own.
 - Secrets that the sending app puts into events. Scrubbing belongs in the SDK's `beforeSend`.
 - Made-up user feedback and client reports. A browser app's DSN is public, so anyone can send feedback in its name and claim counts of dropped events. Davy keeps at most 1,000 feedback messages and 100 report reasons per project and day, and treats both as what a client said, not as fact.
+- Made-up sessions. The same public DSN lets anyone send sessions and lower a release's crash-free rate. Davy counts at most 1,000,000 sessions and 100 release and environment pairs per project, per day and per hour, and `release_health` reports what SDKs claimed.
 
 ## Running it safely
 

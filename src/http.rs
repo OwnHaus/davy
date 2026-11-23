@@ -3,7 +3,7 @@ use crate::{
     envelope::{self, Disposition, Envelope, ItemKind, disposition},
     event::{ErrorEvent, EventId},
     heap,
-    items::{SdkItem, client_report, user_feedback},
+    items::{SdkItem, client_report, session, user_feedback},
     logs::{
         self, LogRecord, logtail, otlp,
         store::{LogQueue, LogWriter, QueueError},
@@ -321,6 +321,8 @@ fn sdk_item(item: &envelope::Item<'_>, held: &mut Held) -> Result<Option<SdkItem
         ItemKind::UserReport => {
             user_feedback::parse_user_report(item.payload).map(SdkItem::UserFeedback)
         }
+        ItemKind::Session => session::parse_session(item.payload).map(SdkItem::Session),
+        ItemKind::Sessions => session::parse_aggregates(item.payload).map(SdkItem::Sessions),
         _ => None,
     };
     held.release(cost);
@@ -362,15 +364,10 @@ fn parse_sentry(
             Disposition::StoreError if parsed.event.is_none() => {
                 parsed.event = Some(event(item.payload, maps, held)?);
             }
-            Disposition::ClientReport | Disposition::UserFeedback
-                if parsed.items.len() < MAX_SDK_ITEMS =>
-            {
+            Disposition::SdkItem if parsed.items.len() < MAX_SDK_ITEMS => {
                 parsed.items.extend(sdk_item(&item, held)?);
             }
-            Disposition::StoreError
-            | Disposition::Drop
-            | Disposition::ClientReport
-            | Disposition::UserFeedback => {}
+            Disposition::StoreError | Disposition::Drop | Disposition::SdkItem => {}
             Disposition::StoreLogs => {
                 // An item that does not parse is dropped, as Sentry drops it.
                 let Ok(cost) = logs::sentry::cost(item.payload) else {

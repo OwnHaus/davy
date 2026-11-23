@@ -59,6 +59,21 @@ fb=[{k:f[k] for k in ('message','name','email','url')} for f in ctx['feedback']]
 assert fb==[{'message':'The pay button does nothing','name':'Ana','email':'ana@example.com','url':'https://shop.example.com/cart'}],ctx['feedback']
 print('client reports and feedback: verified before_send/error 1, feedback linked to its issue')
 PY
+DSN=$("$BIN" project create health --data "$SCRATCH/data" --public-url "$URL")
+node "$ROOT/e2e/send-sessions.mjs" "$DSN"
+for i in {1..50}; do
+  "$BIN" sql --data "$SCRATCH/data" --json "SELECT s.release, s.environment, sum(s.started), sum(s.errored), sum(s.crashed), sum(s.abnormal) FROM release_sessions s JOIN projects p ON p.id = s.project_id WHERE p.slug = 'health' GROUP BY 1, 2" > "$SCRATCH/sessions.json"
+  "$BIN" sql --data "$SCRATCH/data" --json "SELECT u.flags FROM release_users u JOIN projects p ON p.id = u.project_id WHERE p.slug = 'health' ORDER BY 1" > "$SCRATCH/users.json"
+  if grep -q '"rows":\[\["e2e@2","e2e",6,3,1,0\]\]' "$SCRATCH/sessions.json"; then break; fi
+  sleep 0.2
+done
+python3 - "$SCRATCH" <<'PY'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])
+assert json.loads((p/'sessions.json').read_text())['rows']==[['e2e@2','e2e',6,3,1,0]],(p/'sessions.json').read_text()
+assert json.loads((p/'users.json').read_text())['rows']==[[2],[6]],(p/'users.json').read_text()
+print('release health: verified 6 sessions, 3 errored, 1 crashed, 2 users of whom 1 crashed')
+PY
 DSN=$("$BIN" project create logs --data "$SCRATCH/data" --public-url "$URL")
 KEY="${DSN#*://}"; KEY="${KEY%%@*}"
 node "$ROOT/e2e/send-logs.mjs" "$DSN"

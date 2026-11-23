@@ -20,11 +20,11 @@ Davy replaces Sentry and Better Stack for a team that wants to run its own. It i
 
 ## What it does
 
-- **Errors.** Takes what the official Sentry SDKs send, groups it into issues and reopens an issue when it comes back in the release that fixed it or a newer one. Minified browser stacks turn back into source through maps uploaded with `sentry-cli`. What users write in the SDK's feedback widget shows up on the issue, and the SDK's client reports say what it dropped before sending.
+- **Errors.** Takes what the official Sentry SDKs send, groups it into issues and reopens an issue when it comes back in the release that fixed it or a newer one. Minified browser stacks turn back into source through maps uploaded with `sentry-cli`. What users write in the SDK's feedback widget shows up on the issue, and the SDK's client reports say what it dropped before sending. Release health counts the sessions the SDKs send, so crash-free sessions and users show per release.
 - **Logs.** Takes logs from Logtail shippers (pino, Vector, Fluent Bit), OpenTelemetry and Sentry's logger, with full-text search, a histogram and live tail. Logs next to an error show up on the error.
 - **Uptime.** HTTP checks with status and keyword, and heartbeats for cron jobs.
 - **Alerts.** A notice when an issue is new or regressed and when a monitor goes down or comes back, never on every event. To webhooks (signed), Slack and e-mail.
-- **Agents.** An MCP server with seven tools: `schema`, `sql`, `search_logs`, `count_logs`, `issue_context`, `mark_fixed` and `submit_feedback`. Every operator step is also a CLI command with `--json`.
+- **Agents.** An MCP server with eight tools: `schema`, `sql`, `search_logs`, `count_logs`, `release_health`, `issue_context`, `mark_fixed` and `submit_feedback`. Every operator step is also a CLI command with `--json`.
 - **Web UI.** Triage issues from the keyboard, read stack traces and breadcrumbs, search logs. Light and dark.
 
 ## Quick start
@@ -110,6 +110,7 @@ Log search takes the same query as `davy logs`. Drag across the histogram to zoo
 - `sql`: one read-only SQLite query, with `schema` to see the tables.
 - `search_logs`: the log search the UI uses. A bare word such as a request ID matches the message and every attribute value.
 - `count_logs`: how many logs match per time bucket, with the filters of `search_logs`, to see how often something happens and since when.
+- `release_health`: crash-free sessions and users per release, from the sessions the SDKs send, to tell whether a new release crashes more than the one before.
 - `mark_fixed`: resolves an issue in a release. It reopens only if the error comes back in that release or a newer one, not from older ones still running.
 - `submit_feedback`: tells whoever runs Davy that a tool was missing or wrong. Davy sends it nowhere else.
 
@@ -125,7 +126,7 @@ davy resolve 12 --data ./data --release 1.4.0
 
 ## What it does not do yet
 
-Davy is at 0.1.0. One team per server, no roles or SSO. No tracing or performance monitoring, session replay, release health or dashboards. Uptime has no status pages, regions, TCP, DNS or TLS expiry checks, and no on-call or escalation. Monitors, channels and projects are created from the CLI, not the UI. The scope of each part is in [docs/design.md](docs/design.md).
+Davy is at 0.1.0. One team per server, no roles or SSO. No tracing or performance monitoring, session replay or dashboards. Uptime has no status pages, regions, TCP, DNS or TLS expiry checks, and no on-call or escalation. Monitors, channels and projects are created from the CLI, not the UI. The scope of each part is in [docs/design.md](docs/design.md).
 
 ## Security
 

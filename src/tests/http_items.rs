@@ -1,4 +1,4 @@
-//! Client reports and user feedback in a Sentry envelope.
+//! Client reports, user feedback and sessions in a Sentry envelope.
 
 use super::*;
 use crate::items::{SdkItem, client_report::Discarded};
@@ -103,4 +103,40 @@ async fn an_envelope_with_nothing_to_keep_queues_nothing() {
         .await;
     assert_eq!(r.status, 200);
     assert!(s.error_inbox.try_recv().is_err(), "nothing queued");
+}
+
+#[tokio::test]
+async fn session_and_sessions_items_are_queued_for_release_health() {
+    let s = server();
+    let body = concat!(
+        "{\"sent_at\":\"2024-10-02T07:15:00Z\"}\n",
+        "{\"type\":\"session\"}\n",
+        "{\"sid\":\"6e3a9a0bd0a14e4f8a6e1c2d3b4a5f60\",\"init\":true,\"started\":\"2024-10-02T07:12:30Z\",\"status\":\"ok\",\"errors\":0,\"attrs\":{\"release\":\"web@3\"}}\n",
+        "{\"type\":\"sessions\"}\n",
+        "{\"aggregates\":[{\"started\":\"2024-10-02T07:12:00Z\",\"exited\":5}],\"attrs\":{\"release\":\"api@2\",\"environment\":\"staging\"}}\n",
+    );
+    let (r, jobs) = tokio::join!(
+        s.send(post(
+            "/api/1/envelope/?sentry_key=key-a",
+            &[],
+            body.to_owned()
+        )),
+        take(&s, 1)
+    );
+    assert_eq!(r.status, 200);
+    let [store::Job::Items { project, items, .. }] = &jobs[..] else {
+        panic!("one items job");
+    };
+    assert_eq!(*project, 1);
+    let [SdkItem::Session(one), SdkItem::Sessions(many)] = &items[..] else {
+        panic!("a session, then aggregates: {items:?}");
+    };
+    assert_eq!(
+        (
+            one.release.as_str(),
+            many.release.as_str(),
+            many.counts[0].started
+        ),
+        ("web@3", "api@2", 5)
+    );
 }

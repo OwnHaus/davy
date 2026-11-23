@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS issue_hourly(issue_id INTEGER NOT NULL REFERENCES iss
 CREATE INDEX IF NOT EXISTS events_issue ON events(issue_id, id DESC);";
 /// Schema changes after the first release, applied in order. `PRAGMA
 /// user_version` counts how many ran.
-const MIGRATIONS: [&str; 9] = [
+const MIGRATIONS: [&str; 10] = [
     "CREATE TABLE releases(project_id INTEGER NOT NULL REFERENCES projects(id), version TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY(project_id, version));
 INSERT INTO releases SELECT project_id, release, min(received_at) FROM events WHERE release IS NOT NULL GROUP BY project_id, release;",
     "CREATE TABLE monitors(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), name TEXT NOT NULL, kind TEXT NOT NULL, url TEXT, expect TEXT, keyword TEXT, heartbeat_token TEXT UNIQUE, every_s INTEGER NOT NULL, timeout_s INTEGER, grace_s INTEGER, state TEXT NOT NULL, last_check_at INTEGER, last_ping_at INTEGER, created_at INTEGER NOT NULL);
@@ -51,6 +51,12 @@ CREATE TRIGGER events_tags AFTER INSERT ON events BEGIN INSERT OR IGNORE INTO is
 CREATE TABLE user_feedback(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), received_at INTEGER NOT NULL, event_id TEXT, issue_id INTEGER REFERENCES issues(id), message TEXT NOT NULL, name TEXT, email TEXT, url TEXT);
 CREATE INDEX user_feedback_project ON user_feedback(project_id, received_at);
 CREATE INDEX user_feedback_issue ON user_feedback(issue_id, received_at) WHERE issue_id IS NOT NULL;",
+    // Release health. session_seen counts each session once however many
+    // updates its SDK sends. release_users.user is a hash of the SDK's user id.
+    "CREATE TABLE release_sessions(project_id INTEGER NOT NULL REFERENCES projects(id), hour INTEGER NOT NULL, release TEXT NOT NULL, environment TEXT NOT NULL, started INTEGER NOT NULL, errored INTEGER NOT NULL, crashed INTEGER NOT NULL, abnormal INTEGER NOT NULL, PRIMARY KEY(project_id, hour, release, environment)) WITHOUT ROWID;
+CREATE TABLE release_users(day INTEGER NOT NULL, project_id INTEGER NOT NULL REFERENCES projects(id), release TEXT NOT NULL, environment TEXT NOT NULL, user INTEGER NOT NULL, flags INTEGER NOT NULL, PRIMARY KEY(day, project_id, release, environment, user)) WITHOUT ROWID;
+CREATE TABLE session_seen(project_id INTEGER NOT NULL, sid BLOB NOT NULL, flags INTEGER NOT NULL, started INTEGER NOT NULL, PRIMARY KEY(project_id, sid)) WITHOUT ROWID;
+CREATE INDEX session_seen_started ON session_seen(started);",
 ];
 mod latest;
 use crate::{
@@ -286,7 +292,7 @@ pub enum Job {
         at: Timestamp,
         result: Outcome,
     },
-    /// Client reports and user feedback from one envelope.
+    /// Client reports, user feedback and sessions from one envelope.
     Items {
         project: i64,
         at: Timestamp,
@@ -340,6 +346,7 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
             crate::monitor::store::sweep(c, *at)?;
             crate::accounts::store::sweep(c, *at)?;
             crate::items::client_report::prune(c, *at)?;
+            crate::items::session::prune(c, *at)?;
             Ok(Ok(()))
         }
         Job::Check {
