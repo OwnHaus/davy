@@ -27,6 +27,12 @@ for i in {1..100}; do
   if curl -s -o /dev/null "$URL/"; then break; fi
   sleep 0.1
 done
+"$BIN" setup --data "$SCRATCH/data" --public-url "$URL" --listen "127.0.0.1:$PORT" > "$SCRATCH/setup.json"
+"$BIN" connect e2e-connect --sdk node --local --data "$SCRATCH/data" > "$SCRATCH/connect.json"
+python3 - "$SCRATCH/connect.json" <<'PYCONNECT' | sh
+import json,sys
+print(json.load(open(sys.argv[1]))['test_event'])
+PYCONNECT
 for SDK in sentry-node-7 sentry-node-10; do
   DSN=$("$BIN" project create "$SDK" --data "$SCRATCH/data" --public-url "$URL")
   node "$ROOT/e2e/send.mjs" "$SDK" "$DSN"
@@ -139,7 +145,8 @@ assert json.loads((p/'gzip-response.json').read_text())=={'id':'1111111111111111
 assert json.loads((p/'store-response.json').read_text())=={'id':'22222222222222222222222222222222'}
 print('gzip envelope and /store/: verified 2 issues, count 1 each')
 PY
-"$BIN" event 1 --data "$SCRATCH/data" > "$SCRATCH/payload.json"
+SDK_ISSUE=$("$BIN" sql --data "$SCRATCH/data" "SELECT i.id FROM issues i JOIN projects p ON p.id = i.project_id WHERE p.slug = 'sentry-node-7' AND i.title LIKE 'TypeError%'" | tail -n 1)
+"$BIN" event "$SDK_ISSUE" --data "$SCRATCH/data" > "$SCRATCH/payload.json"
 python3 - "$SCRATCH/payload.json" <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1])); assert p['exception']['values'][-1]['type'] in ('TypeError','RangeError')

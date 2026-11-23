@@ -423,3 +423,42 @@ async fn release_health_reads_the_sessions_of_one_project() {
     let (text, is_error) = tool(&s.app, "release_health", json!({"project": "nope"})).await;
     assert!(is_error, "{text}");
 }
+
+#[tokio::test]
+async fn connect_reads_an_existing_key_but_never_creates_a_project() {
+    let s = server();
+    for token in [None, Some("wrong")] {
+        let (status, _) = post(
+            &s.app,
+            "localhost",
+            token,
+            call("connect_project", &json!({"slug":"api"})),
+        )
+        .await;
+        assert_eq!(status, 401);
+    }
+    let (text, error) = tool(
+        &s.app,
+        "connect_project",
+        json!({"slug":"api","sdk":"node"}),
+    )
+    .await;
+    assert!(!error, "{text}");
+    let report: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(report["project"]["id"], 1);
+    assert_eq!(report["sdk"]["package"], "@sentry/node");
+    let (text, error) = tool(&s.app, "connect_project", json!({"slug":"new-app"})).await;
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "project not found; run davy connect new-app --data DATA on the server"
+    );
+    let rows = query::run(&query::open(&s.data).unwrap(), "SELECT slug FROM projects").unwrap();
+    assert_eq!(rows.rows, vec![vec![json!("api")]]);
+    let (text, error) = tool(&s.app, "project_status", json!({"slug":"api"})).await;
+    assert!(!error, "{text}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).unwrap(),
+        json!({"event_count":0,"last_event_time":null,"issue_count":0,"last_log_time":null})
+    );
+}

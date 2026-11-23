@@ -10,12 +10,29 @@ const client = new Client({ name: 'davy-e2e', version: '1.0.0' })
 await client.connect(transport)
 
 const { tools } = await client.listTools()
-assert.deepEqual(tools.map(t => t.name).sort(), ['count_logs', 'issue_context', 'mark_fixed', 'release_health', 'schema', 'search_logs', 'sql', 'submit_feedback'])
+assert.deepEqual(tools.map(t => t.name).sort(), ['connect_project', 'count_logs', 'issue_context', 'mark_fixed', 'project_status', 'release_health', 'schema', 'search_logs', 'sql', 'submit_feedback'])
 
 async function call(name, args) {
   const result = await client.callTool({ name, arguments: args })
   return { text: result.content[0].text, isError: result.isError === true }
 }
+
+const connected = JSON.parse((await call('connect_project', { slug: 'e2e-connect', sdk: 'node' })).text)
+assert.equal(connected.project.slug, 'e2e-connect')
+assert.equal(connected.sdk.package, '@sentry/node')
+const missing = await call('connect_project', { slug: 'must-not-create' })
+assert.equal(missing.isError, true)
+let arrived
+for (let i = 0; i < 100; i++) {
+  arrived = JSON.parse((await call('project_status', { slug: 'e2e-connect' })).text)
+  if (arrived.event_count === 1) break
+  await new Promise(resolve => setTimeout(resolve, 100))
+}
+assert.equal(arrived.event_count, 1)
+assert.equal(arrived.issue_count, 1)
+assert.match(arrived.last_event_time, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/)
+assert.equal(arrived.last_log_time, null)
+console.log('PASS connect: CLI test event confirmed by MCP project_status (1 event, 1 issue)')
 
 const schema = await call('schema', {})
 assert.match(schema.text, /CREATE TABLE issues/)
@@ -60,4 +77,4 @@ assert.deepEqual(feedback.rows[0].slice(1), ['e2e tried', 'e2e happened', null])
 assert.ok(feedback.rows[0][0], 'the client name comes from _meta or User-Agent')
 
 await client.close()
-console.log(`mcp: verified 8 tools, sql, issue_context, search_logs, count_logs, release_health, mark_fixed on issue ${issue} and submit_feedback from client ${feedback.rows[0][0]}`)
+console.log(`mcp: verified 10 tools, sql, issue_context, search_logs, count_logs, release_health, mark_fixed on issue ${issue} and submit_feedback from client ${feedback.rows[0][0]}`)

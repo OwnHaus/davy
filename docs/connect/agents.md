@@ -1,6 +1,6 @@
 # Connect a coding agent
 
-Davy serves MCP at `/mcp` of the public URL. Claude Code, Codex and Cursor connect with the admin token and get eight tools: `schema`, `sql`, `search_logs`, `count_logs`, `release_health`, `issue_context`, `mark_fixed` and `submit_feedback`.
+Davy serves MCP at `/mcp` of the public URL. Claude Code, Codex and Cursor connect with the admin token and get ten tools: `schema`, `sql`, `search_logs`, `count_logs`, `release_health`, `issue_context`, `mark_fixed`, `submit_feedback`, `connect_project` and `project_status`.
 
 The token gives full read access to errors and logs. It goes into a file only the person can read and reaches the client through the `DAVY_TOKEN` environment variable, never into a config file or a command line.
 
@@ -46,3 +46,47 @@ To check, ask the agent: "List the unresolved issues in Davy." It calls `sql` an
 - `release_health` returns crash-free sessions and users per release and environment, newest release first, so the agent can tell whether a deploy made things worse. Browser and mobile SDKs send one session per user visit. Server SDKs count requests as sessions and name no users.
 - `mark_fixed` resolves an issue in a release. It reopens when the error comes back in that release or a newer one.
 - `submit_feedback` reports a tool that was missing, returned the wrong thing or needed a workaround. `davy feedback --data /var/lib/davy` lists the reports. Davy sends them nowhere unless a channel was added with `--feedback`.
+
+## Connect a new app
+
+On the Davy host, run this as the service user (add `--local` only for an
+app running on the same host):
+
+<!-- e2e: skip, e2e/run.sh exercises connect with its own data directory -->
+```sh
+davy connect my-app --data /var/lib/davy --sdk node
+```
+
+The command creates or reuses the project and prints JSON. Without `--sdk`,
+it lists supported SDK names. `davy project list --data /var/lib/davy` lists
+existing project IDs and slugs. Both commands require local data access.
+
+1. Read `project.dsn`, install `sdk.package` using `sdk.install`, and add
+   `sdk.init` at app startup. The init snippets assume the usual SDK imports;
+   follow the platform page for a complete example.
+2. Put the DSN in `sdk.dsn_location`, never in a committed file. `.env` files
+   need a loader or launcher that exports their variables. For systemd, put
+   `Environment="SENTRY_DSN=..."` in a service drop-in with `systemctl edit`,
+   then restart the app. Browser build variables are public in the bundle.
+3. Run the returned `test_event` command from the host that can reach its DSN.
+   This checks Davy ingest independently of the SDK.
+4. Poll MCP `project_status` with `{"slug":"my-app"}` until `event_count`
+   increases and `last_event_time` advances. Record the baseline first if
+   the project already has events. Then trigger an SDK error and check again
+   to verify the app's SDK and network path too.
+
+MCP `connect_project` takes `slug` and optional `sdk` and returns the same
+JSON for an existing project, using the running server's public URL. It
+cannot create a project: the admin MCP token keeps its existing authority,
+so new keys require the local CLI. CLI `--local` reads the listener from
+`setup.json`, uses its port and loopback address (IPv4 or IPv6), and uses
+HTTP without going through the TLS proxy. If `serve` overrides the saved
+listener, save that address with `setup` first. A phone's loopback is the
+phone, so Android needs Davy's reachable public URL, VPN or Tailscale.
+
+`project_status` returns `event_count`, `issue_count`, `last_event_time`
+and `last_log_time`. Times are RFC 3339 and null before the first record. Log visibility waits
+for the log writer's commit.
+
+Platform guides: [Node](node.md), [browser](browser.md), [Python](python.md),
+[Go](go.md), [Android](android.md), [Rust](rust.md), [.NET](dotnet.md).

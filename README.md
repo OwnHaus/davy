@@ -24,7 +24,7 @@ Davy replaces Sentry and Better Stack for a team that wants to run its own. It i
 - **Logs.** Takes logs from Logtail shippers (pino, Vector, Fluent Bit), OpenTelemetry and Sentry's logger, with full-text search, a histogram and live tail. Logs next to an error show up on the error.
 - **Uptime.** HTTP checks with status and keyword, and heartbeats for cron jobs.
 - **Alerts.** A notice when an issue is new or regressed and when a monitor goes down or comes back, never on every event. To webhooks (signed), Slack and e-mail.
-- **Agents.** An MCP server with eight tools: `schema`, `sql`, `search_logs`, `count_logs`, `release_health`, `issue_context`, `mark_fixed` and `submit_feedback`. Every operator step is also a CLI command with `--json`.
+- **Agents.** An MCP server with ten tools: `schema`, `sql`, `search_logs`, `count_logs`, `release_health`, `issue_context`, `mark_fixed`, `submit_feedback`, `connect_project` and `project_status`. Every operator step is also a CLI command with `--json`.
 - **Web UI.** Triage issues from the keyboard, read stack traces and breadcrumbs, search logs. Light and dark.
 
 ## Quick start
@@ -74,11 +74,16 @@ The agent asks for the public URL and, optionally, an SMTP server. It installs a
 
 ## Connect your app
 
+Run `davy connect my-app --data /var/lib/davy --sdk node` for JSON with the DSN, SDK setup and a test-event command. Add `--local` for an app on the Davy host. [The agent flow](docs/connect/agents.md#connect-a-new-app) verifies delivery over MCP.
+
 | What you have | What changes | Guide |
 | --- | --- | --- |
 | `@sentry/node` | the DSN | [Node](docs/connect/node.md) |
 | `@sentry/browser` | the DSN, plus `sentry-cli` for source maps | [Browser](docs/connect/browser.md) |
 | `sentry-sdk` for Python | the DSN | [Python](docs/connect/python.md) |
+| `sentry-android` | the DSN, with an unminified build | [Android](docs/connect/android.md) |
+| `sentry` for Rust | the DSN | [Rust](docs/connect/rust.md) |
+| `Sentry.AspNetCore` | the DSN | [.NET](docs/connect/dotnet.md) |
 | `sentry-go` | the DSN | [Go](docs/connect/go.md) |
 | pino, Vector, Fluent Bit or another Logtail shipper | the endpoint and source token | [Logtail](docs/connect/logtail.md) |
 | an OpenTelemetry log exporter | two environment variables | [OpenTelemetry](docs/connect/opentelemetry.md) |
@@ -110,6 +115,8 @@ Log search takes the same query as `davy logs`. Drag across the histogram to zoo
 - `sql`: one read-only SQLite query, with `schema` to see the tables.
 - `search_logs`: the log search the UI uses. A bare word such as a request ID matches the message and every attribute value.
 - `count_logs`: how many logs match per time bucket, with the filters of `search_logs`, to see how often something happens and since when.
+- `connect_project`: existing project DSN, SDK setup and a test-event command; creating projects requires local `davy connect`.
+- `project_status`: event and issue counts and last event/log times to confirm ingest.
 - `release_health`: crash-free sessions and users per release, from the sessions the SDKs send, to tell whether a new release crashes more than the one before.
 - `mark_fixed`: resolves an issue in a release. It reopens only if the error comes back in that release or a newer one, not from older ones still running.
 - `submit_feedback`: tells whoever runs Davy that a tool was missing or wrong. Davy sends it nowhere else.

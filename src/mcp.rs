@@ -2,6 +2,7 @@
 //! mounts it at `/mcp` when an access token is configured.
 
 use crate::{
+    connect::{self, Sdk},
     context,
     feedback::Feedback,
     firsts::First,
@@ -44,6 +45,7 @@ use std::{
 const MAX_LOGS: usize = 500;
 
 const INSTRUCTIONS: &str = "Davy stores the errors that Sentry SDKs report and the logs that services ship. \
+To connect an existing app, call `connect_project`, then send its test_event command and poll `project_status`. Create new projects locally with `davy connect SLUG --data DATA`; MCP cannot create ingest keys. \
 To triage, list open issues with `sql` (SELECT id,title,event_count,last_seen FROM issues WHERE status='unresolved' ORDER BY last_seen DESC LIMIT 20), \
 then call `issue_context` on one issue. It returns the stack with source lines, breadcrumbs, releases, the logs around the error and what users wrote about it. \
 Call `schema` before writing other SQL. To see how often a log line happens and since when, call `count_logs` before `search_logs`. To see whether a release crashes more than the one before, call `release_health`. After a fix ships, call `mark_fixed`. \
@@ -69,6 +71,7 @@ pub fn router(data: PathBuf, writes: store::Sender, token: Token, public_url: &u
     );
     let tools = Tools {
         data: Arc::from(data),
+        public_url: public_url.clone(),
         writes,
         tool_router: Tools::tool_router(),
     };
@@ -120,6 +123,7 @@ async fn first_agent(State(seen): State<Arc<Seen>>, req: Request, next: Next) ->
 
 #[derive(Clone)]
 struct Tools {
+    public_url: url::Url,
     data: Arc<Path>,
     writes: store::Sender,
     tool_router: ToolRouter<Self>,
@@ -220,10 +224,40 @@ struct ReleaseHealth {
     since: Option<String>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ConnectProject {
+    slug: String,
+    sdk: Option<Sdk>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ProjectStatus {
+    slug: String,
+}
+
 type Reply = Result<String, String>;
 
 #[tool_router]
 impl Tools {
+    #[tool(
+        description = "Read an existing project's DSN, SDK setup and test-event command. Does not create projects: run davy connect on the host first. SDK names: android, rust, go, node, python, dotnet, browser."
+    )]
+    async fn connect_project(&self, Parameters(req): Parameters<ConnectProject>) -> Reply {
+        let base = self.public_url.clone();
+        self.blocking(move |data| json(&connect::existing(data, &req.slug, &base, req.sdk)?))
+            .await
+    }
+
+    #[tool(
+        description = "Confirm ingest for a project slug: events counted, time of the last event, issue count and time of the last log line, RFC 3339. Times are null before the first record; poll after sending a test event."
+    )]
+    async fn project_status(&self, Parameters(req): Parameters<ProjectStatus>) -> Reply {
+        self.blocking(move |data| json(&connect::status(data, &req.slug)?))
+            .await
+    }
+
     #[tool(
         description = "The SQL tables (projects, issues, events, releases, issue_hourly, release_sessions, client_reports, user_feedback), what their columns mean, and how to search logs. Read it before writing SQL."
     )]
