@@ -31,8 +31,10 @@ When `gh` is installed, also check that GitHub built the file from the Davy repo
 
 <!-- e2e: skip, the test container already has the binary -->
 ```sh
-gh attestation verify "$FILE" --repo dominikzabcik/davy
+gh attestation verify "$FILE" --repo dominikzabcik/davy --format json | grep -c '"verificationResult"'
 ```
+
+It prints `1` or more, one per attestation that passed. Without `--format json`, `gh` prints the result only in an interactive terminal. Run by an agent, it prints nothing and exits 0 when the check passed.
 
 If either check fails, stop and tell the person. Do not run the file.
 
@@ -47,6 +49,17 @@ davy --version
 ```
 
 It prints `davy` and the version.
+
+On a Mac for one person, install it into their home directory instead, without `sudo`:
+
+<!-- e2e: skip, the test runs Linux -->
+```sh
+mkdir -p "$HOME/.local/bin"
+install -m 755 "$FILE" "$HOME/.local/bin/davy"
+"$HOME/.local/bin/davy" --version
+```
+
+If `davy --version` then says `command not found`, `~/.local/bin` is not on the path. Add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zprofile` and open a new terminal, or call Davy by its full path.
 
 ## 3. Create the davy user and the data directory
 
@@ -192,4 +205,4 @@ Follow [connect/agents.md](connect/agents.md). The agent then reads errors and l
 
 ## Updating
 
-Repeat steps 1 and 2 with the new version, then `sudo systemctl restart davy` and step 8. The data directory and the token stay.
+Repeat steps 1 and 2 with the new version, then `sudo systemctl restart davy` and step 8. On a Mac, restart with `launchctl kickstart -k "gui/$(id -u)/davy"`. The data directory and the token stay.
