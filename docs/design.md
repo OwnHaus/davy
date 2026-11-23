@@ -434,6 +434,10 @@ enum Change { Opened(Reason), Resolved }
 enum Notice { IssueNew(Issue), IssueRegressed(Issue), MonitorDown(Incident), MonitorUp(Incident), Test }
 struct Issue { id: i64, title: String, culprit: Option<String>, level: String, release: Option<String> }
 struct Incident { id: i64, monitor: i64, name: String, reason: String }
+// Issue notices of one channel whose window ended together, oldest first.
+// `id` and `at` are the oldest row's.
+struct Digest { id: i64, at: Timestamp, entries: Vec<Entry> }
+struct Entry { regressed: bool, project: String, issue: Issue }
 enum Channel { Webhook { url: Url, secret: Secret }, Slack { url: Url } }
 ```
 
@@ -464,8 +468,33 @@ A host name goes through a resolver that keeps only the public addresses DNS ret
 ### Alerts
 
 - A channel belongs to one project or to all projects and receives every notice kind for them. Channels are a webhook, a Slack incoming webhook URL or an e-mail address.
-- **Outbox.** When the writer opens a new issue, regresses one, opens or closes an incident, it inserts one `notifications` row per matching channel in the same transaction. A crash cannot lose a notice or send one for a change that did not commit. The body is rendered when the row is stored, so delivery only signs and sends it. A new issue is noticed once, by the event that created it, and a regression once, by the event that reopened it.
-- **Delivery.** One notifier task looks for due rows every second and sends the oldest unsent alert of each channel, or its oldest feedback when no alert waits, one at a time per channel, so `monitor.down` never arrives after its `monitor.up`. A row waiting for its retry holds back the newer alerts of its channel. Feedback never holds back an alert. A channel stays busy until the writer has stored the result, so one server never sends a row twice in a row. A send has 10 s, carries `User-Agent: Davy/<version>` and follows no redirect, so a receiver cannot bounce a signed body elsewhere and a `3xx` is a failure. A `2xx` marks the row sent. Anything else retries after 30 s, 1, 2, 4 and 8 min, then the row is marked failed and the channel moves on. `last_error` keeps the status (`HTTP 500`) or the connection error, cut to 200 characters and never with the URL, because the URL is a credential. An `https` URL is checked against the operating system's trust store, so a host without root certificates (a bare container image) needs its CA bundle installed. An invalid or expired certificate fails the send. Delivery is at least once, so a row in flight at shutdown is sent again on the next start. Each payload carries its `id` so a receiver can drop a repeat.
+- **Outbox.** When the writer opens a new issue, regresses one, opens or closes an incident, it inserts one `notifications` row per matching channel in the same transaction. A crash cannot lose a notice or send one for a change that did not commit. The body is rendered when the row is stored, so delivery only signs and sends it. A digest is the exception: it is rendered from its rows when they are due. A new issue is noticed once, by the event that created it, and a regression once, by the event that reopened it.
+- **Delivery.** One notifier task looks for due rows every second and sends the oldest unsent alert of each channel, or its oldest feedback when no alert waits, one at a time per channel, so `monitor.down` never arrives after its `monitor.up`. A row waiting for its retry holds back the newer alerts of its channel. Feedback never holds back an alert, and issue rows waiting for their window hold back nothing. A channel stays busy until the writer has stored the result, so one server never sends a row twice in a row. A send has 10 s, carries `User-Agent: Davy/<version>` and follows no redirect, so a receiver cannot bounce a signed body elsewhere and a `3xx` is a failure. A `2xx` marks the row sent. Anything else retries after 30 s, 1, 2, 4 and 8 min, then the row is marked failed and the channel moves on. `last_error` keeps the status (`HTTP 500`) or the connection error, cut to 200 characters and never with the URL, because the URL is a credential. An `https` URL is checked against the operating system's trust store, so a host without root certificates (a bare container image) needs its CA bundle installed. An invalid or expired certificate fails the send. Delivery is at least once, so a row in flight at shutdown is sent again on the next start. Each payload carries its `id` so a receiver can drop a repeat.
+- **Digest.** An issue notice (`issue.new` or `issue.regressed`) waits up to 30 s, so the issues of a broken deploy or of a batch of test events reach a channel as one message, not one each. The first issue notice of a channel opens a window of 30 s, and every issue notice for that channel until it ends joins it, from any project the channel covers. The window does not grow, so a long burst sends one message every 30 s. When it ends, one waiting notice goes out with the body it would have alone, and two or more go out as one digest. Monitor, feedback and test notices never wait and pass the waiting issue notices. Each notice keeps its own row, with its project and issue in the row's `issue` column, so the window survives a restart. A digest's rows are marked together: a failed digest retries as a whole, with the same rows, `id` and `Message-ID`, and the notices of a later window wait behind it. The window is a constant: 30 s holds the burst of one deploy or one test run and still tells a team about a new issue within a minute.
+- A digest links each issue to its page in the web UI, `<public URL>/ui/issues/<id>`. A webhook gets every issue of the digest, because a receiver may act on each one. The bound on unsent rows keeps that to 100. `id` and `at` are those of the oldest row, and `project` is set when every issue is of one project:
+
+```json
+{"id": 21, "type": "issue.digest", "project": null, "at": "2026-11-20T08:42:01Z",
+ "issues": [{"type": "issue.new", "project": "shop", "url": "https://davy.example.com/ui/issues/3",
+             "issue": {"id": 3, "title": "TypeError: x is undefined", "culprit": "parseOrder(src/app.js)", "level": "error", "release": "shop@2.0.0"}},
+            {"type": "issue.regressed", "project": "blog", "url": "https://davy.example.com/ui/issues/5",
+             "issue": {"id": 5, "title": "RangeError: y", "culprit": null, "level": "error", "release": null}}]}
+```
+
+- Slack and e-mail get a line such as `12 new issues in 5 projects`, or `[shop] 2 new and 1 regressed issues` when the issues share a project, then the first 5 issues, each as its notice line and its link, then `and 7 more: <public URL>/ui/issues`. With titles cut to 200 characters a Slack digest stays far below the 40,000 characters after which Slack cuts a message. The e-mail subject is the first line, and the `Message-ID` that of the oldest row.
+
+```
+Subject: 1 new and 1 regressed issues in 2 projects
+
+1 new and 1 regressed issues in 2 projects
+
+[shop] New issue: TypeError: x is undefined
+https://davy.example.com/ui/issues/3
+
+[blog] Issue regressed: RangeError: y
+https://davy.example.com/ui/issues/5
+```
+
 - **Bounds.** At most 100 unsent alerts per channel. Over that a notice is not stored and the channel's `dropped` counter grows, which `davy channel list` shows. Feedback from agents has 5 places of its own on top, so a flood of feedback cannot push out an alert.
 - **Webhook.** `POST` with `content-type: application/json` and the headers `Davy-Delivery: <id>` and `Davy-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<body>" with the channel secret>`. The secret is 32 random bytes as hex, printed once by `davy channel add`. The HMAC key is those 64 characters as text, not the decoded bytes. The scheme matches Stripe's, so receivers can reuse their verification code.
 
@@ -492,7 +521,7 @@ reason: HTTP 503
 at: 2026-11-20T08:43:10Z
 ```
 
-- `type` is one of `issue.new`, `issue.regressed`, `monitor.down`, `monitor.up`, `feedback`, `test`. A `feedback` notice goes only to channels added with `--feedback`, has `project: null` and a `feedback` object with `id`, `client`, `tried`, `happened` and `fix`. Its Slack line is `Feedback from <client>: <happened>`.
+- `type` is one of `issue.new`, `issue.regressed`, `issue.digest`, `monitor.down`, `monitor.up`, `feedback`, `test`. A `feedback` notice goes only to channels added with `--feedback`, has `project: null` and a `feedback` object with `id`, `client`, `tried`, `happened` and `fix`. Its Slack line is `Feedback from <client>: <happened>`.
 
 ### Storage
 
@@ -502,7 +531,7 @@ New tables, added by migration, so existing data directories keep opening:
 - `checks(monitor_id, at, ok, status, ms, reason)` with an index on `(monitor_id, at)`
 - `incidents(id, monitor_id, started_at, resolved_at, reason)`
 - `channels(id, project_id NULL for all, kind, url, secret, dropped, created_at)`
-- `notifications(id, channel_id, type, payload, created_at, attempts, next_at, sent_at, failed_at, last_error)` with an index on `(channel_id, id) WHERE sent_at IS NULL AND failed_at IS NULL`
+- `notifications(id, channel_id, type, payload, created_at, attempts, next_at, sent_at, failed_at, last_error, issue)` with an index on `(channel_id, id) WHERE sent_at IS NULL AND failed_at IS NULL`
 
 At most 1,000 monitors and 100 channels per data directory. The `sql` tool reads `monitors.heartbeat_token`, `monitors.url`, `channels.url` and `channels.secret` as `NULL`, and since the web UI `users.password`, `sessions.hash` and `invites.hash` too, because an agent has no use for a credential and a prompt-injected agent could leak it. A monitor URL counts, because its query string often holds a token.
 
@@ -523,7 +552,7 @@ Status pages, regions and remote probes, ping, TCP, DNS and TLS expiry checks, c
 ### Done means
 
 - Unit tests with literal values: the state machine for every pair of state and outcome; `Reach::Public` for a table of addresses, IPv4-mapped, NAT64 and 6to4 included; check outcomes against a local test server for status, keyword, keyword absence, timeout, a redirect to a refused address and a body over 1 MiB; the webhook signature of a fixed body, time and secret; the retry schedule; the outbox order per channel; the heartbeat route with a known, an unknown and a `/fail` token; the `sql` tool reading `NULL` for the three credential columns.
-- `e2e/alerts.mjs`, run by `e2e/run.sh`, starts its own `davy serve` with a local site, a local webhook and Slack receiver and a local SMTP server, and one channel of each kind for all projects. The site answers 503 until the monitor is down, then 200. `@sentry/node` sends two new issues. A heartbeat gets a ping, a failure ping and a ping, then misses its window. Each channel must get the same 7 notices: both `issue.new`, `monitor.down` then `monitor.up` for the site, and `monitor.down`, `monitor.up`, `monitor.down` for the heartbeat. Every webhook signature must verify with the channel's secret, every e-mail must have its own `Message-ID`, and `davy channel list` must show nothing unsent or failed. It takes about 75 s, most of it waiting for the missed heartbeat.
+- `e2e/alerts.mjs`, run by `e2e/run.sh`, starts its own `davy serve` with a local site, a local webhook and Slack receiver and a local SMTP server, and one channel of each kind for all projects. The site answers 503 until the monitor is down, then 200. `@sentry/node` sends two new issues. A heartbeat gets a ping, a failure ping and a ping, then misses its window. Each channel must get the same 6 notices: one `issue.digest` of both new issues, `monitor.down` then `monitor.up` for the site, and `monitor.down`, `monitor.up`, `monitor.down` for the heartbeat. Every webhook signature must verify with the channel's secret, every e-mail must have its own `Message-ID`, and `davy channel list` must show nothing unsent or failed. It takes about 75 s, most of it waiting for the missed heartbeat.
 - `scripts/check` passes.
 
 ## Milestone 7: install by prompt

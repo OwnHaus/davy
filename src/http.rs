@@ -595,6 +595,7 @@ pub async fn serve(
         alert::deliver::Transports::new(net::Reach::Any, smtp)?,
         writer.sender.clone(),
         NOTIFY_EVERY,
+        public_url.clone(),
     ));
     #[cfg(unix)]
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;

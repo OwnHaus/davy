@@ -44,6 +44,7 @@ async fn server(rcpt: &'static str) -> (String, mpsc::UnboundedReceiver<String>)
 fn email(payload: String) -> Due {
     Due {
         id: 19,
+        merged: Vec::new(),
         channel: 1,
         to: Channel::Email {
             to: "ops@example.com".into(),

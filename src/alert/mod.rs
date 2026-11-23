@@ -3,6 +3,9 @@
 pub mod deliver;
 #[cfg(test)]
 mod deliver_tests;
+pub mod digest;
+#[cfg(test)]
+mod digest_tests;
 pub mod mail;
 #[cfg(test)]
 mod mail_tests;

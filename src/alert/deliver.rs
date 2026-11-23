@@ -72,18 +72,20 @@ pub async fn send(transports: &Transports, due: &Due, now: Timestamp) -> Result<
 
 /// Every `period`, sends the due rows from `c`, one at a time per channel,
 /// and marks each through `writer`. A channel stays busy until its result is
-/// stored, so a row is not sent twice by one server. Runs until aborted.
+/// stored, so a row is not sent twice by one server. A digest links to the
+/// web UI at `public_url`. Runs until aborted.
 pub async fn run(
     c: Connection,
     transports: Transports,
     writer: crate::store::Sender,
     period: Duration,
+    public_url: url::Url,
 ) {
     tasks::poll(
         "notifier",
         period,
         usize::MAX,
-        move || store::due(&c, time::now_ms()),
+        move || store::due(&c, time::now_ms(), &public_url),
         |due| due.channel,
         |due| deliver(transports.clone(), due, writer.clone()),
     )
@@ -93,7 +95,7 @@ pub async fn run(
 async fn deliver(transports: Transports, due: Due, writer: crate::store::Sender) {
     let result = send(&transports, &due, time::now_ms()).await;
     let job = Job::Delivery {
-        id: due.id,
+        ids: std::iter::once(due.id).chain(due.merged).collect(),
         at: time::now_ms(),
         result,
     };

@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS issue_hourly(issue_id INTEGER NOT NULL REFERENCES iss
 CREATE INDEX IF NOT EXISTS events_issue ON events(issue_id, id DESC);";
 /// Schema changes after the first release, applied in order. `PRAGMA
 /// user_version` counts how many ran.
-const MIGRATIONS: [&str; 10] = [
+const MIGRATIONS: [&str; 11] = [
     "CREATE TABLE releases(project_id INTEGER NOT NULL REFERENCES projects(id), version TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY(project_id, version));
 INSERT INTO releases SELECT project_id, release, min(received_at) FROM events WHERE release IS NOT NULL GROUP BY project_id, release;",
     "CREATE TABLE monitors(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), name TEXT NOT NULL, kind TEXT NOT NULL, url TEXT, expect TEXT, keyword TEXT, heartbeat_token TEXT UNIQUE, every_s INTEGER NOT NULL, timeout_s INTEGER, grace_s INTEGER, state TEXT NOT NULL, last_check_at INTEGER, last_ping_at INTEGER, created_at INTEGER NOT NULL);
@@ -57,6 +57,9 @@ CREATE INDEX user_feedback_issue ON user_feedback(issue_id, received_at) WHERE i
 CREATE TABLE release_users(day INTEGER NOT NULL, project_id INTEGER NOT NULL REFERENCES projects(id), release TEXT NOT NULL, environment TEXT NOT NULL, user INTEGER NOT NULL, flags INTEGER NOT NULL, PRIMARY KEY(day, project_id, release, environment, user)) WITHOUT ROWID;
 CREATE TABLE session_seen(project_id INTEGER NOT NULL, sid BLOB NOT NULL, flags INTEGER NOT NULL, started INTEGER NOT NULL, PRIMARY KEY(project_id, sid)) WITHOUT ROWID;
 CREATE INDEX session_seen_started ON session_seen(started);",
+    // The issue an issue notice reports, so the issue notices that wait
+    // together go out as one digest, see src/alert/digest.rs.
+    "ALTER TABLE notifications ADD COLUMN issue TEXT;",
 ];
 mod latest;
 use crate::{
@@ -288,7 +291,8 @@ pub enum Job {
     },
     /// The result of one attempt to send a notification.
     Delivery {
-        id: i64,
+        /// The rows one send covered: one, or every row of a digest.
+        ids: Vec<i64>,
         at: Timestamp,
         result: Outcome,
     },
@@ -357,8 +361,8 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
             crate::monitor::store::checked(c, *monitor, *at, checked)?;
             Ok(Ok(()))
         }
-        Job::Delivery { id, at, result } => {
-            alert::store::delivered(c, *id, *at, result)?;
+        Job::Delivery { ids, at, result } => {
+            alert::store::delivered(c, ids, *at, result)?;
             Ok(Ok(()))
         }
         Job::Items { project, at, items } => {

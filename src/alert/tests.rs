@@ -1,7 +1,7 @@
 use super::*;
 use crate::monitor::CheckUrl;
 
-fn memory() -> rusqlite::Connection {
+pub(super) fn memory() -> rusqlite::Connection {
     let mut c = rusqlite::Connection::open_in_memory().unwrap();
     crate::store::init(&mut c).unwrap();
     crate::store::create_project(&c, "shop").unwrap();
@@ -10,6 +10,10 @@ fn memory() -> rusqlite::Connection {
 
 fn url(s: &str) -> CheckUrl {
     CheckUrl::parse(s).unwrap()
+}
+
+pub(super) fn public_url() -> url::Url {
+    url::Url::parse("https://davy.example/").unwrap()
 }
 
 #[test]
@@ -120,7 +124,7 @@ fn a_data_directory_holds_at_most_100_channels() {
     );
 }
 
-fn issue(title: &str) -> Issue {
+pub(super) fn issue(title: &str) -> Issue {
     Issue {
         id: 3,
         title: title.into(),
@@ -130,7 +134,7 @@ fn issue(title: &str) -> Issue {
     }
 }
 
-fn incident() -> Incident {
+pub(super) fn incident() -> Incident {
     Incident {
         id: 4,
         monitor: 1,
@@ -237,7 +241,7 @@ fn an_email_has_the_plain_line_as_subject_and_the_details_in_its_body() {
     );
 }
 
-fn channel(c: &rusqlite::Connection, project: Option<i64>, kind: Kind) -> i64 {
+pub(super) fn channel(c: &rusqlite::Connection, project: Option<i64>, kind: Kind) -> i64 {
     let to = match kind {
         Kind::Webhook => Destination::Webhook(url("https://hooks.example/x")),
         Kind::Slack => Destination::Slack(url("https://hooks.example/x")),
@@ -365,7 +369,7 @@ fn an_email_channel_is_listed_and_due_with_its_address() {
     let id = channel(&c, Some(1), Kind::Email);
     assert_eq!(store::list(&c).unwrap()[0].to, "ops@example.com".to_owned());
     store::notify(&c, 1, &Notice::Test, 0).unwrap();
-    let due = store::due(&c, 0).unwrap();
+    let due = store::due(&c, 0, &public_url()).unwrap();
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].channel, id);
     assert_eq!(
@@ -408,7 +412,7 @@ fn only_the_oldest_unsent_row_of_each_channel_is_due() {
     c.execute("UPDATE notifications SET next_at=5000 WHERE id=2", [])
         .unwrap();
     let due = |at| -> Vec<(i64, i64, &'static str)> {
-        store::due(&c, at)
+        store::due(&c, at, &public_url())
             .unwrap()
             .into_iter()
             .map(|d| {
@@ -424,7 +428,7 @@ fn only_the_oldest_unsent_row_of_each_channel_is_due() {
     };
     assert_eq!(due(3_000), [(1, hook, "webhook")]);
     assert_eq!(due(5_000), [(1, hook, "webhook"), (2, slack, "slack")]);
-    store::delivered(&c, 1, 5_000, &Ok(())).unwrap();
+    store::delivered(&c, &[1], 5_000, &Ok(())).unwrap();
     assert_eq!(due(5_000), [(2, slack, "slack"), (3, hook, "webhook")]);
 }
 
@@ -436,7 +440,7 @@ fn a_failed_row_waits_longer_each_time_then_fails_and_a_sent_row_stays_sent() {
     let failure = Err("HTTP 500".to_owned());
     let mut seen = Vec::new();
     for at in [1_000, 40_000, 110_000, 240_000, 500_000, 990_000] {
-        store::delivered(&c, 1, at, &failure).unwrap();
+        store::delivered(&c, &[1], at, &failure).unwrap();
         let (attempts, next_at, sent, failed, error) = row(&c, 1);
         assert_eq!((sent, error.as_deref()), (None, Some("HTTP 500")));
         seen.push((attempts, next_at, failed));
@@ -453,12 +457,12 @@ fn a_failed_row_waits_longer_each_time_then_fails_and_a_sent_row_stays_sent() {
         ]
     );
     store::notify(&c, 1, &Notice::Test, 0).unwrap();
-    store::delivered(&c, 2, 1_000, &Err("x".repeat(300))).unwrap();
+    store::delivered(&c, &[2], 1_000, &Err("x".repeat(300))).unwrap();
     assert_eq!(row(&c, 2).4.unwrap().len(), 200);
-    store::delivered(&c, 2, 2_000, &Ok(())).unwrap();
+    store::delivered(&c, &[2], 2_000, &Ok(())).unwrap();
     assert_eq!(row(&c, 2).0, 2);
     assert_eq!(row(&c, 2).2, Some(2_000));
-    store::delivered(&c, 99, 2_000, &Err("gone".into())).unwrap();
+    store::delivered(&c, &[99], 2_000, &Err("gone".into())).unwrap();
 }
 
 #[test]

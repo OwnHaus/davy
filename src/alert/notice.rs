@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// Slack shows a long title in full, so one event cannot fill a channel.
 const MAX_TEXT_CHARS: usize = 200;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Issue {
     pub id: i64,
     pub title: String,
@@ -200,8 +200,17 @@ impl Notice {
         }
     }
 
+    /// The issue of an issue notice.
+    #[must_use]
+    pub fn issue(&self) -> Option<&Issue> {
+        match self {
+            Self::IssueNew(issue) | Self::IssueRegressed(issue) => Some(issue),
+            _ => None,
+        }
+    }
+
     /// One line such as `[shop] API is down: HTTP 503`.
-    fn line(&self, project: Option<&str>) -> String {
+    pub(super) fn line(&self, project: Option<&str>) -> String {
         let text = match self {
             Self::IssueNew(issue) => format!("New issue: {}", cut(&issue.title)),
             Self::IssueRegressed(issue) => format!("Issue regressed: {}", cut(&issue.title)),
@@ -230,7 +239,7 @@ fn cut(s: &str) -> String {
 }
 
 /// Escaped so a title from an event cannot mention `@channel` or hide a link.
-fn slack(line: &str) -> String {
+pub(super) fn slack(line: &str) -> String {
     line.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

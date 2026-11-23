@@ -141,7 +141,12 @@ fn feedback_neither_pushes_out_nor_holds_back_an_alert() {
     }
     let listed = &alert::store::list(&c).unwrap()[0];
     assert_eq!((listed.unsent, listed.dropped), (101, 0));
-    let due = alert::store::due(&c, 1_000).unwrap();
+    let due = alert::store::due(
+        &c,
+        1_000,
+        &url::Url::parse("https://davy.example/").unwrap(),
+    )
+    .unwrap();
     assert_eq!(due.iter().map(|d| d.id).collect::<Vec<_>>(), [2]);
     assert!(alert::store::test(&c, id, 101).unwrap());
     assert_eq!(alert::store::list(&c).unwrap()[0].dropped, 1);

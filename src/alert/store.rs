@@ -1,6 +1,10 @@
 //! Channel rows. The tables are created by the migrations in `crate::store`.
 
-use super::{Channel, Destination, Kind, Notice, Secret, retry_after};
+use super::{
+    Channel, Destination, Kind, Notice, Secret,
+    digest::{Digest, Entry, Held, WINDOW_MS},
+    retry_after,
+};
 use crate::{event::Timestamp, net::MAX_ERROR_CHARS};
 use anyhow::{Context as _, Result};
 use rusqlite::{
@@ -8,6 +12,7 @@ use rusqlite::{
     types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef},
 };
 use serde::Serialize;
+use url::Url;
 
 pub const MAX_CHANNELS: i64 = 100;
 /// A channel that is down for a day fills up, and its oldest notices are the
@@ -100,7 +105,7 @@ pub fn list(c: &Connection) -> Result<Vec<Listed>> {
         let (id, project, kind, url, feedback, [unsent, failed, dropped]) = row?;
         let to = match kind {
             Kind::Email => url.strip_prefix("mailto:").map(str::to_owned),
-            Kind::Webhook | Kind::Slack => url::Url::parse(&url)
+            Kind::Webhook | Kind::Slack => Url::parse(&url)
                 .ok()
                 .and_then(|u| u.host_str().map(str::to_owned)),
         }
@@ -182,10 +187,12 @@ pub fn test(c: &Connection, id: i64, at: Timestamp) -> Result<bool> {
     Ok(true)
 }
 
-/// Stores one notification row, due at once, or counts it as dropped when
-/// the channel already has [`MAX_UNSENT`]. Feedback does not count against
-/// an alert, so it cannot push one out. The body holds the row's ID, so the
-/// row is stored first.
+/// Stores one notification row, or counts it as dropped when the channel
+/// already has [`MAX_UNSENT`]. Feedback does not count against an alert, so
+/// it cannot push one out. The body holds the row's ID, so the row is stored
+/// first. An issue notice of a project is due when the channel's waiting
+/// issue rows are, or [`WINDOW_MS`] after `at` when none waits, and keeps
+/// its issue for a digest. Any other notice is due at once.
 fn queue(
     c: &Connection,
     channel: i64,
@@ -207,9 +214,22 @@ fn queue(
         )?;
         return Ok(());
     }
+    let held = notice
+        .issue()
+        .zip(project)
+        .map(|(issue, project)| {
+            serde_json::to_string(&Held {
+                project: project.to_owned(),
+                issue: issue.clone(),
+            })
+        })
+        .transpose()?;
     c.execute(
-        "INSERT INTO notifications(channel_id,type,payload,created_at,next_at) VALUES (?1,?2,'',?3,?3)",
-        params![channel, notice.kind(), at],
+        "INSERT INTO notifications(channel_id,type,payload,created_at,next_at,issue)
+         VALUES (?1,?2,'',?3,CASE WHEN ?4 IS NULL THEN ?3 ELSE coalesce((SELECT max(next_at)
+           FROM notifications WHERE channel_id=?1 AND issue IS NOT NULL AND attempts=0
+           AND sent_at IS NULL AND failed_at IS NULL AND next_at>?3),?3+?5) END,?4)",
+        params![channel, notice.kind(), at, held, WINDOW_MS],
     )?;
     let id = c.last_insert_rowid();
     c.execute(
@@ -223,6 +243,8 @@ fn queue(
 #[derive(Debug)]
 pub struct Due {
     pub id: i64,
+    /// The other rows of a digest, marked with this one.
+    pub merged: Vec<i64>,
     pub channel: i64,
     pub to: Channel,
     pub payload: String,
@@ -232,59 +254,126 @@ pub struct Due {
 /// alert waits, when it is due by `now`. A row waiting for its retry holds
 /// back the newer alerts of its channel, so a receiver never gets
 /// `monitor.up` before its `monitor.down`, and feedback never holds back an
-/// alert.
-pub fn due(c: &Connection, now: Timestamp) -> Result<Vec<Due>> {
+/// alert. Issue rows that wait for their window hold back nothing. When
+/// their window ends they go out together, as one [`Digest`] when there are
+/// several, with links that start at `public_url`.
+pub fn due(c: &Connection, now: Timestamp, public_url: &Url) -> Result<Vec<Due>> {
     let mut q = c.prepare(
-        "SELECT n.id,ch.id,ch.kind,ch.url,ch.secret,n.payload FROM channels ch
-         JOIN notifications n ON n.id=(SELECT id FROM notifications
+        "SELECT n.id,ch.id,ch.kind,ch.url,ch.secret,n.payload,n.attempts,n.issue IS NOT NULL
+         FROM channels ch JOIN notifications n ON n.id=(SELECT id FROM notifications
            WHERE channel_id=ch.id AND sent_at IS NULL AND failed_at IS NULL
-           ORDER BY type='feedback',id LIMIT 1)
+           ORDER BY issue IS NOT NULL AND attempts=0 AND next_at>?1,type='feedback',id LIMIT 1)
          WHERE n.next_at<=?1 ORDER BY n.id",
     )?;
     let rows = q.query_map([now], |r| {
         Ok((
-            r.get::<_, i64>(0)?,
-            r.get::<_, i64>(1)?,
+            [r.get::<_, i64>(0)?, r.get(1)?, r.get(6)?],
             r.get::<_, Kind>(2)?,
             r.get::<_, String>(3)?,
             r.get::<_, Option<String>>(4)?,
             r.get::<_, String>(5)?,
+            r.get::<_, bool>(7)?,
         ))
     })?;
     rows.map(|row| {
-        let (id, channel, kind, url, secret, payload) = row?;
-        let to = match (kind, secret) {
-            (Kind::Webhook, Some(secret)) => Channel::Webhook {
-                url,
-                secret: Secret::load(secret),
-            },
-            (Kind::Slack, _) => Channel::Slack { url },
-            (Kind::Email, _) => Channel::Email {
-                to: url
-                    .strip_prefix("mailto:")
-                    .with_context(|| format!("e-mail channel {channel} has no mailto: URL"))?
-                    .to_owned(),
-            },
-            (Kind::Webhook, None) => anyhow::bail!("webhook channel {channel} has no secret"),
-        };
-        Ok(Due {
+        let ([id, channel, attempts], kind, url, secret, payload, issue) = row?;
+        let mut due = Due {
             id,
+            merged: Vec::new(),
             channel,
-            to,
+            to: channel_of(channel, kind, url, secret)?,
             payload,
-        })
+        };
+        if issue && let Some((digest, merged)) = digest(c, channel, attempts, now)? {
+            due.payload = digest.render(kind, public_url)?;
+            due.merged = merged;
+        }
+        Ok(due)
     })
     .collect()
 }
 
-/// Records one attempt to send row `id` at `at`. A failure keeps the error,
-/// cut to 200 characters, and schedules the next try or marks the row failed.
+fn channel_of(channel: i64, kind: Kind, url: String, secret: Option<String>) -> Result<Channel> {
+    Ok(match (kind, secret) {
+        (Kind::Webhook, Some(secret)) => Channel::Webhook {
+            url,
+            secret: Secret::load(secret),
+        },
+        (Kind::Slack, _) => Channel::Slack { url },
+        (Kind::Email, _) => Channel::Email {
+            to: url
+                .strip_prefix("mailto:")
+                .with_context(|| format!("e-mail channel {channel} has no mailto: URL"))?
+                .to_owned(),
+        },
+        (Kind::Webhook, None) => anyhow::bail!("webhook channel {channel} has no secret"),
+    })
+}
+
+/// The digest of the issue rows of `channel` due with its oldest one, with
+/// the IDs of the rows after the first, read in one query so the rows marked
+/// sent are the rows the body shows. `None` when the oldest goes out alone.
+/// Only one group of a channel has been tried at a time, because only its
+/// oldest row is sent, so the rows with the oldest one's `attempts` are the
+/// rows of a failed digest, or of windows that have ended.
+fn digest(
+    c: &Connection,
+    channel: i64,
+    attempts: i64,
+    now: Timestamp,
+) -> Result<Option<(Digest, Vec<i64>)>> {
+    let mut q = c.prepare(
+        "SELECT id,created_at,type,issue FROM notifications WHERE channel_id=?1
+         AND issue IS NOT NULL AND sent_at IS NULL AND failed_at IS NULL
+         AND attempts=?2 AND next_at<=?3 ORDER BY id",
+    )?;
+    let rows = q.query_map(params![channel, attempts, now], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, Timestamp>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    })?;
+    let mut first = None;
+    let mut entries = Vec::new();
+    let mut merged = Vec::new();
+    for row in rows {
+        let (id, at, kind, held) = row?;
+        if first.is_some() {
+            merged.push(id);
+        }
+        first.get_or_insert((id, at));
+        let Held { project, issue } = serde_json::from_str(&held)
+            .with_context(|| format!("notification {id} holds no issue"))?;
+        entries.push(Entry {
+            regressed: kind == "issue.regressed",
+            project,
+            issue,
+        });
+    }
+    Ok(match first {
+        Some((id, at)) if !merged.is_empty() => Some((Digest { id, at, entries }, merged)),
+        _ => None,
+    })
+}
+
+/// Records one attempt to send rows `ids` at `at`, every row of a digest
+/// alike. A failure keeps the error, cut to 200 characters, and schedules
+/// the next try or marks the row failed.
 pub fn delivered(
     c: &Connection,
-    id: i64,
+    ids: &[i64],
     at: Timestamp,
     result: &Result<(), String>,
 ) -> Result<()> {
+    for &id in ids {
+        attempted(c, id, at, result)?;
+    }
+    Ok(())
+}
+
+fn attempted(c: &Connection, id: i64, at: Timestamp, result: &Result<(), String>) -> Result<()> {
     let error = match result {
         Ok(()) => {
             c.execute(

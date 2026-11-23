@@ -302,7 +302,7 @@ fn migration_backfills_releases_from_old_events() {
     let version: i64 = c
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
 }
 #[test]
 fn migration_indexes_the_text_and_tags_of_old_issues() {
@@ -315,7 +315,7 @@ fn migration_indexes_the_text_and_tags_of_old_issues() {
     )
     .unwrap();
     c.execute_batch(
-        "DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE firsts; DROP TABLE client_reports; DROP TABLE user_feedback; DROP TABLE release_sessions; DROP TABLE release_users; DROP TABLE session_seen; PRAGMA user_version=6;",
+        "DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE firsts; DROP TABLE client_reports; DROP TABLE user_feedback; DROP TABLE release_sessions; DROP TABLE release_users; DROP TABLE session_seen; ALTER TABLE notifications DROP COLUMN issue; PRAGMA user_version=6;",
     )
     .unwrap();
     store::init(&mut c).unwrap();

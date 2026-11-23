@@ -96,17 +96,16 @@ try {
   await ping('')
 
   const webhooks = () => hooks.filter(h => h.path === '/hook')
-  const types = () => webhooks().map(h => JSON.parse(h.body)).map(b => `${b.type} ${b.monitor?.name ?? b.issue.title}`)
+  const types = () => webhooks().map(h => JSON.parse(h.body)).map(b => `${b.type} ${b.monitor?.name ?? b.issues.map(i => i.issue.title).toSorted().join(', ')}`)
   const deadline = Date.now() + 120_000
-  while (webhooks().length < 7 && Date.now() < deadline) {
+  while (webhooks().length < 6 && Date.now() < deadline) {
     if (siteStatus === 503 && types().includes('monitor.down API')) siteStatus = 200
     await new Promise(resolve => setTimeout(resolve, 250))
   }
   await new Promise(resolve => setTimeout(resolve, 2000))
 
   assert.deepEqual(types().toSorted(), [
-    'issue.new RangeError: SDK test failure',
-    'issue.new TypeError: SDK test failure',
+    'issue.digest RangeError: SDK test failure, TypeError: SDK test failure',
     'monitor.down API',
     'monitor.down cron',
     'monitor.down cron',
@@ -123,7 +122,9 @@ try {
     assert.equal(body.project, 'shop')
     ids.add(body.id)
   }
-  assert.equal(ids.size, 7, 'each delivery has its own id')
+  assert.equal(ids.size, 6, 'each delivery has its own id')
+  const digest = webhooks().map(h => JSON.parse(h.body)).find(b => b.type === 'issue.digest')
+  assert.deepEqual(digest.issues.map(i => [i.type, i.project, i.url]).toSorted(), digest.issues.map(i => ['issue.new', 'shop', `${url}/ui/issues/${i.issue.id}`]).toSorted())
   const order = name => types().filter(t => t.endsWith(` ${name}`)).map(t => t.split(' ')[0])
   assert.deepEqual(order('API'), ['monitor.down', 'monitor.up'])
   assert.deepEqual(order('cron'), ['monitor.down', 'monitor.up', 'monitor.down'])
@@ -131,28 +132,27 @@ try {
   assert.deepEqual(reasons.toSorted(), ['API: HTTP 503', 'cron: failure ping', 'cron: no ping in time'])
 
   const lines = [
+    '[shop] 2 new issues',
     '[shop] API is down: HTTP 503',
     '[shop] API is up again',
-    '[shop] New issue: RangeError: SDK test failure',
-    '[shop] New issue: TypeError: SDK test failure',
     '[shop] cron is down: failure ping',
     '[shop] cron is down: no ping in time',
     '[shop] cron is up again',
   ]
   const slack = hooks.filter(h => h.path === '/slack')
-  assert.deepEqual(slack.map(h => JSON.parse(h.body).text).toSorted(), lines)
+  assert.deepEqual(slack.map(h => JSON.parse(h.body).text.split('\n')[0]).toSorted(), lines)
   assert.ok(slack.every(h => h.headers['davy-signature'] === undefined), 'Slack gets no signature')
 
   const header = (mail, name) => mail.split('\n').find(l => l.startsWith(`${name}: `))?.slice(name.length + 2)
   assert.deepEqual(mails.map(m => header(m, 'Subject')).toSorted(), lines)
   assert.ok(mails.every(m => header(m, 'To') === 'ops@example.com' && header(m, 'From') === 'Davy <alerts@davy.example>'))
-  assert.equal(new Set(mails.map(m => header(m, 'Message-ID'))).size, 7, 'each mail has its own Message-ID')
+  assert.equal(new Set(mails.map(m => header(m, 'Message-ID'))).size, 6, 'each mail has its own Message-ID')
   assert.ok(mails.every(m => /^<davy\.\d+\.\d+@davy\.example>$/.test(header(m, 'Message-ID'))))
 
   const channels = JSON.parse(davy('channel', 'list', '--json'))
   assert.deepEqual(channels.map(c => [c.kind, c.unsent, c.failed, c.dropped]), [['webhook', 0, 0, 0], ['slack', 0, 0, 0], ['email', 0, 0, 0]])
   const seconds = Math.round((Date.now() - started) / 1000)
-  console.log(`alerts: verified 7 signed webhooks, 7 Slack lines and 7 e-mails for 2 new issues, an HTTP monitor down and up, and a heartbeat failed, up and late, in ${seconds}s`)
+  console.log(`alerts: verified 6 signed webhooks, 6 Slack messages and 6 e-mails for a digest of 2 new issues, an HTTP monitor down and up, and a heartbeat failed, up and late, in ${seconds}s`)
 } finally {
   server.kill()
   site.close()

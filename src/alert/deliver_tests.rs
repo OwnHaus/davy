@@ -27,6 +27,7 @@ async fn receiver(status: StatusCode) -> (String, Seen) {
 fn webhook(url: &str) -> Due {
     Due {
         id: 18,
+        merged: Vec::new(),
         channel: 1,
         to: Channel::Webhook {
             url: url.to_owned(),
@@ -129,6 +130,7 @@ async fn the_notifier_sends_a_channel_s_rows_in_order_and_marks_them_sent() {
         Transports::new(Reach::Any, None).unwrap(),
         writer.sender.clone(),
         Duration::from_millis(10),
+        url::Url::parse("https://davy.example/").unwrap(),
     ));
     let first = seen.recv().await.unwrap();
     let second = seen.recv().await.unwrap();
@@ -158,5 +160,46 @@ async fn the_notifier_sends_a_channel_s_rows_in_order_and_marks_them_sent() {
     tokio::task::spawn_blocking(move || writer.thread.join().unwrap())
         .await
         .unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn waiting_issue_notices_survive_a_restart_and_reach_a_webhook_as_one_digest() {
+    let dir = crate::test_support::scratch("alert-digest");
+    let (url, mut seen) = receiver(StatusCode::OK).await;
+    let new = |id, title: &str| {
+        Notice::IssueNew(super::Issue {
+            id,
+            title: title.into(),
+            culprit: None,
+            level: "error".into(),
+            release: None,
+        })
+    };
+    {
+        let c = crate::store::open(&dir).unwrap();
+        crate::store::create_project(&c, "shop").unwrap();
+        let url = crate::monitor::CheckUrl::parse(&url).unwrap();
+        store::add(&c, Some(1), &Destination::Webhook(url), false, 0).unwrap();
+        store::notify(&c, 1, &new(3, "TypeError: x"), 1_000).unwrap();
+        store::notify(&c, 1, &new(4, "RangeError: y"), 2_000).unwrap();
+    }
+    let c = crate::store::open(&dir).unwrap();
+    let public = url::Url::parse("https://davy.example/").unwrap();
+    assert_eq!(store::due(&c, 30_999, &public).unwrap().len(), 0);
+    let due = store::due(&c, 31_000, &public).unwrap();
+    assert_eq!((due[0].id, due[0].merged.clone()), (1, vec![2]));
+    let transports = Transports::new(Reach::Any, None).unwrap();
+    assert_eq!(send(&transports, &due[0], 31_000).await, Ok(()));
+    let (headers, body) = seen.recv().await.unwrap();
+    assert_eq!(header(&headers, "davy-delivery"), Some("1"));
+    assert_eq!(
+        body,
+        r#"{"id":1,"type":"issue.digest","project":"shop","at":"1970-01-01T00:00:01Z","issues":[{"type":"issue.new","project":"shop","url":"https://davy.example/ui/issues/3","issue":{"id":3,"title":"TypeError: x","culprit":null,"level":"error","release":null}},{"type":"issue.new","project":"shop","url":"https://davy.example/ui/issues/4","issue":{"id":4,"title":"RangeError: y","culprit":null,"level":"error","release":null}}]}"#
+    );
+    store::delivered(&c, &[1, 2], 31_100, &Ok(())).unwrap();
+    let listed = store::list(&c).unwrap();
+    assert_eq!((listed[0].unsent, listed[0].failed), (0, 0));
+    drop(c);
     std::fs::remove_dir_all(dir).unwrap();
 }
