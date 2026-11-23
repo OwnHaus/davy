@@ -69,7 +69,7 @@ Mechanical rules live in `Cargo.toml` `[lints]`, `clippy.toml`, `deny.toml` and 
 
 - This crate is AGPL and must stay usable as a library by the closed `davy-cloud` crate. Nothing here depends on cloud code. A cloud feature needs an extension point here, not a fork.
 - Dependencies must be permissive or weak copyleft, so the cloud crate can link them. `deny.toml` enforces the list.
-- This repo will be public. Market research, competitors, pricing, launch plans and cloud plans live in the private `davy-internal` repo. None of it goes here, in a doc, a comment or a commit message.
+- This repo is public. Market research, competitors, pricing, launch plans and cloud plans are kept outside it. None of it goes here, in a doc, a comment or a commit message.
 
 ## When an agent gets something wrong
 
