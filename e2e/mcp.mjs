@@ -10,7 +10,7 @@ const client = new Client({ name: 'davy-e2e', version: '1.0.0' })
 await client.connect(transport)
 
 const { tools } = await client.listTools()
-assert.deepEqual(tools.map(t => t.name).sort(), ['count_logs', 'issue_context', 'mark_fixed', 'schema', 'search_logs', 'sql', 'submit_feedback'])
+assert.deepEqual(tools.map(t => t.name).sort(), ['count_logs', 'issue_context', 'mark_fixed', 'release_health', 'schema', 'search_logs', 'sql', 'submit_feedback'])
 
 async function call(name, args) {
   const result = await client.callTool({ name, arguments: args })
@@ -44,6 +44,9 @@ const counts = JSON.parse((await call('count_logs', { query: 'timeout', project:
 assert.equal(counts.total, 2)
 assert.equal(counts.buckets.reduce((sum, [, n]) => sum + n, 0), 2)
 
+const health = JSON.parse((await call('release_health', { project: 'health', since: '1d' })).text)
+assert.deepEqual(health.map(r => [r.release, r.sessions, r.crashed, r.crash_free_sessions, r.users, r.crash_free_users]), [['e2e@2', 6, 1, 83.33, 2, 50]])
+
 const fixed = await call('mark_fixed', { issue_id: issue, release: 'e2e@2' })
 assert.deepEqual(fixed, { text: `issue ${issue} resolved in release e2e@2`, isError: false })
 const status = JSON.parse((await call('sql', { query: `SELECT status, resolved_in_release FROM issues WHERE id = ${issue}` })).text)
@@ -57,4 +60,4 @@ assert.deepEqual(feedback.rows[0].slice(1), ['e2e tried', 'e2e happened', null])
 assert.ok(feedback.rows[0][0], 'the client name comes from _meta or User-Agent')
 
 await client.close()
-console.log(`mcp: verified 7 tools, sql, issue_context, search_logs, count_logs, mark_fixed on issue ${issue} and submit_feedback from client ${feedback.rows[0][0]}`)
+console.log(`mcp: verified 8 tools, sql, issue_context, search_logs, count_logs, release_health, mark_fixed on issue ${issue} and submit_feedback from client ${feedback.rows[0][0]}`)
