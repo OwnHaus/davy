@@ -10,6 +10,8 @@ Davy is built by its owner and the coding agents that work for the owner, and co
 - **Anything else is welcome too**: docs that were wrong or unclear, a connect guide for another SDK, a benchmark on your hardware, a report of how an agent got on with the MCP tools.
 - **A security problem never goes into a public issue.** See `SECURITY.md`.
 
+New issues, pull requests and comments get the label `triage` until the owner has gone through them. An issue that waits on its author gets `needs-info`, and a reply from the author puts it back in the queue. A bot asks once for what a form would have asked, and warns when a post seems to hold a token or key.
+
 A contribution is licensed under AGPL-3.0, like the rest of Davy, and its author agrees that the owner may also license it under other terms, so the core can be sold under a commercial license too. The pull request template asks for that in one checkbox. A formal CLA may replace the checkbox before 1.0.
 
 ## Setup after a clone

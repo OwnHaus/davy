@@ -1,19 +1,30 @@
 name: triage
 
-# Feature ideas start as issues (CONTRIBUTING.md, "What to send"). This job
-# asks the author of a feat pull request that links no issue to open one.
-# pull_request_target lets it comment on pull requests from forks. It never
-# checks out or runs their code, and reads the title and body only as data
-# through the environment.
+# Cheap checks that need no model and no secret. Every issue, pull request
+# or comment from someone other than the owner gets the label "triage". The
+# owner's own triage run reads everything with that label, does the real
+# work and takes the label off. A reply from the author of an issue marked
+# "needs-info" puts it back in the queue.
+#
+# Feature ideas start as issues (CONTRIBUTING.md, "What to send"), so a
+# feat pull request that links no issue is asked to open one.
+#
+# pull_request_target lets the jobs label and comment on pull requests from
+# forks. No job checks out or runs their code, and titles, bodies and
+# comments are read only as data through the environment.
 on:
   pull_request_target: # zizmor: ignore[dangerous-triggers]
+    types: [opened, reopened, edited, synchronize]
+  issues:
     types: [opened, reopened, edited]
+  issue_comment:
+    types: [created]
 
 permissions: {}
 
 jobs:
   feature-needs-issue:
-    if: github.event.pull_request.user.login != github.repository_owner && github.event.pull_request.user.type != 'Bot'
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.user.login != github.repository_owner && github.event.pull_request.user.type != 'Bot'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -39,3 +50,61 @@ jobs:
           Could you open a "Feature idea" issue that says what you were trying to do, and link it here? If this fixes something that broke for you, say what you were doing when it broke and retitle the pull request \`fix(...)\`.
           EOF
           gh pr comment "$NUMBER" --repo "$REPO" --body-file "$RUNNER_TEMP/comment.md"
+
+  mark:
+    if: github.event.sender.login != github.repository_owner && github.event.sender.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      EVENT: ${{ github.event_name }}
+      ACTION: ${{ github.event.action }}
+      NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+      ISSUE_BODY: ${{ github.event.issue.body }}
+      PR_BODY: ${{ github.event.pull_request.body }}
+      COMMENT_BODY: ${{ github.event.comment.body }}
+    steps:
+      - name: Queue for triage
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/issues/$NUMBER/labels" -f 'labels[]=triage' > /dev/null
+          if [ "$EVENT" = issue_comment ]; then
+            gh api -X DELETE "repos/$REPO/issues/$NUMBER/labels/needs-info" > /dev/null 2>&1 || true
+          fi
+      - name: Ask once for what is missing
+        run: |
+          set -euo pipefail
+          said() { gh api --paginate "repos/$REPO/issues/$NUMBER/comments" --jq '.[].body' | grep -qF "$1"; }
+          ask() {
+            marker="<!-- davy-triage: $1 -->"
+            if said "$marker"; then return 0; fi
+            { printf '%s\n' "$marker"; cat; } > "$RUNNER_TEMP/comment.md"
+            gh api "repos/$REPO/issues/$NUMBER/comments" -F "body=@$RUNNER_TEMP/comment.md" > /dev/null
+            if [ "$2" = needs-info ]; then
+              gh api "repos/$REPO/issues/$NUMBER/labels" -f 'labels[]=needs-info' > /dev/null
+            fi
+          }
+          text="$ISSUE_BODY
+          $PR_BODY
+          $COMMENT_BODY"
+          if printf '%s' "$text" | grep -qE 'gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{40,}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{40,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----'; then
+            ask secret warn <<'EOF'
+          Something in this looks like a secret: an access token, an API key or a private key. Please edit it out, and revoke and replace it, because the first version stays in the edit history and has been public since you posted it.
+          EOF
+          fi
+          if [ "$EVENT" = issues ] && [ "$ACTION" != reopened ] \
+            && ! printf '%s' "$ISSUE_BODY" | grep -qE '^### (What happened|What you were trying to do)'; then
+            ask form needs-info <<'EOF'
+          Thanks for opening this. It did not come through one of the issue forms, so it misses what triage needs. For a bug, please add the Davy version, how Davy runs, what happened, what you expected and how to make it happen again. For an idea, please say what you were trying to do and what Davy could do. Editing this issue is enough.
+          EOF
+          fi
+          if [ "$EVENT" = pull_request_target ] && [ "$ACTION" != synchronize ] \
+            && ! printf '%s' "$PR_BODY" | grep -qiE '^- \[x\] I license this contribution'; then
+            ask license needs-info <<'EOF'
+          Thanks for the pull request. Before it can be merged, please tick the last box of the template, which licenses the change under AGPL-3.0 and lets the owner also license it under other terms, as CONTRIBUTING.md says. If you removed the template, paste that line back from .github/pull_request_template.md.
+          EOF
+          fi
