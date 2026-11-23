@@ -90,7 +90,10 @@ pub fn group(e: &ErrorEvent) -> Grouping {
     let title = e
         .exceptions
         .last()
-        .map(|ex| format!("{}: {}", ex.ty, ex.value.as_deref().unwrap_or("")))
+        .map(|ex| match ex.value.as_deref() {
+            Some(value) if !value.is_empty() => format!("{}: {value}", ex.ty),
+            _ => ex.ty.clone(),
+        })
         .or_else(|| e.message.clone())
         .unwrap_or_default()
         .chars()

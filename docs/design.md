@@ -107,7 +107,7 @@ Version 1 rules:
 4. Without exceptions, use `message_template`, else the normalized `message`.
 5. Normalize: replace UUIDs, hex runs of 8 or more, numbers, email addresses and IPv4 addresses with placeholders. Strip a content hash from bundle filenames (`main.3f9a1c2b.js` becomes `main.js`) and query strings.
 
-`title` is `"{type}: {value}"` for the last exception, else the message, truncated to 200 characters. `culprit` is the function of the frame nearest the crash among in-app frames.
+`title` is `"{type}: {value}"` for the last exception, or `{type}` when it has no value, else the message, truncated to 200 characters. `culprit` is the function of the frame nearest the crash among in-app frames.
 
 A stored issue keeps its `grouping_version`. A later version 2 must not move old issues.
 

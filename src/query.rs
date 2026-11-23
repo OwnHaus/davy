@@ -250,7 +250,7 @@ mod tests {
             "SELECT i.title FROM issues_text t JOIN issues i ON i.id = t.rowid WHERE issues_text MATCH '\"typeerr\"'",
         )
         .unwrap();
-        assert_eq!(r.rows, [vec![json!("TypeError: ")]]);
+        assert_eq!(r.rows, [vec![json!("TypeError")]]);
         assert!(
             run(&c, "PRAGMA journal_mode").is_err(),
             "other pragmas stay denied"

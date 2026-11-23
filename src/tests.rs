@@ -61,6 +61,8 @@ fn grouping_rules() {
     assert_eq!(a.fingerprint, group(&ex("TypeError", 99)).fingerprint);
     assert_ne!(a.fingerprint, group(&ex("SyntaxError", 1)).fingerprint);
     assert_eq!(a.title, "TypeError: oops");
+    let bare = event(json!({"exception":{"values":[{"type":"TypeError"}]}}));
+    assert_eq!(group(&bare).title, "TypeError", "no value, no colon");
     assert_eq!(a.culprit.as_deref(), Some("crash"));
     let mut e = ex("TypeError", 1);
     e.fingerprint = Some(vec!["{{ default }}".into(), "x".into()]);
