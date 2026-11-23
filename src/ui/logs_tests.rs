@@ -137,6 +137,45 @@ async fn pages_go_back_without_repeating_logs_that_share_a_nanosecond() {
 }
 
 #[tokio::test]
+async fn pages_go_on_past_more_logs_at_one_nanosecond_than_a_cursor_counts() {
+    let (s, cookie) = shop();
+    let mut batch: Vec<_> = (0..10_050)
+        .map(|i| log(AT, LogLevel::Info, &format!("same {i}")))
+        .collect();
+    batch.extend((0..5).map(|i| log(AT - 1000 * (i + 1), LogLevel::Info, &format!("old {i}"))));
+    write(&s, batch);
+    let base = format!("/ui/api/logs?from={}&to={AT}", AT - 1_000_000);
+    let (mut uri, mut pages) = (base.clone(), 0);
+    let last = loop {
+        let r = read(&s, &cookie, &uri).await;
+        assert_eq!(r.status, 200, "{}", r.body["error"]);
+        pages += 1;
+        match r.body["before"].as_str() {
+            Some(before) => uri = format!("{base}&before={before}"),
+            None => {
+                break messages(&r.body)
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+            }
+        }
+    };
+    assert_eq!(
+        pages, 101,
+        "100 pages at one nanosecond, then the older logs"
+    );
+    assert_eq!(last, ["old 0", "old 1", "old 2", "old 3", "old 4"]);
+
+    let uri = format!("/ui/api/logs?to={}&before={AT}.50", AT - 1);
+    let r = read(&s, &cookie, &uri).await;
+    assert_eq!(
+        messages(&r.body).first(),
+        Some(&"old 0"),
+        "a cursor past the window skips nothing in it"
+    );
+}
+
+#[tokio::test]
 async fn the_filter_narrows_both_the_page_and_the_histogram() {
     let (s, cookie) = shop();
     store::create_project(&s.db, "admin").unwrap();

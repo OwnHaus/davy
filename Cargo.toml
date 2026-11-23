@@ -40,7 +40,7 @@ argon2 = "0.6"
 crossbeam-channel = "0.5"
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.32", default-features = false, features = ["user"] }
+nix = { version = "0.32", default-features = false, features = ["fs", "user"] }
 
 [dev-dependencies]
 brotli = "9"

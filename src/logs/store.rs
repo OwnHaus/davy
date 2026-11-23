@@ -427,6 +427,9 @@ pub struct LogQuery {
     pub min_level: Option<LogLevel>,
     pub text: Option<String>,
     pub limit: usize,
+    /// The newest hits at exactly `until` to pass over without reading them,
+    /// at most: those an earlier page showed.
+    pub skip: usize,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -553,6 +556,7 @@ pub fn check_text(text: &str) -> Result<(), String> {
 fn search_once(root: &Path, q: &LogQuery) -> Result<Vec<LogHit>> {
     let f = schema().1;
     let mut hits = Vec::new();
+    let mut skip = q.skip;
     for day in days(root, q.since, q.until)? {
         if hits.len() >= q.limit {
             break;
@@ -560,10 +564,18 @@ fn search_once(root: &Path, q: &LogQuery) -> Result<Vec<LogHit>> {
         let day = day?;
         let top = day.searcher.search(
             &day.matching(&f, q)?,
-            &TopDocs::with_limit(q.limit - hits.len())
+            &TopDocs::with_limit(q.limit - hits.len() + skip)
                 .order_by_fast_field::<i64>("ts", Order::Desc),
         )?;
-        for (_, address) in top {
+        for (ts, address) in top {
+            if skip > 0 && ts == Some(q.until) {
+                skip -= 1;
+                continue;
+            }
+            skip = 0;
+            if hits.len() == q.limit {
+                break;
+            }
             let doc: TantivyDocument = day.searcher.doc(address)?;
             hits.push(hit(&day.index.schema(), &f, &doc)?);
         }

@@ -371,6 +371,7 @@ fn query(since: i64, until: i64) -> LogQuery {
         min_level: None,
         text: None,
         limit: 100,
+        skip: 0,
     }
 }
 
@@ -513,6 +514,36 @@ fn search_filters_by_project_level_text_and_limit() {
 }
 
 #[test]
+fn search_passes_over_the_newest_hits_at_until_only() {
+    let dir = scratch("logs");
+    let now = now_ns();
+    let records = ["a", "b", "c"]
+        .map(|m| record(1, now, now, LogLevel::Info, m))
+        .into_iter()
+        .chain([record(1, now - 1, now, LogLevel::Info, "older")])
+        .collect();
+    write(&dir, 30, records);
+    let page = |skip: usize| -> Vec<String> {
+        let q = LogQuery {
+            limit: 2,
+            skip,
+            ..query(now - DAY, now)
+        };
+        search(&dir, &q)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.message)
+            .collect()
+    };
+    let (first, second) = (page(0), page(2));
+    assert_eq!(second[0], "older", "oldest first");
+    let all: std::collections::HashSet<_> = first.iter().chain(&second).collect();
+    assert_eq!(all.len(), 4, "the second page repeats none of the first");
+    assert_eq!(page(9), ["older"], "only hits at until are passed over");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn store_recovers_when_a_day_index_breaks() {
     let dir = scratch("logs");
     let now = now_ns();
@@ -557,6 +588,7 @@ fn store_recovers_when_a_day_index_breaks() {
         &LogQuery {
             text: Some("after".into()),
             limit: 50_000,
+            skip: 0,
             ..query(now - 1_000_000_000, now + 1)
         },
     )

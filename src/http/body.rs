@@ -196,6 +196,32 @@ pub async fn read_at_most(body: Body, limit: usize, held: &mut Held) -> Result<V
     Ok(incoming.bytes)
 }
 
+/// Reads a body of at most `limit` bytes that must arrive whole `within`,
+/// without paying from a budget. For a body smaller than what its connection
+/// already holds: a budget would bound nothing, and slow bodies that spend it
+/// would refuse everyone else.
+pub async fn read_small(
+    mut body: Body,
+    limit: usize,
+    within: Duration,
+) -> Result<Vec<u8>, Failure> {
+    let deadline = Instant::now() + within;
+    let mut bytes = Vec::new();
+    while let Some(frame) = tokio::time::timeout_at(deadline, body.frame())
+        .await
+        .map_err(|e| (StatusCode::REQUEST_TIMEOUT, format!("body not read: {e}")))?
+    {
+        let Ok(data) = frame.map_err(bad)?.into_data() else {
+            continue;
+        };
+        if bytes.len() + data.len() > limit {
+            return Err(too_large("body too large"));
+        }
+        bytes.extend_from_slice(&data);
+    }
+    Ok(bytes)
+}
+
 /// Reads an envelope whose key is in the DSN of its header line. Reads only
 /// until that line decompresses, passes it to `admit`, and reads the rest only
 /// if `admit` succeeds, so a refused request holds about [`BEFORE_AUTH`].

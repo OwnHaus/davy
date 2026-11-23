@@ -399,7 +399,9 @@ impl Queues {
             open: 2,
         }
     }
-    /// Up to [`BATCH`] jobs, those of people first. Waits for the first one.
+    /// Up to [`BATCH`] jobs, those of people first but at most half of them
+    /// while ingest waits, so people who keep writing cannot stop ingest.
+    /// Waits for the first one.
     fn next_batch(&mut self) -> Option<Vec<Write>> {
         let first = loop {
             if self.open == 0 {
@@ -418,9 +420,11 @@ impl Queues {
             }
         };
         let mut batch = vec![first];
-        batch.extend(self.ui.try_iter().take(BATCH - 1));
+        batch.extend(self.ui.try_iter().take(BATCH / 2 - 1));
         let room = BATCH - batch.len();
         batch.extend(self.ingest.try_iter().take(room));
+        let room = BATCH - batch.len();
+        batch.extend(self.ui.try_iter().take(room));
         Some(batch)
     }
 }
@@ -640,5 +644,21 @@ mod tests {
             })
             .collect();
         assert_eq!(order, [99, 1, 2]);
+    }
+
+    #[test]
+    fn people_who_keep_writing_leave_half_of_each_batch_to_ingest() {
+        let (ingest_tx, ingest) = crossbeam_channel::bounded(BATCH);
+        let (ui_tx, ui) = crossbeam_channel::bounded(UI_QUEUE);
+        for n in 0..64 {
+            ui_tx.try_send(job(1000 + n).0).unwrap();
+            ingest_tx.try_send(job(n).0).unwrap();
+        }
+        let batch = Queues::new(ui, ingest).next_batch().unwrap();
+        let people = batch
+            .iter()
+            .filter(|w| matches!(w.job, Job::Sweep { at } if at >= 1000))
+            .count();
+        assert_eq!((batch.len(), people), (64, 32));
     }
 }

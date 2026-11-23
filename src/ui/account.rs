@@ -8,7 +8,9 @@ use super::{
 };
 use crate::{
     accounts::{
-        Email, Person, Secret, check_new_password, hash_password,
+        Email, Person, Secret,
+        backoff::Target,
+        check_new_password, hash_password,
         store::{self, Change},
         verify_password,
     },
@@ -28,6 +30,8 @@ use std::sync::Arc;
 
 /// What a login, welcome or password body may weigh.
 pub const MAX_BODY: usize = 4 * 1024;
+/// How long such a body may take. A browser sends it with the headers.
+pub const BODY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const WRONG: &str = "wrong e-mail or password";
 const LINK_GONE: &str = "this link was used or is older than 24 hours, ask for a new one";
 
@@ -63,9 +67,8 @@ pub fn protected(local: Arc<Local>) -> Router {
         .with_state(local)
 }
 
-async fn read<T: DeserializeOwned>(local: &Local, body: Body) -> Result<T, Refusal> {
-    let mut held = local.budget().hold();
-    let bytes = body::read_at_most(body, MAX_BODY, &mut held).await?;
+async fn read<T: DeserializeOwned>(body: Body) -> Result<T, Refusal> {
+    let bytes = body::read_small(body, MAX_BODY, BODY_TIMEOUT).await?;
     serde_json::from_slice(&bytes).map_err(|e| Refusal::bad(e.to_string()))
 }
 
@@ -99,12 +102,14 @@ pub(super) struct Login {
 }
 
 async fn login(State(local): State<Arc<Local>>, body: Body) -> Result<Response, Refusal> {
-    let req: Login = read(&local, body).await?;
+    let req: Login = read(body).await?;
     let email = Email::parse(&req.email).map_err(Refusal::bad)?;
-    let slot = local.slot()?;
-    local.attempt(Guess::Login, &email)?;
     let found = store::password(&*local.db()?, &email)?;
     let (user, hash) = found.map_or((None, None), |(id, hash)| (Some(id), hash));
+    let target = user.map_or(Target::Unknown(&email), Target::User);
+    local.check(Guess::Login, target)?;
+    let slot = local.slot().await?;
+    local.attempt(Guess::Login, target)?;
     let checked = hash.clone();
     let password = req.password;
     let matched = hashing(slot, move || {
@@ -124,7 +129,7 @@ async fn login(State(local): State<Arc<Local>>, body: Body) -> Result<Response, 
     write(&local.writes, change)
         .await?
         .map_err(|_password_changed| Refusal::new(StatusCode::UNAUTHORIZED, WRONG))?;
-    local.succeeded(Guess::Login, &email);
+    local.succeeded(Guess::Login, user);
     let next = next_page(req.next.as_deref());
     let body = LoggedIn {
         email: email.as_str().to_owned(),
@@ -183,27 +188,28 @@ pub(super) struct Welcome {
 
 async fn welcome(State(local): State<Arc<Local>>, body: Body) -> Result<Response, Refusal> {
     let gone = || Refusal::new(StatusCode::GONE, LINK_GONE);
-    let req: Welcome = read(&local, body).await?;
+    let req: Welcome = read(body).await?;
     let invite = Secret::parse(&req.secret).ok_or_else(gone)?.hash();
     check_new_password(&req.password).map_err(Refusal::bad)?;
-    let now = time::now_ms();
-    if !store::invite_works(&*local.db()?, &invite, now)? {
+    if !store::invite_works(&*local.db()?, &invite, time::now_ms())? {
         return Err(gone());
     }
-    let slot = local.slot()?;
+    let slot = local.slot().await?;
     let password = req.password;
     let hash = hashing(slot, move || hash_password(&password)).await?;
     let secret = Secret::random().map_err(internal)?;
+    // Read after the hash, so a link that expired while it waited is gone.
+    let at = time::now_ms();
     let change = Change::Welcome {
         invite,
         password: hash,
         session: secret.hash(),
-        at: now,
+        at,
     };
     write(&local.writes, change)
         .await?
         .map_err(|_link_used| gone())?;
-    let session = store::session(&*local.db()?, &secret.hash(), now)?;
+    let session = store::session(&*local.db()?, &secret.hash(), at)?;
     let email = session
         .map(|s| s.person.email.to_string())
         .unwrap_or_default();
@@ -230,10 +236,11 @@ async fn set_password(
     body: Body,
 ) -> Result<Response, Refusal> {
     let keep = current(&headers)?.hash();
-    let req: NewPassword = read(&local, body).await?;
+    let req: NewPassword = read(body).await?;
     check_new_password(&req.new).map_err(Refusal::bad)?;
-    let slot = local.slot()?;
-    local.attempt(Guess::Change, &person.email)?;
+    local.check(Guess::Change, Target::User(person.id))?;
+    let slot = local.slot().await?;
+    local.attempt(Guess::Change, Target::User(person.id))?;
     let old = store::password_of(&*local.db()?, person.id)?;
     let checked = old.clone();
     let new = hashing(slot, move || {
@@ -260,7 +267,7 @@ async fn set_password(
                 "the password changed meanwhile, try again",
             )
         })?;
-    local.succeeded(Guess::Change, &person.email);
+    local.succeeded(Guess::Change, person.id);
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

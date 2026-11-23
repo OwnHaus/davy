@@ -1,4 +1,4 @@
-use super::backoff::{Backoff, MAX_WAIT};
+use super::backoff::{Backoff, MAX_WAIT, Target};
 use super::store::{self, Change, LINK_USED, PASSWORD_CHANGED, Session};
 use super::{
     DUMMY_HASH, Email, INVITE_MS, Person, SESSION_IDLE_MS, SESSION_MAX_MS, Secret, SecretHash,
@@ -63,6 +63,15 @@ fn a_new_password_needs_12_characters_and_at_most_1024_bytes() {
     assert_eq!(check_new_password("twelve chars"), Ok(()));
     assert_eq!(check_new_password("ěščřžýáíéúůď"), Ok(()));
     assert!(check_new_password(&"a".repeat(1025)).is_err());
+}
+
+#[test]
+fn a_new_password_is_not_one_of_the_common_ones_in_any_case() {
+    assert_eq!(
+        check_new_password("Qwerty123456"),
+        Err("this password is one of the most common ones, choose another".to_owned())
+    );
+    assert_eq!(check_new_password("qwerty123456 pony"), Ok(()));
 }
 
 #[test]
@@ -309,35 +318,36 @@ fn the_sweep_deletes_ended_sessions_and_links() {
 }
 
 #[test]
-fn the_wait_doubles_per_attempt_up_to_15_minutes() {
-    let mut b = Backoff::new(10);
+fn the_wait_doubles_per_attempt_up_to_15_minutes_with_or_without_a_user() {
     let ann = email("ann@example.com");
-    let mut now = Instant::now();
-    let mut waits = vec![];
-    for _ in 0..12 {
-        b.attempt(&ann, now).unwrap();
-        let wait = b.attempt(&ann, now).unwrap_err();
-        waits.push(wait.as_secs());
-        now += wait;
+    for target in [Target::User(1), Target::Unknown(&ann)] {
+        let mut b = Backoff::new(10);
+        let mut now = Instant::now();
+        let mut waits = vec![];
+        for _ in 0..12 {
+            b.attempt(target, now).unwrap();
+            let wait = b.attempt(target, now).unwrap_err();
+            waits.push(wait.as_secs());
+            now += wait;
+        }
+        assert_eq!(waits, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 900, 900]);
     }
-    assert_eq!(waits, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 900, 900]);
     assert_eq!(MAX_WAIT, Duration::from_mins(15));
 }
 
 #[test]
-fn a_success_forgets_the_attempts_of_that_email_only() {
+fn a_success_forgets_the_attempts_of_that_user_only() {
     let mut b = Backoff::new(10);
-    let (ann, bob) = (email("ann@example.com"), email("bob@example.com"));
     let now = Instant::now();
-    b.attempt(&ann, now).unwrap();
-    b.attempt(&bob, now).unwrap();
-    b.succeeded(&ann);
-    assert_eq!(b.attempt(&ann, now), Ok(()));
-    assert_eq!(b.attempt(&bob, now), Err(Duration::from_secs(1)));
+    b.attempt(Target::User(1), now).unwrap();
+    b.attempt(Target::User(2), now).unwrap();
+    b.succeeded(1);
+    assert_eq!(b.attempt(Target::User(1), now), Ok(()));
+    assert_eq!(b.attempt(Target::User(2), now), Err(Duration::from_secs(1)));
 }
 
 #[test]
-fn a_full_backoff_drops_the_entry_whose_wait_ended_first() {
+fn a_full_table_of_unknown_emails_drops_the_oldest() {
     let mut b = Backoff::new(2);
     let (ann, bob, cid) = (
         email("ann@example.com"),
@@ -345,30 +355,26 @@ fn a_full_backoff_drops_the_entry_whose_wait_ended_first() {
         email("cid@example.com"),
     );
     let now = Instant::now();
-    let later = now + Duration::from_secs(2);
-    b.attempt(&ann, now).unwrap();
-    b.attempt(&bob, later).unwrap();
-    b.attempt(&cid, later).unwrap();
-    assert_eq!(b.attempt(&bob, later), Err(Duration::from_secs(1)));
-    assert_eq!(b.attempt(&cid, later), Err(Duration::from_secs(1)));
-    assert_eq!(b.attempt(&ann, now), Ok(()));
+    for e in [&ann, &bob, &cid] {
+        b.attempt(Target::Unknown(e), now).unwrap();
+    }
+    assert_eq!(b.attempt(Target::Unknown(&ann), now), Ok(()));
+    assert_eq!(
+        b.attempt(Target::Unknown(&cid), now),
+        Err(Duration::from_secs(1))
+    );
 }
 
 #[test]
-fn a_flood_of_new_emails_does_not_reset_the_count_of_one_under_attack() {
+fn a_flood_of_unknown_emails_does_not_reset_the_count_of_a_user() {
     let mut b = Backoff::new(3);
-    let ann = email("ann@example.com");
-    let mut now = Instant::now();
-    for _ in 0..5 {
-        b.attempt(&ann, now).unwrap();
-        now += b.attempt(&ann, now).unwrap_err();
-    }
+    let now = Instant::now();
+    b.attempt(Target::User(1), now).unwrap();
     for i in 0..100 {
-        b.attempt(&email(&format!("new{i}@example.com")), now)
+        b.attempt(Target::Unknown(&email(&format!("new{i}@example.com"))), now)
             .unwrap();
     }
-    b.attempt(&ann, now).unwrap();
-    assert_eq!(b.attempt(&ann, now), Err(Duration::from_secs(32)));
+    assert_eq!(b.attempt(Target::User(1), now), Err(Duration::from_secs(1)));
 }
 
 #[test]
@@ -404,4 +410,39 @@ fn user_add_refuses_a_link_to_plain_http_on_another_host() {
         let link = add(email, url).unwrap();
         assert!(link.starts_with(&format!("{url}ui/welcome#")), "{link}");
     }
+}
+
+#[test]
+fn user_hints_quote_the_email_for_the_shell() {
+    #[derive(clap::Parser)]
+    struct Davy {
+        #[command(subcommand)]
+        user: super::cli::User,
+    }
+    let data = crate::test_support::scratch("user-hint");
+    let data = data.to_str().unwrap();
+    let run = |command: &str| {
+        let davy = <Davy as clap::Parser>::try_parse_from([
+            "davy",
+            command,
+            "o'$(id)@example.com",
+            "--data",
+            data,
+            "--public-url",
+            "https://davy.example.com/",
+        ])
+        .unwrap();
+        super::cli::run(&mut Vec::new(), davy.user)
+    };
+    let e = run("reset").unwrap_err().to_string();
+    assert!(
+        e.contains(r"davy user add 'o'\''$(id)@example.com' --data "),
+        "{e}"
+    );
+    run("add").unwrap();
+    let e = run("add").unwrap_err().to_string();
+    assert!(
+        e.contains(r"davy user reset 'o'\''$(id)@example.com' --data "),
+        "{e}"
+    );
 }

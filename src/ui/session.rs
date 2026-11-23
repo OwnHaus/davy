@@ -4,11 +4,11 @@
 use super::Refusal;
 use crate::{
     accounts::{
-        Accounts, Email, Person, Secret,
-        backoff::{self, Backoff},
+        Accounts, Person, Secret,
+        backoff::{self, Backoff, Target},
         store::{self, Change},
     },
-    http::{body::Budget, internal},
+    http::internal,
     store::{Job, Sender, Write},
     time,
 };
@@ -24,9 +24,12 @@ pub const COOKIE: &str = "__Host-davy_session";
 /// Argon2 runs at once at most this often, so logins cannot take every
 /// blocking thread or more than this many times [`crate::accounts::HASH_MEMORY`].
 pub const HASHES_AT_ONCE: usize = 2;
-/// What the bodies of logins, welcomes and password changes may hold at once.
-/// Their own budget, so ingest that holds its budget does not refuse a login.
-pub const BODY_MEMORY: usize = 2 * 1024 * 1024;
+/// Requests that may wait for a hash slot, in the order they came, and for
+/// how long. Logins that arrive together then wait their turn, and a flood
+/// has to keep this many waiting to refuse anyone.
+pub const HASH_QUEUE: usize = 32;
+pub const HASH_WAIT: Duration = Duration::from_secs(3);
+const TOO_MANY: &str = "too many attempts for this e-mail, wait";
 
 /// Which count an attempt to guess a password goes to. A login and a
 /// password change in an open session count apart, so failed logins for an
@@ -46,7 +49,7 @@ pub struct Local {
     /// At most [`HASHES_AT_ONCE`] hashes, so they never hold more memory
     /// than that many times [`crate::accounts::HASH_MEMORY`].
     pub(super) hashing: Arc<Semaphore>,
-    budget: Budget,
+    pub(super) queue: Semaphore,
 }
 
 /// The right to run one Argon2 hash.
@@ -64,7 +67,7 @@ impl Local {
             logins: Mutex::new(Backoff::new(backoff::CAPACITY)),
             changes: Mutex::new(Backoff::new(backoff::CAPACITY)),
             hashing: Arc::new(Semaphore::new(HASHES_AT_ONCE)),
-            budget: Budget::new(BODY_MEMORY),
+            queue: Semaphore::new(HASH_QUEUE),
         }
     }
 
@@ -72,17 +75,15 @@ impl Local {
         self.db.lock().map_err(|e| internal(e).into())
     }
 
-    pub(super) fn budget(&self) -> &Budget {
-        &self.budget
-    }
-
-    /// A hash slot, or `429` at once when both are busy.
-    pub(super) fn slot(&self) -> Result<Slot, Refusal> {
-        let permit = Arc::clone(&self.hashing)
-            .try_acquire_owned()
-            .map_err(|_busy| {
-                Refusal::wait(Duration::from_secs(1), "too many logins at once, try again")
-            })?;
+    /// A hash slot, after the requests that waited before this one, or `429`
+    /// when [`HASH_QUEUE`] wait already or none frees in [`HASH_WAIT`].
+    pub(super) async fn slot(&self) -> Result<Slot, Refusal> {
+        let busy = || Refusal::wait(Duration::from_secs(1), "too many logins at once, try again");
+        let _waiting = self.queue.try_acquire().map_err(|_full| busy())?;
+        let permit = tokio::time::timeout(HASH_WAIT, Arc::clone(&self.hashing).acquire_owned())
+            .await
+            .map_err(|_late| busy())?
+            .map_err(internal)?;
         Ok(Slot { _permit: permit })
     }
 
@@ -93,18 +94,28 @@ impl Local {
         }
     }
 
-    /// Counts an attempt to guess the password of `email`, or says how long
-    /// to wait.
-    pub(super) fn attempt(&self, guess: Guess, email: &Email) -> Result<(), Refusal> {
-        let mut backoff = self.backoff(guess).lock().map_err(internal)?;
-        backoff
-            .attempt(email, Instant::now())
-            .map_err(|wait| Refusal::wait(wait, "too many attempts for this e-mail, wait"))
+    /// Refuses a guess at `target` that is still in its wait, without
+    /// counting it. [`Self::attempt`] counts it later, once it has a slot.
+    pub(super) fn check(&self, guess: Guess, target: Target<'_>) -> Result<(), Refusal> {
+        let backoff = self.backoff(guess).lock().map_err(internal)?;
+        match backoff.waiting(target, Instant::now()) {
+            Some(wait) => Err(Refusal::wait(wait, TOO_MANY)),
+            None => Ok(()),
+        }
     }
 
-    pub(super) fn succeeded(&self, guess: Guess, email: &Email) {
+    /// Counts an attempt to guess the password of `target`, or says how
+    /// long to wait.
+    pub(super) fn attempt(&self, guess: Guess, target: Target<'_>) -> Result<(), Refusal> {
+        let mut backoff = self.backoff(guess).lock().map_err(internal)?;
+        backoff
+            .attempt(target, Instant::now())
+            .map_err(|wait| Refusal::wait(wait, TOO_MANY))
+    }
+
+    pub(super) fn succeeded(&self, guess: Guess, user: i64) {
         if let Ok(mut backoff) = self.backoff(guess).lock() {
-            backoff.succeeded(email);
+            backoff.succeeded(user);
         }
     }
 }

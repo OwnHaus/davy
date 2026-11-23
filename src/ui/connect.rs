@@ -145,6 +145,7 @@ async fn any_log(reads: &Arc<Reads>) -> Result<Option<Timestamp>, Refusal> {
         min_level: None,
         text: None,
         limit: 1,
+        skip: 0,
     };
     let hits = logs::searching(reads, move |dir| search(dir, &query)).await?;
     Ok(hits.first().map(|h| h.timestamp_ns.div_euclid(1_000_000)))

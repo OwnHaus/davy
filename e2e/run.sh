@@ -142,5 +142,8 @@ assert ctx['issue']['title'].startswith('TypeError: Cannot read properties of un
 print('source maps: sentry-cli upload, symbolicated top frame parseOrder at ../src/app.js:5')
 PY
 node "$ROOT/e2e/alerts.mjs" "$BIN" "$SCRATCH/alerts"
+OPEN=$(find "$SCRATCH/data" \( -perm -004 -o -perm -040 \) -print)
+[ -z "$OPEN" ] || { echo "readable by other users: $OPEN"; exit 1; }
+echo 'data directory: no file is readable by other users'
 echo 'PASS: all end-to-end assertions passed'
 

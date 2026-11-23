@@ -32,17 +32,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// The files under `dir`, without dotfiles such as `.gitkeep`.
+/// The files under `dir`, without dotfiles such as `.gitkeep` and without
+/// symlinks, so nothing outside `ui/dist/` ends up in the binary.
 fn collect(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), Box<dyn Error>> {
     for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path
-            .file_name()
-            .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let path = entry.path();
+        if kind.is_symlink()
+            || path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with('.'))
         {
             continue;
         }
-        if path.is_dir() {
+        if kind.is_dir() {
             collect(&path, files)?;
         } else {
             files.push(path);

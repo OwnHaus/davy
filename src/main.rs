@@ -244,6 +244,9 @@ fn duration(s: &str) -> Result<Duration, String> {
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Every file Davy creates holds events, logs, sessions or keys.
+    #[cfg(unix)]
+    nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
     let mut out = std::io::stdout();
     match Cli::parse().command {
         Command::Serve(args) => davy::serve::run(args).await?,
@@ -329,6 +332,7 @@ fn logs(out: &mut impl Write, args: Logs) -> anyhow::Result<()> {
             min_level: args.level,
             text: args.query,
             limit: args.limit,
+            skip: 0,
         },
     )?;
     print_logs(out, hits, args.json)

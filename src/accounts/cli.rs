@@ -51,7 +51,7 @@ pub fn run(out: &mut impl Write, command: User) -> anyhow::Result<()> {
             anyhow::ensure!(
                 store::remove(&crate::store::open(&data)?, &email)?,
                 "no user {email}, see davy user list --data {}",
-                data.display()
+                install::sh(&data.to_string_lossy())
             );
             if json {
                 writeln!(out, "{}", serde_json::json!({ "removed": email.as_str() }))?;
@@ -93,14 +93,16 @@ fn invite(out: &mut impl Write, args: &Invite, reset: bool) -> anyhow::Result<()
     if reset {
         anyhow::ensure!(
             store::reset(&c, &email, &secret.hash(), now)?,
-            "no user {email}, add one with davy user add {email} --data {}",
-            args.data.display()
+            "no user {email}, add one with davy user add {} --data {}",
+            install::sh(email.as_str()),
+            install::sh(&args.data.to_string_lossy())
         );
     } else {
         anyhow::ensure!(
             store::add(&c, &email, &secret.hash(), now)?.is_some(),
-            "{email} already has a user, send a new link with davy user reset {email} --data {}",
-            args.data.display()
+            "{email} already has a user, send a new link with davy user reset {} --data {}",
+            install::sh(email.as_str()),
+            install::sh(&args.data.to_string_lossy())
         );
     }
     let link = welcome_link(&public_url, &secret);

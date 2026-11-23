@@ -66,6 +66,7 @@ pub fn logs_around(project: i64, at_ns: i64, trace: Option<&str>) -> (String, Lo
                 min_level: None,
                 text: Some(format!("trace_id:{trace}")),
                 limit: 50,
+                skip: 0,
             },
         ),
         None => (
@@ -77,6 +78,7 @@ pub fn logs_around(project: i64, at_ns: i64, trace: Option<&str>) -> (String, Lo
                 min_level: None,
                 text: None,
                 limit: 30,
+                skip: 0,
             },
         ),
     }

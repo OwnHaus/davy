@@ -78,7 +78,8 @@ pub async fn page(path: Option<Path<String>>, headers: HeaderMap) -> Response {
 }
 
 fn respond(files: Files, name: &str, br: bool) -> Response {
-    let (name, cache) = if file(files, name).is_some() {
+    // A brotli copy goes out only as the encoding of its plain file.
+    let (name, cache) = if name.strip_suffix(".br").is_none() && file(files, name).is_some() {
         // Files under assets/ carry a hash of their content in the name.
         let cache = if name.starts_with("assets/") {
             "public, max-age=31536000, immutable"
@@ -181,6 +182,11 @@ mod tests {
         );
         assert_eq!(sent("issues/5", false).await, (200, None, b"page".to_vec()));
         assert_eq!(sent("assets/gone.js", true).await.0, 404);
+        assert_eq!(sent("assets/app-1.js.br", false).await.0, 404);
+        assert_eq!(
+            sent("index.html.br", false).await,
+            (200, None, b"page".to_vec())
+        );
         let r = respond(FILES, "assets/app-1.js", true);
         assert_eq!(r.headers()[header::VARY], "accept-encoding");
         assert_eq!(

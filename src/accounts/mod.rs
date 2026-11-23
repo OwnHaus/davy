@@ -86,8 +86,25 @@ pub fn check_new_password(p: &str) -> Result<(), String> {
             "a password may have at most {MAX_PASSWORD_BYTES} bytes"
         ));
     }
+    if common(p) {
+        return Err("this password is one of the most common ones, choose another".to_owned());
+    }
     Ok(())
 }
+
+/// Whether `p` is in [`COMMON_PASSWORDS`], ignoring case, so a guesser who
+/// tries the usual passwords first cannot find it.
+fn common(p: &str) -> bool {
+    let p = p.to_lowercase();
+    COMMON_PASSWORDS
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .any(|line| line == p)
+}
+
+/// The most common passwords that are long enough for
+/// [`MIN_PASSWORD_CHARS`], one per line, after notes on where they come from.
+const COMMON_PASSWORDS: &str = include_str!("common_passwords.txt");
 
 fn argon2() -> Argon2<'static> {
     Argon2::new(Algorithm::Argon2id, Version::V0x13, Params::default())

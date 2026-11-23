@@ -419,10 +419,9 @@ pub struct StatusChange {
 }
 
 async fn set_status(State(reads): State<Arc<Reads>>, body: Body) -> Result<Response, Refusal> {
-    let mut held = reads.budget.hold();
-    let bytes = body::read_at_most(body, MAX_STATUS_BODY, &mut held)
-        .await
-        .map_err(priced)?;
+    // Read within a few seconds, so a session that ends meanwhile cannot
+    // keep a write pending for long.
+    let bytes = body::read_small(body, MAX_STATUS_BODY, super::account::BODY_TIMEOUT).await?;
     let change: StatusChange =
         serde_json::from_slice(&bytes).map_err(|e| Refusal::bad(e.to_string()))?;
     let issues = IssueIds::new(change.issues).map_err(Refusal::bad)?;

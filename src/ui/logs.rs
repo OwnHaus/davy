@@ -30,8 +30,9 @@ use std::{collections::HashMap, sync::Arc};
 pub const PAGE: usize = 100;
 /// Characters a search query has at most.
 pub const MAX_QUERY: usize = 1000;
-/// Logs at one nanosecond a cursor may step over. Past it the next page
-/// would have to read them all again for each page.
+/// Logs at one nanosecond a cursor may step over. The store passes over
+/// them without reading them, but still ranks them for each page. Past this
+/// many the next page starts a nanosecond earlier, so paging never stops.
 const MAX_SEEN: usize = 10_000;
 /// The window when the browser names no start: the hour up to the end.
 const DEFAULT_SPAN: i64 = 3_600_000_000_000;
@@ -58,7 +59,7 @@ impl Before {
         let (ts, seen) = s.split_once('.')?;
         Some(Self {
             ts: ts.parse().ok().filter(|ts| *ts >= 0)?,
-            seen: seen.parse().ok().filter(|n| (1..=MAX_SEEN).contains(n))?,
+            seen: seen.parse().ok().filter(|n| *n < MAX_SEEN)?,
         })
     }
 
@@ -101,6 +102,7 @@ fn filter(q: &Query) -> Result<(LogQuery, Option<String>), Refusal> {
         min_level: min_level.map_err(Refusal::bad)?,
         text,
         limit: PAGE,
+        skip: 0,
     };
     Ok((query, q.owned("project")))
 }
@@ -154,8 +156,11 @@ async fn list(State(reads): State<Arc<Reads>>, uri: Uri) -> Result<Response, Ref
     match (before.transpose()?, ns(&q, "after")?) {
         (Some(_), Some(_)) => Err(Refusal::bad("a page is before or after, not both")),
         (Some(before), None) => {
-            query.until = query.until.min(before.ts);
-            query.limit = PAGE + before.seen;
+            // A cursor past the end of the window has nothing to skip there.
+            if before.ts <= query.until {
+                query.until = before.ts;
+                query.skip = before.seen;
+            }
             read_page(&reads, query, slug, Some(before)).await
         }
         (None, after) => {
@@ -194,27 +199,25 @@ fn page_of(
     slugs: &HashMap<i64, String>,
 ) -> LogPage {
     hits.reverse();
-    let skip = before.map_or(0, |b| {
-        let at = hits.iter().take_while(|h| h.timestamp_ns == b.ts).count();
-        at.min(b.seen)
-    });
-    let older = (hits.len() - skip >= page)
+    let older = (hits.len() >= page)
         .then(|| hits.last())
         .flatten()
-        .map(|oldest| Before {
-            ts: oldest.timestamp_ns,
-            seen: hits
-                .iter()
-                .filter(|h| h.timestamp_ns == oldest.timestamp_ns)
-                .count()
-                .min(MAX_SEEN),
+        .and_then(|oldest| {
+            let ts = oldest.timestamp_ns;
+            let shown = hits.iter().filter(|h| h.timestamp_ns == ts).count();
+            let earlier = before.filter(|b| b.ts == ts).map_or(0, |b| b.seen);
+            let seen = shown + earlier;
+            if seen < MAX_SEEN {
+                Some(Before { ts, seen })
+            } else {
+                (ts > 0).then(|| Before {
+                    ts: ts - 1,
+                    seen: 0,
+                })
+            }
         });
     LogPage {
-        logs: hits
-            .into_iter()
-            .skip(skip)
-            .map(|h| LogLine::new(h, slugs))
-            .collect(),
+        logs: hits.into_iter().map(|h| LogLine::new(h, slugs)).collect(),
         before: older.map(|b| b.encode()),
     }
 }

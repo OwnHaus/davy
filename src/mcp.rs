@@ -221,6 +221,7 @@ impl Tools {
                     min_level,
                     text: req.query,
                     limit: req.limit.unwrap_or(100).min(MAX_LOGS),
+                    skip: 0,
                 },
             )?;
             json(&hits)
