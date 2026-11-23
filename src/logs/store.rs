@@ -53,6 +53,10 @@ struct Fields {
     span_id: Field,
     message: Field,
     attributes: Field,
+    /// Every string and number in `attributes`, at any depth, so a bare word
+    /// finds a value without naming its path. Not stored. Days written before
+    /// it existed lack it.
+    values: Field,
 }
 
 fn schema() -> (Schema, Fields) {
@@ -68,8 +72,14 @@ fn schema() -> (Schema, Fields) {
         span_id: b.add_text_field("span_id", STRING | STORED),
         message: b.add_text_field("message", TEXT | STORED),
         attributes: b.add_json_field("attributes", TEXT | STORED),
+        values: b.add_text_field("values", TEXT),
     };
     (b.build(), f)
+}
+
+/// Whether a day index has [`Fields::values`].
+fn has_values(index: &Index) -> bool {
+    index.schema().get_field("values").is_ok()
 }
 
 fn parse_day(name: &str) -> Option<Date> {
@@ -91,7 +101,7 @@ fn open_index(root: &Path, day: Date) -> Result<Index> {
         .create_in_dir(&dir)?)
 }
 
-fn document(f: &Fields, r: LogRecord) -> TantivyDocument {
+fn document(f: &Fields, r: LogRecord, values: bool) -> TantivyDocument {
     let mut d = TantivyDocument::default();
     d.add_u64(f.project, r.project_id.cast_unsigned());
     d.add_i64(f.ts, r.timestamp);
@@ -108,6 +118,9 @@ fn document(f: &Fields, r: LogRecord) -> TantivyDocument {
         d.add_text(f.span_id, s);
     }
     d.add_text(f.message, r.message);
+    if values {
+        add_values(&mut d, f.values, &r.attributes);
+    }
     d.add_object(
         f.attributes,
         r.attributes
@@ -118,8 +131,24 @@ fn document(f: &Fields, r: LogRecord) -> TantivyDocument {
     d
 }
 
+/// Adds each string and number in `attributes` to `field`. A stack and not
+/// recursion, because attributes nest as deep as the ingest allows.
+fn add_values(d: &mut TantivyDocument, field: Field, attributes: &Map<String, Value>) {
+    let mut stack: Vec<&Value> = attributes.values().collect();
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::String(s) => d.add_text(field, s),
+            Value::Number(n) => d.add_text(field, n.to_string()),
+            Value::Array(a) => stack.extend(a),
+            Value::Object(m) => stack.extend(m.values()),
+            Value::Bool(_) | Value::Null => {}
+        }
+    }
+}
+
 struct OpenDay {
     writer: IndexWriter,
+    values: bool,
     last_write: Instant,
     dirty: bool,
 }
@@ -163,11 +192,14 @@ impl State {
             {
                 self.close(oldest)?;
             }
-            let writer = open_index(&self.root, day)?.writer_with_num_threads(1, WRITER_HEAP)?;
+            let index = open_index(&self.root, day)?;
+            let values = has_values(&index);
+            let writer = index.writer_with_num_threads(1, WRITER_HEAP)?;
             self.open.insert(
                 day,
                 OpenDay {
                     writer,
+                    values,
                     last_write: Instant::now(),
                     dirty: false,
                 },
@@ -182,7 +214,7 @@ impl State {
             self.settle(&mut r);
             let day = day_of(r.timestamp);
             let open = self.writer(day)?;
-            if let Err(e) = open.writer.add_document(document(&fields, r)) {
+            if let Err(e) = open.writer.add_document(document(&fields, r, open.values)) {
                 self.discard(day);
                 return Err(e.into());
             }
@@ -529,7 +561,12 @@ impl Day {
             ));
         }
         if let Some(text) = q.text.as_deref().filter(|t| !t.trim().is_empty()) {
-            let parser = QueryParser::for_index(&self.index, vec![f.message, f.attributes]);
+            let words = if has_values(&self.index) {
+                f.values
+            } else {
+                f.attributes
+            };
+            let parser = QueryParser::for_index(&self.index, vec![f.message, words]);
             let parsed = parser
                 .parse_query(text)
                 .map_err(|e| anyhow!("invalid query {text:?}: {e}"))?;
@@ -544,7 +581,7 @@ pub fn check_text(text: &str) -> Result<(), String> {
     let (schema, f) = schema();
     let parser = QueryParser::new(
         schema,
-        vec![f.message, f.attributes],
+        vec![f.message, f.values],
         TokenizerManager::default(),
     );
     parser
@@ -619,3 +656,7 @@ pub use histogram::{Histogram, MAX_BUCKETS, histogram};
 #[cfg(test)]
 #[path = "queue_tests.rs"]
 mod queue_tests;
+
+#[cfg(test)]
+#[path = "values_tests.rs"]
+mod values_tests;

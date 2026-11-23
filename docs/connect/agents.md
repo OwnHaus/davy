@@ -40,7 +40,7 @@ To check, ask the agent: "List the unresolved issues in Davy." It calls `sql` an
 ## What the agent can do
 
 - `issue_context` returns what fixing an issue needs: the stack with source lines, breadcrumbs, the releases it occurs in and the logs around it.
-- `search_logs` searches logs by text and attributes over a time range.
+- `search_logs` searches logs over a time range. A bare word such as a request ID matches the message and every attribute value, and `attributes.<key>:<word>` matches one attribute.
 - `sql` runs one read-only query, and `schema` describes the tables.
 - `mark_fixed` resolves an issue in a release. It reopens when the error comes back in that release or a newer one.
 - `submit_feedback` reports a tool that was missing, returned the wrong thing or needed a workaround. `davy feedback --data /var/lib/davy` lists the reports. Davy sends them nowhere unless a channel was added with `--feedback`.

@@ -51,8 +51,8 @@ When a tool was missing, returned the wrong thing or needed a workaround, call `
 
 const LOG_NOTES: &str = "
 Logs are not in SQL. Use search_logs. Its query is Tantivy syntax over these fields:
-- message (full text, the default field)
-- attributes.<key> (full text inside the JSON attributes, e.g. attributes.provider:acme)
+- message and every attribute value (full text, the default: a bare word such as timeout or r-3fa9c2d1 matches either)
+- attributes.<key> (full text in one attribute, e.g. attributes.provider:acme or attributes.req.id:r-3fa9c2d1)
 - service, trace_id, span_id (exact match, e.g. trace_id:4bf92f3577b34da6a3ce929d0e0e4736)
 Combine with AND, OR, NOT and parentheses. Levels are trace, debug, info, warn, error, fatal.";
 

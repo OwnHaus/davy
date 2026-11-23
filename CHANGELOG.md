@@ -6,6 +6,7 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 
 ### Fixed
 
+- A bare word in a log search now finds attribute values at any depth. Searching `r-3fa9c2d1` found nothing when the request ID sat in `attributes.req.id`, and only `attributes.req.id:r-3fa9c2d1` found it. Logs written before this release keep the old behaviour: a bare word matches their message only.
 - An issue's latest event is now its newest one. After 50 events Davy kept the payload of only every 100th, so the UI, `davy event` and `issue_context` could show an event hours older than the issue's last seen time.
 
 ## 0.1.0 (2026-11-23)
