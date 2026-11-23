@@ -10,6 +10,7 @@ pub mod checkin_store;
 mod checkin_store_tests;
 #[cfg(test)]
 mod checkin_tests;
+pub mod cli;
 mod retention;
 pub mod schedule;
 #[cfg(test)]

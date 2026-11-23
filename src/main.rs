@@ -5,7 +5,7 @@ use davy::{
         self, LogLevel,
         store::{LogCounts, LogHit, LogQuery, histogram, search},
     },
-    monitor::{self, CheckUrl, Expect, NewMonitor, Target},
+    monitor::{self, CheckUrl},
     query, store, text,
     time::{self, now_ns},
 };
@@ -13,7 +13,6 @@ use std::{
     borrow::Cow,
     io::Write,
     path::{Path, PathBuf},
-    time::Duration,
 };
 #[derive(Parser)]
 #[command(version)]
@@ -53,7 +52,7 @@ enum Command {
     /// Uptime checks of a URL and heartbeats from cron jobs.
     Monitor {
         #[command(subcommand)]
-        command: Monitor,
+        command: monitor::cli::Monitor,
     },
     /// Where alerts about issues and monitors go.
     Channel {
@@ -169,62 +168,6 @@ enum Project {
     },
 }
 #[derive(Subcommand)]
-enum Monitor {
-    /// Adds an HTTP check with --url, or a heartbeat with --heartbeat. Prints
-    /// the monitor's ID and its URL or ping path.
-    Add(MonitorAdd),
-    /// Prints each monitor with its state, last check and open incident.
-    List {
-        #[arg(long)]
-        data: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    /// Deletes a monitor with its checks and incidents.
-    Remove {
-        /// The ID that `davy monitor list` prints.
-        id: i64,
-        #[arg(long)]
-        data: PathBuf,
-    },
-}
-#[derive(clap::Args)]
-#[command(group(ArgGroup::new("target").required(true).args(["url", "heartbeat"])))]
-struct MonitorAdd {
-    /// The project slug whose channels get the alerts.
-    project: String,
-    /// A name for alerts and lists, such as `api health`.
-    name: String,
-    #[arg(long)]
-    data: PathBuf,
-    /// The URL to GET. A status of 400 or more is down.
-    #[arg(long)]
-    url: Option<String>,
-    /// Up only when the first 1 MiB of the body contains this text.
-    #[arg(long, conflicts_with_all = ["no_keyword", "heartbeat"])]
-    keyword: Option<String>,
-    /// Up only when the first 1 MiB of the body does not contain this text.
-    #[arg(long, conflicts_with = "heartbeat")]
-    no_keyword: Option<String>,
-    /// Expect a ping to /api/heartbeat/<token> every --every.
-    #[arg(long)]
-    heartbeat: bool,
-    /// Default 60s for --url, 1h for --heartbeat.
-    #[arg(long, value_parser = duration)]
-    every: Option<Duration>,
-    /// Default 10s.
-    #[arg(long, value_parser = duration, conflicts_with = "heartbeat")]
-    timeout: Option<Duration>,
-    /// How late a ping may be before the monitor is down. Default 5m.
-    #[arg(long, value_parser = duration, conflicts_with = "url")]
-    grace: Option<Duration>,
-    /// Also take Sentry SDK check-ins for this monitor slug. They ping the
-    /// monitor but never change its --every or --grace. Anyone with the
-    /// public project DSN can ping a guessable slug; keep it unset for token-only access.
-    #[arg(long, conflicts_with = "url")]
-    slug: Option<String>,
-}
-#[derive(Subcommand)]
 enum Channel {
     /// Adds a webhook, a Slack incoming webhook or an e-mail address for
     /// --project or --all. Prints the channel's ID, and for a webhook its
@@ -289,9 +232,6 @@ fn shared_help(c: clap::Command) -> clap::Command {
     })
     .mut_subcommands(shared_help)
 }
-fn duration(s: &str) -> Result<Duration, String> {
-    time::duration(s).ok_or_else(|| format!("expected 30s, 15m, 1h or 2d, got {s:?}"))
-}
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Every file Davy creates holds events, logs, sessions or keys.
@@ -324,7 +264,7 @@ async fn main() -> anyhow::Result<()> {
             };
             writeln!(out, "{}", create_project(&data, &slug, &public_url)?)?;
         }
-        Command::Monitor { command } => run_monitor(&mut out.lock(), command)?,
+        Command::Monitor { command } => monitor::cli::run(&mut out.lock(), command)?,
         Command::Channel { command } => run_channel(&mut out.lock(), command)?,
         Command::User { command } => davy::accounts::cli::run(&mut out.lock(), command)?,
         Command::Issues {
@@ -397,67 +337,6 @@ fn logs(out: &mut impl Write, args: Logs) -> anyhow::Result<()> {
         writeln!(out, "{} logs, {} buckets", counts.total, counts.step)?;
         for (start, n) in counts.buckets {
             writeln!(out, "{start}\t{n}")?;
-        }
-    }
-    Ok(())
-}
-fn run_monitor(out: &mut impl Write, command: Monitor) -> anyhow::Result<()> {
-    match command {
-        Monitor::Add(args) => {
-            let c = store::open(&args.data)?;
-            let project = store::project_by_slug(&c, &args.project)?;
-            let target = match args.url {
-                Some(url) => Target::Http {
-                    url: CheckUrl::parse(&url).map_err(anyhow::Error::msg)?,
-                    expect: match (args.keyword, args.no_keyword) {
-                        (Some(k), _) => Expect::Keyword(k),
-                        (None, Some(k)) => Expect::NoKeyword(k),
-                        (None, None) => Expect::Status,
-                    },
-                    timeout: args.timeout.unwrap_or(monitor::DEFAULT_TIMEOUT),
-                },
-                None => Target::Heartbeat {
-                    grace: args.grace.unwrap_or(monitor::DEFAULT_GRACE),
-                    slug: args
-                        .slug
-                        .map(|s| {
-                            monitor::checkin::MonitorSlug::parse(&s).ok_or_else(|| {
-                                anyhow::anyhow!("a slug is 1 to 50 characters of A-Z a-z 0-9 _ -")
-                            })
-                        })
-                        .transpose()?,
-                },
-            };
-            let m = NewMonitor::new(&args.name, target, args.every).map_err(anyhow::Error::msg)?;
-            let added = monitor::store::add(&c, project, &m, time::now_ms())?;
-            writeln!(out, "{}\t{}", added.id, added.target)?;
-        }
-        Monitor::List { data, json } => {
-            let monitors = monitor::store::list(&store::open(&data)?)?;
-            if json {
-                writeln!(out, "{}", serde_json::to_string(&monitors)?)?;
-                return Ok(());
-            }
-            let at = |ms: Option<i64>| ms.map_or_else(|| "-".to_owned(), time::rfc3339_ms);
-            for m in monitors {
-                writeln!(
-                    out,
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                    m.id,
-                    safe(&m.project),
-                    safe(&m.name),
-                    m.state.as_str(),
-                    safe(&m.target),
-                    at(m.last_check_at),
-                    at(m.open_since)
-                )?;
-            }
-        }
-        Monitor::Remove { id, data } => {
-            anyhow::ensure!(
-                monitor::store::remove(&store::open(&data)?, id)?,
-                "no monitor {id}"
-            );
         }
     }
     Ok(())
