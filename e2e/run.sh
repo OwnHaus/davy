@@ -109,6 +109,28 @@ assert json.loads((p/'dropped.json').read_text())['rows']==[['davy_unknown_monit
 print(project+': verified 3 monitors made by check-ins, the CLI monitor unchanged, a failure ping and an unknown slug counted')
 PY
 done
+"$BIN" project create edit-from --data "$SCRATCH/data" --public-url "$URL" > /dev/null
+"$BIN" project create edit-to --data "$SCRATCH/data" --public-url "$URL" > /dev/null
+ADDED=$("$BIN" monitor add edit-from nightly --heartbeat --every 1h --data "$SCRATCH/data")
+ID="${ADDED%%	*}"; PING="${ADDED#*	}"
+pings() { "$BIN" sql --data "$SCRATCH/data" --json "SELECT count(*) FROM checks WHERE monitor_id = $ID" | python3 -c 'import json,sys; print(json.load(sys.stdin)["rows"][0][0])'; }
+[ "$(curl -fsS "$URL$PING")" = ok ]
+for i in {1..50}; do [ "$(pings)" = 1 ] && break; sleep 0.1; done
+EDITED=$("$BIN" monitor edit "$ID" --every 2h --project edit-to --name 'nightly backup' --data "$SCRATCH/data")
+[ "$EDITED" = "$ADDED" ] || { echo "edit printed $EDITED, add printed $ADDED"; exit 1; }
+if "$BIN" monitor edit "$ID" --url https://shop.example/ --data "$SCRATCH/data" 2> "$SCRATCH/kind.txt"; then echo 'a heartbeat took a URL'; exit 1; fi
+[ "$(curl -fsS "$URL$PING")" = ok ]
+for i in {1..50}; do [ "$(pings)" = 2 ] && break; sleep 0.1; done
+"$BIN" monitor edit "$ID" --grace 1m --data "$SCRATCH/data" --json > "$SCRATCH/edited.json"
+python3 - "$SCRATCH" "$PING" "$(pings)" <<'PY'
+import json,pathlib,sys
+p,ping,pings=pathlib.Path(sys.argv[1]),sys.argv[2],sys.argv[3]
+m=json.loads((p/'edited.json').read_text())
+got=(m['project'],m['name'],m['schedule'],m['target'],m['state'],m['source'],pings)
+assert got==('edit-to','nightly backup','every 2h',ping,'up','cli','2'),got
+assert 'keeps its kind' in (p/'kind.txt').read_text(),(p/'kind.txt').read_text()
+print('monitor edit: verified a heartbeat moved to another project with a new schedule keeps its ID, token and 2 checks, and refuses a URL')
+PY
 DSN=$("$BIN" project create logs --data "$SCRATCH/data" --public-url "$URL")
 KEY="${DSN#*://}"; KEY="${KEY%%@*}"
 node "$ROOT/e2e/send-logs.mjs" "$DSN"

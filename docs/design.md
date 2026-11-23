@@ -543,10 +543,23 @@ At most 1,000 monitors and 100 channels per data directory. The `sql` tool reads
 - `davy monitor add <project> <name> --url <url> [--keyword <text> | --no-keyword <text>] [--every 60s] [--timeout 10s]`
 - `davy monitor add <project> <name> --heartbeat [--every 1h] [--grace 5m]` prints the ping path `/api/heartbeat/<token>`.
 - `davy monitor list` shows each monitor with its state, last check and open incident. `davy monitor remove <id>`.
+- `davy monitor edit <id> [--project <slug>] [--name <name>] [--every <d>]`, and for an HTTP check `[--url <url>] [--keyword <text> | --no-keyword <text> | --status-only] [--timeout <d>]`, for a heartbeat `[--grace <d>] [--slug <slug> | --no-slug]`. It prints what `add` prints, or with `--json` the monitor as one row of `davy monitor list --json`. See [Editing a monitor](#editing-a-monitor).
 - `davy channel add webhook <url> (--project <slug> | --all)` prints the channel ID and the signing secret, once. `davy channel add slack <url> (--project <slug> | --all)` and `davy channel add email <address> (--project <slug> | --all)` print the ID. An address is one `user@domain` of at most 254 characters, stored as a `mailto:` URL. The project is a flag because clap cannot read an optional positional before two required ones.
 - `davy channel list` shows each channel with its unsent, failed and dropped counts and where it goes: only the host of a webhook or Slack URL, because a Slack webhook URL is a credential, and the whole address of an e-mail channel. `davy channel remove <id>`. `davy channel test <id>` queues a `test` notice for that channel alone. Its `project` is `null` on a channel of every project.
 
-Monitors and channels are added from the CLI only. No MCP tool creates them, so an agent cannot point the server at an address.
+Monitors and channels are added and changed from the CLI only. No MCP tool creates or edits them, so an agent cannot point the server at an address or silence an alert. The web UI shows monitors and has no form to change one.
+
+### Editing a monitor
+
+Removing a monitor deletes its checks and incidents, and a new heartbeat gets a new token, so `davy monitor edit` changes a monitor in place:
+
+- It keeps the ID, the checks, the incidents, the state and the heartbeat token. Only the given flags change. At least one is required.
+- The result is held to the limits of `add`: the URL, the name, the keyword, `every` with `timeout` or `grace`, and the slug, unique per project.
+- A monitor keeps its kind. An HTTP flag on a heartbeat, or a heartbeat flag on an HTTP check, is refused. To change the kind, add a new monitor and remove the old one.
+- A heartbeat whose `every` or `grace` changes expects its next ping by `last ping + every + grace`, as a ping sets it. A heartbeat that is `Pending`, or down after a missed ping, expects nothing until its next ping, as before.
+- `--project` moves the monitor with its history. The new project's channels get its notices from then on. When it moves with an open incident, the channels of the new project alone get `monitor.down` for that incident, so the `monitor.up` that closes it does not come out of nowhere. Channels of every project got it already, and the old project's channels get no `monitor.up`.
+- A monitor made by check-ins takes its schedule from the check-ins and is found by its project and slug, so only `--name` changes it. Every other flag is refused with that reason.
+- The edit is one transaction. A check that started before it stores its result for the old settings.
 
 ### Not in this milestone
 

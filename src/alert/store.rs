@@ -132,11 +132,27 @@ pub fn remove(c: &Connection, id: i64) -> Result<bool> {
 /// Queues `notice` for every channel of `project` and of all projects. Call
 /// it in the transaction that makes the change it reports.
 pub fn notify(c: &Connection, project: i64, notice: &Notice, at: Timestamp) -> Result<()> {
+    fan_out(c, project, true, notice, at)
+}
+
+/// Queues `notice` for the channels of `project` alone, not for those of
+/// all projects. Call it in the transaction that makes the change it reports.
+pub fn notify_project(c: &Connection, project: i64, notice: &Notice, at: Timestamp) -> Result<()> {
+    fan_out(c, project, false, notice, at)
+}
+
+fn fan_out(
+    c: &Connection,
+    project: i64,
+    all_projects: bool,
+    notice: &Notice,
+    at: Timestamp,
+) -> Result<()> {
     let channels: Vec<(i64, Kind)> = c
         .prepare(
-            "SELECT id,kind FROM channels WHERE project_id=?1 OR project_id IS NULL ORDER BY id",
+            "SELECT id,kind FROM channels WHERE project_id=?1 OR (?2 AND project_id IS NULL) ORDER BY id",
         )?
-        .query_map([project], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .query_map(params![project, all_projects], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     if channels.is_empty() {
         return Ok(());

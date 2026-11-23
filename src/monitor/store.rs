@@ -33,7 +33,7 @@ pub struct Added {
 }
 
 /// Errs when a monitor of `project` already takes check-ins for `slug`.
-fn slug_free(c: &Connection, project: i64, slug: &str) -> Result<()> {
+pub(super) fn slug_free(c: &Connection, project: i64, slug: &str) -> Result<()> {
     let in_use: bool = c.query_row(
         "SELECT EXISTS(SELECT 1 FROM monitors WHERE project_id=?1 AND slug=?2)",
         params![project, slug],
@@ -55,11 +55,7 @@ pub fn add(c: &Connection, project: i64, m: &NewMonitor, now: Timestamp) -> Resu
             expect,
             timeout,
         } => {
-            let (expect, keyword) = match expect {
-                Expect::Status => ("status", None),
-                Expect::Keyword(k) => ("keyword", Some(k.as_str())),
-                Expect::NoKeyword(k) => ("no_keyword", Some(k.as_str())),
-            };
+            let (expect, keyword) = expect_columns(expect);
             let timeout = Some(secs(*timeout));
             let target = url.as_str().to_owned();
             (
@@ -122,6 +118,29 @@ pub fn add(c: &Connection, project: i64, m: &NewMonitor, now: Timestamp) -> Resu
     Ok(Added {
         id: c.last_insert_rowid(),
         target,
+    })
+}
+
+/// The columns `expect` and `keyword` of `e`.
+pub(super) fn expect_columns(e: &Expect) -> (&'static str, Option<&str>) {
+    match e {
+        Expect::Status => ("status", None),
+        Expect::Keyword(k) => ("keyword", Some(k.as_str())),
+        Expect::NoKeyword(k) => ("no_keyword", Some(k.as_str())),
+    }
+}
+
+/// The [`Expect`] in the columns `expect` and `keyword` of monitor `id`.
+pub(super) fn stored_expect(
+    id: i64,
+    expect: Option<&str>,
+    keyword: Option<String>,
+) -> Result<Expect> {
+    Ok(match (expect, keyword) {
+        (Some("status"), _) => Expect::Status,
+        (Some("keyword"), Some(k)) => Expect::Keyword(k),
+        (Some("no_keyword"), Some(k)) => Expect::NoKeyword(k),
+        (expect, _) => anyhow::bail!("HTTP monitor {id} has unknown expect {expect:?}"),
     })
 }
 
@@ -222,12 +241,7 @@ pub fn due(c: &Connection, now: Timestamp) -> Result<Vec<Http>> {
             .map(CheckUrl::parse)
             .with_context(|| format!("HTTP monitor {id} has no URL"))?
             .map_err(|e| anyhow::anyhow!("HTTP monitor {id}: {e}"))?;
-        let expect = match (expect.as_deref(), keyword) {
-            (Some("status"), _) => Expect::Status,
-            (Some("keyword"), Some(k)) => Expect::Keyword(k),
-            (Some("no_keyword"), Some(k)) => Expect::NoKeyword(k),
-            (expect, _) => anyhow::bail!("HTTP monitor {id} has unknown expect {expect:?}"),
-        };
+        let expect = stored_expect(id, expect.as_deref(), keyword)?;
         let timeout = timeout
             .and_then(|s| u64::try_from(s).ok())
             .with_context(|| format!("HTTP monitor {id} has no timeout"))?;
@@ -361,13 +375,22 @@ pub struct Listed {
 
 /// Every monitor, oldest first.
 pub fn list(c: &Connection) -> Result<Vec<Listed>> {
+    listed(c, None)
+}
+
+/// Monitor `id` as [`list`] shows it.
+pub fn one(c: &Connection, id: i64) -> Result<Option<Listed>> {
+    Ok(listed(c, Some(id))?.pop())
+}
+
+fn listed(c: &Connection, id: Option<i64>) -> Result<Vec<Listed>> {
     let mut q = c.prepare(
         "SELECT m.id,p.slug,m.name,coalesce(m.url,'/api/heartbeat/'||m.heartbeat_token,'check-in '||m.slug),m.state,m.last_check_at,
          (SELECT started_at FROM incidents i WHERE i.monitor_id=m.id AND i.resolved_at IS NULL),
          m.slug,m.source,m.kind,m.every_s,m.months,m.cron,m.zone,m.config_changes
-         FROM monitors m JOIN projects p ON p.id=m.project_id ORDER BY m.id",
+         FROM monitors m JOIN projects p ON p.id=m.project_id WHERE ?1 IS NULL OR m.id=?1 ORDER BY m.id",
     )?;
-    let rows = q.query_map([], |r| {
+    let rows = q.query_map([id], |r| {
         let schedule = (r.get::<_, String>(9)? == "heartbeat").then(|| {
             super::checkin_store::schedule_at(r, 10)
                 .map_or_else(|_| "invalid stored schedule".to_owned(), |s| s.to_string())

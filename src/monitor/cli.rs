@@ -2,7 +2,7 @@
 //! Writes from its own process, like the other commands that change the
 //! database.
 
-use super::{CheckUrl, Expect, NewMonitor, Target, checkin::MonitorSlug, store};
+use super::{CheckUrl, Expect, NewMonitor, Target, checkin::MonitorSlug, edit::Edit, store};
 use crate::{text, time};
 use clap::{ArgGroup, Args, Subcommand};
 use std::{borrow::Cow, io::Write, path::PathBuf, time::Duration};
@@ -19,6 +19,9 @@ pub enum Monitor {
         #[arg(long)]
         json: bool,
     },
+    /// Changes a monitor in place: only the given flags change, and it keeps
+    /// its ID, checks, incidents and heartbeat token. Prints what add prints.
+    Edit(EditArgs),
     /// Deletes a monitor with its checks and incidents.
     Remove {
         /// The ID that `davy monitor list` prints.
@@ -65,6 +68,54 @@ pub struct Add {
     slug: Option<String>,
 }
 
+#[derive(Args)]
+#[command(group(ArgGroup::new("change").required(true).multiple(true).args([
+    "project", "name", "every", "url", "keyword", "no_keyword", "status_only", "timeout", "grace",
+    "slug", "no_slug",
+])))]
+#[command(group(ArgGroup::new("body").args(["keyword", "no_keyword", "status_only"])))]
+pub struct EditArgs {
+    /// The ID that `davy monitor list` prints.
+    id: i64,
+    #[arg(long)]
+    data: PathBuf,
+    /// Moves the monitor, with its checks and incidents, to this project slug.
+    #[arg(long)]
+    project: Option<String>,
+    /// A name for alerts and lists, such as `api health`.
+    #[arg(long)]
+    name: Option<String>,
+    /// How often an HTTP check runs, or a heartbeat expects a ping.
+    #[arg(long, value_parser = duration)]
+    every: Option<Duration>,
+    /// The URL an HTTP check GETs.
+    #[arg(long)]
+    url: Option<String>,
+    /// Up only when the first 1 MiB of the body contains this text.
+    #[arg(long)]
+    keyword: Option<String>,
+    /// Up only when the first 1 MiB of the body does not contain this text.
+    #[arg(long)]
+    no_keyword: Option<String>,
+    /// Up on the status alone, without a keyword.
+    #[arg(long)]
+    status_only: bool,
+    /// How long an HTTP check may take.
+    #[arg(long, value_parser = duration)]
+    timeout: Option<Duration>,
+    /// How late a heartbeat's ping may be before the monitor is down.
+    #[arg(long, value_parser = duration)]
+    grace: Option<Duration>,
+    /// Also take Sentry SDK check-ins for this monitor slug, as add --slug.
+    #[arg(long, conflicts_with = "no_slug")]
+    slug: Option<String>,
+    /// Stop taking check-ins, so only the heartbeat token pings the monitor.
+    #[arg(long)]
+    no_slug: bool,
+    #[arg(long)]
+    json: bool,
+}
+
 fn duration(s: &str) -> Result<Duration, String> {
     time::duration(s).ok_or_else(|| format!("expected 30s, 15m, 1h or 2d, got {s:?}"))
 }
@@ -79,6 +130,7 @@ pub fn run(out: &mut impl Write, command: Monitor) -> anyhow::Result<()> {
     match command {
         Monitor::Add(args) => add(out, args)?,
         Monitor::List { data, json } => list(out, &data, json)?,
+        Monitor::Edit(args) => edit(out, args)?,
         Monitor::Remove { id, data } => {
             anyhow::ensure!(
                 store::remove(&crate::store::open(&data)?, id)?,
@@ -110,6 +162,51 @@ fn add(out: &mut impl Write, args: Add) -> anyhow::Result<()> {
     let m = NewMonitor::new(&args.name, target, args.every).map_err(anyhow::Error::msg)?;
     let added = store::add(&c, project, &m, time::now_ms())?;
     writeln!(out, "{}\t{}", added.id, added.target)?;
+    Ok(())
+}
+
+fn edit(out: &mut impl Write, args: EditArgs) -> anyhow::Result<()> {
+    let mut c = crate::store::open(&args.data)?;
+    let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let project = args
+        .project
+        .map(|slug| crate::store::project_by_slug(&tx, &slug))
+        .transpose()?;
+    let expect = match (args.keyword, args.no_keyword, args.status_only) {
+        (Some(k), _, _) => Some(Expect::Keyword(k)),
+        (None, Some(k), _) => Some(Expect::NoKeyword(k)),
+        (None, None, true) => Some(Expect::Status),
+        (None, None, false) => None,
+    };
+    let slug = match (args.slug, args.no_slug) {
+        (Some(s), _) => Some(Some(slug(&s)?)),
+        (None, true) => Some(None),
+        (None, false) => None,
+    };
+    let change = Edit {
+        project,
+        name: args.name,
+        every: args.every,
+        url: args
+            .url
+            .map(|u| CheckUrl::parse(&u).map_err(anyhow::Error::msg))
+            .transpose()?,
+        expect,
+        timeout: args.timeout,
+        grace: args.grace,
+        slug,
+    };
+    let edited = super::edit::edit(&tx, args.id, &change, time::now_ms())?;
+    let row = args
+        .json
+        .then(|| store::one(&tx, args.id))
+        .transpose()?
+        .flatten();
+    tx.commit()?;
+    match row {
+        Some(row) => writeln!(out, "{}", serde_json::to_string(&row)?)?,
+        None => writeln!(out, "{}\t{}", edited.id, edited.target)?,
+    }
     Ok(())
 }
 

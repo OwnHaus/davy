@@ -60,6 +60,27 @@ fn monitor_add_takes_the_flags_of_one_kind() {
 }
 
 #[test]
+fn monitor_edit_takes_at_least_one_change() {
+    let edit = |extra: &[&str]| {
+        let base = ["davy", "monitor", "edit", "3", "--data", "d"];
+        Cli::try_parse_from(base.iter().chain(extra)).is_ok()
+    };
+    assert!(edit(&["--name", "API", "--project", "blog"]));
+    assert!(edit(&["--every", "2h", "--grace", "0s", "--no-slug"]));
+    assert!(edit(&["--status-only", "--timeout", "5s", "--json"]));
+    for bad in [
+        &[][..],
+        &["--json"],
+        &["--keyword", "a", "--no-keyword", "b"],
+        &["--keyword", "a", "--status-only"],
+        &["--slug", "backup", "--no-slug"],
+        &["--every", "soon"],
+    ] {
+        assert!(!edit(bad), "{bad:?}");
+    }
+}
+
+#[test]
 fn channel_add_takes_a_project_or_all() {
     let add = |extra: &[&str]| {
         let base = ["davy", "channel", "add", "--data", "d"];

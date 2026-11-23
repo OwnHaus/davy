@@ -11,6 +11,7 @@ mod checkin_store_tests;
 #[cfg(test)]
 mod checkin_tests;
 pub mod cli;
+pub mod edit;
 mod retention;
 pub mod schedule;
 #[cfg(test)]
@@ -101,6 +102,15 @@ pub enum Target {
     },
 }
 
+/// `name` trimmed, when that is 1 to 100 characters.
+fn monitor_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > MAX_NAME_CHARS {
+        return Err(format!("the name must be 1 to {MAX_NAME_CHARS} characters"));
+    }
+    Ok(name.to_owned())
+}
+
 /// A monitor that passed its limits and can be stored.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewMonitor {
@@ -113,10 +123,7 @@ impl NewMonitor {
     /// Checks the limits in `docs/design.md`. Without `every`, an HTTP check
     /// runs every minute and a heartbeat expects a ping every hour.
     pub fn new(name: &str, target: Target, every: Option<Duration>) -> Result<Self, String> {
-        let name = name.trim().to_owned();
-        if name.is_empty() || name.chars().count() > MAX_NAME_CHARS {
-            return Err(format!("the name must be 1 to {MAX_NAME_CHARS} characters"));
-        }
+        let name = monitor_name(name)?;
         let within = |d: Duration, (low, high): (Duration, Duration)| (low..=high).contains(&d);
         let every = match &target {
             Target::Http {
