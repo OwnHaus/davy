@@ -24,7 +24,7 @@ Davy replaces Sentry and Better Stack for a team that wants to run its own. It i
 - **Logs.** Takes logs from Logtail shippers (pino, Vector, Fluent Bit), OpenTelemetry and Sentry's logger, with full-text search, a histogram and live tail. Logs next to an error show up on the error.
 - **Uptime.** HTTP checks with status and keyword, and heartbeats for cron jobs.
 - **Alerts.** A notice when an issue is new or regressed and when a monitor goes down or comes back, never on every event. To webhooks (signed), Slack and e-mail.
-- **Agents.** An MCP server with six tools: `schema`, `sql`, `search_logs`, `issue_context`, `mark_fixed` and `submit_feedback`. Every operator step is also a CLI command with `--json`.
+- **Agents.** An MCP server with seven tools: `schema`, `sql`, `search_logs`, `count_logs`, `issue_context`, `mark_fixed` and `submit_feedback`. Every operator step is also a CLI command with `--json`.
 - **Web UI.** Triage issues from the keyboard, read stack traces and breadcrumbs, search logs. Light and dark.
 
 ## Quick start
@@ -108,7 +108,8 @@ Log search takes the same query as `davy logs`. Drag across the histogram to zoo
 
 - `issue_context`: the stack with source lines, breadcrumbs, releases and the logs around the error, in one call.
 - `sql`: one read-only SQLite query, with `schema` to see the tables.
-- `search_logs`: the log search the UI uses.
+- `search_logs`: the log search the UI uses. A bare word such as a request ID matches the message and every attribute value.
+- `count_logs`: how many logs match per time bucket, with the filters of `search_logs`, to see how often something happens and since when.
 - `mark_fixed`: resolves an issue in a release. It reopens only if the error comes back in that release or a newer one, not from older ones still running.
 - `submit_feedback`: tells whoever runs Davy that a tool was missing or wrong. Davy sends it nowhere else.
 
@@ -118,6 +119,7 @@ The same is in the CLI:
 davy issues --data ./data
 davy context 12 --data ./data
 davy logs --data ./data --project my-app --since 1h --level warn 'timeout AND attributes.provider:acme'
+davy logs --data ./data --since 30d --count timeout
 davy resolve 12 --data ./data --release 1.4.0
 ```
 

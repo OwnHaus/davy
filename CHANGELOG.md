@@ -4,6 +4,10 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 
 ## Unreleased
 
+### Added
+
+- `count_logs`, an MCP tool that counts the logs matching the filters of `search_logs` per time bucket, so an agent sees how often something happens and since when without reading the logs. The CLI has the same as `davy logs --count`.
+
 ### Fixed
 
 - A bare word in a log search now finds attribute values at any depth. Searching `r-3fa9c2d1` found nothing when the request ID sat in `attributes.req.id`, and only `attributes.req.id:r-3fa9c2d1` found it. Logs written before this release keep the old behaviour: a bare word matches their message only.

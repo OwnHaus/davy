@@ -3,7 +3,7 @@ use davy::{
     alert, context, feedback, install, issues,
     logs::{
         self, LogLevel,
-        store::{LogHit, LogQuery, search},
+        store::{LogCounts, LogHit, LogQuery, histogram, search},
     },
     monitor::{self, CheckUrl, Expect, NewMonitor, Target},
     query, store, text,
@@ -133,8 +133,11 @@ struct Logs {
     #[arg(long, value_parser = level)]
     level: Option<LogLevel>,
     /// At most this many logs, the newest ones in the window.
-    #[arg(long, default_value_t = 100)]
+    #[arg(long, default_value_t = 100, conflicts_with = "count")]
     limit: usize,
+    /// Prints how many logs match per time bucket instead of the logs.
+    #[arg(long)]
+    count: bool,
     #[arg(long)]
     json: bool,
 }
@@ -359,19 +362,28 @@ fn logs(out: &mut impl Write, args: Logs) -> anyhow::Result<()> {
         Some(slug) => Some(store::project_by_slug(&store::open(&args.data)?, &slug)?),
         None => None,
     };
-    let hits = search(
-        &logs::dir(&args.data),
-        &LogQuery {
-            project,
-            since: args.since,
-            until: args.until.unwrap_or_else(now_ns),
-            min_level: args.level,
-            text: args.query,
-            limit: args.limit,
-            skip: 0,
-        },
-    )?;
-    print_logs(out, hits, args.json)
+    let q = LogQuery {
+        project,
+        since: args.since,
+        until: args.until.unwrap_or_else(now_ns),
+        min_level: args.level,
+        text: args.query,
+        limit: args.limit,
+        skip: 0,
+    };
+    if !args.count {
+        return print_logs(out, search(&logs::dir(&args.data), &q)?, args.json);
+    }
+    let counts = LogCounts::from(histogram(&logs::dir(&args.data), &q)?);
+    if args.json {
+        writeln!(out, "{}", serde_json::to_string(&counts)?)?;
+    } else {
+        writeln!(out, "{} logs, {} buckets", counts.total, counts.step)?;
+        for (start, n) in counts.buckets {
+            writeln!(out, "{start}\t{n}")?;
+        }
+    }
+    Ok(())
 }
 fn run_monitor(out: &mut impl Write, command: Monitor) -> anyhow::Result<()> {
     match command {

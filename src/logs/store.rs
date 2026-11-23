@@ -651,7 +651,7 @@ fn hit(schema: &Schema, f: &Fields, doc: &TantivyDocument) -> Result<LogHit> {
 
 #[path = "histogram.rs"]
 mod histogram;
-pub use histogram::{Histogram, MAX_BUCKETS, histogram};
+pub use histogram::{Histogram, LogCounts, MAX_BUCKETS, histogram};
 
 #[cfg(test)]
 #[path = "queue_tests.rs"]

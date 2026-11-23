@@ -8,7 +8,7 @@ use crate::{
     issues::IssueIds,
     logs::{
         self, LogLevel,
-        store::{LogQuery, search},
+        store::{LogCounts, LogQuery, histogram, search},
     },
     query,
     store::{self, IssueStatus, Job},
@@ -46,7 +46,7 @@ const MAX_LOGS: usize = 500;
 const INSTRUCTIONS: &str = "Davy stores the errors that Sentry SDKs report and the logs that services ship. \
 To triage, list open issues with `sql` (SELECT id,title,event_count,last_seen FROM issues WHERE status='unresolved' ORDER BY last_seen DESC LIMIT 20), \
 then call `issue_context` on one issue. It returns the stack with source lines, breadcrumbs, releases and the logs around the error. \
-Call `schema` before writing other SQL. After a fix ships, call `mark_fixed`. \
+Call `schema` before writing other SQL. To see how often a log line happens and since when, call `count_logs` before `search_logs`. After a fix ships, call `mark_fixed`. \
 When a tool was missing, returned the wrong thing or needed a workaround, call `submit_feedback`.";
 
 const LOG_NOTES: &str = "
@@ -54,7 +54,8 @@ Logs are not in SQL. Use search_logs. Its query is Tantivy syntax over these fie
 - message and every attribute value (full text, the default: a bare word such as timeout or r-3fa9c2d1 matches either)
 - attributes.<key> (full text in one attribute, e.g. attributes.provider:acme or attributes.req.id:r-3fa9c2d1)
 - service, trace_id, span_id (exact match, e.g. trace_id:4bf92f3577b34da6a3ce929d0e0e4736)
-Combine with AND, OR, NOT and parentheses. Levels are trace, debug, info, warn, error, fatal.";
+Combine with AND, OR, NOT and parentheses. Levels are trace, debug, info, warn, error, fatal.
+count_logs takes the same filters and returns counts per time bucket instead of the logs.";
 
 /// `/mcp`, behind the token. Requests must name loopback or the host of
 /// `public_url` in their `Host` header, and a browser page that sends one
@@ -131,9 +132,10 @@ struct Sql {
     query: String,
 }
 
+/// The logs `search_logs` reads and `count_logs` counts.
 #[derive(Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
-struct SearchLogs {
+struct LogFilter {
     /// Tantivy query, see `schema`. Leave out to match every log.
     query: Option<String>,
     /// Project slug. Leave out to search every project.
@@ -144,6 +146,42 @@ struct SearchLogs {
     until: Option<String>,
     /// Minimum level: trace, debug, info, warn, error or fatal.
     level: Option<String>,
+}
+
+impl LogFilter {
+    /// The store query, with at most `limit` hits.
+    fn query(self, data: &Path, limit: usize) -> anyhow::Result<LogQuery> {
+        let now = time::now_ns();
+        let instant = |s: Option<&str>, default: &str| {
+            time::instant(s.unwrap_or(default), now).map_err(anyhow::Error::msg)
+        };
+        let project = match &self.project {
+            Some(slug) => Some(store::project_by_slug(&query::open(data)?, slug)?),
+            None => None,
+        };
+        let min_level = self
+            .level
+            .as_deref()
+            .map(LogLevel::named)
+            .transpose()
+            .map_err(anyhow::Error::msg)?;
+        Ok(LogQuery {
+            project,
+            since: instant(self.since.as_deref(), "24h")?,
+            until: instant(self.until.as_deref(), "0s")?,
+            min_level,
+            text: self.query,
+            limit,
+            skip: 0,
+        })
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct SearchLogs {
+    #[serde(flatten)]
+    filter: LogFilter,
     /// At most 500. Default 100. The newest logs win when there are more.
     limit: Option<usize>,
 }
@@ -198,33 +236,19 @@ impl Tools {
     )]
     async fn search_logs(&self, Parameters(req): Parameters<SearchLogs>) -> Reply {
         self.blocking(move |data| {
-            let now = time::now_ns();
-            let instant = |s: Option<&str>, default: &str| {
-                time::instant(s.unwrap_or(default), now).map_err(anyhow::Error::msg)
-            };
-            let project = match &req.project {
-                Some(slug) => Some(store::project_by_slug(&query::open(data)?, slug)?),
-                None => None,
-            };
-            let min_level = req
-                .level
-                .as_deref()
-                .map(LogLevel::named)
-                .transpose()
-                .map_err(anyhow::Error::msg)?;
-            let hits = search(
-                &logs::dir(data),
-                &LogQuery {
-                    project,
-                    since: instant(req.since.as_deref(), "24h")?,
-                    until: instant(req.until.as_deref(), "0s")?,
-                    min_level,
-                    text: req.query,
-                    limit: req.limit.unwrap_or(100).min(MAX_LOGS),
-                    skip: 0,
-                },
-            )?;
-            json(&hits)
+            let limit = req.limit.unwrap_or(100).min(MAX_LOGS);
+            json(&search(&logs::dir(data), &req.filter.query(data, limit)?)?)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Count the logs that match, per time bucket, with the filters of search_logs. Returns the total, the bucket width and each bucket that has logs as [start, count], oldest first, at most 200 buckets. Use it to see how often something happens and since when, then read examples with search_logs."
+    )]
+    async fn count_logs(&self, Parameters(filter): Parameters<LogFilter>) -> Reply {
+        self.blocking(move |data| {
+            let q = filter.query(data, 0)?;
+            json(&LogCounts::from(histogram(&logs::dir(data), &q)?))
         })
         .await
     }
@@ -338,297 +362,5 @@ impl ServerHandler for Tools {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::body::{Body, to_bytes};
-    use axum::http::header;
-    use serde_json::{Value, json};
-    use tower::ServiceExt;
-
-    const SECRET: &str = "a-test-token-that-is-long-enough!";
-
-    struct Server {
-        app: Router,
-        writes: crossbeam_channel::Receiver<store::Write>,
-    }
-
-    fn server() -> Server {
-        let data = crate::test_support::scratch("mcp");
-        let c = store::open(&data).unwrap();
-        store::create_project(&c, "api").unwrap();
-        let (tx, writes) = crossbeam_channel::bounded(8);
-        Server {
-            app: router(
-                data,
-                tx,
-                Token::new(SECRET),
-                &url::Url::parse("https://davy.example/").unwrap(),
-            ),
-            writes,
-        }
-    }
-
-    /// The next write that is not the first agent's.
-    fn next_job(writes: &crossbeam_channel::Receiver<store::Write>) -> store::Write {
-        loop {
-            let w = writes.recv().unwrap();
-            if !matches!(w.job, Job::First { .. }) {
-                return w;
-            }
-        }
-    }
-
-    async fn post(app: &Router, host: &str, token: Option<&str>, body: Value) -> (u16, String) {
-        let mut req = axum::http::Request::post("/mcp")
-            .header(header::HOST, host)
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::ACCEPT, "application/json, text/event-stream");
-        if let Some(t) = token {
-            req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
-        }
-        let r = app
-            .clone()
-            .oneshot(req.body(Body::from(body.to_string())).unwrap())
-            .await
-            .unwrap();
-        let status = r.status().as_u16();
-        let body = to_bytes(r.into_body(), 1_000_000).await.unwrap();
-        (status, String::from_utf8(body.to_vec()).unwrap())
-    }
-
-    fn call(tool: &str, arguments: &Value) -> Value {
-        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-               "params": {"name": tool, "arguments": arguments}})
-    }
-
-    /// The text and `isError` flag of a tool result.
-    async fn tool(app: &Router, tool: &str, arguments: Value) -> (String, bool) {
-        let (status, body) = post(app, "localhost", Some(SECRET), call(tool, &arguments)).await;
-        assert_eq!(status, 200, "{body}");
-        let reply: Value = serde_json::from_str(&body).unwrap();
-        let result = &reply["result"];
-        (
-            result["content"][0]["text"].as_str().unwrap().to_owned(),
-            result["isError"].as_bool().unwrap_or(false),
-        )
-    }
-
-    #[tokio::test]
-    async fn mcp_answers_only_with_the_token() {
-        let s = server();
-        let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
-        for (token, expected) in [(None, 401), (Some("wrong"), 401), (Some(SECRET), 200)] {
-            let (status, body) = post(&s.app, "localhost", token, list.clone()).await;
-            assert_eq!(status, expected, "{token:?}: {body}");
-        }
-    }
-
-    #[tokio::test]
-    async fn the_first_request_with_the_token_records_an_agent_once() {
-        let s = server();
-        let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
-        post(&s.app, "localhost", Some("wrong"), list.clone()).await;
-        tokio::task::yield_now().await;
-        assert!(
-            s.writes.try_recv().is_err(),
-            "a refused request is no agent"
-        );
-        for _ in 0..3 {
-            post(&s.app, "localhost", Some(SECRET), list.clone()).await;
-        }
-        let write = s
-            .writes
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
-        let Job::First { what, at } = write.job else {
-            panic!("the write is no first agent");
-        };
-        assert_eq!(what, First::Agent);
-        assert!(time::now_ms() - at < 60_000);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert!(s.writes.try_recv().is_err(), "one write per server start");
-    }
-
-    #[tokio::test]
-    async fn a_ui_session_cookie_is_no_token() {
-        let s = server();
-        let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
-        let req = axum::http::Request::post("/mcp")
-            .header(header::HOST, "localhost")
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::ACCEPT, "application/json, text/event-stream")
-            .header(header::COOKIE, format!("__Host-davy_session={SECRET}"))
-            .body(Body::from(list.to_string()))
-            .unwrap();
-        assert_eq!(s.app.clone().oneshot(req).await.unwrap().status(), 401);
-    }
-
-    #[tokio::test]
-    async fn mcp_answers_only_for_loopback_and_the_public_host() {
-        let s = server();
-        let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
-        for (host, expected) in [
-            ("localhost:8080", 200),
-            ("127.0.0.1", 200),
-            ("davy.example", 200),
-            ("attacker.example", 403),
-        ] {
-            let (status, body) = post(&s.app, host, Some(SECRET), list.clone()).await;
-            assert_eq!(status, expected, "{host}: {body}");
-        }
-    }
-
-    #[tokio::test]
-    async fn mcp_refuses_pages_from_other_origins_and_an_empty_host() {
-        let s = server();
-        let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
-        for (host, origin, expected) in [
-            ("davy.example", None, 200),
-            ("davy.example", Some("https://davy.example"), 200),
-            ("localhost", Some("http://localhost:6274"), 200),
-            ("davy.example", Some("https://attacker.example"), 403),
-            ("davy.example", Some("http://davy.example"), 403),
-            ("davy.example", Some("null"), 403),
-            ("", None, 400),
-        ] {
-            let mut req = axum::http::Request::post("/mcp")
-                .header(header::HOST, host)
-                .header(header::CONTENT_TYPE, "application/json")
-                .header(header::ACCEPT, "application/json, text/event-stream")
-                .header(header::AUTHORIZATION, format!("Bearer {SECRET}"));
-            if let Some(origin) = origin {
-                req = req.header(header::ORIGIN, origin);
-            }
-            let req = req.body(Body::from(list.to_string())).unwrap();
-            let status = s.app.clone().oneshot(req).await.unwrap().status();
-            assert_eq!(status.as_u16(), expected, "{host} {origin:?}");
-        }
-    }
-
-    #[tokio::test]
-    async fn sql_tool_reads_and_refuses_writes() {
-        let s = server();
-        assert_eq!(
-            tool(&s.app, "sql", json!({"query": "SELECT slug FROM projects"})).await,
-            (
-                r#"{"columns":["slug"],"rows":[["api"]],"truncated":false}"#.to_owned(),
-                false
-            )
-        );
-        let (text, is_error) = tool(&s.app, "sql", json!({"query": "DELETE FROM projects"})).await;
-        assert!(is_error, "{text}");
-    }
-
-    #[tokio::test]
-    async fn mark_fixed_queues_a_resolve_and_reports_the_writer_outcome() {
-        let s = server();
-        let writer = std::thread::spawn(move || {
-            for outcome in [Ok(()), Err("no issue 9".to_owned())] {
-                let w = next_job(&s.writes);
-                let Job::SetStatus {
-                    issues,
-                    status: IssueStatus::Resolved { in_release, .. },
-                } = w.job
-                else {
-                    panic!("expected a resolve job");
-                };
-                w.done.send(outcome).unwrap();
-                assert_eq!(in_release.as_deref(), Some("2.0.0"));
-                assert!(issues == IssueIds::one(7) || issues == IssueIds::one(9));
-            }
-        });
-        assert_eq!(
-            tool(
-                &s.app,
-                "mark_fixed",
-                json!({"issue_id": 7, "release": "2.0.0"})
-            )
-            .await,
-            ("issue 7 resolved in release 2.0.0".to_owned(), false)
-        );
-        assert_eq!(
-            tool(
-                &s.app,
-                "mark_fixed",
-                json!({"issue_id": 9, "release": "2.0.0"})
-            )
-            .await,
-            ("no issue 9".to_owned(), true)
-        );
-        writer.join().unwrap();
-    }
-
-    #[tokio::test]
-    async fn submit_feedback_queues_the_text_with_the_client_name() {
-        let s = server();
-        let writer = std::thread::spawn(move || {
-            let mut seen = Vec::new();
-            for _ in 0..2 {
-                let w = next_job(&s.writes);
-                let Job::Feedback { feedback, .. } = w.job else {
-                    panic!("expected a feedback job");
-                };
-                seen.push(feedback);
-                w.done.send(Ok(())).unwrap();
-            }
-            seen
-        });
-        let thanks = (
-            "Thanks. The feedback is stored for the person who runs Davy.".to_owned(),
-            false,
-        );
-        let mut with_meta = call(
-            "submit_feedback",
-            &json!({"tried": "sql on logs", "happened": "no such table: logs", "fix": "say logs are not in SQL"}),
-        );
-        with_meta["params"]["_meta"] = json!({
-            "io.modelcontextprotocol/clientInfo": {"name": "claude-code", "version": "2.1.0"}
-        });
-        let (status, body) = post(&s.app, "localhost", Some(SECRET), with_meta).await;
-        assert_eq!(status, 200, "{body}");
-        let reply: Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(reply["result"]["content"][0]["text"], thanks.0.as_str());
-        let request = axum::http::Request::post("/mcp")
-            .header(header::HOST, "localhost")
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::ACCEPT, "application/json, text/event-stream")
-            .header(header::AUTHORIZATION, format!("Bearer {SECRET}"))
-            .header(header::USER_AGENT, "codex_cli_rs/0.80.0")
-            .body(Body::from(
-                call(
-                    "submit_feedback",
-                    &json!({"tried": "issue_context 3", "happened": "no source lines"}),
-                )
-                .to_string(),
-            ))
-            .unwrap();
-        let r = s.app.clone().oneshot(request).await.unwrap();
-        assert_eq!(r.status(), 200);
-        assert_eq!(
-            tool(
-                &s.app,
-                "submit_feedback",
-                json!({"tried": "", "happened": "x"})
-            )
-            .await,
-            ("tried is empty".to_owned(), true)
-        );
-        assert_eq!(
-            writer.join().unwrap(),
-            [
-                Feedback {
-                    client: Some("claude-code".to_owned()),
-                    tried: "sql on logs".to_owned(),
-                    happened: "no such table: logs".to_owned(),
-                    fix: Some("say logs are not in SQL".to_owned()),
-                },
-                Feedback {
-                    client: Some("codex_cli_rs/0.80.0".to_owned()),
-                    tried: "issue_context 3".to_owned(),
-                    happened: "no source lines".to_owned(),
-                    fix: None,
-                },
-            ]
-        );
-    }
-}
+#[path = "mcp_tests.rs"]
+mod tests;

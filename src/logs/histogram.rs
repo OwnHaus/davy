@@ -180,6 +180,48 @@ impl SegmentCollector for SegmentBuckets {
     }
 }
 
+/// A histogram as `count_logs` and `davy logs --count` print it.
+#[derive(Debug, serde::Serialize)]
+pub struct LogCounts {
+    pub total: u64,
+    /// The width of each bucket, such as `1h` or `30s`.
+    pub step: String,
+    /// The start of each bucket that has logs, and how many, oldest first.
+    pub buckets: Vec<(String, u64)>,
+}
+
+impl From<Histogram> for LogCounts {
+    fn from(h: Histogram) -> Self {
+        let units = [
+            (86_400_000_000_000, "d"),
+            (3_600_000_000_000, "h"),
+            (60_000_000_000, "m"),
+            (1_000_000_000, "s"),
+            (1_000_000, "ms"),
+        ];
+        let step = units
+            .into_iter()
+            .find(|(unit, _)| h.step % unit == 0)
+            .map_or_else(
+                || format!("{}ns", h.step),
+                |(unit, name)| format!("{}{name}", h.step / unit),
+            );
+        let mut start = h.from;
+        let mut buckets = Vec::new();
+        for n in h.counts {
+            if n > 0 {
+                buckets.push((crate::time::rfc3339(start), n));
+            }
+            start += h.step;
+        }
+        Self {
+            total: buckets.iter().map(|(_, n)| n).sum(),
+            step,
+            buckets,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DAY_NS, HOUR, MS, SEC, buckets_for};

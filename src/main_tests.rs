@@ -136,3 +136,64 @@ fn text_output_replaces_control_characters() {
          2026-11-20T10:00:00Z info  api\u{fffd} line\u{fffd}\u{fffd}[2Jgone k\u{fffd}=v\u{fffd}\n"
     );
 }
+
+#[test]
+fn logs_count_prints_the_buckets_that_have_logs() {
+    use davy::logs::{LogRecord, LogSource, store::LogWriter};
+    const MIN: i64 = 60_000_000_000;
+    let data = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("test-cli-count-{}", uuid::Uuid::new_v4()));
+    store::create_project(&store::open(&data).unwrap(), "api").unwrap();
+    let now = now_ns();
+    let base = now - now % (60 * MIN) - 120 * MIN;
+    let log = |at: i64, message: &str| LogRecord {
+        project_id: 1,
+        timestamp: at,
+        observed_at: now,
+        source: LogSource::Logtail,
+        level: LogLevel::Error,
+        message: message.into(),
+        service: None,
+        trace_id: None,
+        span_id: None,
+        attributes: serde_json::Map::new(),
+    };
+    let writer = LogWriter::start(logs::dir(&data), 30).unwrap();
+    let batch = vec![
+        log(base + 10 * MIN, "database timeout"),
+        log(base + 10 * MIN + 1, "database timeout"),
+        log(base + 70 * MIN, "database timeout"),
+        log(base + 71 * MIN, "request completed"),
+    ];
+    assert!(writer.queue.push(batch).is_ok());
+    drop(writer.queue);
+    writer.thread.join().unwrap();
+    let run = |extra: &[&str]| {
+        let since = time::rfc3339(base);
+        let until = time::rfc3339(base + 120 * MIN - 1);
+        let d = data.to_str().unwrap();
+        let base_args = ["davy", "logs", "timeout", "--data", d, "--count"];
+        let window = ["--since", &since, "--until", &until];
+        let args = base_args.iter().chain(&window).chain(extra);
+        let Command::Logs(args) = Cli::try_parse_from(args).unwrap().command else {
+            panic!("not the logs command");
+        };
+        let mut out = vec![];
+        logs(&mut out, args).unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    let (a, b) = (
+        time::rfc3339(base + 10 * MIN),
+        time::rfc3339(base + 70 * MIN),
+    );
+    assert_eq!(run(&[]), format!("3 logs, 1m buckets\n{a}\t2\n{b}\t1\n"));
+    assert_eq!(
+        run(&["--json"]),
+        format!("{{\"total\":3,\"step\":\"1m\",\"buckets\":[[\"{a}\",2],[\"{b}\",1]]}}\n")
+    );
+    assert!(
+        Cli::try_parse_from(["davy", "logs", "--data", "d", "--count", "--limit", "5"]).is_err()
+    );
+    std::fs::remove_dir_all(&data).unwrap();
+}
