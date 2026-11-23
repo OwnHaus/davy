@@ -91,7 +91,7 @@ export type LogLevel = "trace" | "debug" | "info" | "warn" | "error" | "fatal";
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
-export type LogLine = { timestamp: string, timestamp_ns: string, source: LogSource, level: LogLevel, service: string | null, message: string, trace_id: string | null, span_id: string | null, attributes: { [key in string]: JsonValue }, };
+export type LogLine = { timestamp: string, timestamp_ns: string, project: string, source: LogSource, level: LogLevel, service: string | null, message: string, trace_id: string | null, span_id: string | null, attributes: { [key in string]: JsonValue }, };
 
 export type Logs = { 
 /**
@@ -102,5 +102,17 @@ scope: string,
  * Oldest first.
  */
 logs: Array<LogLine>, };
+
+export type LogPage = { 
+/**
+ * Newest first.
+ */
+logs: Array<LogLine>, 
+/**
+ * The cursor of the page before this one, when it is full.
+ */
+before: string | null, };
+
+export type LogHistogram = { from: string, step: string, counts: Array<number>, };
 
 export type StatusChange = { issues: Array<number>, status: Status, release?: string, };

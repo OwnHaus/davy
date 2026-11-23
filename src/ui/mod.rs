@@ -5,6 +5,7 @@
 mod account;
 mod assets;
 pub mod issues;
+mod logs;
 pub mod session;
 #[cfg(test)]
 mod tests;
@@ -84,6 +85,8 @@ pub(crate) const PROTECTED: &[(&str, &str)] = &[
     ("GET", "/ui/api/issues/1/events"),
     ("GET", "/ui/api/issues/1/event"),
     ("GET", "/ui/api/issues/1/logs"),
+    ("GET", "/ui/api/logs"),
+    ("GET", "/ui/api/logs/histogram"),
     ("GET", "/ui/api/nowhere"),
 ];
 

@@ -9,7 +9,10 @@ use crate::{
     heap,
     http::{Failure, body, internal},
     issues::{self, Cursor, Filter, IssueIds, MAX_TEXT, Sort, Status},
-    logs::{LogLevel, LogSource, store::search},
+    logs::{
+        LogLevel, LogSource,
+        store::{LogHit, search},
+    },
     store::{self, IssueDetail, IssueStatus, Job, ReleaseCount},
     time,
 };
@@ -25,11 +28,12 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Log searches that may run at once.
 pub const SEARCHES: usize = 8;
@@ -60,7 +64,20 @@ impl Reads {
     }
 
     /// Runs `f` on the connection off the async threads.
-    async fn run<T: Send + 'static>(
+    pub(super) fn data(&self) -> &std::path::Path {
+        &self.data
+    }
+
+    /// A place among the [`SEARCHES`] log searches that may run at once.
+    pub(super) fn search_permit(&self) -> Result<OwnedSemaphorePermit, Refusal> {
+        Arc::clone(&self.searches)
+            .try_acquire_owned()
+            .map_err(|_all_busy| {
+                Refusal::wait(Duration::from_secs(1), "too many log searches at once")
+            })
+    }
+
+    pub(super) async fn run<T: Send + 'static>(
         self: &Arc<Self>,
         f: impl FnOnce(&Connection) -> anyhow::Result<T> + Send + 'static,
     ) -> Result<T, Refusal> {
@@ -84,7 +101,8 @@ pub fn routes(reads: Arc<Reads>) -> Router {
         .route("/ui/api/issues/{id}/events", get(events))
         .route("/ui/api/issues/{id}/event", get(event))
         .route("/ui/api/issues/{id}/logs", get(logs))
-        .with_state(reads)
+        .with_state(Arc::clone(&reads))
+        .merge(super::logs::routes(reads))
 }
 
 fn not_found(message: impl Into<String>) -> Refusal {
@@ -102,10 +120,10 @@ fn priced(failure: Failure) -> Refusal {
 
 /// The query string of a request, each key known and given once. An empty
 /// value is the same as none.
-struct Query(Vec<(String, String)>);
+pub(super) struct Query(Vec<(String, String)>);
 
 impl Query {
-    fn parse(uri: &Uri, known: &[&str]) -> Result<Self, Refusal> {
+    pub(super) fn parse(uri: &Uri, known: &[&str]) -> Result<Self, Refusal> {
         let mut pairs: Vec<(String, String)> = Vec::new();
         let query = uri.query().unwrap_or_default();
         for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
@@ -121,12 +139,12 @@ impl Query {
         Ok(Self(pairs))
     }
 
-    fn get(&self, key: &str) -> Option<&str> {
+    pub(super) fn get(&self, key: &str) -> Option<&str> {
         let value = self.0.iter().find(|(k, _)| k == key);
         value.map(|(_, v)| v.as_str()).filter(|v| !v.is_empty())
     }
 
-    fn owned(&self, key: &str) -> Option<String> {
+    pub(super) fn owned(&self, key: &str) -> Option<String> {
         self.get(key).map(str::to_owned)
     }
 
@@ -310,6 +328,7 @@ async fn event(
 pub struct LogLine {
     pub timestamp: String,
     pub timestamp_ns: String,
+    pub project: String,
     pub source: LogSource,
     pub level: LogLevel,
     pub service: Option<String>,
@@ -317,6 +336,23 @@ pub struct LogLine {
     pub trace_id: Option<String>,
     pub span_id: Option<String>,
     pub attributes: Map<String, Value>,
+}
+
+impl LogLine {
+    pub(super) fn new(h: LogHit, slugs: &HashMap<i64, String>) -> Self {
+        Self {
+            timestamp: h.timestamp,
+            timestamp_ns: h.timestamp_ns.to_string(),
+            project: slugs.get(&h.project_id).cloned().unwrap_or_default(),
+            source: h.source,
+            level: h.level,
+            service: h.service,
+            message: h.message,
+            trace_id: h.trace_id,
+            span_id: h.span_id,
+            attributes: h.attributes,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -336,36 +372,25 @@ async fn logs(
     let q = Query::parse(&uri, &["event"])?;
     let id = issue_id(&id)?;
     let event = q.event()?;
-    let permit = Arc::clone(&reads.searches)
-        .try_acquire_owned()
-        .map_err(|_all_busy| {
-            Refusal::wait(Duration::from_secs(1), "too many log searches at once")
-        })?;
-    let moment = reads
-        .run(move |c| of_issue(c, id, || issues::moment(c, id, event.as_deref())))
+    let permit = reads.search_permit()?;
+    let (moment, slugs) = reads
+        .run(move |c| {
+            of_issue(c, id, || {
+                Ok((issues::moment(c, id, event.as_deref())?, issues::slugs(c)?))
+            })
+        })
         .await?
-        .map_err(not_found)?
-        .ok_or_else(|| not_found("no such event of this issue"))?;
+        .map_err(not_found)?;
+    let moment = moment.ok_or_else(|| not_found("no such event of this issue"))?;
     let dir = crate::logs::dir(&reads.data);
     let logs = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let at_ns = moment.at.saturating_mul(1_000_000);
         let (scope, query) =
             context::logs_around(moment.project, at_ns, moment.trace_id.as_deref());
-        let hits = search(&dir, &query)?;
-        let logs = hits
+        let logs = search(&dir, &query)?
             .into_iter()
-            .map(|h| LogLine {
-                timestamp: h.timestamp,
-                timestamp_ns: h.timestamp_ns.to_string(),
-                source: h.source,
-                level: h.level,
-                service: h.service,
-                message: h.message,
-                trace_id: h.trace_id,
-                span_id: h.span_id,
-                attributes: h.attributes,
-            })
+            .map(|h| LogLine::new(h, &slugs))
             .collect();
         anyhow::Ok(Logs { scope, logs })
     })

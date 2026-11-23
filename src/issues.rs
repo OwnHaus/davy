@@ -12,7 +12,7 @@ use rusqlite::{
     types::{FromSql, FromSqlError, FromSqlResult, ValueRef},
 };
 use serde::{Deserialize, Serialize};
-use std::fmt::Write as _;
+use std::{collections::HashMap, fmt::Write as _};
 
 /// Issues on one page of the list.
 pub const PAGE: usize = 50;
@@ -423,6 +423,13 @@ pub fn projects(c: &Connection) -> Result<Vec<Project>> {
             Ok(Project { slug, releases })
         })
         .collect()
+}
+
+/// Every project's slug by its id.
+pub fn slugs(c: &Connection) -> Result<HashMap<i64, String>> {
+    let mut q = c.prepare("SELECT id,slug FROM projects")?;
+    let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 /// Where and when an event of `issue` happened.

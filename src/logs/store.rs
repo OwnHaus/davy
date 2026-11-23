@@ -20,12 +20,13 @@ use std::{
     time::{Duration, Instant},
 };
 use tantivy::{
-    Document, Index, IndexReader, IndexSettings, IndexWriter, Order, ReloadPolicy, TantivyDocument,
-    Term,
+    Document, Index, IndexReader, IndexSettings, IndexWriter, Order, ReloadPolicy, Searcher,
+    TantivyDocument, Term,
     collector::TopDocs,
     query::{BooleanQuery, Occur, Query, QueryParser, RangeQuery, TermQuery},
     schema::{FAST, Field, INDEXED, IndexRecordOption, STORED, STRING, Schema, TEXT},
     store::{Compressor, ZstdCompressor},
+    tokenizer::TokenizerManager,
 };
 
 const DAY_NS: i64 = 86_400_000_000_000;
@@ -444,21 +445,26 @@ pub struct LogHit {
 
 /// The newest `q.limit` hits, oldest first.
 pub fn search(root: &Path, q: &LogQuery) -> Result<Vec<LogHit>> {
-    // Retention can delete a day between the meta.json check and the open.
-    // tantivy reports that only as text, so a second pass that no longer
-    // sees the day is the way to recover.
-    search_once(root, q).or_else(|e| {
+    retrying(|| search_once(root, q))
+}
+
+/// Runs `f` a second time when its first pass met a day that retention
+/// deleted between the `meta.json` check and the open. tantivy reports that
+/// only as text, so a pass that no longer sees the day is the way to recover.
+fn retrying<T>(f: impl Fn() -> Result<T>) -> Result<T> {
+    f().or_else(|e| {
         let missing = format!("{e:#}");
         if missing.contains("does not exist") || missing.contains("No such file") {
-            search_once(root, q)
+            f()
         } else {
             Err(e)
         }
     })
 }
 
-fn search_once(root: &Path, q: &LogQuery) -> Result<Vec<LogHit>> {
-    let (first, last) = (day_of(q.since), day_of(q.until));
+/// The searcher of each day index from `since` to `until`, newest first.
+fn days(root: &Path, since: i64, until: i64) -> Result<impl Iterator<Item = Result<Day>>> {
+    let (first, last) = (day_of(since), day_of(until));
     let mut days: Vec<Date> = match std::fs::read_dir(root) {
         Ok(entries) => entries
             .filter_map(|e| parse_day(&e.ok()?.file_name().to_string_lossy()))
@@ -468,22 +474,32 @@ fn search_once(root: &Path, q: &LogQuery) -> Result<Vec<LogHit>> {
         Err(e) => return Err(e.into()),
     };
     days.sort_unstable_by(|a, b| b.cmp(a));
-    let f = schema().1;
-    let mut hits = Vec::new();
-    for day in days {
-        if hits.len() >= q.limit {
-            break;
-        }
+    let root = root.to_owned();
+    Ok(days.into_iter().filter_map(move |day| {
         let dir = root.join(day.to_string());
-        if !dir.join("meta.json").exists() {
-            continue;
-        }
-        let index = Index::open_in_dir(&dir).with_context(|| format!("open {}", dir.display()))?;
+        dir.join("meta.json").exists().then(|| Day::open(&dir))
+    }))
+}
+
+/// One day index, read as it was when opened.
+struct Day {
+    index: Index,
+    searcher: Searcher,
+}
+
+impl Day {
+    fn open(dir: &Path) -> Result<Self> {
+        let index = Index::open_in_dir(dir).with_context(|| format!("open {}", dir.display()))?;
         let reader: IndexReader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
             .try_into()?;
         let searcher = reader.searcher();
+        Ok(Self { index, searcher })
+    }
+
+    /// What `q` matches in this day, the limit aside.
+    fn matching(&self, f: &Fields, q: &LogQuery) -> Result<BooleanQuery> {
         let mut clauses: Vec<(Occur, Box<dyn Query>)> = vec![(
             Occur::Must,
             Box::new(RangeQuery::new(
@@ -510,20 +526,46 @@ fn search_once(root: &Path, q: &LogQuery) -> Result<Vec<LogHit>> {
             ));
         }
         if let Some(text) = q.text.as_deref().filter(|t| !t.trim().is_empty()) {
-            let parser = QueryParser::for_index(&index, vec![f.message, f.attributes]);
+            let parser = QueryParser::for_index(&self.index, vec![f.message, f.attributes]);
             let parsed = parser
                 .parse_query(text)
                 .map_err(|e| anyhow!("invalid query {text:?}: {e}"))?;
             clauses.push((Occur::Must, parsed));
         }
-        let top = searcher.search(
-            &BooleanQuery::new(clauses),
+        Ok(BooleanQuery::new(clauses))
+    }
+}
+
+/// Why `text` is not a query `search` takes, if it is not.
+pub fn check_text(text: &str) -> Result<(), String> {
+    let (schema, f) = schema();
+    let parser = QueryParser::new(
+        schema,
+        vec![f.message, f.attributes],
+        TokenizerManager::default(),
+    );
+    parser
+        .parse_query(text)
+        .map(drop)
+        .map_err(|e| e.to_string())
+}
+
+fn search_once(root: &Path, q: &LogQuery) -> Result<Vec<LogHit>> {
+    let f = schema().1;
+    let mut hits = Vec::new();
+    for day in days(root, q.since, q.until)? {
+        if hits.len() >= q.limit {
+            break;
+        }
+        let day = day?;
+        let top = day.searcher.search(
+            &day.matching(&f, q)?,
             &TopDocs::with_limit(q.limit - hits.len())
                 .order_by_fast_field::<i64>("ts", Order::Desc),
         )?;
         for (_, address) in top {
-            let doc: TantivyDocument = searcher.doc(address)?;
-            hits.push(hit(&index.schema(), &f, &doc)?);
+            let doc: TantivyDocument = day.searcher.doc(address)?;
+            hits.push(hit(&day.index.schema(), &f, &doc)?);
         }
     }
     hits.reverse();
@@ -557,6 +599,10 @@ fn hit(schema: &Schema, f: &Fields, doc: &TantivyDocument) -> Result<LogHit> {
         },
     })
 }
+
+#[path = "histogram.rs"]
+mod histogram;
+pub use histogram::{Histogram, MAX_BUCKETS, histogram};
 
 #[cfg(test)]
 #[path = "queue_tests.rs"]

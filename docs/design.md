@@ -740,14 +740,22 @@ The routes, all behind the session:
 | `GET /ui/api/issues/{id}/events?cursor` | `EventPage`, 50 events newest first, each saying whether its payload was kept |
 | `GET /ui/api/issues/{id}/event?event` | `EventView` of that event, or of the newest kept one |
 | `GET /ui/api/issues/{id}/logs?event` | `Logs` around that event, as `issue_context` finds them |
+| `GET /ui/api/logs?q&from&to&project&level&before&after` | `LogPage`, 100 logs newest first and the cursor of the page before |
+| `GET /ui/api/logs/histogram?q&from&to&project&level` | `LogHistogram`, the matches counted in at most 200 round buckets |
 
-A route takes only the query keys it names, each at most once, and answers `400` naming the keys it takes. The project filter takes a slug. Environment and release filter with `EXISTS` over the issue's events. There is no list of environments, since it would need a scan of every event, so environment is typed. Writes answer `404` when an issue is missing, without a read before the write, because the writer already refuses the whole change.
+A route takes only the query keys it names, each at most once, and answers `400` naming the keys it takes. The project filter takes a slug. Environment and release filter through `issue_tags` (see "Load check"). There is no list of environments, since it would need a scan of every event, so environment is typed. Writes answer `404` when an issue is missing, without a read before the write, because the writer already refuses the whole change.
 
-**Issues** (`/ui/issues`). A list of issues sorted by last seen, event count or first seen. Filters are project, status, environment, release and a text match on title and culprit. Each row shows title, culprit, level, status, event count, first and last seen, and a bar chart of the last 24 hours from `issue_hourly`. Select several issues to resolve, ignore or reopen them at once. A new index `issues(project_id, status, last_seen DESC)` serves the default filter.
+**Issues** (`/ui/issues`). A list of issues sorted by last seen, event count or first seen. Filters are project, status, environment, release and a text match on title and culprit. Each row shows title, culprit, level, status, event count, first and last seen, and a bar chart of the last 24 hours from `issue_hourly`. Select several issues to resolve, ignore or reopen them at once. Two covering indexes serve every filter and sort (see "Load check").
 
 **Issue** (`/ui/issues/{id}`). The issue with its status actions: resolve, resolve in a release, ignore, reopen. The selected event (the latest by default) shows the exception chain with its frames (in-app frames open, the rest folded, the symbolicated position and context lines), breadcrumbs, tags, the request, the user, runtime, OS and browser. Then the events of the issue to step through with `[` and `]`, the releases it was seen in, and the logs around the event that `issue_context` finds. The compaction `issue_context` does for agents drops frames and fields to save tokens. The UI reads the payload through its own pure function from payload JSON to an `EventView`, with the limits above, tested on the captured fixtures. **Hand to an agent** copies a prompt that names the issue and the MCP tools `issue_context` and `mark_fixed`. This is the agent-first loop, started from the place a person found the error. The stepper moves only through events whose payload Davy kept (the first 50 of an issue, then every 100th), and says so under it, because the others have no payload to show.
 
-**Logs** (`/ui/logs`). The query syntax of `davy logs`, a time range, project and level filters. Above the results is a histogram of matches over the range, from a new `logs::store::histogram`: tantivy's histogram aggregation over the timestamp, run in each daily index the range touches and merged, at most 200 buckets. Drag across it to zoom the range. Results are newest first and page backwards. A row opens to show every attribute. **Live** asks for logs newer than the last one every 2 seconds while the tab is visible. Polling, not a held connection, so a proxy needs no streaming setup and a hidden tab costs nothing.
+**Logs** (`/ui/logs`). The query syntax of `davy logs`, a time range, project and level filters. Above the results is a histogram of matches over the range, from a new `logs::store::histogram`, at most 200 buckets. Drag across it to zoom the range. Results are newest first and page backwards. A row opens to show every attribute. **Live** asks for logs newer than the last one every 2 seconds while the tab is visible. Polling, not a held connection, so a proxy needs no streaming setup and a hidden tab costs nothing.
+
+- **Times.** `from` and `to` are nanoseconds since 1970, both ends included. Without `from` the range is the hour up to `to`, and without `to` it ends now.
+- **Paging.** A page is the newest 100 matches. Many logs can share one nanosecond, so the cursor of the page before is the oldest time on the page and how many logs at that time the page showed, such as `1763600000123456789.3`. The next page reads up to that time and skips them. A cursor steps over at most 10,000 logs at one nanosecond.
+- **Live** sends `after`, the time of the newest log it has. The answer is the newest 100 logs after it. When the answer is full, more arrived than a page holds, and the page replaces the list instead of joining it.
+- **The histogram** picks the narrowest round step from a fixed list, such as 500 ms, 15 s, 5 min or 6 h, from 1 ms up to 14 days, that splits the range into fewer than 200 buckets, and starts the first bucket at a multiple of the step, so the bars sit on round times. It counts with its own collector over the `ts` fast field of each daily index the range touches. tantivy's histogram aggregation works in `f64`, which holds a time of today only to the nearest 256 ns, so a bucket edge could take a log from its neighbour.
+- **Load.** A log search or histogram runs on the blocking pool and holds one of 8 search places. A ninth at once answers `429` with `Retry-After: 1`, which the UI waits out, so a few open tabs cannot take every core from ingest.
 
 **Uptime** (`/ui/monitors`). Monitors with their state, last check and the response times of the last 24 hours from `checks`. A monitor's page adds 7 and 30 day uptime, its incidents with reasons, and for a heartbeat the expected and last ping.
 
@@ -824,7 +832,7 @@ Creating monitors, channels, projects and users from the UI, which needs roles a
 - A store test: a bulk `SetStatus` of 500 issues commits all or none, and a login commits while the ingest queue is full.
 - Unit tests: `EventView` from each captured fixture gives the exact frames and fields, and cuts an event with 10,000 breadcrumbs to 200 with the count of the rest; the log histogram counts a known set of logs across two daily indexes into the right buckets; a link from an event is a link only for `http` and `https`; a log time of `1763600000123456789` survives the round trip through the API and the generated types.
 - `e2e/ui.spec.ts` runs Playwright against the built binary: `davy user add`, open the link, set a password, see the issue a real Sentry SDK sent, read its in-app frame, resolve it, find a log with a query and zoom the histogram, open a monitor, change the password. axe-core reports no violation on any view, and the browser reports no CSP violation. The issues part runs today, after the Sentry SDKs have sent their errors: it checks axe in light and dark on the welcome, list, issue and login views, and resolves the sentry-node-7 `TypeError` with `r`, so the later steps of `e2e/run.sh` keep the other three issues. The log, monitor and password steps join when their views do. axe checks after colour transitions end, because a button half way through its fade fails contrast.
-- A load check: the issues list and the log search each answer in under 100 ms at the 95th percentile with 100,000 issues and 10 million logs in the data directory, measured and recorded here. The issues half is in "Load check" below. The log half joins with the Logs view.
+- A load check: the issues list and the log search each answer in under 100 ms at the 95th percentile with 100,000 issues and 10 million logs in the data directory, measured and recorded here. Both halves are in "Load check" below.
 - `scripts/check` passes, including the type diff, the lint ban, osv-scanner and the bundle budget.
 
 ### Load check
@@ -852,6 +860,27 @@ Before is the schema of `0d672c5` on the same data. After, the worst case is 29.
 What it costs. A Python prototype on the same data measured an event that bumps an issue at 24 µs before and 31 µs after, warm. The first start after the upgrade builds the text index and reads every event once for the tags: about 3 s for 100,000 issues and 300,000 events. A page still walks an index past the rows it does not show, so that work grows with the store. At 1,000,000 issues the slowest cases should take about ten times as long (a guess, not measured).
 
 The first measurement ran under `taskpolicy -b`, which put the server on the background CPU and I/O class. Every case came out about five times slower: 49 ms instead of 8 ms for the default view. Benchmarks run at normal priority, and the script says so.
+
+`bench/load-log-search.sh` writes 10,000,000 pino-shaped logs spread over the last 24 hours in 4 projects straight into the log store (`examples/fill_logs.rs`, 86 s, 1.3 GB in two daily indexes), then times 50 requests per case over one keep-alive connection. Measured on 2026-11-23 on the same laptop, release build, load average about 5:
+
+| Case | Rows | p95 |
+|---|---|---|
+| page, last hour | 100 | 9.3 ms |
+| page, whole 24 hours | 100 | 33.9 ms |
+| page, 21 pages back | 100 | 34.6 ms |
+| page, one project | 100 | 14.7 ms |
+| page, errors | 100 | 9.0 ms |
+| page, text `timeout` | 100 | 8.2 ms |
+| page, `res.statusCode:500 AND req.method:post` | 100 | 13.9 ms |
+| page, text with no hit | 0 | 5.8 ms |
+| live, nothing newer | 0 | 1.9 ms |
+| histogram, last hour | 406,727 | 4.7 ms |
+| histogram, whole 24 hours | 9,990,060 | 46.4 ms |
+| histogram, errors | 299,795 | 19.1 ms |
+| histogram, text `timeout` | 299,795 | 7.7 ms |
+| histogram, one project | 2,495,530 | 20.5 ms |
+
+The worst case is 46.4 ms, counting every log of the day. A page sorts by the `ts` fast field and reads only the 100 documents it returns. The histogram reads the `ts` column of every match, so it grows with the matches, not with the store: about 4.6 ns per log here.
 
 ## Hardening
 

@@ -1,4 +1,4 @@
-use super::store::{LogQuery, LogWriter, State, search};
+use super::store::{LogQuery, LogWriter, State, histogram, search};
 use super::*;
 use crate::test_support::{fixture, scratch};
 use crate::time::{self, now_ns};
@@ -610,4 +610,59 @@ fn log_retention_is_1_to_36500_days() {
     let writer = LogWriter::start(dir, 36_500).unwrap();
     drop(writer.queue);
     writer.thread.join().unwrap();
+}
+
+#[test]
+fn the_histogram_counts_across_two_day_indexes_into_round_buckets() {
+    let dir = scratch("logs");
+    let now = now_ns();
+    let midnight = now.div_euclid(DAY) * DAY - DAY;
+    let (s, m) = (1_000_000_000, 60_000_000_000);
+    let at = |offset: i64, level| record(1, midnight + offset, now, level, "tick");
+    write(
+        &dir,
+        30,
+        vec![
+            at(-90 * s, LogLevel::Info),
+            at(-30 * s, LogLevel::Error),
+            at(-1, LogLevel::Info),
+            at(0, LogLevel::Info),
+            at(s, LogLevel::Error),
+            at(59 * s, LogLevel::Info),
+            at(61 * s, LogLevel::Info),
+            at(3 * m, LogLevel::Info),
+        ],
+    );
+    assert_eq!(day_dirs(&dir), [day_name(midnight - 1), day_name(midnight)]);
+    let window = query(midnight - 2 * m, midnight + 2 * m - 1);
+    let h = histogram(&dir, &window).unwrap();
+    assert_eq!(
+        (h.from, h.step, h.counts.len()),
+        (midnight - 2 * m, 2 * s, 120)
+    );
+    let nonzero = |counts: &[u64]| -> Vec<(usize, u64)> {
+        counts
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n > 0)
+            .map(|(i, n)| (i, *n))
+            .collect()
+    };
+    assert_eq!(
+        nonzero(&h.counts),
+        [(15, 1), (45, 1), (59, 1), (60, 2), (89, 1), (90, 1)],
+        "2 s buckets from two minutes before midnight, the log at 3 min outside"
+    );
+    let errors = LogQuery {
+        min_level: Some(LogLevel::Error),
+        ..window
+    };
+    let h = histogram(&dir, &errors).unwrap();
+    assert_eq!(nonzero(&h.counts), [(45, 1), (60, 1)]);
+    let empty = histogram(&dir.join("missing"), &query(0, 10)).unwrap();
+    assert_eq!(
+        (empty.from, empty.step, empty.counts),
+        (0, 1_000_000, vec![0])
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
 }

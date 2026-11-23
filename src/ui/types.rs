@@ -5,6 +5,7 @@
 use super::{
     account::{LoggedIn, Login, Me, NewPassword, Welcome},
     issues::{IssueView, LogLine, Logs, StatusChange},
+    logs::{LogHistogram, LogPage},
 };
 use crate::{
     event_view::{Breadcrumb, Context, Cut, EventView, ExceptionView, FrameView, Pair, Request},
@@ -55,6 +56,8 @@ fn file() -> String {
         decl::<serde_json::Value>(&c),
         decl::<LogLine>(&c),
         decl::<Logs>(&c),
+        decl::<LogPage>(&c),
+        decl::<LogHistogram>(&c),
         decl::<StatusChange>(&c),
     ];
     format!("{HEADER}{}", decls.concat())

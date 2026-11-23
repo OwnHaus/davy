@@ -605,3 +605,6 @@ async fn ui_pages_fall_back_to_the_app_and_asset_misses_are_404() {
 
 #[path = "issues_tests.rs"]
 mod issues;
+
+#[path = "logs_tests.rs"]
+mod logs;
