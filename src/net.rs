@@ -186,6 +186,10 @@ impl Client {
             // A redirect target must not learn the URL it came from, which
             // can hold a token.
             .referer(false)
+            // A pooled connection can be closed by the server just as a
+            // request goes out on it, which fails a check of a service that
+            // is up. A fresh connection also times what a new visitor sees.
+            .pool_max_idle_per_host(0)
             .redirect(policy);
         if reach == Reach::Public {
             // A proxy would resolve the name itself, past the check.

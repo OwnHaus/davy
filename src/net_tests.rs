@@ -1,5 +1,7 @@
-use super::net::Reach;
+use super::net::{Client, Reach};
+use reqwest::Method;
 use std::net::IpAddr;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const REFUSED: [&str; 42] = [
     "0.0.0.0",
@@ -93,4 +95,53 @@ fn any_reach_allows_every_address() {
     for ip in ["127.0.0.1", "::1", "10.0.0.1", "169.254.169.254", "8.8.8.8"] {
         assert!(Reach::Any.allows(ip.parse().unwrap()), "{ip}");
     }
+}
+
+/// Reads one request without a body from `conn`. False when the peer
+/// closed first.
+async fn read_request(conn: &mut tokio::net::TcpStream) -> bool {
+    let mut seen = Vec::new();
+    let mut buf = [0; 1024];
+    while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+        match conn.read(&mut buf).await {
+            Ok(0) | Err(_) => return false,
+            Ok(n) => seen.extend_from_slice(&buf[..n]),
+        }
+    }
+    true
+}
+
+/// A server that answers the first request on each connection with
+/// keep-alive and closes the connection when the next request on it comes,
+/// as a server does whose idle timeout ends as a request arrives.
+async fn closes_idle_connections() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        while let Ok((mut conn, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                if read_request(&mut conn).await {
+                    let ok = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok";
+                    conn.write_all(ok).await.unwrap();
+                    read_request(&mut conn).await;
+                }
+            });
+        }
+    });
+    base
+}
+
+#[tokio::test]
+async fn each_request_opens_a_new_connection_so_a_closed_idle_one_cannot_fail_it() {
+    let base = closes_idle_connections().await;
+    let client = Client::new(Reach::Any, 0).unwrap();
+    let mut statuses = Vec::new();
+    for _ in 0..3 {
+        let sent = client.request(Method::GET, &base).unwrap().send().await;
+        statuses.push(
+            sent.map(|r| r.status().as_u16())
+                .map_err(super::net::error_text),
+        );
+    }
+    assert_eq!(statuses, [Ok(200), Ok(200), Ok(200)]);
 }
