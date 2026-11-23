@@ -63,8 +63,13 @@ test("a person signs in, finds the SDK's issue, reads its frame and resolves it"
 
   const row = page.locator("tr.row", { hasText: "sentry-node-7" }).filter({ hasText: "TypeError: SDK test failure" });
 
+  // Every sender in run.sh adds issues, so the list must match the store.
+  const unresolved = () => JSON.parse(davy("sql", "--json", "SELECT count(*) FROM issues WHERE status = 'unresolved'")).rows[0][0] as number;
+  const listed = unresolved();
+
   await test.step("the list shows the issues the Sentry SDKs sent", async () => {
-    await expect(page.locator("tr.row")).toHaveCount(4);
+    expect(listed).toBeGreaterThan(1);
+    await expect(page.locator("tr.row")).toHaveCount(listed);
     await expect(row.locator("td").nth(5)).toHaveText("2");
     await noAxeViolations(page, "issues list");
     await scheme(page, "dark");
@@ -92,7 +97,7 @@ test("a person signs in, finds the SDK's issue, reads its frame and resolves it"
     expect(JSON.parse(davy("sql", "--json", `SELECT status FROM issues WHERE id = ${Number(id)}`)).rows).toEqual([["resolved"]]);
     await page.keyboard.press("Escape");
     await expect(page).toHaveURL(`${URL}/ui/issues`);
-    await expect(page.locator("tr.row")).toHaveCount(3);
+    await expect(page.locator("tr.row")).toHaveCount(listed - 1);
     await expect(row).toHaveCount(0);
   });
 
