@@ -498,7 +498,7 @@ https://davy.example.com/ui/issues/3
 https://davy.example.com/ui/issues/5
 ```
 
-- **Bounds.** At most 100 unsent alerts per channel. Over that a notice is not stored and the channel's `dropped` counter grows, which `davy channel list` shows. Feedback from agents has 5 places of its own on top, so a flood of feedback cannot push out an alert.
+- **Bounds.** At most 100 unsent alerts per channel in each of three classes: issue notices, notices of monitors made by check-ins, and the operator's own monitor and test notices. Anyone with a project's public DSN can make new issues and SDK monitors, so a flood of either cannot push out a CLI or HTTP monitor notice. Over that a notice is not stored and the channel's `dropped` counter grows, which `davy channel list` shows. Feedback from agents has 5 places of its own on top, so a flood of feedback cannot push out an alert.
 - **Webhook.** `POST` with `content-type: application/json` and the headers `Davy-Delivery: <id>` and `Davy-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<body>" with the channel secret>`. The secret is 32 random bytes as hex, printed once by `davy channel add`. The HMAC key is those 64 characters as text, not the decoded bytes. The scheme matches Stripe's, so receivers can reuse their verification code.
 
 ```json

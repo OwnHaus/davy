@@ -187,9 +187,20 @@ pub fn test(c: &Connection, id: i64, at: Timestamp) -> Result<bool> {
     Ok(true)
 }
 
+/// The outbox budget a notice of `kind` counts against.
+fn lane_class(kind: &str) -> &'static str {
+    match kind {
+        "monitor.digest" => "sdk",
+        "issue.new" | "issue.regressed" => "issue",
+        "feedback" => "feedback",
+        _ => "operator",
+    }
+}
+
 /// Stores one notification row, or counts it as dropped when the channel
-/// already has [`MAX_UNSENT`]. Feedback does not count against an alert, so
-/// it cannot push one out. The body holds the row's ID, so the row is stored
+/// already has [`MAX_UNSENT`] of its class: issue notices, SDK monitor
+/// notices and the operator's own monitor and test notices each have their
+/// own. Feedback does not count against an alert, so it cannot push one out. The body holds the row's ID, so the row is stored
 /// first. An issue notice of a project is due when the channel's waiting
 /// issue rows are, or [`WINDOW_MS`] after `at` when none waits, and keeps
 /// its issue for a digest. Any other notice is due at once.
@@ -203,10 +214,15 @@ fn queue(
 ) -> Result<()> {
     let sdk = super::monitor_digest::sdk(c, notice)?;
     let lane = if sdk { "monitor.digest" } else { notice.kind() };
+    // Each class has its own 100 rows, so a DSN holder who makes new issues
+    // or flaps SDK monitors cannot crowd out a CLI or HTTP monitor notice.
+    // Feedback counts every row but the SDK ones: it never pushes out alerts.
     let unsent: i64 = c.query_row(
         "SELECT count(*) FROM notifications WHERE channel_id=?1 AND sent_at IS NULL AND failed_at IS NULL
-           AND ((?2='monitor.digest' AND type='monitor.digest') OR (?2<>'monitor.digest' AND type<>'monitor.digest' AND (?2='feedback' OR type<>'feedback')))",
-        params![channel, lane],
+           AND CASE WHEN type='monitor.digest' THEN 'sdk' WHEN type IN ('issue.new','issue.regressed') THEN 'issue'
+             WHEN type='feedback' THEN 'feedback' ELSE 'operator' END
+           IN (?2, iif(?2='feedback','issue',NULL), iif(?2='feedback','operator',NULL))",
+        params![channel, lane_class(lane)],
         |r| r.get(0),
     )?;
     if unsent >= MAX_UNSENT {

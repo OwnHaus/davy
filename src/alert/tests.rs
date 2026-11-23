@@ -469,3 +469,32 @@ fn a_failed_row_waits_longer_each_time_then_fails_and_a_sent_row_stays_sent() {
 fn a_secret_never_shows_in_debug_output() {
     assert_eq!(format!("{:?}", Secret::load("a1".repeat(32))), "Secret(..)");
 }
+
+#[test]
+fn new_issues_cannot_crowd_out_a_monitor_notice() {
+    let c = memory();
+    channel(&c, Some(1), Kind::Webhook);
+    let issue = |id| {
+        Notice::IssueNew(Issue {
+            id,
+            title: format!("boom {id}"),
+            culprit: None,
+            level: "error".into(),
+            release: None,
+        })
+    };
+    for id in 0..101 {
+        store::notify(&c, 1, &issue(id), 0).unwrap();
+    }
+    store::notify(&c, 1, &Notice::Test, 1).unwrap();
+    let listed = store::list(&c).unwrap();
+    assert_eq!((listed[0].unsent, listed[0].dropped), (101, 1));
+    let types: Vec<String> = c
+        .prepare("SELECT type FROM notifications WHERE type<>'issue.new'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(types, ["test"]);
+}
