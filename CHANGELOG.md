@@ -20,6 +20,7 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 
 - A bare word in a log search now finds attribute values at any depth. Searching `r-3fa9c2d1` found nothing when the request ID sat in `attributes.req.id`, and only `attributes.req.id:r-3fa9c2d1` found it. Logs written before this release keep the old behaviour: a bare word matches their message only.
 - An issue's latest event is now its newest one. After 50 events Davy kept the payload of only every 100th, so the UI, `davy event` and `issue_context` could show an event hours older than the issue's last seen time.
+- Davy removes terminal colour codes and other complete ANSI CSI and OSC sequences from log messages and string attributes as it takes them in, from every log route. Lines that `tracing_subscriber`, zigbee2mqtt and other tools colour now read as plain text, and a search finds the word after a colour code. Logs stored before this release keep their codes.
 - An HTTP check no longer fails with `connection closed before message completed` when the target closes an idle keep-alive connection just as the next check starts. Each check and alert delivery now opens a new connection, so a check's response time includes connecting and the TLS handshake, as for a new visitor, and is higher than before for targets that kept the connection open.
 
 ## 0.1.0 (2026-11-23)

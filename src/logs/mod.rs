@@ -1,3 +1,4 @@
+mod escapes;
 pub mod logtail;
 pub mod otlp;
 pub mod sentry;
@@ -202,8 +203,14 @@ pub fn hex_bytes(b: &[u8], len: usize) -> Option<String> {
 }
 
 /// The text of a record's message, cut to 64 KiB at a character boundary.
-/// A cut sets the attribute [`TRUNCATED`].
-fn message(v: Option<Value>, attributes: &mut Map<String, Value>) -> String {
+/// A cut sets the attribute [`TRUNCATED`]. Terminal escape sequences go
+/// from the message and from every string in `attributes`, so an adapter
+/// calls this once it has put the record's attributes there.
+fn message(mut v: Option<Value>, attributes: &mut Map<String, Value>) -> String {
+    escapes::strip_values(attributes);
+    if let Some(v) = &mut v {
+        escapes::strip_value(v);
+    }
     let mut text = match v {
         Some(Value::String(s)) => s,
         None | Some(Value::Null) => String::new(),
