@@ -276,7 +276,7 @@ fn migration_backfills_releases_from_old_events() {
     let e = event(json!({"message":"boom","release":"v1"}));
     store::insert(&c, 1, &e).unwrap();
     c.execute_batch(
-        "DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE releases; DROP TABLE checks; DROP TABLE incidents; DROP TABLE monitors; DROP TABLE notifications; DROP TABLE channels; DROP TABLE feedback; DROP TABLE sessions; DROP TABLE invites; DROP TABLE users; DROP TABLE firsts; PRAGMA user_version=0;",
+        "DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE releases; DROP TABLE checks; DROP TABLE incidents; DROP TABLE monitors; DROP TABLE notifications; DROP TABLE channels; DROP TABLE feedback; DROP TABLE sessions; DROP TABLE invites; DROP TABLE users; DROP TABLE firsts; DROP TABLE client_reports; DROP TABLE user_feedback; PRAGMA user_version=0;",
     )
     .unwrap();
     store::init(&mut c).unwrap();
@@ -302,7 +302,7 @@ fn migration_backfills_releases_from_old_events() {
     let version: i64 = c
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 8);
+    assert_eq!(version, 9);
 }
 #[test]
 fn migration_indexes_the_text_and_tags_of_old_issues() {
@@ -315,7 +315,7 @@ fn migration_indexes_the_text_and_tags_of_old_issues() {
     )
     .unwrap();
     c.execute_batch(
-        "DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE firsts; PRAGMA user_version=6;",
+        "DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE firsts; DROP TABLE client_reports; DROP TABLE user_feedback; PRAGMA user_version=6;",
     )
     .unwrap();
     store::init(&mut c).unwrap();

@@ -2,6 +2,7 @@
 
 use crate::{
     event::{self, ErrorEvent},
+    items::user_feedback::{self, IssueFeedback},
     logs::store::{LogHit, LogQuery, search},
     store,
 };
@@ -25,7 +26,12 @@ pub struct IssueContext {
     pub logs_scope: String,
     /// Oldest first.
     pub logs: Vec<LogHit>,
+    /// What users wrote about this issue's events, newest first.
+    pub feedback: Vec<IssueFeedback>,
 }
+
+/// Feedback rows `issue_context` returns.
+const FEEDBACK: usize = 10;
 
 /// `None` when there is no such issue. Logs come from the latest event's trace
 /// within an hour either side, or from the whole project in the minute before
@@ -49,6 +55,7 @@ pub fn issue_context(c: &Connection, data: &Path, id: i64) -> Result<Option<Issu
         issue,
         logs_scope,
         logs,
+        feedback: user_feedback::of_issue(c, id, FEEDBACK)?,
     }))
 }
 

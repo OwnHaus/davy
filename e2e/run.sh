@@ -40,6 +40,25 @@ assert {i['title']:i['count'] for i in issues}=={'TypeError: SDK test failure':2
 print(sys.argv[2]+': verified 2 issues, counts 2 and 1')
 PY
 done
+DSN=$("$BIN" project create feedback --data "$SCRATCH/data" --public-url "$URL")
+node "$ROOT/e2e/send-feedback.mjs" "$DSN"
+for i in {1..50}; do
+  "$BIN" sql --data "$SCRATCH/data" --json "SELECT r.reason, r.category, r.quantity FROM client_reports r JOIN projects p ON p.id = r.project_id WHERE p.slug = 'feedback'" > "$SCRATCH/reports.json"
+  if grep -q before_send "$SCRATCH/reports.json"; then break; fi
+  sleep 0.2
+done
+ISSUE=$("$BIN" sql --data "$SCRATCH/data" "SELECT i.id FROM issues i JOIN projects p ON p.id = i.project_id WHERE p.slug = 'feedback'" | tail -n 1)
+"$BIN" context "$ISSUE" --data "$SCRATCH/data" > "$SCRATCH/context.json"
+python3 - "$SCRATCH" <<'PY'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])
+assert json.loads((p/'reports.json').read_text())['rows']==[['before_send','error',1]],(p/'reports.json').read_text()
+ctx=json.loads((p/'context.json').read_text())
+assert ctx['issue']['title']=='TypeError: Checkout failed',ctx['issue']
+fb=[{k:f[k] for k in ('message','name','email','url')} for f in ctx['feedback']]
+assert fb==[{'message':'The pay button does nothing','name':'Ana','email':'ana@example.com','url':'https://shop.example.com/cart'}],ctx['feedback']
+print('client reports and feedback: verified before_send/error 1, feedback linked to its issue')
+PY
 DSN=$("$BIN" project create logs --data "$SCRATCH/data" --public-url "$URL")
 KEY="${DSN#*://}"; KEY="${KEY%%@*}"
 node "$ROOT/e2e/send-logs.mjs" "$DSN"

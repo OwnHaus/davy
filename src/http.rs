@@ -1,8 +1,9 @@
 use crate::{
     alert,
-    envelope::{Disposition, Envelope, disposition},
+    envelope::{self, Disposition, Envelope, ItemKind, disposition},
     event::{ErrorEvent, EventId},
     heap,
+    items::{SdkItem, client_report, user_feedback},
     logs::{
         self, LogRecord, logtail, otlp,
         store::{LogQueue, LogWriter, QueueError},
@@ -40,6 +41,9 @@ const MAX_ITEM: usize = 1024 * 1024;
 /// Log records one request may send. Memory is paid for already, so this
 /// keeps one client from taking the whole log queue at once.
 const MAX_RECORDS: usize = 10_000;
+/// Client reports and feedback read from one envelope. An SDK sends one per
+/// envelope, and the rest of a crafted one is skipped.
+const MAX_SDK_ITEMS: usize = 10;
 /// How late a missed heartbeat can be noticed.
 const SWEEP_EVERY: Duration = Duration::from_secs(10);
 /// How late a due notification can be sent.
@@ -276,6 +280,8 @@ struct Parsed {
     /// Sentry allows one event per envelope. Later event items are dropped.
     event: Option<ErrorEvent>,
     logs: Vec<LogRecord>,
+    /// Client reports and user feedback.
+    items: Vec<SdkItem>,
 }
 fn too_many_records() -> Failure {
     (
@@ -300,6 +306,26 @@ fn event(json: &[u8], maps: &sourcemaps::Store, held: &mut Held) -> Result<Error
         ..ErrorEvent::parse(value).map_err(bad)?
     })
 }
+/// A client report or user feedback item. One that does not parse is
+/// dropped, as Sentry drops it.
+fn sdk_item(item: &envelope::Item<'_>, held: &mut Held) -> Result<Option<SdkItem>, Failure> {
+    let Ok(cost) = heap::json(item.payload, 0) else {
+        return Ok(None);
+    };
+    held.take(cost)?;
+    let parsed = match item.kind {
+        ItemKind::ClientReport => client_report::parse(item.payload).map(SdkItem::ClientReport),
+        ItemKind::Feedback => {
+            user_feedback::parse_feedback(item.payload).map(SdkItem::UserFeedback)
+        }
+        ItemKind::UserReport => {
+            user_feedback::parse_user_report(item.payload).map(SdkItem::UserFeedback)
+        }
+        _ => None,
+    };
+    held.release(cost);
+    Ok(parsed)
+}
 fn parse_sentry(
     bytes: &[u8],
     project: i64,
@@ -316,6 +342,7 @@ fn parse_sentry(
                 Some(event(bytes, maps, held)?)
             },
             logs: Vec::new(),
+            items: Vec::new(),
         });
     }
     let envelope = Envelope::parse(bytes).map_err(bad)?;
@@ -324,6 +351,7 @@ fn parse_sentry(
         id: envelope.header.event_id,
         event: None,
         logs: Vec::new(),
+        items: Vec::new(),
     };
     for item in envelope
         .items
@@ -334,7 +362,15 @@ fn parse_sentry(
             Disposition::StoreError if parsed.event.is_none() => {
                 parsed.event = Some(event(item.payload, maps, held)?);
             }
-            Disposition::StoreError | Disposition::Drop => {}
+            Disposition::ClientReport | Disposition::UserFeedback
+                if parsed.items.len() < MAX_SDK_ITEMS =>
+            {
+                parsed.items.extend(sdk_item(&item, held)?);
+            }
+            Disposition::StoreError
+            | Disposition::Drop
+            | Disposition::ClientReport
+            | Disposition::UserFeedback => {}
             Disposition::StoreLogs => {
                 // An item that does not parse is dropped, as Sentry drops it.
                 let Ok(cost) = logs::sentry::cost(item.payload) else {
@@ -398,6 +434,15 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
             project,
             events,
             held,
+        };
+        store::submit(&app.sender, job).await?;
+    }
+    // After the event, so a full queue costs a report or feedback, not an error.
+    if !parsed.items.is_empty() {
+        let job = Job::Items {
+            project,
+            at: time::now_ms(),
+            items: parsed.items,
         };
         store::submit(&app.sender, job).await?;
     }

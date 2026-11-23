@@ -39,9 +39,9 @@ To check, ask the agent: "List the unresolved issues in Davy." It calls `sql` an
 
 ## What the agent can do
 
-- `issue_context` returns what fixing an issue needs: the stack with source lines, breadcrumbs, the releases it occurs in and the logs around it.
+- `issue_context` returns what fixing an issue needs: the stack with source lines, breadcrumbs, the releases it occurs in, the logs around it and what users wrote about it through the SDK's feedback widget.
 - `search_logs` searches logs over a time range. A bare word such as a request ID matches the message and every attribute value, and `attributes.<key>:<word>` matches one attribute.
 - `count_logs` takes the filters of `search_logs` and returns how many logs match per time bucket. The agent sees how often something happens and since when before it reads examples.
-- `sql` runs one read-only query, and `schema` describes the tables.
+- `sql` runs one read-only query, and `schema` describes the tables. The `client_reports` table says how many errors and logs each SDK dropped before sending, and why, so the agent can tell a quiet app from one whose `beforeSend` drops everything.
 - `mark_fixed` resolves an issue in a release. It reopens when the error comes back in that release or a newer one.
 - `submit_feedback` reports a tool that was missing, returned the wrong thing or needed a workaround. `davy feedback --data /var/lib/davy` lists the reports. Davy sends them nowhere unless a channel was added with `--feedback`.

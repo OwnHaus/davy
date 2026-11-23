@@ -45,7 +45,7 @@ const MAX_LOGS: usize = 500;
 
 const INSTRUCTIONS: &str = "Davy stores the errors that Sentry SDKs report and the logs that services ship. \
 To triage, list open issues with `sql` (SELECT id,title,event_count,last_seen FROM issues WHERE status='unresolved' ORDER BY last_seen DESC LIMIT 20), \
-then call `issue_context` on one issue. It returns the stack with source lines, breadcrumbs, releases and the logs around the error. \
+then call `issue_context` on one issue. It returns the stack with source lines, breadcrumbs, releases, the logs around the error and what users wrote about it. \
 Call `schema` before writing other SQL. To see how often a log line happens and since when, call `count_logs` before `search_logs`. After a fix ships, call `mark_fixed`. \
 When a tool was missing, returned the wrong thing or needed a workaround, call `submit_feedback`.";
 
@@ -254,7 +254,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Everything needed to start fixing one issue: the issue, its newest event cut to the useful parts (stack with source lines of in-app frames, breadcrumbs, tags, user, request, runtime), the last 10 events, the releases it appeared in, and the logs of the same trace or from just before the error."
+        description = "Everything needed to start fixing one issue: the issue, its newest event cut to the useful parts (stack with source lines of in-app frames, breadcrumbs, tags, user, request, runtime), the last 10 events, the releases it appeared in, the logs of the same trace or from just before the error, and the newest 10 things users wrote about it through the SDK's feedback."
     )]
     async fn issue_context(&self, Parameters(Issue { issue_id }): Parameters<Issue>) -> Reply {
         self.blocking(move |data| {

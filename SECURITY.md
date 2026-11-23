@@ -36,6 +36,7 @@ Out of scope:
 - Keeping a person out by guessing for them. Anyone who knows a person's e-mail can keep them from logging in, for up to 15 minutes at a time. A session already open keeps working.
 - Other servers on the same host. A browser sends a cookie to every port of a host, so a server on another port of Davy's host receives the session cookie. Give Davy a host name of its own.
 - Secrets that the sending app puts into events. Scrubbing belongs in the SDK's `beforeSend`.
+- Made-up user feedback and client reports. A browser app's DSN is public, so anyone can send feedback in its name and claim counts of dropped events. Davy keeps at most 1,000 feedback messages and 100 report reasons per project and day, and treats both as what a client said, not as fact.
 
 ## Running it safely
 

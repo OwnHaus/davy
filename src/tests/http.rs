@@ -685,5 +685,7 @@ async fn a_heartbeat_ping_to_a_full_queue_is_429() {
     assert_eq!(r.headers["retry-after"], "1");
 }
 
+#[path = "http_items.rs"]
+mod items;
 #[path = "http_surface.rs"]
 mod surface;

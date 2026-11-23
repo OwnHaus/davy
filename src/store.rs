@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS issue_hourly(issue_id INTEGER NOT NULL REFERENCES iss
 CREATE INDEX IF NOT EXISTS events_issue ON events(issue_id, id DESC);";
 /// Schema changes after the first release, applied in order. `PRAGMA
 /// user_version` counts how many ran.
-const MIGRATIONS: [&str; 8] = [
+const MIGRATIONS: [&str; 9] = [
     "CREATE TABLE releases(project_id INTEGER NOT NULL REFERENCES projects(id), version TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY(project_id, version));
 INSERT INTO releases SELECT project_id, release, min(received_at) FROM events WHERE release IS NOT NULL GROUP BY project_id, release;",
     "CREATE TABLE monitors(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), name TEXT NOT NULL, kind TEXT NOT NULL, url TEXT, expect TEXT, keyword TEXT, heartbeat_token TEXT UNIQUE, every_s INTEGER NOT NULL, timeout_s INTEGER, grace_s INTEGER, state TEXT NOT NULL, last_check_at INTEGER, last_ping_at INTEGER, created_at INTEGER NOT NULL);
@@ -46,6 +46,11 @@ INSERT OR IGNORE INTO issue_tags SELECT 'release', release, issue_id FROM events
 CREATE TRIGGER events_tags AFTER INSERT ON events BEGIN INSERT OR IGNORE INTO issue_tags SELECT 'environment', new.environment, new.issue_id WHERE new.environment IS NOT NULL; INSERT OR IGNORE INTO issue_tags SELECT 'release', new.release, new.issue_id WHERE new.release IS NOT NULL; END;",
     // What the setup page shows that no other table holds.
     "CREATE TABLE firsts(what TEXT PRIMARY KEY, at INTEGER NOT NULL);",
+    // Client reports and user feedback from the SDKs, see src/items.
+    "CREATE TABLE client_reports(day INTEGER NOT NULL, project_id INTEGER NOT NULL REFERENCES projects(id), reason TEXT NOT NULL, category TEXT NOT NULL, quantity INTEGER NOT NULL, PRIMARY KEY(day, project_id, reason, category)) WITHOUT ROWID;
+CREATE TABLE user_feedback(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), received_at INTEGER NOT NULL, event_id TEXT, issue_id INTEGER REFERENCES issues(id), message TEXT NOT NULL, name TEXT, email TEXT, url TEXT);
+CREATE INDEX user_feedback_project ON user_feedback(project_id, received_at);
+CREATE INDEX user_feedback_issue ON user_feedback(issue_id, received_at) WHERE issue_id IS NOT NULL;",
 ];
 mod latest;
 use crate::{
@@ -281,6 +286,12 @@ pub enum Job {
         at: Timestamp,
         result: Outcome,
     },
+    /// Client reports and user feedback from one envelope.
+    Items {
+        project: i64,
+        at: Timestamp,
+        items: Vec<crate::items::SdkItem>,
+    },
     /// What an agent reported with `submit_feedback`.
     Feedback {
         at: Timestamp,
@@ -328,6 +339,7 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
         Job::Sweep { at } => {
             crate::monitor::store::sweep(c, *at)?;
             crate::accounts::store::sweep(c, *at)?;
+            crate::items::client_report::prune(c, *at)?;
             Ok(Ok(()))
         }
         Job::Check {
@@ -340,6 +352,10 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
         }
         Job::Delivery { id, at, result } => {
             alert::store::delivered(c, *id, *at, result)?;
+            Ok(Ok(()))
+        }
+        Job::Items { project, at, items } => {
+            crate::items::add(c, *project, *at, items)?;
             Ok(Ok(()))
         }
         Job::Feedback { at, feedback } => {

@@ -17,6 +17,8 @@ pub enum ItemKind {
     Profile,
     ProfileChunk,
     CheckIn,
+    Feedback,
+    UserReport,
     Other,
 }
 impl ItemKind {
@@ -35,6 +37,8 @@ impl ItemKind {
             "profile" => Self::Profile,
             "profile_chunk" => Self::ProfileChunk,
             "check_in" => Self::CheckIn,
+            "feedback" => Self::Feedback,
+            "user_report" => Self::UserReport,
             _ => Self::Other,
         }
     }
@@ -43,12 +47,16 @@ impl ItemKind {
 pub enum Disposition {
     StoreError,
     StoreLogs,
+    ClientReport,
+    UserFeedback,
     Drop,
 }
 pub fn disposition(kind: &ItemKind) -> Disposition {
     match kind {
         ItemKind::Event => Disposition::StoreError,
         ItemKind::Log => Disposition::StoreLogs,
+        ItemKind::ClientReport => Disposition::ClientReport,
+        ItemKind::Feedback | ItemKind::UserReport => Disposition::UserFeedback,
         _ => Disposition::Drop,
     }
 }

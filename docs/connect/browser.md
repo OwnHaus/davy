@@ -43,3 +43,17 @@ sudo runuser -u davy -- davy issues --data /var/lib/davy --project my-app
 ```
 
 `davy context ID --data /var/lib/davy` shows the stack with the original file names and lines.
+
+## Optional: user feedback
+
+The SDK's feedback widget sends what users write to Davy without other changes. Add it to the integrations:
+
+```js
+Sentry.init({
+  dsn: 'https://KEY@davy.example.com/1',
+  release: 'my-app@1.0.0',
+  integrations: [Sentry.feedbackIntegration({ colorScheme: 'system' })],
+})
+```
+
+To ask after an error instead, call `Sentry.captureFeedback({ message, name, email, associatedEventId })` with the ID `Sentry.captureException` returned. Feedback about an error shows up in `davy context ID` under `feedback`. All of it is in the `user_feedback` table, which `davy sql` reads. Davy keeps up to 1,000 messages per project and day.

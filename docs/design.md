@@ -61,12 +61,12 @@ struct EnvelopeHeader { event_id: Option<EventId>, dsn: Option<String> }
 struct Item<'a> { kind: ItemKind, payload: &'a [u8] }   // borrows the decoded body
 
 enum ItemKind { Event, Transaction, Span, Session, Sessions, ClientReport, Attachment, Log,
-                ReplayEvent, ReplayRecording, Profile, ProfileChunk, CheckIn, Other }
+                ReplayEvent, ReplayRecording, Profile, ProfileChunk, CheckIn, Feedback, UserReport, Other }
 
-enum Disposition { StoreError, StoreLogs, Drop }   // one table: fn disposition(&ItemKind) -> Disposition
+enum Disposition { StoreError, StoreLogs, ClientReport, UserFeedback, Drop }   // one table: fn disposition(&ItemKind) -> Disposition
 ```
 
-`Session`, `Sessions` and `ClientReport` are accepted and dropped in milestone 2 (release health comes later). `Log` is dropped until milestone 3. Unknown types are skipped, never an error.
+`Session` and `Sessions` are accepted and dropped (release health comes later). `Log` was dropped until milestone 3. `ClientReport`, `Feedback` and `UserReport` were dropped in 0.1.0 and are kept since, see [What else the SDKs send](#what-else-the-sdks-send). Unknown types are skipped, never an error.
 
 ```rust
 struct ErrorEvent {
@@ -298,6 +298,7 @@ A coding agent should get from "there is an error" to a fix without a human copy
 - `recent_events`: the last 10 events with `event_id`, `timestamp`, `release`, `environment`.
 - `releases`: each release this issue was seen in, with its event count and last time.
 - `logs`: with a trace id on the latest event, up to 50 logs of that trace within an hour of it. Otherwise up to 30 logs of the project from 60 s before to 10 s after it.
+- `feedback`: the newest 10 things users wrote about the issue's events, each with `received_at`, `message`, `name`, `email`, `url` and `event_id`.
 
 The compaction is a pure function from payload JSON to the `latest_event` value, tested on captured fixtures.
 
@@ -885,6 +886,36 @@ The first measurement ran under `taskpolicy -b`, which put the server on the bac
 
 The worst case is 46.4 ms, counting every log of the day. A page sorts by the `ts` fast field and reads only the 100 documents it returns. The histogram reads the `ts` column of every match, so it grows with the matches, not with the store: about 4.6 ns per log here.
 
+## What else the SDKs send
+
+The SDKs send more than errors and logs. Two of those items say something an agent cannot learn elsewhere, so Davy keeps them in SQLite, where `sql` reads them.
+
+**Client reports.** An SDK counts what it threw away before sending, per reason and category, and sends the counts in a `client_report` item every minute or so and on flush: errors `before_send` returned `null` for, transactions the sample rate skipped, logs a full queue lost, envelopes refused with `429`. Without them, an app that reports no errors looks healthy even when its `before_send` drops everything. Davy adds the counts up per project and UTC day:
+
+```sql
+client_reports(day INTEGER, project_id INTEGER, reason TEXT, category TEXT, quantity INTEGER,
+               PRIMARY KEY(day, project_id, reason, category)) WITHOUT ROWID
+```
+
+`day` is midnight UTC in unix milliseconds, so one row grows by addition and a busy app adds a few rows a day. A reason or category must be at most 64 characters of `a-z`, `0-9` and `_`, which every name the SDKs send is. Rows are kept 90 days and the sweep deletes older ones.
+
+**User feedback.** The SDKs' feedback widget and `Sentry.captureFeedback` send a `feedback` item, an event whose `contexts.feedback` holds `message`, `name`, `contact_email`, `url` and `associated_event_id`. Older SDKs send a `user_report` item with `event_id`, `comments`, `name` and `email`. Both become one row:
+
+```sql
+user_feedback(id INTEGER PRIMARY KEY, project_id INTEGER, received_at INTEGER, event_id TEXT,
+              issue_id INTEGER, message TEXT, name TEXT, email TEXT, url TEXT)
+```
+
+`issue_id` is looked up when the row is written, from the event it names in the same project, so `issue_context` reads an issue's feedback through an index instead of joining every event of the issue. The SDK sends the error first and the user answers later, so the event is almost always there. Feedback that arrives before its event, or names an event Davy did not store, stays unlinked and is still in `sql`. Text is trimmed, control characters become spaces and each field is cut to its limit in the table under [Sizes and counts](#sizes-and-counts).
+
+**Safety.** The DSN of a browser app is public, so anyone can send both items. What they can do with it:
+
+- Fill `user_feedback` with up to 1,000 rows per project and day, at most about 26 MB a day when every field is at its limit in four-byte characters. Past that, feedback is refused and counted in `client_reports` under the reason `davy_daily_cap`, so an operator sees the flood.
+- Add up to 100 made-up reason and category pairs per project and day. Counts of pairs that already exist keep growing, so a real SDK's reports still land.
+- Inflate counts. A report says what an SDK claims, not what happened, and the docs say so.
+
+Both items count against the request memory budget while they are parsed, like events. The writer stores them after the envelope's event, so a full queue costs a report or feedback, not an error. The e-mail and name a user typed are personal data. The `sql` tool and `issue_context` show them to whoever holds the admin token, the same people who can already read event payloads with user data in them.
+
 ## Hardening
 
 A security review of `370e4cd` showed that a client without a key could make the server allocate 4.4 GB with one 194 KB request (measured with a release build on a developer laptop: a gzip body that inflates to 190 MiB of `[0,0,...]` sent to `/store/`). The rules below close that class. Each has a test that a request over the limit is refused.
@@ -910,6 +941,9 @@ Sentry's own limits (develop.sentry.dev, Envelopes, Size Limits) are 200 MiB for
 | Log item in an envelope | 1 MiB | the item is dropped |
 | Items per envelope | 1,000 | `400` |
 | Event items per envelope | 1 (develop.sentry.dev, Envelope Items) | later event items are dropped |
+| Client report and feedback items per envelope | 10 that parse | the rest are dropped |
+| Client report entries | 100 per report, 1,000,000 per entry, 100 reason and category pairs per project and day | later entries are dropped, a larger quantity counts as 1,000,000, a new pair is not counted |
+| User feedback | 1,000 per project and UTC day, message 4,096 characters, name 128, e-mail 256, URL 2,048 | counted in `client_reports` as `davy_daily_cap`, longer text is cut |
 | Frames symbolicated per event | 256, from the frame that threw outward | older frames stay minified |
 | Source line kept per context line | 256 bytes around the column | the rest is cut, marked `…` |
 | Log message | 64 KiB | cut at a character boundary, attribute `davy.truncated` set to `true` |

@@ -32,6 +32,8 @@ const NOTES: &str = "Notes:
 - issue_tags holds each environment and release that an issue's events named. issues_text is a trigram full-text index of issues.title and issues.culprit: SELECT rowid FROM issues_text WHERE issues_text MATCH '\"timed out\"' finds issues whose title or culprit contains the phrase, ignoring case, for phrases of three characters or more.
 - monitors.state is pending, up, failing or down. Times in monitors, checks and incidents are unix milliseconds. An incident with no resolved_at is open. monitors.heartbeat_token, monitors.url, channels.url and channels.secret read as NULL.
 - users.password, sessions.hash and invites.hash read as NULL.
+- client_reports counts what the SDKs dropped before sending, per UTC day (unix milliseconds at midnight), project, reason and category, such as before_send and error, or sample_rate and transaction. reason davy_daily_cap counts user feedback Davy refused past 1000 per project and day. Rows are kept 90 days. When an app reports no errors, check here that its SDK did not drop them.
+- user_feedback holds what users wrote through the SDK's feedback widget or captureFeedback. received_at is unix milliseconds. issue_id is the issue of the event it names, NULL when it names none or arrived before that event.
 - Results stop at 500 rows, text at 4000 characters, payload_json at 16 MiB, and a query at 5 seconds.";
 
 #[derive(Debug, Serialize)]

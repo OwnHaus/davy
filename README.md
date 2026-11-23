@@ -20,7 +20,7 @@ Davy replaces Sentry and Better Stack for a team that wants to run its own. It i
 
 ## What it does
 
-- **Errors.** Takes what the official Sentry SDKs send, groups it into issues and reopens an issue when it comes back in the release that fixed it or a newer one. Minified browser stacks turn back into source through maps uploaded with `sentry-cli`.
+- **Errors.** Takes what the official Sentry SDKs send, groups it into issues and reopens an issue when it comes back in the release that fixed it or a newer one. Minified browser stacks turn back into source through maps uploaded with `sentry-cli`. What users write in the SDK's feedback widget shows up on the issue, and the SDK's client reports say what it dropped before sending.
 - **Logs.** Takes logs from Logtail shippers (pino, Vector, Fluent Bit), OpenTelemetry and Sentry's logger, with full-text search, a histogram and live tail. Logs next to an error show up on the error.
 - **Uptime.** HTTP checks with status and keyword, and heartbeats for cron jobs.
 - **Alerts.** A notice when an issue is new or regressed and when a monitor goes down or comes back, never on every event. To webhooks (signed), Slack and e-mail.
@@ -106,7 +106,7 @@ Log search takes the same query as `davy logs`. Drag across the histogram to zoo
 
 `davy mcp-config --client claude-code` (or `codex`, `cursor`) prints the config. The agent then gets:
 
-- `issue_context`: the stack with source lines, breadcrumbs, releases and the logs around the error, in one call.
+- `issue_context`: the stack with source lines, breadcrumbs, releases, the logs around the error and what users wrote about it, in one call.
 - `sql`: one read-only SQLite query, with `schema` to see the tables.
 - `search_logs`: the log search the UI uses. A bare word such as a request ID matches the message and every attribute value.
 - `count_logs`: how many logs match per time bucket, with the filters of `search_logs`, to see how often something happens and since when.
