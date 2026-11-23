@@ -171,6 +171,33 @@ fn every_filter_narrows_the_list() {
 }
 
 #[test]
+fn text_of_any_length_matches_title_and_culprit_in_any_case() {
+    let c = three_issues();
+    add(
+        &c,
+        2,
+        "unused",
+        NOW - 6 * H,
+        json!({"exception":{"values":[{"type":"Error","value":"Žluťoučký kůň","stacktrace":{"frames":[{"function":"submitCheckout","in_app":true}]}}]}}),
+    );
+    let text = |t: &str| {
+        titles(
+            &c,
+            &Filter {
+                text: Some(t.to_owned()),
+                ..Filter::default()
+            },
+            Sort::LastSeen,
+        )
+    };
+    assert_eq!(text("TA"), ["beta failed", "delta failed"]);
+    assert_eq!(text("ŽLUŤ"), ["Error: Žluťoučký kůň"]);
+    assert_eq!(text("CHECKOUT"), ["Error: Žluťoučký kůň"]);
+    assert_eq!(text("a\" OR \"b"), Vec::<String>::new());
+    assert_eq!(text("ha failed"), ["alpha failed"]);
+}
+
+#[test]
 fn a_cursor_pages_through_issues_with_equal_keys() {
     let c = memory();
     for n in 0..=PAGE {

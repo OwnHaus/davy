@@ -105,7 +105,8 @@ pub struct Filter {
     pub status: Option<Status>,
     pub environment: Option<String>,
     pub release: Option<String>,
-    /// Matched in title and culprit, ignoring ASCII case.
+    /// Matched in title and culprit, ignoring case. Below three characters
+    /// only ASCII case is ignored.
     pub text: Option<String>,
 }
 
@@ -186,51 +187,10 @@ pub fn list(
     now: Timestamp,
 ) -> Result<IssuePage> {
     let column = sort.column();
-    let mut sql = format!(
-        "SELECT i.id,p.slug,i.title,i.culprit,i.level,i.status,i.event_count,i.first_seen,i.last_seen,{column} FROM issues i JOIN projects p ON p.id=i.project_id WHERE 1"
+    let (sql, args) = page_ids(filter, column, after)?;
+    let sql = format!(
+        "SELECT i.id,p.slug,i.title,i.culprit,i.level,i.status,i.event_count,i.first_seen,i.last_seen,{column} FROM ({sql}) t JOIN issues i ON i.id=t.id JOIN projects p ON p.id=i.project_id ORDER BY {column} DESC,i.id DESC"
     );
-    let mut args: Vec<rusqlite::types::Value> = Vec::new();
-    // Each value becomes a numbered parameter, so the text filter can be
-    // used twice.
-    let mut bind = |value: rusqlite::types::Value| {
-        args.push(value);
-        format!("?{}", args.len())
-    };
-    if let Some(project) = filter.project {
-        write!(sql, " AND i.project_id={}", bind(project.into()))?;
-    }
-    if let Some(status) = filter.status {
-        write!(
-            sql,
-            " AND i.status={}",
-            bind(status.as_str().to_owned().into())
-        )?;
-    }
-    for (column, value) in [
-        ("environment", &filter.environment),
-        ("release", &filter.release),
-    ] {
-        if let Some(value) = value {
-            let p = bind(value.clone().into());
-            write!(
-                sql,
-                " AND EXISTS(SELECT 1 FROM events e WHERE e.issue_id=i.id AND e.{column}={p})"
-            )?;
-        }
-    }
-    if let Some(text) = &filter.text {
-        let p = bind(text.to_ascii_lowercase().into());
-        write!(
-            sql,
-            " AND (instr(lower(i.title),{p})>0 OR instr(lower(coalesce(i.culprit,'')),{p})>0)"
-        )?;
-    }
-    if let Some(after) = after {
-        let (key, id) = (bind(after.key.into()), bind(after.id.into()));
-        write!(sql, " AND ({column},i.id)<({key},{id})")?;
-    }
-    let limit = bind(i64::try_from(PAGE + 1)?.into());
-    write!(sql, " ORDER BY {column} DESC,i.id DESC LIMIT {limit}")?;
     let from = hours_from(now);
     let mut q = c.prepare(&sql)?;
     let mut keys = Vec::new();
@@ -266,6 +226,68 @@ pub fn list(
         next,
         hours_from: time::rfc3339_ms(from),
     })
+}
+
+/// The query of one page's ids and its parameters. The ids come from an
+/// index alone, so the columns of the rows are read for those ids only.
+fn page_ids(
+    filter: &Filter,
+    column: &str,
+    after: Option<Cursor>,
+) -> Result<(String, Vec<rusqlite::types::Value>)> {
+    let mut sql = String::from("SELECT i.id FROM issues i WHERE 1");
+    let mut args: Vec<rusqlite::types::Value> = Vec::new();
+    // Each value becomes a numbered parameter, so the short text filter can
+    // be used twice.
+    let mut bind = |value: rusqlite::types::Value| {
+        args.push(value);
+        format!("?{}", args.len())
+    };
+    if let Some(project) = filter.project {
+        write!(sql, " AND i.project_id={}", bind(project.into()))?;
+    }
+    if let Some(status) = filter.status {
+        write!(
+            sql,
+            " AND i.status={}",
+            bind(status.as_str().to_owned().into())
+        )?;
+    }
+    for (key, value) in [
+        ("environment", &filter.environment),
+        ("release", &filter.release),
+    ] {
+        if let Some(value) = value {
+            let (k, v) = (bind(key.to_owned().into()), bind(value.clone().into()));
+            write!(
+                sql,
+                " AND i.id IN (SELECT issue_id FROM issue_tags WHERE key={k} AND value={v})"
+            )?;
+        }
+    }
+    if let Some(text) = &filter.text {
+        // The trigram index finds substrings of three characters or more.
+        if text.chars().count() >= 3 {
+            let p = bind(format!("\"{}\"", text.replace('"', "\"\"")).into());
+            write!(
+                sql,
+                " AND i.id IN (SELECT rowid FROM issues_text WHERE issues_text MATCH {p})"
+            )?;
+        } else {
+            let p = bind(text.to_ascii_lowercase().into());
+            write!(
+                sql,
+                " AND (instr(lower(i.title),{p})>0 OR instr(lower(coalesce(i.culprit,'')),{p})>0)"
+            )?;
+        }
+    }
+    if let Some(after) = after {
+        let (key, id) = (bind(after.key.into()), bind(after.id.into()));
+        write!(sql, " AND ({column},i.id)<({key},{id})")?;
+    }
+    let limit = bind(i64::try_from(PAGE + 1)?.into());
+    write!(sql, " ORDER BY {column} DESC,i.id DESC LIMIT {limit}")?;
+    Ok((sql, args))
 }
 
 fn fill_hourly(c: &Connection, issues: &mut [IssueRow], from: Timestamp) -> Result<()> {

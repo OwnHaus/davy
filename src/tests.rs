@@ -274,7 +274,7 @@ fn migration_backfills_releases_from_old_events() {
     let e = event(json!({"message":"boom","release":"v1"}));
     store::insert(&c, 1, &e).unwrap();
     c.execute_batch(
-        "DROP TABLE releases; DROP TABLE checks; DROP TABLE incidents; DROP TABLE monitors; DROP TABLE notifications; DROP TABLE channels; DROP TABLE feedback; DROP TABLE sessions; DROP TABLE invites; DROP TABLE users; PRAGMA user_version=0;",
+        "DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE releases; DROP TABLE checks; DROP TABLE incidents; DROP TABLE monitors; DROP TABLE notifications; DROP TABLE channels; DROP TABLE feedback; DROP TABLE sessions; DROP TABLE invites; DROP TABLE users; PRAGMA user_version=0;",
     )
     .unwrap();
     store::init(&mut c).unwrap();
@@ -300,7 +300,59 @@ fn migration_backfills_releases_from_old_events() {
     let version: i64 = c
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
+}
+#[test]
+fn migration_indexes_the_text_and_tags_of_old_issues() {
+    let mut c = memory();
+    store::create_project(&c, "old").unwrap();
+    store::insert(
+        &c,
+        1,
+        &event(json!({"message":"Checkout Timed Out","environment":"prod","release":"v1"})),
+    )
+    .unwrap();
+    c.execute_batch(
+        "DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; PRAGMA user_version=6;",
+    )
+    .unwrap();
+    store::init(&mut c).unwrap();
+    let tags: Vec<(String, String, i64)> = c
+        .prepare("SELECT key,value,issue_id FROM issue_tags")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        tags,
+        [
+            ("environment".into(), "prod".into(), 1),
+            ("release".into(), "v1".into(), 1)
+        ]
+    );
+    let found: i64 = c
+        .query_row(
+            "SELECT rowid FROM issues_text WHERE issues_text MATCH '\"timed out\"'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(found, 1);
+    store::insert(
+        &c,
+        1,
+        &event(json!({"message":"Checkout Timed Out","environment":"staging"})),
+    )
+    .unwrap();
+    let staging: i64 = c
+        .query_row(
+            "SELECT issue_id FROM issue_tags WHERE key='environment' AND value='staging'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(staging, 1);
 }
 #[test]
 fn storage_regression_duplicates_sampling_and_ignored() {

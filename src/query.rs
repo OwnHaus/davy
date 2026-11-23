@@ -29,6 +29,7 @@ const NOTES: &str = "Notes:
 - Times in projects, issues, events and releases are unix milliseconds. issue_hourly.hour is the start of its hour in unix milliseconds.
 - events.payload is the compressed Sentry event, kept for a sample of events. payload_json(payload) returns it as JSON text, so json_extract(payload_json(payload), '$.exception.values[0].type') works.
 - issues.status is unresolved, resolved or ignored. A resolved issue reopens when an event arrives without a release, in the release it was resolved in, or in a release first seen after resolved_at.
+- issue_tags holds each environment and release that an issue's events named. issues_text is a trigram full-text index of issues.title and issues.culprit: SELECT rowid FROM issues_text WHERE issues_text MATCH '\"timed out\"' finds issues whose title or culprit contains the phrase, ignoring case, for phrases of three characters or more.
 - monitors.state is pending, up, failing or down. Times in monitors, checks and incidents are unix milliseconds. An incident with no resolved_at is open. monitors.heartbeat_token, monitors.url, channels.url and channels.secret read as NULL.
 - users.password, sessions.hash and invites.hash read as NULL.
 - Results stop at 500 rows, text at 4000 characters, payload_json at 16 MiB, and a query at 5 seconds.";
@@ -98,7 +99,8 @@ const CREDENTIALS: [(&str, &str); 7] = [
 
 /// SQLite counts ATTACH and most PRAGMAs as read-only, so `Statement::readonly`
 /// is not enough. This allows a query to select, read tables and call
-/// functions, and nothing else.
+/// functions, and nothing else. The one pragma allowed is `data_version`,
+/// which FTS5 reads to notice another connection's writes to issues_text.
 fn only_reads(ctx: AuthContext<'_>) -> Authorization {
     match ctx.action {
         AuthAction::Read {
@@ -108,14 +110,21 @@ fn only_reads(ctx: AuthContext<'_>) -> Authorization {
         AuthAction::Select
         | AuthAction::Read { .. }
         | AuthAction::Function { .. }
-        | AuthAction::Recursive => Authorization::Allow,
+        | AuthAction::Recursive
+        | AuthAction::Pragma {
+            pragma_name: "data_version",
+            pragma_value: None,
+        } => Authorization::Allow,
         _ => Authorization::Deny,
     }
 }
 
 /// The `CREATE` statements of every table and index, then `NOTES`.
 pub fn schema(c: &Connection) -> Result<String> {
-    let mut q = c.prepare("SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL")?;
+    // The shadow tables and triggers of issues_text only keep FTS5 in step.
+    let mut q = c.prepare(
+        "SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT GLOB 'issues_text_*'",
+    )?;
     let mut out = q
         .query_map([], |r| r.get::<_, String>(0))?
         .map(|sql| sql.map(|s| s + ";\n"))
@@ -231,6 +240,21 @@ mod tests {
         assert!(!r.truncated);
         let blob = run(&c, "SELECT payload FROM events").unwrap();
         assert!(blob.rows[0][0]["blob_bytes"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn full_text_search_runs_on_the_read_connection() {
+        let (_data, c) = store_with_one_event();
+        let r = run(
+            &c,
+            "SELECT i.title FROM issues_text t JOIN issues i ON i.id = t.rowid WHERE issues_text MATCH '\"typeerr\"'",
+        )
+        .unwrap();
+        assert_eq!(r.rows, [vec![json!("TypeError: ")]]);
+        assert!(
+            run(&c, "PRAGMA journal_mode").is_err(),
+            "other pragmas stay denied"
+        );
     }
 
     #[test]
@@ -412,6 +436,8 @@ mod tests {
         let (_data, c) = store_with_one_event();
         let s = schema(&c).unwrap();
         assert!(s.contains("CREATE TABLE releases("));
+        assert!(s.contains("CREATE VIRTUAL TABLE issues_text USING fts5("));
+        assert!(!s.contains("issues_text_data"));
         assert!(s.contains("payload_json(payload)"));
     }
 }

@@ -3,11 +3,10 @@ CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY, slug TEXT UNIQUE NOT
 CREATE TABLE IF NOT EXISTS issues(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), grouping_version INTEGER NOT NULL, fingerprint TEXT NOT NULL, title TEXT NOT NULL, culprit TEXT, level TEXT NOT NULL, status TEXT NOT NULL, resolved_in_release TEXT, resolved_at INTEGER, regressed_at INTEGER, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, event_count INTEGER NOT NULL, UNIQUE(project_id, grouping_version, fingerprint));
 CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), issue_id INTEGER NOT NULL REFERENCES issues(id), event_id TEXT NOT NULL, timestamp INTEGER NOT NULL, received_at INTEGER NOT NULL, level TEXT NOT NULL, release TEXT, environment TEXT, trace_id TEXT, user_id TEXT, payload BLOB, UNIQUE(project_id, event_id));
 CREATE TABLE IF NOT EXISTS issue_hourly(issue_id INTEGER NOT NULL REFERENCES issues(id), hour INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(issue_id, hour));
-CREATE INDEX IF NOT EXISTS issues_last_seen ON issues(last_seen DESC);
 CREATE INDEX IF NOT EXISTS events_issue ON events(issue_id, id DESC);";
 /// Schema changes after the first release, applied in order. `PRAGMA
 /// user_version` counts how many ran.
-const MIGRATIONS: [&str; 6] = [
+const MIGRATIONS: [&str; 7] = [
     "CREATE TABLE releases(project_id INTEGER NOT NULL REFERENCES projects(id), version TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY(project_id, version));
 INSERT INTO releases SELECT project_id, release, min(received_at) FROM events WHERE release IS NOT NULL GROUP BY project_id, release;",
     "CREATE TABLE monitors(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), name TEXT NOT NULL, kind TEXT NOT NULL, url TEXT, expect TEXT, keyword TEXT, heartbeat_token TEXT UNIQUE, every_s INTEGER NOT NULL, timeout_s INTEGER, grace_s INTEGER, state TEXT NOT NULL, last_check_at INTEGER, last_ping_at INTEGER, created_at INTEGER NOT NULL);
@@ -26,6 +25,25 @@ CREATE INDEX sessions_user ON sessions(user_id);
 CREATE TABLE invites(hash BLOB PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at INTEGER NOT NULL);
 CREATE INDEX invites_user ON invites(user_id);",
     "CREATE INDEX IF NOT EXISTS issues_project_status ON issues(project_id, status, last_seen DESC);",
+    // The issues list. Each index holds every sort key, so a list in any
+    // order with any status reads only the index, and two indexes instead of
+    // nine keep ingest, which updates last_seen and event_count, cheap.
+    // issues_text and issue_tags turn the text, environment and release
+    // filters into sets of ids instead of a scan. Timings in docs/design.md,
+    // "Load check".
+    "DROP INDEX IF EXISTS issues_last_seen;
+DROP INDEX IF EXISTS issues_project_status;
+CREATE INDEX issues_status_sorts ON issues(status, last_seen, event_count, first_seen);
+CREATE INDEX issues_project_sorts ON issues(project_id, status, last_seen, event_count, first_seen);
+CREATE VIRTUAL TABLE issues_text USING fts5(title, culprit, content='issues', content_rowid='id', tokenize='trigram');
+INSERT INTO issues_text(issues_text) VALUES('rebuild');
+CREATE TRIGGER issues_text_insert AFTER INSERT ON issues BEGIN INSERT INTO issues_text(rowid, title, culprit) VALUES (new.id, new.title, new.culprit); END;
+CREATE TRIGGER issues_text_update AFTER UPDATE OF title, culprit ON issues BEGIN INSERT INTO issues_text(issues_text, rowid, title, culprit) VALUES ('delete', old.id, old.title, old.culprit); INSERT INTO issues_text(rowid, title, culprit) VALUES (new.id, new.title, new.culprit); END;
+CREATE TRIGGER issues_text_delete AFTER DELETE ON issues BEGIN INSERT INTO issues_text(issues_text, rowid, title, culprit) VALUES ('delete', old.id, old.title, old.culprit); END;
+CREATE TABLE issue_tags(key TEXT NOT NULL CHECK(key IN ('environment', 'release')), value TEXT NOT NULL, issue_id INTEGER NOT NULL REFERENCES issues(id), PRIMARY KEY(key, value, issue_id)) WITHOUT ROWID;
+INSERT OR IGNORE INTO issue_tags SELECT 'environment', environment, issue_id FROM events WHERE environment IS NOT NULL;
+INSERT OR IGNORE INTO issue_tags SELECT 'release', release, issue_id FROM events WHERE release IS NOT NULL;
+CREATE TRIGGER events_tags AFTER INSERT ON events BEGIN INSERT OR IGNORE INTO issue_tags SELECT 'environment', new.environment, new.issue_id WHERE new.environment IS NOT NULL; INSERT OR IGNORE INTO issue_tags SELECT 'release', new.release, new.issue_id WHERE new.release IS NOT NULL; END;",
 ];
 use crate::{
     alert,

@@ -131,7 +131,11 @@ events(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, issue_id INTEGER NOT
        timestamp INTEGER NOT NULL, received_at INTEGER NOT NULL, level TEXT NOT NULL, release TEXT, environment TEXT,
        trace_id TEXT, user_id TEXT, payload BLOB, UNIQUE(project_id, event_id))
 issue_hourly(issue_id INTEGER NOT NULL, hour INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(issue_id, hour))
+issue_tags(key TEXT NOT NULL, value TEXT NOT NULL, issue_id INTEGER NOT NULL, PRIMARY KEY(key, value, issue_id)) WITHOUT ROWID
+issues_text USING fts5(title, culprit, content='issues', tokenize='trigram')
 ```
+
+`issue_tags` and `issues_text` serve the filters of the web UI's issue list. Triggers keep both in step. Milestone 9's "Load check" says why.
 
 - Timestamps are unix milliseconds.
 - `payload` is the zstd-compressed event JSON. Keep it for the first 50 events of an issue and then for every 100th. Always write the `events` row and bump the counters, so counts stay exact while disk stays bounded under a burst.
@@ -820,8 +824,34 @@ Creating monitors, channels, projects and users from the UI, which needs roles a
 - A store test: a bulk `SetStatus` of 500 issues commits all or none, and a login commits while the ingest queue is full.
 - Unit tests: `EventView` from each captured fixture gives the exact frames and fields, and cuts an event with 10,000 breadcrumbs to 200 with the count of the rest; the log histogram counts a known set of logs across two daily indexes into the right buckets; a link from an event is a link only for `http` and `https`; a log time of `1763600000123456789` survives the round trip through the API and the generated types.
 - `e2e/ui.spec.ts` runs Playwright against the built binary: `davy user add`, open the link, set a password, see the issue a real Sentry SDK sent, read its in-app frame, resolve it, find a log with a query and zoom the histogram, open a monitor, change the password. axe-core reports no violation on any view, and the browser reports no CSP violation. The issues part runs today, after the Sentry SDKs have sent their errors: it checks axe in light and dark on the welcome, list, issue and login views, and resolves the sentry-node-7 `TypeError` with `r`, so the later steps of `e2e/run.sh` keep the other three issues. The log, monitor and password steps join when their views do. axe checks after colour transitions end, because a button half way through its fade fails contrast.
-- A load check: the issues list and the log search each answer in under 100 ms at the 95th percentile with 100,000 issues and 10 million logs in the data directory, measured and recorded here.
+- A load check: the issues list and the log search each answer in under 100 ms at the 95th percentile with 100,000 issues and 10 million logs in the data directory, measured and recorded here. The issues half is in "Load check" below. The log half joins with the Logs view.
 - `scripts/check` passes, including the type diff, the lint ban, osv-scanner and the bundle budget.
+
+### Load check
+
+`bench/load-issues.sh` fills a store with 100,000 issues in 10 projects, 3 events each, and times 200 requests to `GET /ui/api/issues` per case over one keep-alive connection. Measured on 2026-11-23 on the developer laptop with a release build, load average about 5 from other work:
+
+| Case | p95 before | p95 after |
+|---|---|---|
+| unresolved, last seen (the default view) | 8 ms | 0.5 ms |
+| unresolved, most events | 80 ms | 5.9 ms |
+| unresolved, first seen | 87 ms | 6.4 ms |
+| one project, unresolved, most events | not measured | 0.7 ms |
+| text in title or culprit, many hits | 101 ms | 7.6 ms |
+| text, one hit | 110 ms | 6.0 ms |
+| text of two characters, no hit | not measured | 29.8 ms |
+| environment `staging` | 338 ms | 3.4 ms |
+| release `v1.7` | 487 ms | 1.1 ms |
+
+Before is the schema of `0d672c5` on the same data. After, the worst case is 29.8 ms. Three changes, all in migration 7:
+
+- **Two covering indexes instead of one per sort.** `issues(status, last_seen, event_count, first_seen)` and the same led by `project_id` hold every sort key, so the ids of a page come from the index alone and only those 50 rows are read from the table. Davy never runs `ANALYZE`, and without statistics SQLite picked the old `(project_id, status)` index for a status filter and sorted every row in a temporary tree. One index per filter and sort pair would be faster still on the sorts but costs nine index writes on each event that bumps an issue.
+- **A trigram full-text index for text.** `issues_text` is an FTS5 table over `title` and `culprit`, kept in step by triggers. A search of three characters or more matches the phrase there, ignoring case, also outside ASCII. A shorter search cannot use trigrams and scans the rows, ignoring ASCII case only: 29.8 ms when nothing matches, sub-millisecond when 50 rows match early.
+- **Tags rolled up per issue.** `issue_tags(key, value, issue_id)` holds each environment and release an issue's events named, written by a trigger on `events`. The filter was an `EXISTS` over the issue's events for each issue.
+
+What it costs. A Python prototype on the same data measured an event that bumps an issue at 24 µs before and 31 µs after, warm. The first start after the upgrade builds the text index and reads every event once for the tags: about 3 s for 100,000 issues and 300,000 events. A page still walks an index past the rows it does not show, so that work grows with the store. At 1,000,000 issues the slowest cases should take about ten times as long (a guess, not measured).
+
+The first measurement ran under `taskpolicy -b`, which put the server on the background CPU and I/O class. Every case came out about five times slower: 49 ms instead of 8 ms for the default view. Benchmarks run at normal priority, and the script says so.
 
 ## Hardening
 
