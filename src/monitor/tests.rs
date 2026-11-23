@@ -403,7 +403,7 @@ fn a_sweep_marks_a_heartbeat_down_once_its_window_passes() {
 }
 
 #[test]
-fn a_sweep_deletes_up_to_1000_checks_older_than_30_days() {
+fn a_sweep_deletes_checks_older_than_30_days() {
     let c = memory();
     let id = backup(&c);
     let day = 86_400_000;
@@ -426,8 +426,7 @@ fn a_sweep_deletes_up_to_1000_checks_older_than_30_days() {
         c.query_row("SELECT count(*) FROM checks", [], |r| r.get(0))
             .unwrap()
     };
-    store::sweep(&c, now).unwrap();
-    assert_eq!(left(&c), 502);
+    // 1,500 rows are two batches, and both fit in one sweep's budget.
     store::sweep(&c, now).unwrap();
     assert_eq!(left(&c), 2);
 }

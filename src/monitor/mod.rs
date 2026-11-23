@@ -13,6 +13,8 @@ mod checkin_tests;
 pub mod cli;
 pub mod edit;
 mod retention;
+#[cfg(test)]
+mod retention_tests;
 pub mod schedule;
 #[cfg(test)]
 mod schedule_tests;

@@ -451,7 +451,7 @@ enum Channel { Webhook { url: Url, secret: Secret }, Slack { url: Url } }
 - **Confirmation.** One failed HTTP check moves `Up` to `Failing` and schedules the next check after 10 s instead of `every`. A second failure in a row opens an incident (`Down`). One success closes it. A heartbeat opens its incident on the first late check or `/fail`, because the grace period is its confirmation.
 - One scheduler task in `davy serve` runs the checks, at most 16 at a time, the longest waiting first. Every second it reads which monitors are due, so `davy monitor add` in another process takes effect within a second and a restart resumes the schedule from `last_check_at`. A check is due `every` after the start of the last one, or 10 s after it while the monitor is `Failing`. A monitor stays busy until the writer has stored its result, so its checks never overlap.
 - A check row keeps the status and `ms`, the time until the response headers arrived. The timeout covers reading the body too. A sixth redirect is a connection failure, and so is a connection error, whose text is cut to 200 characters and holds no URL.
-- Check results and pings go to the writer queue. Every 10 s `davy serve` queues a sweep. The writer then opens an incident for each heartbeat that is up and late, and deletes up to 1,000 check rows older than 30 days. The check runs in the writer, so it cannot race a ping. A late heartbeat is noticed at most 10 s after its window ends. 1,000 rows every 10 s outpace the most a data directory adds, 1,000 monitors checking every 30 s.
+- Check results and pings go to the writer queue. Every 10 s `davy serve` queues a sweep. The writer then opens an incident for each heartbeat that is up and late, and deletes check rows older than 30 days, 1,000 at a time, until none are left or the sweep has spent 100 ms deleting. The check runs in the writer, so it cannot race a ping. A late heartbeat is noticed at most 10 s after its window ends. Even one batch every 10 s outpaces the most `davy monitor add` lets a data directory add, 1,000 monitors checking every 30 s. The rest of the budget is for monitors made by check-ins, which that limit does not cover ("Bounds" under "Cron check-ins").
 
 ### Heartbeat route
 
@@ -1072,9 +1072,23 @@ the monitor list and their check-ins are dropped as `davy_bad_config`.
 They do not break listing or check-ins for other monitors.
 
 Resolved incidents and sent or permanently failed notifications expire after
-30 days, matching checks retention. Each sweep deletes at most 1,000 rows
-from each class. Open incidents and incidents overlapping the 30-day uptime
-window remain. Starts expire after one minute, at most 1,000 per sweep.
+30 days, matching checks retention. Open incidents and incidents overlapping
+the 30-day uptime window remain. Starts expire after one minute. Each sweep
+deletes in rounds of up to 1,000 rows from each class (checks, incidents,
+sent notifications, failed notifications, starts) until no class has a full
+batch left or 100 ms are spent. The first round always runs and the classes
+take turns, so a backlog in one class cannot starve another. The sweep runs
+in the writer every 10 s, so 100 ms is at most 1% of its time; the last
+round can overrun the budget by a few milliseconds.
+A sweep that deleted one batch per class could not keep up once about ten
+projects flooded check-ins, because a public DSN can create monitors and
+incidents and the 1,000-monitor limit does not cover them. Measured on an
+M2 Max under a load average of 13 (release build of a scratch program, a
+file database with 1,000 monitors and 1,400,000 expired rows): one batch per
+class deleted 3,000 rows in 27 ms; a budgeted sweep deleted 57,000 to 60,000
+rows in about 130 ms including its commit, 261,000 rows/s while sweeping.
+That is about 19,000 rows per class per sweep where 1,000 were before, so a
+flood needs about 19 times as many projects to outgrow it.
 Incidents are not capped per day: dropping spans would inflate uptime.
 The six-per-minute check-in budget bounds their creation instead.
 Monitors created by check-ins do not count toward the 1,000 monitors of

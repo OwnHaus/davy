@@ -113,7 +113,7 @@ fn unreadable_schedule_does_not_break_listing_or_other_checkins() {
 }
 
 #[test]
-fn sweep_prunes_only_expired_resolved_history_in_bounded_batches() {
+fn sweep_prunes_only_expired_resolved_history() {
     let c = memory();
     send(
         &c,
@@ -134,7 +134,7 @@ fn sweep_prunes_only_expired_resolved_history_in_bounded_batches() {
     let count: i64 = c
         .query_row("SELECT count(*) FROM incidents", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(count, 4);
+    assert_eq!(count, 3);
 }
 
 #[test]

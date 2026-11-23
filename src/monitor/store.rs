@@ -17,10 +17,6 @@ use rusqlite::{
 use serde::Serialize;
 
 pub const MAX_MONITORS: i64 = 1000;
-const KEEP_CHECKS_MS: Timestamp = 30 * 24 * 60 * 60 * 1000;
-/// Small enough that a sweep holds the writer for milliseconds, large enough
-/// to delete faster than 1,000 monitors checking every 30 s add rows.
-const PRUNE_BATCH: i64 = 1000;
 /// A failed HTTP check is confirmed this soon instead of after `every`.
 const CONFIRM_AFTER_MS: Timestamp = 10_000;
 
@@ -173,7 +169,8 @@ pub fn ping(c: &Connection, monitor: i64, at: Timestamp, failed: bool) -> Result
 }
 
 /// Opens an incident for each heartbeat that is not down and is past its
-/// `due_at` at `at`, and deletes up to 1,000 check rows older than 30 days.
+/// `due_at` at `at`, and deletes expired history within
+/// [`super::retention::BUDGET`].
 /// A run that outlived its maximum runtime times out, a monitor with a slug
 /// missed a check-in, and any other heartbeat is late.
 pub fn sweep(c: &Connection, at: Timestamp) -> Result<()> {
@@ -205,14 +202,7 @@ pub fn sweep(c: &Connection, at: Timestamp) -> Result<()> {
          AND run_started_at+coalesce(max_runtime_s,?2)*1000<?1",
         params![at, super::checkin_store::default_max_runtime_s()],
     )?;
-    // CROSS JOIN keeps monitors as the outer loop, so each monitor's old rows
-    // are a range of checks_monitor_at instead of a scan of every check.
-    c.execute(
-        "DELETE FROM checks WHERE rowid IN (SELECT c.rowid FROM monitors m
-         CROSS JOIN checks c ON c.monitor_id=m.id AND c.at<?1 LIMIT ?2)",
-        params![at.saturating_sub(KEEP_CHECKS_MS), PRUNE_BATCH],
-    )?;
-    super::retention::prune(c, at)?;
+    super::retention::prune(c, at, super::retention::BUDGET)?;
     Ok(())
 }
 
