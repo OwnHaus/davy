@@ -1,109 +1,156 @@
-# Davy
+<h1 align="center">Davy</h1>
 
-One self-hosted binary that replaces Sentry and Better Stack. Point your existing Sentry SDK or Logtail shipper at it by changing the DSN or source token. No code changes.
+<p align="center">
+  Error tracking, logs, uptime and alerts in one self-hosted binary.<br>
+  Your existing Sentry SDK and log shippers send to it unchanged.
+</p>
 
-Status: errors, logs, source maps, uptime checks, heartbeats, alerts and MCP work. The UI comes later. See `docs/design.md`.
+<p align="center">
+  <a href="https://github.com/dominikzabcik/davy/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/dominikzabcik/davy/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/dominikzabcik/davy/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/dominikzabcik/davy"></a>
+  <a href="LICENSE"><img alt="License AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue"></a>
+</p>
 
-## Install with a coding agent
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/issues-dark.png">
+  <img alt="The issue list: errors grouped into issues, each with a 24-hour strip of events, and an inspector with the latest stack trace." src="docs/images/issues-light.png">
+</picture>
 
-Give your agent this prompt in the app's repository:
+Davy replaces Sentry and Better Stack for a team that wants to run its own. It is one Rust binary of about 30 MB with SQLite and Tantivy inside. There is no database server, queue or cache to run next to it. Apps switch by changing the DSN or the log token, not their code. Coding agents read errors and logs and mark issues fixed over MCP.
+
+## What it does
+
+- **Errors.** Takes what the official Sentry SDKs send, groups it into issues and reopens an issue when it comes back in the release that fixed it or a newer one. Minified browser stacks turn back into source through maps uploaded with `sentry-cli`.
+- **Logs.** Takes logs from Logtail shippers (pino, Vector, Fluent Bit), OpenTelemetry and Sentry's logger, with full-text search, a histogram and live tail. Logs next to an error show up on the error.
+- **Uptime.** HTTP checks with status and keyword, and heartbeats for cron jobs.
+- **Alerts.** A notice when an issue is new or regressed and when a monitor goes down or comes back, never on every event. To webhooks (signed), Slack and e-mail.
+- **Agents.** An MCP server with six tools: `schema`, `sql`, `search_logs`, `issue_context`, `mark_fixed` and `submit_feedback`. Every operator step is also a CLI command with `--json`.
+- **Web UI.** Triage issues from the keyboard, read stack traces and breadcrumbs, search logs. Light and dark.
+
+## Quick start
+
+### Docker
+
+```sh
+docker volume create davy
+docker run --rm -v davy:/data ghcr.io/dominikzabcik/davy \
+  setup --data /data --public-url http://127.0.0.1:8000 --listen 0.0.0.0:8000
+docker run -d --name davy --restart unless-stopped \
+  -p 127.0.0.1:8000:8000 -v davy:/data ghcr.io/dominikzabcik/davy serve --data /data
+
+docker exec davy /davy project create my-app --data /data      # prints the DSN
+docker exec davy /davy user add you@example.com --data /data   # prints a sign-in link
+```
+
+Open the link, set a password, and put the DSN into `Sentry.init({ dsn })`. The UI is at http://127.0.0.1:8000/ui/. [docs/docker.md](docs/docker.md) adds TLS, MCP, backups and upgrades.
+
+### Binary
+
+Builds for Linux (static, x86_64 and aarch64) and macOS (Apple silicon and Intel) are on the [releases page](https://github.com/dominikzabcik/davy/releases/latest). On a Mac with Apple silicon:
+
+```sh
+FILE=davy-aarch64-apple-darwin
+curl -fsSLO "https://github.com/dominikzabcik/davy/releases/latest/download/$FILE"
+curl -fsSLO "https://github.com/dominikzabcik/davy/releases/latest/download/SHA256SUMS"
+grep " $FILE\$" SHA256SUMS | shasum -a 256 -c -   # on Linux: sha256sum -c -
+install -m 755 "$FILE" ./davy
+
+./davy setup --data ./data --public-url http://127.0.0.1:8000
+./davy serve --data ./data &
+./davy project create my-app --data ./data
+./davy user add you@example.com --data ./data
+```
+
+### With a coding agent
+
+For a server with systemd and TLS, or a Mac that keeps Davy running, give your agent this prompt in the app's repository:
 
 ```text
 Install Davy on this machine and connect this app to it.
 Follow docs/install.md in https://github.com/dominikzabcik/davy from top to bottom.
 ```
 
-The agent asks you for the public URL, and optionally an SMTP server, and does the rest: binary, service, TLS, the SDK in your app and MCP for itself. `davy doctor` tells it what is still wrong and how to fix it. The pages it follows are listed in `llms.txt`.
+The agent asks for the public URL and, optionally, an SMTP server. It installs and checks the binary, sets up the service and TLS, connects the SDK in your app and adds MCP for itself. `davy doctor` tells it what is still wrong and the command that fixes it. CI follows the same page in Debian with systemd, every step but the download.
 
-## Try it locally
+## Connect your app
+
+| What you have | What changes | Guide |
+| --- | --- | --- |
+| `@sentry/node` | the DSN | [Node](docs/connect/node.md) |
+| `@sentry/browser` | the DSN, plus `sentry-cli` for source maps | [Browser](docs/connect/browser.md) |
+| `sentry-sdk` for Python | the DSN | [Python](docs/connect/python.md) |
+| `sentry-go` | the DSN | [Go](docs/connect/go.md) |
+| pino, Vector, Fluent Bit or another Logtail shipper | the endpoint and source token | [Logtail](docs/connect/logtail.md) |
+| an OpenTelemetry log exporter | two environment variables | [OpenTelemetry](docs/connect/opentelemetry.md) |
+| Claude Code, Codex or Cursor | one MCP config from `davy mcp-config` | [Agents](docs/connect/agents.md) |
+
+The tests run the real `@sentry/node` 7 and 10, `@logtail/pino`, the OpenTelemetry exporters, `sentry-cli` and an MCP client against the release binary. The Python and Go SDKs speak the same protocol and are not in the tests yet.
+
+## A look around
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/issue-dark.png">
+  <img alt="An issue: the stack trace with source lines, breadcrumbs, context and the logs around the error." src="docs/images/issue-light.png">
+</picture>
+
+An issue shows the stack trace with source, the breadcrumbs, tags and context of each event, and the logs written around it.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/logs-dark.png">
+  <img alt="Log search: a histogram of the matches over 24 hours above a list of log lines with levels and services." src="docs/images/logs-light.png">
+</picture>
+
+Log search takes the same query as `davy logs`. Drag across the histogram to zoom, open a row to see every attribute.
+
+## For coding agents
+
+`davy mcp-config --client claude-code` (or `codex`, `cursor`) prints the config. The agent then gets:
+
+- `issue_context`: the stack with source lines, breadcrumbs, releases and the logs around the error, in one call.
+- `sql`: one read-only SQLite query, with `schema` to see the tables.
+- `search_logs`: the log search the UI uses.
+- `mark_fixed`: resolves an issue in a release. It reopens only if the error comes back in that release or a newer one, not from older ones still running.
+- `submit_feedback`: tells whoever runs Davy that a tool was missing or wrong. Davy sends it nowhere else.
+
+The same is in the CLI:
 
 ```sh
-cargo build --release
-./target/release/davy project create my-app --data ./data --public-url http://127.0.0.1:8000
-./target/release/davy serve --data ./data --listen 127.0.0.1:8000 --public-url http://127.0.0.1:8000
-./target/release/davy issues --data ./data
+davy issues --data ./data
+davy context 12 --data ./data
+davy logs --data ./data --project my-app --since 1h --level warn 'timeout AND attributes.provider:acme'
+davy resolve 12 --data ./data --release 1.4.0
 ```
 
-`project create` prints a DSN. Put it into `Sentry.init({ dsn })`.
+## What it does not do yet
 
-## Logs
+Davy is at 0.1.0. One team per server, no roles or SSO. No tracing or performance monitoring, session replay, release health or dashboards. Uptime has no status pages, regions, TCP, DNS or TLS expiry checks, and no on-call or escalation. Monitors, channels and projects are created from the CLI, not the UI. The scope of each part is in [docs/design.md](docs/design.md).
 
-The DSN's public key is also the log token. Three ways in:
+## Security
 
-- **Logtail shippers** (`@logtail/pino`, `@logtail/node`, Vector, Fluent Bit). Set the endpoint to `http://127.0.0.1:8000` and the source token to the public key.
-- **OpenTelemetry.** `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:8000/v1/logs` and `OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <public_key>`. Protobuf and JSON both work.
-- **Sentry's logger.** `Sentry.init({ dsn, enableLogs: true })`, then `Sentry.logger.info(...)`.
+Every release ships with checksums, a CycloneDX SBOM per binary, build provenance and a signed multi-arch image. [RELEASING.md](RELEASING.md) shows how to verify them. Before 0.1.0 the server and the web UI each went through an internal penetration test, followed by two security reads of the fixes. The reports list every finding and what became of it: [server](docs/security/pentest-0.1.0.md), [web UI](docs/security/pentest-ui-0.1.0.md).
 
-Or by hand:
+Report a vulnerability privately as [SECURITY.md](SECURITY.md) says, never in a public issue.
 
-```sh
-curl -X POST http://127.0.0.1:8000/ -H 'Authorization: Bearer <public_key>' \
-  -H 'Content-Type: application/json' -d '{"message":"payment timed out","level":"error","provider":"acme"}'
-```
+## Docs
 
-Search them:
+- [Install](docs/install.md), step by step for a server with systemd or a Mac.
+- [Docker](docs/docker.md), the image with TLS, backups and upgrades.
+- [Design](docs/design.md), what each part does and why.
+- [Architecture](docs/architecture.md), how the binary is built inside.
+- [Changelog](CHANGELOG.md).
+- [llms.txt](llms.txt), the index for agents.
 
-```sh
-./target/release/davy logs --data ./data --project my-app --since 1h --level warn 'timeout AND attributes.provider:acme'
-```
+## Contributing
 
-`--since` and `--until` take `30m`, `2h`, `7d` or an RFC 3339 time (default the last 24 h). The query uses Tantivy syntax over the message and the attributes. `--json` prints one hit per line. Logs are kept 30 days by default (`davy serve --log-retention-days`).
-
-## Coding agents
-
-`davy setup` writes an admin token, and `/mcp` turns on when the server has one. `davy mcp-config` prints the config for Claude Code, Codex or Cursor:
+How changes land is in [CONTRIBUTING.md](CONTRIBUTING.md) and how versions ship in [RELEASING.md](RELEASING.md). Build and test:
 
 ```sh
-./target/release/davy setup --data ./data --public-url http://127.0.0.1:8000
-DAVY_TOKEN_FILE=./data/token ./target/release/davy serve --data ./data --listen 127.0.0.1:8000 --public-url http://127.0.0.1:8000
-export DAVY_TOKEN="$(cat ./data/token)"
-./target/release/davy mcp-config --client claude-code --data ./data
-```
-
-The agent gets six tools: `schema`, `sql` (one read-only SQLite query), `search_logs`, `issue_context` (stack with source lines, breadcrumbs, releases and the logs around the error), `mark_fixed` and `submit_feedback`, which reports a problem with Davy's own tools to whoever runs it (`davy feedback`). A fixed issue reopens when the error comes back in the fix release or a newer one, not from older releases still running.
-
-The same works from a shell:
-
-```sh
-./target/release/davy sql --data ./data "SELECT id, title, event_count FROM issues WHERE status = 'unresolved'"
-./target/release/davy context 12 --data ./data
-./target/release/davy resolve 12 --data ./data --release 1.4.0
-```
-
-## Source maps
-
-With `DAVY_TOKEN` set, `sentry-cli` uploads source maps to Davy as it would to Sentry. Run `inject` before you deploy the bundle, so the SDK reports the debug ID that ties an error to its map:
-
-```sh
-export SENTRY_URL=http://127.0.0.1:8000 SENTRY_AUTH_TOKEN=$DAVY_TOKEN SENTRY_ORG=any SENTRY_PROJECT=my-app
-npx @sentry/cli sourcemaps inject dist
-npx @sentry/cli sourcemaps upload --release my-app@1.0.0 dist
-```
-
-Errors that arrive after the upload show the original function, file, line and source. Davy matches by debug ID only, so the org, project and release names do not matter.
-
-## Uptime and alerts
-
-```sh
-./target/release/davy monitor add my-app homepage --url https://example.com --keyword Welcome --data ./data
-./target/release/davy monitor add my-app nightly-backup --heartbeat --every 24h --data ./data
-./target/release/davy channel add slack https://hooks.slack.com/services/... --all --data ./data
-```
-
-A heartbeat prints the path the job pings when it finishes. Channels get a notice when a monitor goes down or comes back and when an issue is new or regressed, never on every event. Webhook notices are signed with a secret printed once.
-
-## Tests
-
-```sh
+scripts/ui && cargo build --release
 cargo test
-bash e2e/run.sh    # needs Node and pnpm; runs real @sentry/node 7 and 10, @logtail/pino, the OpenTelemetry exporters, the MCP client, sentry-cli and the alert receivers against the binary
-bash e2e/install.sh # needs Docker; follows docs/install.md and the connect pages in Debian with systemd
+bash e2e/run.sh       # needs Node and pnpm
+bash e2e/install.sh   # needs Docker, follows docs/install.md in Debian with systemd
 ```
-
-## Contributing, releases and security
-
-How changes land is in `CONTRIBUTING.md`, how versions ship in `RELEASING.md`, what changed in `CHANGELOG.md`. Report a vulnerability as `SECURITY.md` says, never in a public issue.
 
 ## License
 
-AGPL-3.0. See `LICENSE`.
+[AGPL-3.0](LICENSE).
