@@ -24,3 +24,18 @@ To install Davy and connect an app, follow docs/install.md from top to bottom. E
 - [Design](docs/design.md): what each part does and why, milestone by milestone.
 - [Architecture](docs/architecture.md): how the binary is built inside.
 - [Security](SECURITY.md): how to report a vulnerability and what Davy defends against.
+
+## Connect a new app
+
+Run `davy connect SLUG --data DATA --sdk PLATFORM` on the Davy host. It
+creates or reuses a project and prints JSON with the DSN, SDK install and
+init, an uncommitted DSN location and a test-event shell command. Use
+`--local` only for apps on that host. Execute the test command and poll MCP
+`project_status(slug)` for an increased event count. Then trigger an SDK
+error and check again. MCP `connect_project(slug, sdk?)` reads the same
+instructions for existing projects; creating keys requires the local CLI.
+See [the agent flow](docs/connect/agents.md#connect-a-new-app).
+
+- [Android](docs/connect/android.md): Kotlin setup, offline caching and mapping limits.
+- [Rust](docs/connect/rust.md): sentry 0.49 builder and tracing error layer.
+- [.NET](docs/connect/dotnet.md): ASP.NET Core and an empty DSN fallback.

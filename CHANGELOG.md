@@ -6,6 +6,8 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 
 ### Added
 
+- Follow Android, Rust and ASP.NET Core connect guides with DSN storage and SDK-specific limits.
+
 - Agents can retrieve connection instructions and confirm ingest with MCP `connect_project` and `project_status`.
 
 - Connect an app with `davy connect` JSON SDK instructions and a test-event command; list projects with `davy project list`.
