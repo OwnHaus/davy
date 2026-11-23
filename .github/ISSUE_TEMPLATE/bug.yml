@@ -1,0 +1,53 @@
+name: Bug
+description: Davy did something wrong while you ran it.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A security problem goes through "Report a vulnerability" on the Security tab, never here.
+        Leave secrets, DSN keys, tokens and personal data out of what you paste.
+  - type: input
+    id: version
+    attributes:
+      label: Davy version
+      description: What `davy --version` prints.
+      placeholder: davy 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How Davy runs
+      options:
+        - systemd unit from davy systemd-unit
+        - Docker image
+        - Binary started by hand
+        - Built from source
+        - Other, said below
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: What sends to Davy
+      description: The SDK, shipper or agent and its version, when the bug is about data it sent.
+      placeholder: "@sentry/node 10.78.0, Vector 0.49, Claude Code over MCP"
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: What you did and what Davy did. Paste output and logs as text.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen again
+      description: The smallest steps you found. A curl command or a few lines of SDK code help most.

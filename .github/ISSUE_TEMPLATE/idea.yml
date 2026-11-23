@@ -1,0 +1,32 @@
+name: Feature idea
+description: Something Davy should do. Ideas come here, not as pull requests.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. Davy takes feature ideas as issues, so they can be talked through before anyone writes code. Please open no pull request for a new feature until the issue says how it should work.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you were trying to do
+      description: The job, not the solution. What were you debugging, watching or connecting when Davy fell short?
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today instead
+      description: The workaround, or the other tool you still keep for it.
+  - type: textarea
+    id: idea
+    attributes:
+      label: What Davy could do
+      description: How you would like it to work, from the CLI, MCP, the API or the UI.
+    validations:
+      required: true
+  - type: input
+    id: elsewhere
+    attributes:
+      label: Where you have seen it
+      description: A product or tool that does it well, if any.

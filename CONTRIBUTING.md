@@ -1,6 +1,16 @@
 # Contributing
 
-Davy is built by its owner and the coding agents that work for the owner. Outside contributions open with the public release and need the CLA described in `docs/design.md`. `AGENTS.md` holds the rules for writing code. This file holds the flow around it: commits, the changelog, dependencies and review. Releases are in `RELEASING.md`, the security program in `SECURITY.md`.
+Davy is built by its owner and the coding agents that work for the owner, and contributions from people who run it are welcome. `AGENTS.md` holds the rules for writing code. This file holds the flow around it: commits, the changelog, dependencies and review. Releases are in `RELEASING.md`, the security program in `SECURITY.md`.
+
+## What to send
+
+- **A feature idea goes into an issue, not a pull request.** Use the "Feature idea" form and describe what you were trying to do. An idea is talked through first, because every feature adds to one binary that has to stay small and safe. A pull request for a new feature without an agreed issue is closed with a pointer to this section.
+- **A fix goes into a pull request.** The best ones come from running Davy: something broke for you, you found why, and the fix has a test that fails without it. Say in the pull request what you were doing when it broke.
+- **A bug you cannot fix goes into an issue** with the "Bug" form: the version, how Davy runs, what happened and how to make it happen again.
+- **Anything else is welcome too**: docs that were wrong or unclear, a connect guide for another SDK, a benchmark on your hardware, a report of how an agent got on with the MCP tools.
+- **A security problem never goes into a public issue.** See `SECURITY.md`.
+
+A contribution is licensed under AGPL-3.0, like the rest of Davy, and its author agrees that the owner may also license it under other terms, so the core can be sold under a commercial license too. The pull request template asks for that in one checkbox. A formal CLA may replace the checkbox before 1.0.
 
 ## Setup after a clone
 
@@ -18,7 +28,7 @@ The pre-commit hook runs `scripts/check`. The commit-msg hook runs `scripts/comm
 ## The flow
 
 - `main` is always releasable. Every commit on it passes `scripts/check`, and CI runs the gate, e2e and the commit check on every push.
-- Today the owner commits to `main` directly, because the hooks run the same gate as CI. With the public release `main` gets a GitHub ruleset: changes land through pull requests, CI must be green, commits must be signed, history stays linear, and force pushes and deletion are blocked.
+- The owner commits to `main` directly, because the hooks run the same gate as CI. Contributions land through pull requests with green CI. Later `main` gets a GitHub ruleset: changes land through pull requests, CI must be green, commits must be signed, history stays linear, and force pushes and deletion are blocked.
 - A branch is named after what it does, short and in kebab case (`smtp-alerts`).
 - Never force-push `main`.
 

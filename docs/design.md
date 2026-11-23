@@ -1013,7 +1013,7 @@ These are fine for one team on its own server and must change before tenants sha
 
 - **Open, AGPL-3.0 (this repo).** The single binary someone runs themselves: Sentry, Logtail and OTLP ingest, issues, log search, uptime, alerts by e-mail, webhook and Slack, CLI, MCP, and a basic UI for one team.
 - **Closed, in a private `davy-cloud` repo that depends on this crate.** The managed cloud: what it takes to run Davy for many teams at once.
-- Contributions need a CLA, so the core can also be sold under a commercial license.
+- A contribution's author agrees that the owner may also license it under other terms, so the core can also be sold under a commercial license. Today that is a checkbox in the pull request template (`CONTRIBUTING.md`, "What to send"). A formal CLA may replace it before 1.0.
 - Keep the core usable as a library: the cloud must not need a fork.
 
 ## Log storage (decided by benchmark)
