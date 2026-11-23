@@ -625,13 +625,13 @@ Fuzzing, measured on 2026-11-20 with `FUZZ_CPUS=5 fuzz/docker 3600` on an M-seri
 
 The peak of `logtail_msgpack` is libFuzzer's whole process, not one input: a further 90 seconds with `-malloc_limit_mb=128` found no single allocation over 128 MB.
 
-After the pentest fixes each log parser target also asserts that a body it accepts has a price in `src/heap.rs`. That found three bodies that parsed without one: a protobuf group, invalid UTF-8 inside an unknown JSON field and the MessagePack marker `0xc1`. The server refused all three, with the wrong status. After the fix in `4f30c5b`, `fuzz/docker 60` ran all nine targets without a failure.
+After the pentest fixes each log parser target also asserts that a body it accepts has a price in `src/heap.rs`. That found three bodies that parsed without one: a protobuf group, invalid UTF-8 inside an unknown JSON field and the MessagePack marker `0xc1`. The server refused all three, with the wrong status. After the fix in `572f846`, `fuzz/docker 60` ran all nine targets without a failure.
 
-The internal penetration test of `dede8b8` is in `docs/security/pentest-0.1.0.md`. It found one high, two medium, seven low and six informational findings. The high and both mediums are fixed with tests, and so are most of the rest. What stays is accepted there with a reason.
+The internal penetration test of `e2c7701` is in `docs/security/pentest-0.1.0.md`. It found one high, two medium, seven low and six informational findings. The high and both mediums are fixed with tests, and so are most of the rest. What stays is accepted there with a reason.
 
 The release workflow ran end to end on the test tag `v0.1.0-test.3` (run 44816788766), unsigned, because the repository is private: the four binaries, the image for both architectures, the checksums and the dependency list verified, and the e2e suite passed against a downloaded binary and the image.
 
-The cleanup pass surveyed the code at `eb4de33` and found 28 items: duplicated code, dead fields, loose visibility and stale docs. 24 are fixed, one in part, in the `refactor`, `fix` and `docs` commits up to `997a7a7`. These stay, each for a reason:
+The cleanup pass surveyed the code at `7b4fabf` and found 28 items: duplicated code, dead fields, loose visibility and stale docs. 24 are fixed, one in part, in the `refactor`, `fix` and `docs` commits up to `ca05297`. These stay, each for a reason:
 
 - `ErrorEvent::parse` reads the clock itself, because the fuzz targets call it with one argument.
 - `create_project` reads the clock itself. `projects.created_at` is never read, so a fixed time would help no test and touch about 20 call sites.
@@ -851,7 +851,7 @@ Creating monitors, channels, projects and users from the UI, which needs roles a
 | environment `staging` | 338 ms | 3.4 ms |
 | release `v1.7` | 487 ms | 1.1 ms |
 
-Before is the schema of `0d672c5` on the same data. After, the worst case is 29.8 ms. Three changes, all in migration 7:
+Before is the schema of `1caa0be` on the same data. After, the worst case is 29.8 ms. Three changes, all in migration 7:
 
 - **Two covering indexes instead of one per sort.** `issues(status, last_seen, event_count, first_seen)` and the same led by `project_id` hold every sort key, so the ids of a page come from the index alone and only those 50 rows are read from the table. Davy never runs `ANALYZE`, and without statistics SQLite picked the old `(project_id, status)` index for a status filter and sorted every row in a temporary tree. One index per filter and sort pair would be faster still on the sorts but costs nine index writes on each event that bumps an issue.
 - **A trigram full-text index for text.** `issues_text` is an FTS5 table over `title` and `culprit`, kept in step by triggers. A search of three characters or more matches the phrase there, ignoring case, also outside ASCII. A shorter search cannot use trigrams and scans the rows, ignoring ASCII case only: 29.8 ms when nothing matches, sub-millisecond when 50 rows match early.
@@ -884,7 +884,7 @@ The worst case is 46.4 ms, counting every log of the day. A page sorts by the `t
 
 ## Hardening
 
-A security review of `16f413c` showed that a client without a key could make the server allocate 4.4 GB with one 194 KB request (measured with a release build on a developer laptop: a gzip body that inflates to 190 MiB of `[0,0,...]` sent to `/store/`). The rules below close that class. Each has a test that a request over the limit is refused.
+A security review of `370e4cd` showed that a client without a key could make the server allocate 4.4 GB with one 194 KB request (measured with a release build on a developer laptop: a gzip body that inflates to 190 MiB of `[0,0,...]` sent to `/store/`). The rules below close that class. Each has a test that a request over the limit is refused.
 
 ### Authentication before work
 

@@ -53,7 +53,7 @@ What runs when. Items marked planned have a milestone in `docs/design.md`.
 
 **Every week.** CI runs the gate against the newest advisories, because a new advisory can hit code that did not change. Dependabot proposes updates for crates, e2e packages and actions.
 
-**At the end of each milestone.** A security review of everything since the last one, by a model that did not write the code, against the threat model above. The first one, of `16f413c`, produced the rules in the Hardening section of `docs/design.md`. Each finding becomes a fix with a test, or an entry under "Before the cloud launch".
+**At the end of each milestone.** A security review of everything since the last one, by a model that did not write the code, against the threat model above. The first one, of `370e4cd`, produced the rules in the Hardening section of `docs/design.md`. Each finding becomes a fix with a test, or an entry under "Before the cloud launch".
 
 **Before release 0.1.0 (planned).**
 
