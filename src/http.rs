@@ -290,12 +290,15 @@ fn event(json: &[u8], maps: &sourcemaps::Store, held: &mut Held) -> Result<Error
     // A stored map that no longer reads, or a parse that waits too long,
     // leaves frames minified. The event still counts.
     let deadline = sourcemaps::parse_deadline();
-    symbolicate(
+    let moved = symbolicate(
         &mut value,
         |id| maps.build(id, deadline).ok().flatten(),
         |added| held.take(2 * added),
     )?;
-    ErrorEvent::parse(value).map_err(bad)
+    Ok(ErrorEvent {
+        symbolicated: moved > 0,
+        ..ErrorEvent::parse(value).map_err(bad)?
+    })
 }
 fn parse_sentry(
     bytes: &[u8],

@@ -23,11 +23,12 @@ const MAX_BUILDS: usize = 8;
 /// frame that threw, because Sentry lists frames oldest first. Each frame
 /// pays `pay` the heap it grew by, by the prices of [`crate::heap`], before
 /// the next frame is rewritten, and a refused payment stops the rewrite.
+/// Returns how many frames moved.
 pub fn symbolicate<E>(
     event: &mut Value,
     builds: impl Fn(DebugId) -> Option<Arc<Build>>,
     mut pay: impl FnMut(usize) -> Result<(), E>,
-) -> Result<(), E> {
+) -> Result<usize, E> {
     let images: HashMap<String, DebugId> = event
         .pointer("/debug_meta/images")
         .and_then(Value::as_array)
@@ -43,15 +44,16 @@ pub fn symbolicate<E>(
         })
         .collect();
     if images.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
     let Some(exceptions) = event
         .pointer_mut("/exception/values")
         .and_then(Value::as_array_mut)
     else {
-        return Ok(());
+        return Ok(0);
     };
     let mut found: HashMap<DebugId, Option<Arc<Build>>> = HashMap::new();
+    let mut moved = 0;
     let frames = exceptions
         .iter_mut()
         .rev()
@@ -74,11 +76,11 @@ pub fn symbolicate<E>(
         }
         if let Some(build) = found.entry(id).or_insert_with(|| builds(id)) {
             let before = heap::of_map(frame);
-            rewrite(frame, build);
+            moved += usize::from(rewrite(frame, build).is_some());
             pay(heap::of_map(frame).saturating_sub(before))?;
         }
     }
-    Ok(())
+    Ok(moved)
 }
 
 fn rewrite(frame: &mut Map<String, Value>, build: &Build) -> Option<()> {

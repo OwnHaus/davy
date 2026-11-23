@@ -5,6 +5,7 @@ pub mod envelope;
 pub mod event;
 pub mod event_view;
 pub mod feedback;
+pub mod firsts;
 pub mod grouping;
 pub mod heap;
 pub mod http;

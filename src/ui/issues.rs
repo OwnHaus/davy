@@ -68,6 +68,11 @@ impl Reads {
         &self.data
     }
 
+    /// The writer's UI queue.
+    pub(super) fn writes(&self) -> &store::Sender {
+        &self.writes
+    }
+
     /// A place among the [`SEARCHES`] log searches that may run at once.
     pub(super) fn search_permit(&self) -> Result<OwnedSemaphorePermit, Refusal> {
         Arc::clone(&self.searches)

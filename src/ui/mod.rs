@@ -3,9 +3,12 @@
 //! for the person first. Writes need JSON and the exact public origin.
 
 mod account;
+mod alerts;
 mod assets;
+mod connect;
 pub mod issues;
 mod logs;
+mod monitors;
 pub mod session;
 #[cfg(test)]
 mod tests;
@@ -50,7 +53,7 @@ pub fn serve(
 pub fn router(local: Arc<Local>, reads: Arc<Reads>, public_url: &url::Url) -> Router {
     let accounts: Arc<dyn Accounts> = Arc::clone(&local) as Arc<dyn Accounts>;
     let guard = Arc::new(Guard::new(public_url));
-    protected(Arc::clone(&local), reads)
+    protected(Arc::clone(&local), reads, public_url)
         .route_layer(middleware::from_fn_with_state(accounts, require))
         .merge(account::open(local))
         .route("/ui", get(|| async { Redirect::permanent("/ui/") }))
@@ -62,9 +65,12 @@ pub fn router(local: Arc<Local>, reads: Arc<Reads>, public_url: &url::Url) -> Ro
 
 /// The `/ui/api/` routes that need a person, each with the one method it
 /// answers. A test sends each of them without a session.
-fn protected(local: Arc<Local>, reads: Arc<Reads>) -> Router {
+fn protected(local: Arc<Local>, reads: Arc<Reads>, public_url: &url::Url) -> Router {
     Router::new()
         .route("/ui/api/me", get(me))
+        .merge(monitors::routes(Arc::clone(&reads)))
+        .merge(alerts::routes(Arc::clone(&reads)))
+        .merge(connect::routes(Arc::clone(&reads), public_url))
         .merge(issues::routes(reads))
         .route(
             "/ui/api/{*rest}",
@@ -87,6 +93,12 @@ pub(crate) const PROTECTED: &[(&str, &str)] = &[
     ("GET", "/ui/api/issues/1/logs"),
     ("GET", "/ui/api/logs"),
     ("GET", "/ui/api/logs/histogram"),
+    ("GET", "/ui/api/monitors"),
+    ("GET", "/ui/api/monitors/1"),
+    ("GET", "/ui/api/channels"),
+    ("GET", "/ui/api/notifications"),
+    ("GET", "/ui/api/connect"),
+    ("GET", "/ui/api/setup"),
     ("GET", "/ui/api/nowhere"),
 ];
 

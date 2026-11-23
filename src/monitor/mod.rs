@@ -192,6 +192,7 @@ pub enum Outcome {
 /// `Down` means the monitor has an open incident. The incident itself is a
 /// row, so its ID lives there and not here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum State {
     Pending,

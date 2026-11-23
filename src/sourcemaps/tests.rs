@@ -45,12 +45,13 @@ fn frames(event: &Value) -> &Vec<Value> {
 fn minified_frames_get_the_original_function_file_line_and_source() {
     let mut event = captured_event();
     let build = captured_build();
-    symbolicate(
+    let moved = symbolicate(
         &mut event,
         |id| (id == DebugId::parse(BUILD).unwrap()).then(|| Arc::clone(&build)),
         FREE,
     )
     .unwrap();
+    assert_eq!(moved, 2, "frames 2 and 3 are in the minified file");
     let frames = frames(&event);
     assert_eq!(
         frames[3],
@@ -84,7 +85,7 @@ fn minified_frames_get_the_original_function_file_line_and_source() {
 fn frames_without_a_known_build_stay_as_they_are() {
     let mut event = captured_event();
     let before = event.clone();
-    symbolicate(&mut event, |_| None, FREE).unwrap();
+    assert_eq!(symbolicate(&mut event, |_| None, FREE).unwrap(), 0);
     assert_eq!(event, before);
 }
 

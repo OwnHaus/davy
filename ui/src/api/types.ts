@@ -116,3 +116,132 @@ before: string | null, };
 export type LogHistogram = { from: string, step: string, counts: Array<number>, };
 
 export type StatusChange = { issues: Array<number>, status: Status, release?: string, };
+
+export type MonitorKind = "http" | "heartbeat";
+
+export type State = "pending" | "up" | "failing" | "down";
+
+export type Hour = { checks: number, failed: number, 
+/**
+ * The mean response time of the checks that have one, in milliseconds.
+ */
+ms: number | null, };
+
+export type MonitorRow = { id: number, project: string, name: string, kind: MonitorKind, 
+/**
+ * The scheme, host and path an HTTP monitor checks. The query and a
+ * login may hold a credential, so they stay out, and a heartbeat's ping
+ * URL is one, so it has none.
+ */
+url: string | null, state: State, every_s: number, last_check: string | null, 
+/**
+ * When the open incident started.
+ */
+open_since: string | null, 
+/**
+ * Checks in each of the [`HOURS`] hours from `hours_from`.
+ */
+hourly: Array<Hour>, };
+
+export type MonitorPage = { monitors: Array<MonitorRow>, 
+/**
+ * The start of the first hour of every row's hourly chart.
+ */
+hours_from: string, };
+
+export type Incident = { id: number, started: string, resolved: string | null, reason: string, };
+
+export type Check = { at: string, ok: boolean, status: number | null, ms: number | null, reason: string | null, };
+
+export type MonitorDetail = { monitor: MonitorRow, hours_from: string, 
+/**
+ * The share of the last 7 days without an open incident, from 0 to 1,
+ * counted from when the monitor was added. None for a monitor added
+ * this millisecond.
+ */
+uptime_7d: number | null, uptime_30d: number | null, timeout_s: number | null, grace_s: number | null, last_ping: string | null, 
+/**
+ * When a heartbeat that gets no ping opens an incident.
+ */
+expected_by: string | null, 
+/**
+ * The [`NEWEST`] newest incidents.
+ */
+incidents: Array<Incident>, 
+/**
+ * The [`NEWEST`] newest checks.
+ */
+checks: Array<Check>, };
+
+export type Kind = "webhook" | "slack" | "email";
+
+export type Channel = { id: number, 
+/**
+ * `None` for a channel of every project.
+ */
+project: string | null, kind: Kind, 
+/**
+ * The host of a webhook or Slack URL, because the whole URL of a Slack
+ * webhook is a credential, or the address of an e-mail channel.
+ */
+to: string, feedback: boolean, unsent: number, failed: number, dropped: number, };
+
+export type Delivery = "waiting" | "sent" | "failed";
+
+export type Notification = { id: number, channel: number, 
+/**
+ * What it tells, such as `issue.created` or `monitor.down`.
+ */
+kind: string, created: string, delivery: Delivery, attempts: number, 
+/**
+ * When it was sent or given up on.
+ */
+done: string | null, 
+/**
+ * When the next try is due, while it waits.
+ */
+next_try: string | null, 
+/**
+ * Why the last try failed. It never holds the channel's URL.
+ */
+last_error: string | null, };
+
+export type NotificationPage = { notifications: Array<Notification>, 
+/**
+ * The cursor of the next, older page, when there is one.
+ */
+next: string | null, };
+
+export type ProjectKey = { slug: string, 
+/**
+ * What a Sentry SDK takes.
+ */
+dsn: string, 
+/**
+ * The public key in the DSN, which log shippers send as a bearer token.
+ */
+key: string, };
+
+export type Endpoints = { public_url: string, 
+/**
+ * Where log shippers POST JSON or NDJSON.
+ */
+logs: string, 
+/**
+ * Where an OpenTelemetry exporter POSTs logs over HTTP.
+ */
+otlp: string, 
+/**
+ * Where agents connect, when the server has an admin token.
+ */
+mcp: string, projects: Array<ProjectKey>, };
+
+export type First = "agent" | "project" | "error" | "symbolicated" | "log" | "monitor" | "delivered";
+
+export type Step = { what: First, required: boolean, 
+/**
+ * When it was first done, or None while it is not.
+ */
+at: string | null, };
+
+export type Setup = { steps: Array<Step>, };

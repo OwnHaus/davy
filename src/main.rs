@@ -264,7 +264,7 @@ async fn main() -> anyhow::Result<()> {
                 Some(url) => url,
                 None => install::Settings::load(&data)?.public_url()?,
             };
-            writeln!(out, "{}", create_project(&data, &slug, public_url)?)?;
+            writeln!(out, "{}", create_project(&data, &slug, &public_url)?)?;
         }
         Command::Monitor { command } => run_monitor(&mut out.lock(), command)?,
         Command::Channel { command } => run_channel(&mut out.lock(), command)?,
@@ -447,17 +447,11 @@ fn run_channel(out: &mut impl Write, command: Channel) -> anyhow::Result<()> {
     Ok(())
 }
 /// Creates the project, or finds the one with this slug, and returns its DSN.
-fn create_project(data: &Path, slug: &str, mut public_url: url::Url) -> anyhow::Result<url::Url> {
-    install::check_public_url(&public_url)?;
+fn create_project(data: &Path, slug: &str, public_url: &url::Url) -> anyhow::Result<url::Url> {
+    install::check_public_url(public_url)?;
     anyhow::ensure!(!slug.trim().is_empty(), "slug must not be empty");
     let (id, key) = store::create_project(&store::open(data)?, slug)?;
-    let cannot_carry_key = |()| anyhow::anyhow!("public URL cannot carry a key");
-    public_url.set_username(&key).map_err(cannot_carry_key)?;
-    public_url.set_password(None).map_err(cannot_carry_key)?;
-    public_url.set_path(&format!("/{id}"));
-    public_url.set_query(None);
-    public_url.set_fragment(None);
-    Ok(public_url)
+    install::dsn(public_url, &key, id)
 }
 fn print_issues(out: &mut impl Write, issues: Vec<store::Issue>, json: bool) -> anyhow::Result<()> {
     if json {

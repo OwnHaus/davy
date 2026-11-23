@@ -4,13 +4,19 @@
 
 use super::{
     account::{LoggedIn, Login, Me, NewPassword, Welcome},
+    alerts::{Delivery, Notification, NotificationPage},
+    connect::{Endpoints, ProjectKey, Setup, Step},
     issues::{IssueView, LogLine, Logs, StatusChange},
     logs::{LogHistogram, LogPage},
+    monitors::{Check, Hour, Incident, MonitorDetail, MonitorKind, MonitorPage, MonitorRow},
 };
 use crate::{
+    alert::{Kind, store::Listed},
     event_view::{Breadcrumb, Context, Cut, EventView, ExceptionView, FrameView, Pair, Request},
+    firsts::First,
     issues::{EventItem, EventPage, IssuePage, IssueRow, Project, Sort, Status},
     logs::{LogLevel, LogSource},
+    monitor::State,
     store::{IssueDetail, ReleaseCount},
 };
 use ts_rs::{Config, TS};
@@ -59,6 +65,24 @@ fn file() -> String {
         decl::<LogPage>(&c),
         decl::<LogHistogram>(&c),
         decl::<StatusChange>(&c),
+        decl::<MonitorKind>(&c),
+        decl::<State>(&c),
+        decl::<Hour>(&c),
+        decl::<MonitorRow>(&c),
+        decl::<MonitorPage>(&c),
+        decl::<Incident>(&c),
+        decl::<Check>(&c),
+        decl::<MonitorDetail>(&c),
+        decl::<Kind>(&c),
+        decl::<Listed>(&c),
+        decl::<Delivery>(&c),
+        decl::<Notification>(&c),
+        decl::<NotificationPage>(&c),
+        decl::<ProjectKey>(&c),
+        decl::<Endpoints>(&c),
+        decl::<First>(&c),
+        decl::<Step>(&c),
+        decl::<Setup>(&c),
     ];
     format!("{HEADER}{}", decls.concat())
 }

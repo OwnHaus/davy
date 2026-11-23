@@ -27,7 +27,7 @@ struct Ui {
     db: Connection,
     /// The memory budget of ingest bodies.
     ingest: Budget,
-    _writer: store::Writer,
+    writer: store::Writer,
 }
 
 struct Reply {
@@ -79,7 +79,7 @@ fn ui() -> Ui {
         reads,
         db,
         ingest,
-        _writer: writer,
+        writer,
     }
 }
 
@@ -608,3 +608,12 @@ mod issues;
 
 #[path = "logs_tests.rs"]
 mod logs;
+
+#[path = "uptime_tests.rs"]
+mod uptime;
+
+#[path = "alerts_tests.rs"]
+mod alerts;
+
+#[path = "connect_tests.rs"]
+mod connect;

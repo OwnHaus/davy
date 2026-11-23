@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS issue_hourly(issue_id INTEGER NOT NULL REFERENCES iss
 CREATE INDEX IF NOT EXISTS events_issue ON events(issue_id, id DESC);";
 /// Schema changes after the first release, applied in order. `PRAGMA
 /// user_version` counts how many ran.
-const MIGRATIONS: [&str; 7] = [
+const MIGRATIONS: [&str; 8] = [
     "CREATE TABLE releases(project_id INTEGER NOT NULL REFERENCES projects(id), version TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY(project_id, version));
 INSERT INTO releases SELECT project_id, release, min(received_at) FROM events WHERE release IS NOT NULL GROUP BY project_id, release;",
     "CREATE TABLE monitors(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), name TEXT NOT NULL, kind TEXT NOT NULL, url TEXT, expect TEXT, keyword TEXT, heartbeat_token TEXT UNIQUE, every_s INTEGER NOT NULL, timeout_s INTEGER, grace_s INTEGER, state TEXT NOT NULL, last_check_at INTEGER, last_ping_at INTEGER, created_at INTEGER NOT NULL);
@@ -44,6 +44,8 @@ CREATE TABLE issue_tags(key TEXT NOT NULL CHECK(key IN ('environment', 'release'
 INSERT OR IGNORE INTO issue_tags SELECT 'environment', environment, issue_id FROM events WHERE environment IS NOT NULL;
 INSERT OR IGNORE INTO issue_tags SELECT 'release', release, issue_id FROM events WHERE release IS NOT NULL;
 CREATE TRIGGER events_tags AFTER INSERT ON events BEGIN INSERT OR IGNORE INTO issue_tags SELECT 'environment', new.environment, new.issue_id WHERE new.environment IS NOT NULL; INSERT OR IGNORE INTO issue_tags SELECT 'release', new.release, new.issue_id WHERE new.release IS NOT NULL; END;",
+    // What the setup page shows that no other table holds.
+    "CREATE TABLE firsts(what TEXT PRIMARY KEY, at INTEGER NOT NULL);",
 ];
 use crate::{
     alert,
@@ -281,6 +283,11 @@ pub enum Job {
     },
     /// A login, a logout or a new password from the web UI.
     Account(crate::accounts::store::Change),
+    /// The first time Davy saw `what`. A later one changes nothing.
+    First {
+        what: crate::firsts::First,
+        at: Timestamp,
+    },
 }
 pub type Outcome = std::result::Result<(), String>;
 pub struct Write {
@@ -296,6 +303,9 @@ fn apply(c: &Connection, job: &Job) -> Result<Outcome> {
         } => {
             for e in events {
                 insert(c, *project, e)?;
+                if e.symbolicated {
+                    crate::firsts::record(c, crate::firsts::First::Symbolicated, e.received_at)?;
+                }
             }
             Ok(Ok(()))
         }
@@ -332,6 +342,10 @@ fn apply(c: &Connection, job: &Job) -> Result<Outcome> {
             Ok(Ok(()))
         }
         Job::Account(change) => crate::accounts::store::apply(c, change),
+        Job::First { what, at } => {
+            crate::firsts::record(c, *what, *at)?;
+            Ok(Ok(()))
+        }
     }
 }
 pub struct Writer {

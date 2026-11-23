@@ -26,6 +26,7 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// A webhook gets a signed JSON body, Slack an incoming webhook message and
 /// an e-mail channel a plain text message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     Webhook,

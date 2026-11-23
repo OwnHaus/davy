@@ -62,6 +62,8 @@ pub struct ErrorEvent {
     pub user_id: Option<String>,
     pub trace_id: Option<String>,
     pub raw: Value,
+    /// Whether an uploaded source map moved one of its frames on arrival.
+    pub symbolicated: bool,
 }
 #[derive(Debug)]
 pub struct Exception {
@@ -168,6 +170,7 @@ impl ErrorEvent {
                 .as_str()
                 .and_then(|s| crate::logs::hex_id(s, 32)),
             raw,
+            symbolicated: false,
         })
     }
 }

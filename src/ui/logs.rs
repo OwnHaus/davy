@@ -120,7 +120,7 @@ async fn projects(
 }
 
 /// Runs a log store read off the async threads, holding a search place.
-async fn searching<T: Send + 'static>(
+pub(super) async fn searching<T: Send + 'static>(
     reads: &Arc<Reads>,
     f: impl FnOnce(&std::path::Path) -> anyhow::Result<T> + Send + 'static,
 ) -> Result<T, Refusal> {

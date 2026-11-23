@@ -74,6 +74,19 @@ pub fn check_public_url(url: &Url) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The DSN of project `id` with public key `key`: the public URL with the
+/// key as its user name and the project id as its path.
+pub fn dsn(public_url: &Url, key: &str, id: i64) -> anyhow::Result<Url> {
+    let mut dsn = public_url.clone();
+    let cannot_carry_key = |()| anyhow::anyhow!("public URL cannot carry a key");
+    dsn.set_username(key).map_err(cannot_carry_key)?;
+    dsn.set_password(None).map_err(cannot_carry_key)?;
+    dsn.set_path(&format!("/{id}"));
+    dsn.set_query(None);
+    dsn.set_fragment(None);
+    Ok(dsn)
+}
+
 /// The path of this binary, for the service file and the printed commands.
 pub fn exe() -> anyhow::Result<PathBuf> {
     std::env::current_exe()

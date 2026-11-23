@@ -61,6 +61,8 @@ pub fn add(
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename = "Channel")]
 pub struct Listed {
     pub id: i64,
     /// `None` for a channel of every project.

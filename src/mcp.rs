@@ -4,6 +4,7 @@
 use crate::{
     context,
     feedback::Feedback,
+    firsts::First,
     issues::IssueIds,
     logs::{
         self, LogLevel,
@@ -14,7 +15,12 @@ use crate::{
     time,
     token::{self, Token},
 };
-use axum::{Router, middleware};
+use axum::{
+    Router,
+    extract::{Request, State},
+    middleware::{self, Next},
+    response::Response,
+};
 use rmcp::{
     RoleServer, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -29,7 +35,10 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 const MAX_LOGS: usize = 500;
@@ -72,14 +81,40 @@ pub fn router(data: PathBuf, writes: store::Sender, token: Token, public_url: &u
             "http://127.0.0.1:*",
             "http://[::1]:*",
         ]);
+    let seen = Arc::new(Seen {
+        writes: tools.writes.clone(),
+        once: AtomicBool::new(false),
+    });
     let service: StreamableHttpService<Tools, LocalSessionManager> =
         StreamableHttpService::new(move || Ok(tools.clone()), Arc::default(), config);
     Router::new()
         .nest_service("/mcp", service)
+        .layer(middleware::from_fn_with_state(seen, first_agent))
         .layer(middleware::from_fn_with_state(
             Arc::new(token),
             token::require,
         ))
+}
+
+/// Whether this server has recorded an agent on `/mcp` yet, for the setup
+/// page.
+struct Seen {
+    writes: store::Sender,
+    once: AtomicBool,
+}
+
+/// Records the first request that passed the token, once per server start.
+/// The table keeps the first time of all.
+async fn first_agent(State(seen): State<Arc<Seen>>, req: Request, next: Next) -> Response {
+    if !seen.once.swap(true, Ordering::Relaxed) {
+        let job = Job::First {
+            what: First::Agent,
+            at: time::now_ms(),
+        };
+        let writes = seen.writes.clone();
+        tokio::spawn(async move { store::queue_and_wait(&writes, job).await });
+    }
+    next.run(req).await
 }
 
 #[derive(Clone)]
@@ -320,7 +355,7 @@ mod tests {
         let data = crate::test_support::scratch("mcp");
         let c = store::open(&data).unwrap();
         store::create_project(&c, "api").unwrap();
-        let (tx, writes) = crossbeam_channel::bounded(1);
+        let (tx, writes) = crossbeam_channel::bounded(8);
         Server {
             app: router(
                 data,
@@ -329,6 +364,16 @@ mod tests {
                 &url::Url::parse("https://davy.example/").unwrap(),
             ),
             writes,
+        }
+    }
+
+    /// The next write that is not the first agent's.
+    fn next_job(writes: &crossbeam_channel::Receiver<store::Write>) -> store::Write {
+        loop {
+            let w = writes.recv().unwrap();
+            if !matches!(w.job, Job::First { .. }) {
+                return w;
+            }
         }
     }
 
@@ -375,6 +420,32 @@ mod tests {
             let (status, body) = post(&s.app, "localhost", token, list.clone()).await;
             assert_eq!(status, expected, "{token:?}: {body}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_first_request_with_the_token_records_an_agent_once() {
+        let s = server();
+        let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+        post(&s.app, "localhost", Some("wrong"), list.clone()).await;
+        tokio::task::yield_now().await;
+        assert!(
+            s.writes.try_recv().is_err(),
+            "a refused request is no agent"
+        );
+        for _ in 0..3 {
+            post(&s.app, "localhost", Some(SECRET), list.clone()).await;
+        }
+        let write = s
+            .writes
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let Job::First { what, at } = write.job else {
+            panic!("the write is no first agent");
+        };
+        assert_eq!(what, First::Agent);
+        assert!(time::now_ms() - at < 60_000);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(s.writes.try_recv().is_err(), "one write per server start");
     }
 
     #[tokio::test]
@@ -452,7 +523,7 @@ mod tests {
         let s = server();
         let writer = std::thread::spawn(move || {
             for outcome in [Ok(()), Err("no issue 9".to_owned())] {
-                let w = s.writes.recv().unwrap();
+                let w = next_job(&s.writes);
                 let Job::SetStatus {
                     issues,
                     status: IssueStatus::Resolved { in_release, .. },
@@ -492,7 +563,7 @@ mod tests {
         let writer = std::thread::spawn(move || {
             let mut seen = Vec::new();
             for _ in 0..2 {
-                let w = s.writes.recv().unwrap();
+                let w = next_job(&s.writes);
                 let Job::Feedback { feedback, .. } = w.job else {
                     panic!("expected a feedback job");
                 };
