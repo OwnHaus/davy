@@ -284,7 +284,7 @@ fn a_status_change_names_one_to_five_hundred_issues() {
 #[test]
 fn events_page_newest_first_and_the_newest_stored_one_has_a_payload() {
     let c = memory();
-    for n in 0..=EVENT_PAGE {
+    for n in 0..=EVENT_PAGE + 1 {
         add(
             &c,
             1,
@@ -295,15 +295,16 @@ fn events_page_newest_first_and_the_newest_stored_one_has_a_payload() {
     }
     let first = events(&c, 1, None).unwrap();
     assert_eq!(first.events.len(), EVENT_PAGE);
-    assert_eq!(first.next.as_deref(), Some("2"));
-    assert_eq!(first.events[0].timestamp, "2025-11-22T11:30:00.05Z");
-    assert!(!first.events[0].stored, "the 51st event keeps no payload");
-    assert!(first.events[1].stored);
-    let second = events(&c, 1, Some(2)).unwrap();
-    assert_eq!(second.events.len(), 1);
+    assert_eq!(first.next.as_deref(), Some("3"));
+    assert_eq!(first.events[0].timestamp, "2025-11-22T11:30:00.051Z");
+    assert!(first.events[0].stored, "the newest event keeps its payload");
+    assert!(!first.events[1].stored, "the 51st event keeps no payload");
+    assert!(first.events[2].stored);
+    let second = events(&c, 1, Some(3)).unwrap();
+    assert_eq!(second.events.len(), 2);
     assert_eq!(second.next, None);
     let (newest, blob) = stored_payload(&c, 1, None).unwrap().unwrap();
-    assert_eq!(newest, first.events[1].event_id);
+    assert_eq!(newest, first.events[0].event_id);
     let raw: Value = serde_json::from_slice(&zstd::decode_all(blob.as_slice()).unwrap()).unwrap();
     assert_eq!(raw["message"], "boom");
     let oldest = &second.events[0].event_id;
@@ -314,7 +315,7 @@ fn events_page_newest_first_and_the_newest_stored_one_has_a_payload() {
         Some(oldest.clone())
     );
     assert_eq!(
-        stored_payload(&c, 1, Some(&first.events[0].event_id)).unwrap(),
+        stored_payload(&c, 1, Some(&first.events[1].event_id)).unwrap(),
         None
     );
     assert_eq!(stored_payload(&c, 2, None).unwrap(), None);

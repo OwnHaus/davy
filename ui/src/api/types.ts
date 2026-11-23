@@ -45,7 +45,7 @@ export type IssueView = { issue: IssueDetail, hourly: Array<number>, hours_from:
 
 export type EventItem = { event_id: string, timestamp: string, release: string | null, environment: string | null, 
 /**
- * Whether Davy kept the payload. Only a sample of events keep one.
+ * Whether Davy kept the payload. The newest event and a sample of the rest keep one.
  */
 stored: boolean, };
 

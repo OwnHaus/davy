@@ -47,6 +47,7 @@ CREATE TRIGGER events_tags AFTER INSERT ON events BEGIN INSERT OR IGNORE INTO is
     // What the setup page shows that no other table holds.
     "CREATE TABLE firsts(what TEXT PRIMARY KEY, at INTEGER NOT NULL);",
 ];
+mod latest;
 use crate::{
     alert,
     event::{ErrorEvent, Timestamp},
@@ -55,6 +56,7 @@ use crate::{
 };
 use anyhow::Result;
 use crossbeam_channel::{Receiver, TrySendError, select_biased};
+use latest::Latest;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Serialize;
 use std::{path::Path, thread};
@@ -185,7 +187,15 @@ pub fn project_id(c: &Connection, slug: &str) -> Result<Option<i64>> {
     )
     .optional()?)
 }
+/// Writes one event in a transaction of its own.
 pub fn insert(c: &Connection, project: i64, e: &ErrorEvent) -> Result<()> {
+    let mut latest = Latest::default();
+    add(c, project, e, &mut latest)?;
+    latest.keep(c)
+}
+/// Writes one event. `latest` gives the newest event of each issue its
+/// payload when the transaction ends.
+fn add<'a>(c: &Connection, project: i64, e: &'a ErrorEvent, latest: &mut Latest<'a>) -> Result<()> {
     let duplicate: bool = c.query_row(
         "SELECT EXISTS(SELECT 1 FROM events WHERE project_id=?1 AND event_id=?2)",
         params![project, e.event_id.0],
@@ -215,15 +225,10 @@ pub fn insert(c: &Connection, project: i64, e: &ErrorEvent) -> Result<()> {
     };
     let regressed = status.on_event(seen, e.received_at);
     let status = status.as_str();
-    let payload = if count < 50 || (count + 1) % 100 == 0 {
-        Some(zstd::stream::encode_all(
-            serde_json::to_vec(&e.raw)?.as_slice(),
-            1,
-        )?)
-    } else {
-        None
-    };
+    let kept = latest.before(c, id, count)?;
+    let payload = kept.then(|| latest::compress(e)).transpose()?;
     c.execute("INSERT INTO events(project_id,issue_id,event_id,timestamp,received_at,level,release,environment,trace_id,user_id,payload) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",params![project,id,e.event_id.0,e.timestamp,e.received_at,e.level.as_str(),e.release,e.environment,e.trace_id,e.user_id,payload])?;
+    latest.after(id, c.last_insert_rowid(), e, kept);
     c.execute("UPDATE issues SET event_count=event_count+1,first_seen=min(first_seen,?2),last_seen=max(last_seen,?2),status=?3,regressed_at=coalesce(?4,regressed_at),resolved_at=CASE WHEN ?4 IS NOT NULL THEN NULL ELSE resolved_at END,resolved_in_release=CASE WHEN ?4 IS NOT NULL THEN NULL ELSE resolved_in_release END WHERE id=?1",params![id,e.timestamp,status,regressed])?;
     c.execute("INSERT INTO issue_hourly(issue_id,hour,count) VALUES (?1,?2,1) ON CONFLICT(issue_id,hour) DO UPDATE SET count=count+1", params![id,e.timestamp.div_euclid(3_600_000)*3_600_000])?;
     if created || regressed.is_some() {
@@ -296,13 +301,13 @@ pub struct Write {
 }
 /// Runs one job. The outer error is a database failure that aborts the batch,
 /// the inner one a problem with this job alone.
-fn apply(c: &Connection, job: &Job) -> Result<Outcome> {
+fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Outcome> {
     match job {
         Job::Ingest {
             project, events, ..
         } => {
             for e in events {
-                insert(c, *project, e)?;
+                add(c, *project, e, latest)?;
                 if e.symbolicated {
                     crate::firsts::record(c, crate::firsts::First::Symbolicated, e.received_at)?;
                 }
@@ -364,10 +369,12 @@ impl Writer {
             while let Some(batch) = queues.next_batch() {
                 let outcomes = (|| -> Result<Vec<Outcome>> {
                     let tx = c.transaction()?;
+                    let mut latest = Latest::default();
                     let outcomes = batch
                         .iter()
-                        .map(|w| apply(&tx, &w.job))
+                        .map(|w| apply(&tx, &w.job, &mut latest))
                         .collect::<Result<_>>()?;
+                    latest.keep(&tx)?;
                     tx.commit()?;
                     Ok(outcomes)
                 })()
@@ -511,7 +518,7 @@ pub fn issues(c: &Connection, project: Option<&str>) -> Result<Vec<Issue>> {
     })?
     .collect::<rusqlite::Result<_>>()?)
 }
-/// The newest stored event of an issue. Only a sample of events keep a payload.
+/// The newest event of an issue. It always keeps its payload, older ones only in the sample.
 pub fn payload(c: &Connection, issue: i64) -> Result<Option<serde_json::Value>> {
     let Some(b) = c
         .query_row(

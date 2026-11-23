@@ -138,7 +138,7 @@ issues_text USING fts5(title, culprit, content='issues', tokenize='trigram')
 `issue_tags` and `issues_text` serve the filters of the web UI's issue list. Triggers keep both in step. Milestone 9's "Load check" says why.
 
 - Timestamps are unix milliseconds.
-- `payload` is the zstd-compressed event JSON. Keep it for the first 50 events of an issue and then for every 100th. Always write the `events` row and bump the counters, so counts stay exact while disk stays bounded under a burst.
+- `payload` is the zstd-compressed event JSON. Keep it for the first 50 events of an issue, then for every 100th, and for the newest, so an issue always shows its latest event. The newest drops its payload when a newer event arrives, unless the sample keeps it. The writer compresses the newest event of each issue once per transaction, not every event, so a burst costs no more than before. Always write the `events` row and bump the counters, so counts stay exact while disk stays bounded under a burst.
 - A duplicate `event_id` in the same project is ignored (SDKs retry).
 - The writer drains the queue in batches and commits each batch in one transaction.
 

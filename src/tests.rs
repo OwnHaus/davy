@@ -400,20 +400,23 @@ fn storage_regression_duplicates_sampling_and_ignored() {
         ("ignored".into(), 101)
     );
     assert_eq!(
-        c.query_row("SELECT count(payload) FROM events", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        51
-    );
-    assert_eq!(
         c.query_row("SELECT sum(count) FROM issue_hourly", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
         101
     );
+    let payloads = |c: &rusqlite::Connection| {
+        c.query_row("SELECT count(payload) FROM events", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap()
+    };
+    assert_eq!(payloads(&c), 52);
+    store::insert(&c, 1, &event(json!({"message":"failure 4"}))).unwrap();
+    assert_eq!(payloads(&c), 52);
     assert_eq!(
         store::payload(&c, 1).unwrap().unwrap()["message"],
-        "failure 3"
+        "failure 4"
     );
 }
 #[test]
@@ -474,5 +477,40 @@ fn a_new_data_directory_is_readable_by_its_owner_only() {
     std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o750)).unwrap();
     store::open(&data).unwrap();
     assert_eq!(mode(&data), 0o750, "an existing directory keeps its mode");
+    std::fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn the_writer_keeps_the_payload_of_the_newest_event_of_each_batch() {
+    let root = crate::test_support::scratch("writer-newest");
+    let writer = store::Writer::start(store::open(&root).unwrap(), 8);
+    let c = store::open(&root).unwrap();
+    store::create_project(&c, "shop").unwrap();
+    let ingest = |messages: std::ops::Range<i64>| {
+        let events = messages
+            .map(|n| event(json!({"message":"boom","extra":{"n":n}})))
+            .collect();
+        let (done, outcome) = tokio::sync::oneshot::channel();
+        let held = crate::http::body::Budget::new(0).hold();
+        let job = store::Job::Ingest {
+            project: 1,
+            events,
+            held,
+        };
+        writer.sender.send(store::Write { job, done }).unwrap();
+        outcome.blocking_recv().unwrap().unwrap();
+    };
+    let kept = || -> Vec<i64> {
+        c.prepare("SELECT id FROM events WHERE payload IS NOT NULL ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    ingest(0..70);
+    assert_eq!(kept(), (1..=50).chain([70]).collect::<Vec<_>>());
+    ingest(70..72);
+    assert_eq!(kept(), (1..=50).chain([72]).collect::<Vec<_>>());
+    assert_eq!(store::payload(&c, 1).unwrap().unwrap()["extra"]["n"], 71);
     std::fs::remove_dir_all(root).unwrap();
 }

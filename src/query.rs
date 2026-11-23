@@ -27,7 +27,7 @@ const MAX_PAYLOAD: u64 = 16 * 1024 * 1024;
 /// What an agent needs to write a query, beyond the table definitions.
 const NOTES: &str = "Notes:
 - Times in projects, issues, events and releases are unix milliseconds. issue_hourly.hour is the start of its hour in unix milliseconds.
-- events.payload is the compressed Sentry event, kept for a sample of events. payload_json(payload) returns it as JSON text, so json_extract(payload_json(payload), '$.exception.values[0].type') works.
+- events.payload is the compressed Sentry event, kept for the newest event of an issue and a sample of the rest. payload_json(payload) returns it as JSON text, so json_extract(payload_json(payload), '$.exception.values[0].type') works.
 - issues.status is unresolved, resolved or ignored. A resolved issue reopens when an event arrives without a release, in the release it was resolved in, or in a release first seen after resolved_at.
 - issue_tags holds each environment and release that an issue's events named. issues_text is a trigram full-text index of issues.title and issues.culprit: SELECT rowid FROM issues_text WHERE issues_text MATCH '\"timed out\"' finds issues whose title or culprit contains the phrase, ignoring case, for phrases of three characters or more.
 - monitors.state is pending, up, failing or down. Times in monitors, checks and incidents are unix milliseconds. An incident with no resolved_at is open. monitors.heartbeat_token, monitors.url, channels.url and channels.secret read as NULL.

@@ -341,7 +341,7 @@ pub struct EventItem {
     pub timestamp: String,
     pub release: Option<String>,
     pub environment: Option<String>,
-    /// Whether Davy kept the payload. Only a sample of events keep one.
+    /// Whether Davy kept the payload. The newest event and a sample of the rest keep one.
     pub stored: bool,
 }
 

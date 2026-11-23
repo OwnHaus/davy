@@ -4,6 +4,10 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 
 ## Unreleased
 
+### Fixed
+
+- An issue's latest event is now its newest one. After 50 events Davy kept the payload of only every 100th, so the UI, `davy event` and `issue_context` could show an event hours older than the issue's last seen time.
+
 ## 0.1.0 (2026-11-23)
 
 The first release. One binary takes errors from the Sentry SDKs and logs from Logtail shippers and OpenTelemetry, checks uptime, sends alerts, serves a web UI for one team and gives coding agents MCP tools. Install it with [docs/install.md](docs/install.md) or the Docker quick start in the [README](README.md).
