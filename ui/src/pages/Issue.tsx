@@ -1,6 +1,6 @@
 import * as Popover from "@radix-ui/react-popover";
 import { useInfiniteQuery, useQuery, type InfiniteData } from "@tanstack/react-query";
-import { Link, getRouteApi, useNavigate } from "@tanstack/react-router";
+import { getRouteApi, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { Refused, get, query } from "../api/client";
 import { useStatusChange } from "../api/status";
@@ -15,7 +15,7 @@ import { Axis, Strip, StripTable, peakWords } from "../parts/HeatStrip";
 import { Icon } from "../parts/Icon";
 import { Level, Regressed, StatusMark } from "../parts/Marks";
 import { lastList, savedSort } from "../search";
-import { Shell, type KeyHint } from "./Shell";
+import { IssuesRail, Shell, type KeyHint } from "./Shell";
 
 const route = getRouteApi("/issues/$id");
 
@@ -105,16 +105,18 @@ export function Issue() {
 
   const crumb = (
     <>
-      <Link className="up" to="/issues" search={lastList}>
-        Issues
-      </Link>
-      <Icon name="fwd" size={11} />
-      <b>#{id}</b>
+      <span className="sep" aria-hidden="true" />
+      <b>Issue {id}</b>
     </>
   );
 
   return (
-    <Shell crumb={crumb} keys={KEYS} filters={lastList} sort={lastList.sort ?? savedSort()} inspector={false}>
+    <Shell
+      crumb={crumb}
+      keys={KEYS}
+      rail={(close) => <IssuesRail filters={lastList} sort={lastList.sort ?? savedSort()} onPick={close} />}
+      inspector={false}
+    >
       <main id="vissue" aria-label={`Issue ${id}`}>
         {view.error ? (
           <p className="none">{view.error instanceof Refused && view.error.status === 404 ? `There is no issue ${id}.` : view.error.message}</p>

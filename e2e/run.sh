@@ -40,34 +40,6 @@ assert {i['title']:i['count'] for i in issues}=={'TypeError: SDK test failure':2
 print(sys.argv[2]+': verified 2 issues, counts 2 and 1')
 PY
 done
-# The web UI test resolves the sentry-node-7 TypeError. The steps below use
-# the other three issues.
-(cd "$ROOT/e2e" && pnpm exec playwright install chromium --only-shell && DAVY_BIN="$BIN" DAVY_URL="$URL" DAVY_DATA="$SCRATCH/data" pnpm exec playwright test ui.spec.ts --reporter=line --output "$SCRATCH/playwright")
-echo 'web UI: verified sign-in, the list, the in-app frame, resolve, login, axe and CSP'
-DSN=$("$BIN" project create legacy --data "$SCRATCH/data" --public-url "$URL")
-KEY="${DSN#*://}"; KEY="${KEY%%@*}"
-PROJECT="${DSN##*/}"
-python3 - "$SCRATCH" <<'PY'
-import gzip,pathlib,sys
-p=pathlib.Path(sys.argv[1]); (p/'envelope.gz').write_bytes(gzip.compress(b'{}\n{"type":"event"}\n{"event_id":"11111111111111111111111111111111","message":"gzip event"}'))
-PY
-curl -fsS -H 'Content-Encoding: gzip' --data-binary @"$SCRATCH/envelope.gz" "$URL/api/$PROJECT/envelope/?sentry_key=$KEY" > "$SCRATCH/gzip-response.json"
-curl -fsS -H 'Content-Type: application/json' -H "X-Sentry-Auth: Sentry sentry_key=$KEY, sentry_version=7" --data-binary '{"event_id":"22222222222222222222222222222222","message":"store event"}' "$URL/api/$PROJECT/store/" > "$SCRATCH/store-response.json"
-"$BIN" issues --data "$SCRATCH/data" --project legacy --json > "$SCRATCH/issues.json"
-python3 - "$SCRATCH" <<'PY'
-import json,pathlib,sys
-p=pathlib.Path(sys.argv[1]); issues=json.loads((p/'issues.json').read_text())
-assert {i['title']:i['count'] for i in issues}=={'gzip event':1,'store event':1},issues
-assert json.loads((p/'gzip-response.json').read_text())=={'id':'11111111111111111111111111111111'}
-assert json.loads((p/'store-response.json').read_text())=={'id':'22222222222222222222222222222222'}
-print('gzip envelope and /store/: verified 2 issues, count 1 each')
-PY
-"$BIN" event 1 --data "$SCRATCH/data" > "$SCRATCH/payload.json"
-python3 - "$SCRATCH/payload.json" <<'PY'
-import json,sys
-p=json.load(open(sys.argv[1])); assert p['exception']['values'][-1]['type'] in ('TypeError','RangeError')
-print('event CLI: verified stored JSON payload')
-PY
 DSN=$("$BIN" project create logs --data "$SCRATCH/data" --public-url "$URL")
 KEY="${DSN#*://}"; KEY="${KEY%%@*}"
 node "$ROOT/e2e/send-logs.mjs" "$DSN"
@@ -111,6 +83,34 @@ STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer wrong'
 STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' --data '{"message":"curl line","level":"warn"}' "$URL/")
 [ "$STATUS" = 202 ] || { echo "logtail JSON gave $STATUS"; exit 1; }
 echo 'logs: wrong bearer 403, Logtail JSON 202'
+# The web UI test resolves the sentry-node-7 TypeError. The steps below use
+# the other three issues.
+(cd "$ROOT/e2e" && pnpm exec playwright install chromium --only-shell && DAVY_BIN="$BIN" DAVY_URL="$URL" DAVY_DATA="$SCRATCH/data" pnpm exec playwright test ui.spec.ts --reporter=line --output "$SCRATCH/playwright")
+echo 'web UI: verified sign-in, the list, the in-app frame, resolve, login, logs search, zoom and live, axe and CSP'
+DSN=$("$BIN" project create legacy --data "$SCRATCH/data" --public-url "$URL")
+KEY="${DSN#*://}"; KEY="${KEY%%@*}"
+PROJECT="${DSN##*/}"
+python3 - "$SCRATCH" <<'PY'
+import gzip,pathlib,sys
+p=pathlib.Path(sys.argv[1]); (p/'envelope.gz').write_bytes(gzip.compress(b'{}\n{"type":"event"}\n{"event_id":"11111111111111111111111111111111","message":"gzip event"}'))
+PY
+curl -fsS -H 'Content-Encoding: gzip' --data-binary @"$SCRATCH/envelope.gz" "$URL/api/$PROJECT/envelope/?sentry_key=$KEY" > "$SCRATCH/gzip-response.json"
+curl -fsS -H 'Content-Type: application/json' -H "X-Sentry-Auth: Sentry sentry_key=$KEY, sentry_version=7" --data-binary '{"event_id":"22222222222222222222222222222222","message":"store event"}' "$URL/api/$PROJECT/store/" > "$SCRATCH/store-response.json"
+"$BIN" issues --data "$SCRATCH/data" --project legacy --json > "$SCRATCH/issues.json"
+python3 - "$SCRATCH" <<'PY'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1]); issues=json.loads((p/'issues.json').read_text())
+assert {i['title']:i['count'] for i in issues}=={'gzip event':1,'store event':1},issues
+assert json.loads((p/'gzip-response.json').read_text())=={'id':'11111111111111111111111111111111'}
+assert json.loads((p/'store-response.json').read_text())=={'id':'22222222222222222222222222222222'}
+print('gzip envelope and /store/: verified 2 issues, count 1 each')
+PY
+"$BIN" event 1 --data "$SCRATCH/data" > "$SCRATCH/payload.json"
+python3 - "$SCRATCH/payload.json" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1])); assert p['exception']['values'][-1]['type'] in ('TypeError','RangeError')
+print('event CLI: verified stored JSON payload')
+PY
 STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' --data '{}' "$URL/mcp")
 [ "$STATUS" = 401 ] || { echo "MCP without token gave $STATUS"; exit 1; }
 node "$ROOT/e2e/mcp.mjs" "$URL" "$TOKEN"

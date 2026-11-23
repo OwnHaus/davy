@@ -2,9 +2,10 @@ import { Outlet, createRootRoute, createRoute, createRouter, redirect } from "@t
 import { Issue } from "./pages/Issue";
 import { Issues } from "./pages/Issues";
 import { Login } from "./pages/Login";
+import { Logs } from "./pages/Logs";
 import { NotFound } from "./pages/Shell";
 import { Welcome } from "./pages/Welcome";
-import { issueSearch, issuesSearch, loginSearch, parseSearch, stringifySearch } from "./search";
+import { issueSearch, issuesSearch, loginSearch, logsSearch, parseSearch, stringifySearch } from "./search";
 
 const root = createRootRoute({ component: Outlet, notFoundComponent: NotFound });
 
@@ -20,6 +21,7 @@ const routes = [
   }),
   createRoute({ getParentRoute: () => root, path: "/issues", validateSearch: issuesSearch, component: Issues }),
   createRoute({ getParentRoute: () => root, path: "/issues/$id", validateSearch: issueSearch, component: Issue }),
+  createRoute({ getParentRoute: () => root, path: "/logs", validateSearch: logsSearch, component: Logs }),
 ];
 
 export const router = createRouter({

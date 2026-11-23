@@ -1,6 +1,6 @@
 // The state of every view lives in the URL, so a link shows what its sender saw.
 
-import type { Sort, Status } from "./api/types";
+import type { LogLevel, Sort, Status } from "./api/types";
 
 export type StatusFilter = Status | "all";
 
@@ -33,6 +33,47 @@ export function issuesSearch(s: Record<string, unknown>): IssuesSearch {
 }
 
 export const issueSearch = (s: Record<string, unknown>): IssueSearch => ({ event: text(s.event) });
+
+/** A time range ending now, picked in the rail. */
+export const RANGES = [
+  ["15m", "15 minutes", 15 * 60_000],
+  ["1h", "1 hour", 3_600_000],
+  ["6h", "6 hours", 6 * 3_600_000],
+  ["24h", "24 hours", 24 * 3_600_000],
+  ["7d", "7 days", 7 * 86_400_000],
+  ["30d", "30 days", 30 * 86_400_000],
+] as const;
+export type Range = (typeof RANGES)[number][0];
+
+export const LEVELS = ["trace", "debug", "info", "warn", "error", "fatal"] as const satisfies readonly LogLevel[];
+
+/** `from` and `to` are a zoomed range in nanoseconds; without them the range ends now. */
+export type LogsSearch = {
+  q?: string | undefined;
+  project?: string | undefined;
+  level?: LogLevel | undefined;
+  range?: Range | undefined;
+  from?: string | undefined;
+  to?: string | undefined;
+  live?: "1" | undefined;
+};
+
+const ns = (v: unknown) => (typeof v === "string" && /^\d{1,19}$/.test(v) ? v : undefined);
+
+export function logsSearch(s: Record<string, unknown>): LogsSearch {
+  const from = ns(s.from);
+  const to = ns(s.to);
+  const zoomed = from !== undefined && to !== undefined && BigInt(from) <= BigInt(to);
+  return {
+    q: text(s.q),
+    project: text(s.project),
+    level: oneOf(s.level, LEVELS),
+    range: oneOf(s.range, RANGES.map(([r]) => r)),
+    from: zoomed ? from : undefined,
+    to: zoomed ? to : undefined,
+    live: !zoomed && s.live === "1" ? "1" : undefined,
+  };
+}
 
 export const loginSearch = (s: Record<string, unknown>) => ({ next: text(s.next) });
 

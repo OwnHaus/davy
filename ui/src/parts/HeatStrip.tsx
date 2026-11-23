@@ -169,14 +169,22 @@ export function Legend() {
 
 const tip = () => document.getElementById("tip");
 
-function readout(cell: HTMLElement, x?: number) {
+/** A cell of a chart: the strip's hours, the log histogram's bars. */
+type Cell = HTMLElement | SVGElement;
+
+/**
+ * Shows the readout over `cell`. A cell says its count in `data-n`, and its
+ * time in `data-when` or as the hour that starts at `data-start`.
+ */
+export function readout(cell: Cell, x?: number) {
   const el = tip();
   if (!el) return;
   const n = Number(cell.dataset.n);
+  const unit = cell.dataset.unit ?? "event";
   const [when, count, word] = el.children;
-  if (when) when.textContent = hourRange(Number(cell.dataset.start));
-  if (count) count.textContent = `${n}`;
-  if (word) word.textContent = ` ${n === 1 ? "event" : "events"}`;
+  if (when) when.textContent = cell.dataset.when ?? hourRange(Number(cell.dataset.start));
+  if (count) count.textContent = n.toLocaleString("en-US");
+  if (word) word.textContent = ` ${n === 1 ? unit : `${unit}s`}`;
   el.classList.add("show");
   const r = cell.getBoundingClientRect();
   const left = Math.min(window.innerWidth - el.offsetWidth - 8, Math.max(8, (x ?? r.left + r.width / 2) - el.offsetWidth / 2));
@@ -186,8 +194,13 @@ function readout(cell: HTMLElement, x?: number) {
   el.style.top = `${top}px`;
 }
 
+export function hideReadout() {
+  tip()?.classList.remove("show");
+  hot(-1);
+}
+
 /** Marks hour `i` in every small strip, and `cell` itself. */
-function hot(i: number, cell?: HTMLElement) {
+export function hot(i: number, cell?: Cell) {
   for (const c of document.querySelectorAll(".cell.col, .cell.on")) c.classList.remove("col", "on");
   if (i < 0) return;
   const start = cell?.dataset.start;
@@ -195,7 +208,7 @@ function hot(i: number, cell?: HTMLElement) {
   cell?.classList.add("on");
 }
 
-const cellOf = (t: EventTarget | null) => (t instanceof Element ? t.closest<HTMLElement>(".cell") : null);
+const cellOf = (t: EventTarget | null) => (t instanceof Element ? t.closest<HTMLElement | SVGElement>(".cell") : null);
 
 /** The readout element and its listeners. Render once, in the shell. */
 export function Tip() {

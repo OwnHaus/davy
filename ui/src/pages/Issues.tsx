@@ -14,7 +14,7 @@ import { Icon } from "../parts/Icon";
 import { Level, StatusMark } from "../parts/Marks";
 import { rememberList, saveSort, savedSort, type IssuesSearch } from "../search";
 import { Inspector } from "./Inspector";
-import { Shell, type KeyHint } from "./Shell";
+import { IssuesRail, Shell, type KeyHint } from "./Shell";
 
 const route = getRouteApi("/issues");
 
@@ -198,11 +198,9 @@ export function Issues() {
 
   return (
     <Shell
-      crumb={<b>Issues</b>}
       keys={KEYS}
       note="Heat strips use one scale for every row"
-      filters={search}
-      sort={sort}
+      rail={(close) => <IssuesRail filters={search} sort={sort} onPick={close} />}
       inspector
     >
       <main id="vlist" aria-label="Issues" aria-busy={list.isFetching}>

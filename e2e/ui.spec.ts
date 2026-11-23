@@ -108,5 +108,54 @@ test("a person signs in, finds the SDK's issue, reads its frame and resolves it"
     await expect(page).toHaveURL(`${URL}/ui/issues`);
   });
 
+  await test.step("the Logs page finds a log by its attribute, zooms and goes live", async () => {
+    await page.getByRole("navigation", { name: "Views" }).getByRole("link", { name: "Logs" }).click();
+    await expect(page).toHaveURL(`${URL}/ui/logs`);
+    const rows = page.locator(".lrow");
+    await expect(rows).toHaveCount(11);
+    await expect(rows.filter({ hasText: "sentry payment provider timed out" })).toHaveCount(1);
+    await noAxeViolations(page, "logs");
+
+    const search = page.getByRole("searchbox", { name: "Search messages and attributes" });
+    await search.fill("attributes.provider:acme");
+    await expect(page).toHaveURL(/q=attributes\.provider/);
+    await expect(rows).toHaveCount(1);
+    await rows.first().locator(".lhead").click();
+    await expect(page.locator(".ldet")).toContainText("acme-pay");
+
+    await search.fill("");
+    await expect(rows).toHaveCount(11);
+    await rows.filter({ hasText: "sentry order placed" }).locator(".lhead").click();
+    await page.getByRole("button", { name: "Search for order.id ord-1001" }).click();
+    await expect(search).toHaveValue('attributes.order\\.id:"ord-1001"');
+    await expect(rows).toHaveCount(1);
+    await search.fill("");
+    await expect(rows).toHaveCount(11);
+
+    const box = (await page.locator(".hist svg").boundingBox())!;
+    await page.mouse.move(box.x + 1, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width - 1, box.y + box.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await expect(page).toHaveURL(/from=\d+&.*to=\d+|to=\d+&.*from=\d+/);
+    await expect(page.getByRole("button", { name: "Zoom out" })).toBeVisible();
+    await expect(rows).toHaveCount(11);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("button", { name: "Zoom out" })).toHaveCount(0);
+
+    await page.keyboard.press("l");
+    await expect(page.getByRole("button", { name: /^Live/ })).toHaveAttribute("aria-pressed", "true");
+    const dsn = davy("project", "create", "live-test", "--public-url", URL).trim();
+    const key = new globalThis.URL(dsn).username;
+    const sent = await page.request.post(`${URL}/`, { headers: { authorization: `Bearer ${key}` }, data: { message: "live line" } });
+    expect(sent.status()).toBe(202);
+    await expect(rows.filter({ hasText: "live line" })).toHaveCount(1, { timeout: 6000 });
+    await expect(rows).toHaveCount(12);
+    await noAxeViolations(page, "logs, live");
+    await scheme(page, "dark");
+    await noAxeViolations(page, "logs, dark");
+    await scheme(page, "light");
+  });
+
   expect(problems, "page errors and CSP violations").toEqual([]);
 });

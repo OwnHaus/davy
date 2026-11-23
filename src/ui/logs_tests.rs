@@ -259,3 +259,43 @@ async fn a_ninth_log_search_or_histogram_at_once_waits() {
         assert_eq!(read(&s, &cookie, uri).await.status, 200, "{uri}");
     }
 }
+
+/// `q` for a query string, every byte but letters and digits escaped.
+fn escaped(q: &str) -> String {
+    q.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() {
+                char::from(b).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn the_attribute_searches_the_logs_page_builds_find_their_log() {
+    let (s, cookie) = shop();
+    let mut hit = log(AT, LogLevel::Info, "order placed");
+    hit.attributes = serde_json::from_value(json!({
+        "order.id": "ord-1001",
+        "http": {"status": 502},
+        "ok": true,
+        "provider": "acme-pay",
+    }))
+    .unwrap();
+    write(&s, vec![hit, log(AT - 1, LogLevel::Info, "other")]);
+    let window = format!("from={}&to={AT}", AT - 1_000_000);
+    for (q, expected) in [
+        (r#"attributes.order\.id:"ord-1001""#, &["order placed"][..]),
+        ("attributes.http.status:502", &["order placed"]),
+        ("attributes.ok:true", &["order placed"]),
+        (r#"attributes.provider:"acme-pay""#, &["order placed"]),
+        (r#"attributes.provider:"acme-other""#, &[]),
+    ] {
+        let uri = format!("/ui/api/logs?{window}&q={}", escaped(q));
+        let r = read(&s, &cookie, &uri).await;
+        assert_eq!(r.status, 200, "{q}: {}", r.body["error"]);
+        assert_eq!(messages(&r.body), expected, "{q}");
+    }
+}

@@ -6,24 +6,23 @@ import type { Me, Project, Sort } from "../api/types";
 import { liveRegion } from "../lib/live";
 import { Legend, Tip } from "../parts/HeatStrip";
 import { Brand, Icon } from "../parts/Icon";
-import { saveSort, type IssuesSearch, type StatusFilter } from "../search";
+import { lastList, saveSort, type IssuesSearch, type StatusFilter } from "../search";
 
 /** A key and what it does, for the footer. */
 export type KeyHint = [string, string | null, string];
 
 type ShellProps = {
-  crumb: ReactNode;
+  crumb?: ReactNode;
   keys: KeyHint[];
   note?: string;
-  /** The list filters the rail shows. */
-  filters: IssuesSearch;
-  sort: Sort;
+  /** The filters in the rail. `close` hides the rail where it is an overlay. */
+  rail: (close: () => void) => ReactNode;
   /** Whether the page has its own inspector column. */
   inspector: boolean;
   children: ReactNode;
 };
 
-export function Shell({ crumb, keys, note, filters, sort, inspector, children }: ShellProps) {
+export function Shell({ crumb, keys, note, rail, inspector, children }: ShellProps) {
   const [railOpen, setRailOpen] = useState(false);
   return (
     <div className="app">
@@ -42,13 +41,25 @@ export function Shell({ crumb, keys, note, filters, sort, inspector, children }:
           <Brand />
           <span>Davy</span>
         </Link>
-        <nav className="crumb" aria-label="Location">
-          {crumb}
+        <nav className="views" aria-label="Views">
+          <Link to="/issues" search={lastList} data-text="Issues">
+            Issues
+          </Link>
+          <Link to="/logs" data-text="Logs">
+            Logs
+          </Link>
         </nav>
+        {crumb ? (
+          <nav className="crumb" aria-label="Location">
+            {crumb}
+          </nav>
+        ) : null}
         <Account />
       </header>
       <div className={`body${inspector ? "" : " wide"}`}>
-        <Rail filters={filters} sort={sort} open={railOpen} onPick={() => setRailOpen(false)} />
+        <aside id="rail" className={railOpen ? "open" : undefined} aria-label="Filters">
+          {rail(() => setRailOpen(false))}
+        </aside>
         {children}
       </div>
       <footer className="foot">
@@ -96,7 +107,8 @@ const SORT_PICKS: [Sort, string][] = [
   ["first_seen", "First seen"],
 ];
 
-function Rail({ filters, sort, open, onPick }: { filters: IssuesSearch; sort: Sort; open: boolean; onPick: () => void }) {
+/** The issue filters, for the issue list and an issue's page. */
+export function IssuesRail({ filters, sort, onPick }: { filters: IssuesSearch; sort: Sort; onPick: () => void }) {
   const navigate = useNavigate();
   const projects = useQuery({ queryKey: ["projects"], queryFn: () => get<Project[]>("/projects"), staleTime: 60_000 });
   const pick = (change: IssuesSearch) => {
@@ -106,7 +118,7 @@ function Rail({ filters, sort, open, onPick }: { filters: IssuesSearch; sort: So
   const status = filters.status ?? "unresolved";
   const releases = (projects.data ?? []).filter((p) => !filters.project || p.slug === filters.project).flatMap((p) => p.releases);
   return (
-    <aside id="rail" className={open ? "open" : undefined} aria-label="Filters">
+    <>
       <div className="rgroup">
         <h2>Projects</h2>
         <RailButton label="All projects" on={!filters.project} onClick={() => pick({ project: undefined, release: undefined })} />
@@ -149,11 +161,11 @@ function Rail({ filters, sort, open, onPick }: { filters: IssuesSearch; sort: So
         <div className="rnote">Saved on this device</div>
       </div>
       <Legend />
-    </aside>
+    </>
   );
 }
 
-function RailButton({ label, on, onClick, extra }: { label: string; on: boolean; onClick: () => void; extra?: ReactNode }) {
+export function RailButton({ label, on, onClick, extra }: { label: string; on: boolean; onClick: () => void; extra?: ReactNode }) {
   return (
     <button type="button" className="rb" aria-pressed={on} onClick={onClick}>
       <span className="l">{label}</span>

@@ -51,3 +51,26 @@ export function hourRange(start: number, now = Date.now()): string {
   }
   return `${from} ${hourOfDay(start)}:59 UTC`;
 }
+
+// Log times are nanoseconds since 1970, past what a Number holds exactly, so
+// they stay decimal strings and BigInt does their arithmetic.
+
+export const NS_PER_MS = 1_000_000n;
+export const nsOf = (ms: number) => BigInt(ms) * NS_PER_MS;
+export const msOf = (ns: bigint | string) => Number(BigInt(ns) / NS_PER_MS);
+
+/** `08:42:01.048`, or `08:42:01` when `ms` is false, of a time in milliseconds. */
+export function hms(ms: number, millis = true): string {
+  const d = new Date(ms);
+  const s = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+  return millis ? `${s}.${pad(d.getUTCMilliseconds(), 3)}` : s;
+}
+
+/** Whether two times in milliseconds fall on one UTC day. */
+export const sameDay = (a: number, b: number) => Math.floor(a / 86_400_000) === Math.floor(b / 86_400_000);
+
+/** The words for a span of time from `from` to `to`, both in milliseconds and included. */
+export function span(from: number, to: number, millis: boolean): string {
+  if (sameDay(from, to)) return `${day(from)}, ${hms(from, millis)} to ${hms(to, millis)} UTC`;
+  return `${day(from)} ${hms(from, millis)} to ${day(to)} ${hms(to, millis)} UTC`;
+}
