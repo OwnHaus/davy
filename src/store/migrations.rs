@@ -1,6 +1,6 @@
 /// Schema changes after the first release, applied in order. `PRAGMA
 /// user_version` counts how many ran.
-pub(super) const MIGRATIONS: [&str; 12] = [
+pub(super) const MIGRATIONS: [&str; 13] = [
     "CREATE TABLE releases(project_id INTEGER NOT NULL REFERENCES projects(id), version TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY(project_id, version));
 INSERT INTO releases SELECT project_id, release, min(received_at) FROM events WHERE release IS NOT NULL GROUP BY project_id, release;",
     "CREATE TABLE monitors(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), name TEXT NOT NULL, kind TEXT NOT NULL, url TEXT, expect TEXT, keyword TEXT, heartbeat_token TEXT UNIQUE, every_s INTEGER NOT NULL, timeout_s INTEGER, grace_s INTEGER, state TEXT NOT NULL, last_check_at INTEGER, last_ping_at INTEGER, created_at INTEGER NOT NULL);
@@ -55,4 +55,7 @@ CREATE INDEX session_seen_started ON session_seen(started);",
     // together go out as one digest, see src/alert/digest.rs.
     "ALTER TABLE notifications ADD COLUMN issue TEXT;",
     crate::monitor::checkin_store::MIGRATION,
+    // Notices of monitors made by check-ins that a full outbox dropped, kept
+    // apart from `dropped` because anyone with a public DSN can raise them.
+    "ALTER TABLE channels ADD COLUMN sdk_dropped INTEGER NOT NULL DEFAULT 0;",
 ];

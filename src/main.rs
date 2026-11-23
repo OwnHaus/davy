@@ -173,7 +173,8 @@ enum Channel {
     /// --project or --all. Prints the channel's ID, and for a webhook its
     /// signing secret, shown only this once.
     Add(ChannelAdd),
-    /// Prints each channel with its unsent, failed and dropped notices.
+    /// Prints each channel with its unsent, failed and dropped notices, and
+    /// the notices of monitors made by check-ins that it dropped.
     List {
         #[arg(long)]
         data: PathBuf,
@@ -372,14 +373,15 @@ fn run_channel(out: &mut impl Write, command: Channel) -> anyhow::Result<()> {
             for ch in channels {
                 writeln!(
                     out,
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     ch.id,
                     ch.project.as_deref().map_or(Cow::Borrowed("*"), safe),
                     ch.kind.as_str(),
                     safe(&ch.to),
                     ch.unsent,
                     ch.failed,
-                    ch.dropped
+                    ch.dropped,
+                    ch.sdk_dropped
                 )?;
             }
         }

@@ -209,7 +209,17 @@ project: string | null, kind: Kind,
  * The host of a webhook or Slack URL, because the whole URL of a Slack
  * webhook is a credential, or the address of an e-mail channel.
  */
-to: string, feedback: boolean, unsent: number, failed: number, dropped: number, };
+to: string, feedback: boolean, unsent: number, failed: number, 
+/**
+ * Issue, feedback and operator notices not stored because their class
+ * was full. Only someone who can make issues or operator alerts moves it.
+ */
+dropped: number, 
+/**
+ * Notices of monitors made by check-ins not stored because 100 waited.
+ * Anyone with a public DSN can raise it, so it has its own count.
+ */
+sdk_dropped: number, };
 
 export type Delivery = "waiting" | "sent" | "failed";
 

@@ -305,3 +305,31 @@ fn a_run_left_open_on_a_down_monitor_expires() {
     send(&c, "2026-11-23T16:13:00Z", "job", "in_progress", "");
     assert_eq!(started(), Some(ms("2026-11-23T16:13:00Z")));
 }
+
+#[test]
+fn an_sdk_flood_counts_apart_from_operator_drops() {
+    use crate::alert::{self, Destination, Notice};
+    let c = memory();
+    let hook = Destination::Webhook(super::CheckUrl::parse("https://example.com/hooks").unwrap());
+    alert::store::add(&c, Some(1), &hook, false, 0).unwrap();
+    let config = r#","monitor_config":{"schedule":{"type":"interval","value":1,"unit":"hour"}}"#;
+    for monitor in 0..100 {
+        send(
+            &c,
+            "2026-11-23T16:00:00Z",
+            &format!("job-{monitor}"),
+            "error",
+            config,
+        );
+    }
+    send(&c, "2026-11-23T16:01:00Z", "job-0", "ok", "");
+    let counts = |c: &rusqlite::Connection| {
+        let ch = &alert::store::list(c).unwrap()[0];
+        (ch.unsent, ch.dropped, ch.sdk_dropped)
+    };
+    assert_eq!(counts(&c), (100, 0, 1));
+    for at in 0..101 {
+        alert::store::notify(&c, 1, &Notice::Test, at).unwrap();
+    }
+    assert_eq!(counts(&c), (200, 1, 1));
+}

@@ -57,7 +57,8 @@ fn channels_are_added_listed_and_removed() {
                 feedback: false,
                 unsent: 0,
                 failed: 0,
-                dropped: 0
+                dropped: 0,
+                sdk_dropped: 0
             },
             store::Listed {
                 id: 2,
@@ -67,7 +68,8 @@ fn channels_are_added_listed_and_removed() {
                 feedback: true,
                 unsent: 0,
                 failed: 0,
-                dropped: 0
+                dropped: 0,
+                sdk_dropped: 0
             },
         ]
     );

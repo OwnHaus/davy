@@ -79,7 +79,12 @@ pub struct Listed {
     pub feedback: bool,
     pub unsent: i64,
     pub failed: i64,
+    /// Issue, feedback and operator notices not stored because their class
+    /// was full. Only someone who can make issues or operator alerts moves it.
     pub dropped: i64,
+    /// Notices of monitors made by check-ins not stored because 100 waited.
+    /// Anyone with a public DSN can raise it, so it has its own count.
+    pub sdk_dropped: i64,
 }
 
 /// Every channel, oldest first.
@@ -88,7 +93,7 @@ pub fn list(c: &Connection) -> Result<Vec<Listed>> {
         "SELECT ch.id,p.slug,ch.kind,ch.url,ch.feedback,
          (SELECT count(*) FROM notifications n WHERE n.channel_id=ch.id AND n.sent_at IS NULL AND n.failed_at IS NULL),
          (SELECT count(*) FROM notifications n WHERE n.channel_id=ch.id AND n.failed_at IS NOT NULL),
-         ch.dropped
+         ch.dropped,ch.sdk_dropped
          FROM channels ch LEFT JOIN projects p ON p.id=ch.project_id ORDER BY ch.id",
     )?;
     let rows = q.query_map([], |r| {
@@ -98,11 +103,11 @@ pub fn list(c: &Connection) -> Result<Vec<Listed>> {
             r.get::<_, Kind>(2)?,
             r.get::<_, String>(3)?,
             r.get::<_, bool>(4)?,
-            [r.get::<_, i64>(5)?, r.get(6)?, r.get(7)?],
+            [r.get::<_, i64>(5)?, r.get(6)?, r.get(7)?, r.get(8)?],
         ))
     })?;
     rows.map(|row| {
-        let (id, project, kind, url, feedback, [unsent, failed, dropped]) = row?;
+        let (id, project, kind, url, feedback, [unsent, failed, dropped, sdk_dropped]) = row?;
         let to = match kind {
             Kind::Email => url.strip_prefix("mailto:").map(str::to_owned),
             Kind::Webhook | Kind::Slack => Url::parse(&url)
@@ -119,6 +124,7 @@ pub fn list(c: &Connection) -> Result<Vec<Listed>> {
             unsent,
             failed,
             dropped,
+            sdk_dropped,
         })
     })
     .collect()
@@ -216,10 +222,12 @@ fn lane_class(kind: &str) -> &'static str {
 /// Stores one notification row, or counts it as dropped when the channel
 /// already has [`MAX_UNSENT`] of its class: issue notices, SDK monitor
 /// notices and the operator's own monitor and test notices each have their
-/// own. Feedback does not count against an alert, so it cannot push one out. The body holds the row's ID, so the row is stored
-/// first. An issue notice of a project is due when the channel's waiting
-/// issue rows are, or [`WINDOW_MS`] after `at` when none waits, and keeps
-/// its issue for a digest. Any other notice is due at once.
+/// own. A dropped SDK notice counts in `sdk_dropped`, any other in
+/// `dropped`. Feedback does not count against an alert, so it cannot push
+/// one out. The body holds the row's ID, so the row is stored first. An
+/// issue notice of a project is due when the channel's waiting issue rows
+/// are, or [`WINDOW_MS`] after `at` when none waits, and keeps its issue for
+/// a digest. Any other notice is due at once.
 fn queue(
     c: &Connection,
     channel: i64,
@@ -233,19 +241,23 @@ fn queue(
     // Each class has its own 100 rows, so a DSN holder who makes new issues
     // or flaps SDK monitors cannot crowd out a CLI or HTTP monitor notice.
     // Feedback counts every row but the SDK ones: it never pushes out alerts.
+    let class = lane_class(lane);
     let unsent: i64 = c.query_row(
         "SELECT count(*) FROM notifications WHERE channel_id=?1 AND sent_at IS NULL AND failed_at IS NULL
            AND CASE WHEN type='monitor.digest' THEN 'sdk' WHEN type IN ('issue.new','issue.regressed') THEN 'issue'
              WHEN type='feedback' THEN 'feedback' ELSE 'operator' END
            IN (?2, iif(?2='feedback','issue',NULL), iif(?2='feedback','operator',NULL))",
-        params![channel, lane_class(lane)],
+        params![channel, class],
         |r| r.get(0),
     )?;
     if unsent >= MAX_UNSENT {
-        c.execute(
-            "UPDATE channels SET dropped=dropped+1 WHERE id=?1",
-            [channel],
-        )?;
+        // A DSN holder can fill the SDK class at will, so its losses are
+        // kept apart: `dropped` then still says an operator alert was lost.
+        let count = match class {
+            "sdk" => "UPDATE channels SET sdk_dropped=sdk_dropped+1 WHERE id=?1",
+            _ => "UPDATE channels SET dropped=dropped+1 WHERE id=?1",
+        };
+        c.execute(count, [channel])?;
         return Ok(());
     }
     let held = notice

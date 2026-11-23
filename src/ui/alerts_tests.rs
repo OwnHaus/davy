@@ -53,8 +53,8 @@ async fn channels_show_their_host_and_never_their_url() {
     assert_eq!(
         r.body,
         json!([
-            {"id": 1, "project": "shop", "kind": "slack", "to": "hooks.slack.example", "feedback": false, "unsent": 0, "failed": 1, "dropped": 0},
-            {"id": 2, "project": null, "kind": "email", "to": "ops@shop.example", "feedback": false, "unsent": 50, "failed": 0, "dropped": 0},
+            {"id": 1, "project": "shop", "kind": "slack", "to": "hooks.slack.example", "feedback": false, "unsent": 0, "failed": 1, "dropped": 0, "sdk_dropped": 0},
+            {"id": 2, "project": null, "kind": "email", "to": "ops@shop.example", "feedback": false, "unsent": 50, "failed": 0, "dropped": 0, "sdk_dropped": 0},
         ])
     );
     assert!(!r.body.to_string().contains("s3cret"));

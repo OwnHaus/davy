@@ -129,6 +129,7 @@ function Channels({ channels }: { channels: Channel[] }) {
           <col className="w-num" />
           <col className="w-num" />
           <col className="w-num" />
+          <col className="w-num-wide" />
         </colgroup>
         <thead>
           <tr>
@@ -148,6 +149,9 @@ function Channels({ channels }: { channels: Channel[] }) {
             <th scope="col" className="r">
               Dropped
             </th>
+            <th scope="col" className="r" title="Notices of monitors made by check-ins. Anyone with the DSN can raise this count.">
+              SDK dropped
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -163,6 +167,7 @@ function Channels({ channels }: { channels: Channel[] }) {
               <td className="r">{c.unsent}</td>
               <td className="r">{c.failed ? <span className="problem">{c.failed}</span> : 0}</td>
               <td className="r">{c.dropped ? <span className="problem">{c.dropped}</span> : 0}</td>
+              <td className="r">{c.sdk_dropped}</td>
             </tr>
           ))}
         </tbody>

@@ -150,7 +150,7 @@ try {
   assert.ok(mails.every(m => /^<davy\.\d+\.\d+@davy\.example>$/.test(header(m, 'Message-ID'))))
 
   const channels = JSON.parse(davy('channel', 'list', '--json'))
-  assert.deepEqual(channels.map(c => [c.kind, c.unsent, c.failed, c.dropped]), [['webhook', 0, 0, 0], ['slack', 0, 0, 0], ['email', 0, 0, 0]])
+  assert.deepEqual(channels.map(c => [c.kind, c.unsent, c.failed, c.dropped, c.sdk_dropped]), [['webhook', 0, 0, 0, 0], ['slack', 0, 0, 0, 0], ['email', 0, 0, 0, 0]])
   const seconds = Math.round((Date.now() - started) / 1000)
   console.log(`alerts: verified 6 signed webhooks, 6 Slack messages and 6 e-mails for a digest of 2 new issues, an HTTP monitor down and up, and a heartbeat failed, up and late, in ${seconds}s`)
 } finally {
