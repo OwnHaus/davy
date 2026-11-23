@@ -9,6 +9,7 @@ use url::Url;
 
 #[derive(clap::Args)]
 pub struct Args {
+    /// The coding agent the config is for.
     #[arg(long, value_enum)]
     pub client: Client,
     /// The data directory, to read the public URL and the token from.

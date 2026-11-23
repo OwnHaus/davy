@@ -15,6 +15,7 @@ pub enum User {
     Reset(Invite),
     /// Removes a person and ends their sessions.
     Remove {
+        /// The address they sign in with.
         email: String,
         #[arg(long)]
         data: PathBuf,
@@ -32,6 +33,7 @@ pub enum User {
 
 #[derive(Args)]
 pub struct Invite {
+    /// The address they sign in with.
     email: String,
     #[arg(long)]
     data: PathBuf,

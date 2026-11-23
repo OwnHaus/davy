@@ -1,4 +1,4 @@
-use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use davy::{
     alert, context, feedback, install, issues,
     logs::{
@@ -43,6 +43,7 @@ enum Command {
     /// by DAVY_TOKEN_FILE or DATA/token it also serves MCP at /mcp and takes
     /// source map uploads.
     Serve(davy::serve::Args),
+    /// The apps that send errors and logs, each with its own DSN.
     Project {
         #[command(subcommand)]
         command: Project,
@@ -62,15 +63,19 @@ enum Command {
         #[command(subcommand)]
         command: davy::accounts::cli::User,
     },
+    /// Lists issues, the most recently seen first.
     Issues {
         #[arg(long)]
         data: PathBuf,
+        /// Only the issues of this project slug.
         #[arg(long)]
         project: Option<String>,
         #[arg(long)]
         json: bool,
     },
+    /// Prints the newest stored event of an issue as the SDK sent it.
     Event {
+        /// The ID that `davy issues` prints.
         issue_id: i64,
         #[arg(long)]
         data: PathBuf,
@@ -81,6 +86,7 @@ enum Command {
     /// Runs one read-only SQL query against the error store. `davy sql schema`
     /// prints the tables and notes on units.
     Sql {
+        /// One SELECT statement, or `schema`.
         query: String,
         #[arg(long)]
         data: PathBuf,
@@ -90,6 +96,7 @@ enum Command {
     /// Prints what an agent needs to fix an issue as JSON: the issue, its newest
     /// event, recent events, releases and the logs around it.
     Context {
+        /// The ID that `davy issues` prints.
         issue_id: i64,
         #[arg(long)]
         data: PathBuf,
@@ -97,28 +104,35 @@ enum Command {
     /// Marks an issue fixed. Without --release it stays fixed until an event
     /// arrives from a release first seen after now.
     Resolve {
+        /// The ID that `davy issues` prints.
         issue_id: i64,
         #[arg(long)]
         data: PathBuf,
+        /// The release the fix ships in. An event from it or a newer release
+        /// reopens the issue.
         #[arg(long)]
         release: Option<String>,
     },
 }
 #[derive(clap::Args)]
 struct Logs {
+    /// Without it every log in the window matches.
     query: Option<String>,
     #[arg(long)]
     data: PathBuf,
+    /// Only the logs of this project slug.
     #[arg(long)]
     project: Option<String>,
     /// A duration back from now (30m, 1h, 2d) or an RFC 3339 timestamp.
     #[arg(long, default_value = "24h", value_parser = instant)]
     since: i64,
+    /// Like --since. Defaults to now.
     #[arg(long, value_parser = instant)]
     until: Option<i64>,
     /// Minimum level: trace, debug, info, warn, error, fatal.
     #[arg(long, value_parser = level)]
     level: Option<LogLevel>,
+    /// At most this many logs, the newest ones in the window.
     #[arg(long, default_value_t = 100)]
     limit: usize,
     #[arg(long)]
@@ -135,6 +149,7 @@ enum Project {
     /// Creates a project and prints its DSN. For an existing slug it prints
     /// the DSN it already has.
     Create {
+        /// A short name such as `web` or `billing-api`.
         slug: String,
         #[arg(long)]
         data: PathBuf,
@@ -157,6 +172,7 @@ enum Monitor {
     },
     /// Deletes a monitor with its checks and incidents.
     Remove {
+        /// The ID that `davy monitor list` prints.
         id: i64,
         #[arg(long)]
         data: PathBuf,
@@ -165,10 +181,13 @@ enum Monitor {
 #[derive(clap::Args)]
 #[command(group(ArgGroup::new("target").required(true).args(["url", "heartbeat"])))]
 struct MonitorAdd {
+    /// The project slug whose channels get the alerts.
     project: String,
+    /// A name for alerts and lists, such as `api health`.
     name: String,
     #[arg(long)]
     data: PathBuf,
+    /// The URL to GET. A status of 400 or more is down.
     #[arg(long)]
     url: Option<String>,
     /// Up only when the first 1 MiB of the body contains this text.
@@ -205,12 +224,14 @@ enum Channel {
     },
     /// Deletes a channel with its notices.
     Remove {
+        /// The ID that `davy channel list` prints.
         id: i64,
         #[arg(long)]
         data: PathBuf,
     },
     /// Queues a test notice for one channel. A running server sends it.
     Test {
+        /// The ID that `davy channel list` prints.
         id: i64,
         #[arg(long)]
         data: PathBuf,
@@ -219,9 +240,11 @@ enum Channel {
 #[derive(clap::Args)]
 #[command(group(ArgGroup::new("scope").required(true).args(["project", "all"])))]
 struct ChannelAdd {
+    /// How alerts are sent.
     kind: ChannelKind,
     /// The URL of a webhook or Slack channel, or the address of an e-mail one.
     to: String,
+    /// Alerts for this project slug only.
     #[arg(long)]
     project: Option<String>,
     /// Alerts for every project, including ones created later.
@@ -239,6 +262,18 @@ enum ChannelKind {
     Slack,
     Email,
 }
+/// The command line, with help for the flags most commands share.
+fn cli() -> clap::Command {
+    shared_help(Cli::command())
+}
+fn shared_help(c: clap::Command) -> clap::Command {
+    c.mut_args(|a| match (a.get_id().as_str(), a.get_help()) {
+        ("data", None) => a.help("The data directory, such as /var/lib/davy"),
+        ("json", None) => a.help("Prints JSON instead of text"),
+        _ => a,
+    })
+    .mut_subcommands(shared_help)
+}
 fn duration(s: &str) -> Result<Duration, String> {
     time::duration(s).ok_or_else(|| format!("expected 30s, 15m, 1h or 2d, got {s:?}"))
 }
@@ -248,7 +283,8 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(unix)]
     nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
     let mut out = std::io::stdout();
-    match Cli::parse().command {
+    let parsed = Cli::from_arg_matches(&cli().get_matches()).unwrap_or_else(|e| e.exit());
+    match parsed.command {
         Command::Serve(args) => davy::serve::run(args).await?,
         Command::SystemdUnit(args) => install::unit::run(&mut out.lock(), &args)?,
         Command::Setup(args) => install::setup::run(&mut out.lock(), &args)?,
@@ -526,122 +562,5 @@ fn safe(s: &str) -> Cow<'_, str> {
     text::printable(s, char::REPLACEMENT_CHARACTER)
 }
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_admin_token_is_not_a_command_line_flag() {
-        let serve = |extra: &[&str]| {
-            let base = ["davy", "serve", "--data", "d", "--listen", "127.0.0.1:0"];
-            let url = ["--public-url", "http://127.0.0.1/"];
-            Cli::try_parse_from(base.iter().chain(&url).chain(extra)).is_ok()
-        };
-        assert!(serve(&[]));
-        assert!(!serve(&["--token", "0123456789abcdef0123456789abcdef"]));
-    }
-
-    #[test]
-    fn monitor_add_takes_the_flags_of_one_kind() {
-        let add = |extra: &[&str]| {
-            let base = ["davy", "monitor", "add", "shop", "API", "--data", "d"];
-            Cli::try_parse_from(base.iter().chain(extra)).is_ok()
-        };
-        assert!(add(&["--url", "https://shop.example/", "--timeout", "5s"]));
-        assert!(add(&["--heartbeat", "--grace", "1m"]));
-        for bad in [
-            &[][..],
-            &["--url", "https://shop.example/", "--heartbeat"],
-            &["--heartbeat", "--timeout", "5s"],
-            &["--heartbeat", "--keyword", "ok"],
-            &["--url", "https://shop.example/", "--grace", "1m"],
-            &[
-                "--url",
-                "https://shop.example/",
-                "--keyword",
-                "a",
-                "--no-keyword",
-                "b",
-            ],
-        ] {
-            assert!(!add(bad), "{bad:?}");
-        }
-    }
-
-    #[test]
-    fn channel_add_takes_a_project_or_all() {
-        let add = |extra: &[&str]| {
-            let base = ["davy", "channel", "add", "--data", "d"];
-            Cli::try_parse_from(base.iter().chain(extra)).is_ok()
-        };
-        assert!(add(&[
-            "webhook",
-            "https://hooks.example/",
-            "--project",
-            "shop"
-        ]));
-        assert!(add(&["slack", "https://hooks.slack.com/", "--all"]));
-        assert!(add(&["email", "ops@example.com", "--all"]));
-        for bad in [
-            &["webhook", "https://hooks.example/"][..],
-            &[
-                "webhook",
-                "https://hooks.example/",
-                "--project",
-                "shop",
-                "--all",
-            ],
-            &["sms", "+420123456789", "--all"],
-        ] {
-            assert!(!add(bad), "{bad:?}");
-        }
-    }
-
-    #[test]
-    fn sql_text_output_separates_columns_with_tabs() {
-        let mut out = Vec::new();
-        let rows = query::Rows {
-            columns: vec!["id".into(), "na\u{1b}me".into()],
-            rows: vec![vec![serde_json::json!(1), serde_json::json!("API\t")]],
-            truncated: false,
-        };
-        print_rows(&mut out, &rows, false).unwrap();
-        assert_eq!(
-            String::from_utf8(out).unwrap(),
-            "id\tna\u{fffd}me\n1\tAPI\u{fffd}\n"
-        );
-    }
-
-    #[test]
-    fn text_output_replaces_control_characters() {
-        let mut out = Vec::new();
-        let issue = store::Issue {
-            id: 1,
-            status: "unresolved".into(),
-            count: 2,
-            title: "Error: \u{1b}]52;c;cHduZWQ=\u{7}".into(),
-            culprit: Some("a\tb\u{9b}2J".into()),
-        };
-        print_issues(&mut out, vec![issue], false).unwrap();
-        let hit = LogHit {
-            timestamp: "2026-11-20T10:00:00Z".into(),
-            timestamp_ns: 0,
-            project_id: 1,
-            source: logs::LogSource::Logtail,
-            level: LogLevel::Info,
-            service: Some("api\r".into()),
-            message: "line\n\u{1b}[2Jgone".into(),
-            trace_id: None,
-            span_id: None,
-            attributes: serde_json::json!({"k\u{1b}": "v\u{7}"})
-                .as_object()
-                .unwrap()
-                .clone(),
-        };
-        print_logs(&mut out, vec![hit], false).unwrap();
-        assert_eq!(
-            String::from_utf8(out).unwrap(),
-            "1\tunresolved\t2\tError: \u{fffd}]52;c;cHduZWQ=\u{fffd}\ta\u{fffd}b\u{fffd}2J\n\
-             2026-11-20T10:00:00Z info  api\u{fffd} line\u{fffd}\u{fffd}[2Jgone k\u{fffd}=v\u{fffd}\n"
-        );
-    }
-}
+#[path = "main_tests.rs"]
+mod tests;

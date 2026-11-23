@@ -21,6 +21,7 @@ pub struct Args {
     /// Defaults to the public URL in DATA/setup.json.
     #[arg(long)]
     pub public_url: Option<Url>,
+    /// Days of logs to keep, 1 to 36,500. Older days are deleted hourly.
     #[arg(long, default_value_t = 30)]
     pub log_retention_days: u32,
     /// The sender of alert e-mail, required when there is an SMTP URL.
