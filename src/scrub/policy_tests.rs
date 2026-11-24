@@ -162,6 +162,10 @@ async fn the_api_refuses_incomplete_or_unknown_policies() {
             "extra key \"--\" has no ASCII letter or digit, and keys are compared by those alone",
         ),
         (
+            policy(&json!({"extra_keys": ["p%61ss"]})),
+            "extra key \"p%61ss\" holds % or +",
+        ),
+        (
             policy(&json!({"extra_keys": ["x".repeat(101)]})),
             "must hold 1 to 100 bytes",
         ),

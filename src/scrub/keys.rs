@@ -3,9 +3,13 @@ use super::Policy;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashSet;
 
-/// How much of the end of a key is checked. Real keys are far shorter, and
-/// a sensitive name ends in its root, so a longer key is checked by its end.
+/// How much of each end of a key is checked. Real keys are far shorter, so
+/// a longer key is checked by its first and last `WINDOW` bytes.
 const WINDOW: usize = 256;
+/// The most a [`WINDOW`] folds to. With runs of separators kept as one, no
+/// character folds to more than twice its UTF-8 bytes (`㎯`, 3 bytes, is
+/// `rad-s2`), so a whole window always fits and none of it is cut.
+const FOLDED: usize = 2 * WINDOW;
 /// Roots distinctive enough to match anywhere in a normalized key.
 const ROOTS: &[&str] = &[
     "password",
@@ -48,12 +52,22 @@ const WORDS: &[&str] = &["pin", "otp"];
 /// Form-decoding passes over an assignment key, so a key encoded twice
 /// (`p%2561ssword`) decodes as well as one encoded once.
 const DECODE_PASSES: usize = 3;
-/// The last [`WINDOW`] bytes of `key`, folded to ASCII by [`fold`]. With
-/// `decode`, `+` and `%XX` decode as a form decodes them, up to
-/// [`DECODE_PASSES`] times.
-fn ascii<'b>(key: &'b str, decode: bool, buf: &'b mut [u8; WINDOW]) -> &'b str {
+/// Which end of a key [`ascii`] reads.
+#[derive(Clone, Copy)]
+enum End {
+    Head,
+    Tail,
+}
+
+/// The first or last [`WINDOW`] bytes of `key`, folded to ASCII by
+/// [`fold`]. With `decode`, `+` and `%XX` decode as a form decodes them, up
+/// to [`DECODE_PASSES`] times.
+fn ascii<'b>(key: &'b str, decode: bool, end: End, buf: &'b mut [u8; FOLDED]) -> &'b str {
     let bytes = key.as_bytes();
-    let tail = &bytes[bytes.len().saturating_sub(WINDOW)..];
+    let tail = match end {
+        End::Head => &bytes[..bytes.len().min(WINDOW)],
+        End::Tail => &bytes[bytes.len().saturating_sub(WINDOW)..],
+    };
     if !decode && tail.is_ascii() {
         return std::str::from_utf8(tail).unwrap_or_default();
     }
@@ -100,47 +114,31 @@ fn form_decode(bytes: &mut [u8]) -> usize {
 
 /// `bytes` with look-alike letters folded to ASCII. Fullwidth and styled
 /// letters decompose (NFKD), accents and invisible format characters drop,
-/// and anything else becomes `-`, which separates words as it did. The
-/// fold runs from the end and stops when the buffer is full, as a long key
-/// keeps its end, so a character that decomposes into many does not
-/// multiply the work.
-fn fold<'b>(bytes: &[u8], buf: &'b mut [u8; WINDOW]) -> &'b str {
+/// and anything else becomes `-`, which separates words as it did. A run of
+/// separators is kept as one, so the whole of `bytes` fits in [`FOLDED`].
+pub(super) fn fold<'b>(bytes: &[u8], buf: &'b mut [u8; FOLDED]) -> &'b str {
     if bytes.is_ascii() {
         buf[..bytes.len()].copy_from_slice(bytes);
         return std::str::from_utf8(&buf[..bytes.len()]).unwrap_or_default();
     }
-    // Each character or invalid sequence takes at least one byte.
-    let mut chars = ['\0'; WINDOW];
-    let mut count = 0;
+    let mut len = 0;
+    let mut push = |byte: u8| {
+        let separator = !byte.is_ascii_alphanumeric();
+        let repeat = separator && len > 0 && !buf[len - 1].is_ascii_alphanumeric();
+        if !repeat && len < FOLDED {
+            buf[len] = byte;
+            len += 1;
+        }
+    };
     for chunk in bytes.utf8_chunks() {
         for c in chunk.valid().chars() {
-            chars[count] = c;
-            count += 1;
+            fold_char(c, &mut push);
         }
         if !chunk.invalid().is_empty() {
-            chars[count] = char::REPLACEMENT_CHARACTER;
-            count += 1;
+            push(b'-');
         }
     }
-    let mut start = WINDOW;
-    for &c in chars[..count].iter().rev() {
-        // The longest decomposition, U+FDFA, has 18 characters.
-        let (mut part, mut len) = ([0; 32], 0);
-        fold_char(c, &mut |byte| {
-            if len < part.len() {
-                part[len] = byte;
-                len += 1;
-            }
-        });
-        let take = len.min(start);
-        buf[start - take..start].copy_from_slice(&part[len - take..len]);
-        start -= take;
-        if start == 0 {
-            break;
-        }
-    }
-    buf.copy_within(start.., 0);
-    std::str::from_utf8(&buf[..WINDOW - start]).unwrap_or_default()
+    std::str::from_utf8(&buf[..len]).unwrap_or_default()
 }
 
 fn fold_char(c: char, push: &mut impl FnMut(u8)) {
@@ -227,7 +225,7 @@ fn invisible(c: char) -> bool {
 }
 
 /// The lowercase ASCII letters and digits of `ascii`.
-fn normalize<'b>(ascii: &str, buf: &'b mut [u8; WINDOW]) -> &'b str {
+fn normalize<'b>(ascii: &str, buf: &'b mut [u8; FOLDED]) -> &'b str {
     let mut len = 0;
     for byte in ascii.bytes().filter(u8::is_ascii_alphanumeric) {
         buf[len] = byte.to_ascii_lowercase();
@@ -238,18 +236,18 @@ fn normalize<'b>(ascii: &str, buf: &'b mut [u8; WINDOW]) -> &'b str {
 
 /// The form an extra key is stored and compared in.
 pub(super) fn normalized(key: &str) -> String {
-    let (mut folded, mut out) = ([0; WINDOW], [0; WINDOW]);
-    normalize(ascii(key, false, &mut folded), &mut out).to_owned()
+    let (mut folded, mut out) = ([0; FOLDED], [0; FOLDED]);
+    normalize(ascii(key, false, End::Tail, &mut folded), &mut out).to_owned()
 }
 
 impl Policy {
     /// The marker for the value under `key`, if the key names one to remove.
     /// `identity` says the key is in a `user` object or feedback.
     pub(super) fn class(&self, key: &str, identity: bool) -> Option<&'static str> {
-        let (mut folded, mut out) = ([0; WINDOW], [0; WINDOW]);
-        let ascii = ascii(key, false, &mut folded);
+        let (mut folded, mut out) = ([0; FOLDED], [0; FOLDED]);
+        let ascii = ascii(key, false, End::Tail, &mut folded);
         let normalized = normalize(ascii, &mut out);
-        if self.sensitive_words(ascii, normalized) {
+        if self.sensitive_words(ascii, normalized) || self.sensitive_head(key, false) {
             return Some(super::SENSITIVE);
         }
         if self.personal
@@ -270,8 +268,20 @@ impl Policy {
     /// Whether the key of an assignment in text, which may be form-encoded,
     /// names a sensitive value.
     pub(super) fn sensitive_assignment(&self, key: &str) -> bool {
-        let (mut folded, mut out) = ([0; WINDOW], [0; WINDOW]);
-        let ascii = ascii(key, key.contains(['%', '+']), &mut folded);
+        let decode = key.contains(['%', '+']);
+        let (mut folded, mut out) = ([0; FOLDED], [0; FOLDED]);
+        let ascii = ascii(key, decode, End::Tail, &mut folded);
+        self.sensitive_words(ascii, normalize(ascii, &mut out)) || self.sensitive_head(key, decode)
+    }
+
+    /// Whether the start of a key longer than [`WINDOW`] bytes names a
+    /// sensitive value. The start of a shorter key is in its tail.
+    fn sensitive_head(&self, key: &str, decode: bool) -> bool {
+        if key.len() <= WINDOW {
+            return false;
+        }
+        let (mut folded, mut out) = ([0; FOLDED], [0; FOLDED]);
+        let ascii = ascii(key, decode, End::Head, &mut folded);
         self.sensitive_words(ascii, normalize(ascii, &mut out))
     }
 

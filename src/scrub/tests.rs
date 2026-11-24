@@ -49,12 +49,12 @@ fn recognizes_credentials_and_luhn_but_keeps_invalid_cards() {
 }
 
 #[test]
-fn a_card_or_token_next_to_a_non_ascii_letter_is_still_found() {
-    let mut text = "\u{10d}4242424242424242 \u{3a9}ghp_abcdefghij".to_owned();
+fn a_card_token_or_address_next_to_a_non_ascii_letter_is_still_found() {
+    let mut text = "\u{10d}4242424242424242 \u{3a9}ghp_abcdefghij \u{e9}192.0.2.1\u{e9}".to_owned();
     Policy::default().text(&mut text);
     assert_eq!(
         text,
-        "\u{10d}[Filtered: card] \u{3a9}[Filtered: credential]"
+        "\u{10d}[Filtered: card] \u{3a9}[Filtered: credential] \u{e9}[Filtered: ip]\u{e9}"
     );
 }
 

@@ -193,9 +193,10 @@ pub(super) fn key_marker(policy: &Policy, key: &str) -> Option<&'static str> {
 }
 
 /// Nothing that continues a name, a version or an address on either side.
+/// Letters are ASCII, so an address right after `é` is still found.
 /// A dot after the candidate may end a sentence.
 fn standalone(text: &str, start: usize, end: usize) -> bool {
-    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let before = text[..start].chars().next_back();
     let mut after = text[end..].chars();
     let free_after = match after.next() {

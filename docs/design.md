@@ -1276,8 +1276,10 @@ not ingest attachments, and are outside this policy.
 replaces them, and fields it leaves out take the defaults above. Admin
 bearer-authenticated GET and PUT `/api/projects/{project}/scrub` read and
 replace the same object. Both refuse unknown fields, more than 100 extra
-keys, keys over 100 bytes and keys with no ASCII letter or digit, which
-would normalize to nothing. A stored policy is read leniently, so one
+keys, keys over 100 bytes, keys with no ASCII letter or digit, which
+would normalize to nothing, and keys with `%` or `+`, as a form-encoded key
+in text is decoded before it is compared, so the decoded name is the one to
+give. A stored policy is read leniently, so one
 written by a newer version still applies. A PUT for a project that does not
 exist answers `404` before it reaches the writer, and the writer fails only
 that job, so other writes in its batch commit.
@@ -1302,7 +1304,11 @@ such as `о` and `ο`, and soft hyphens, zero-width and other invisible
 format characters drop. So `passwоrd` with a Cyrillic `о`, `ｐａｓｓｗｏｒｄ`
 and `pass\u200bword` are all `password`. Any other non-ASCII character
 separates words. Extra keys fold the same way when stored, and apply
-whether or not the `keys` class is on.
+whether or not the `keys` class is on. A key longer than 256 bytes is
+checked by its first and last 256 bytes. Each window is folded whole: a
+run of separators folds to one, so no character takes more than twice its
+bytes (`㎯` is `rad-s2`), and a character that decomposes into many letters
+cannot push a root out of the window.
 Sensitive keys split on separators and camelCase. Distinctive roots
 (password, passphrase, secret, credential, accountkey, sharedaccesskey and
 similar) match normalized substrings; short roots (auth, token, session,
@@ -1328,9 +1334,13 @@ an item or a log record's attributes, in an event's `contexts.trace`, in a
 session's `attrs` and in each entry of session `aggregates`. Anywhere else,
 as in `extra`, `tags`, breadcrumb data or other contexts, the same name is
 free text and gets every pattern. A sensitive key under a structural name
-is still hidden. IP candidates must have no letter, digit, underscore, dot or colon on either side, so `Foo::bar` and
+is still hidden. IP candidates must have no ASCII letter, digit, underscore,
+dot or colon on either side, so `Foo::bar` and
 `v1.2.3.4.5` stay. A dot that ends a sentence is allowed, and an IPv4
-address with a port (`10.0.0.5:5432`) is removed whole.
+address with a port (`10.0.0.5:5432`) is removed whole. Letters next to a
+candidate count only in ASCII, as in the card and credential patterns, so
+`é192.0.2.1` is found, and so is a version written right after Chinese or
+Japanese text (`版本2.11.0.7`), which is removed as an address.
 `project_status` exposes the current policy over MCP. Ingest holds each
 project's policy for 2 seconds; a PUT replaces it at once, and a CLI edit
 applies within 2 seconds without a restart. Disabling a class permits that
@@ -1366,11 +1376,12 @@ what a scrub pays bounds its peak heap. The regex automata and their
 per-thread caches are allocated once and are not charged.
 
 Measured on an Apple M2 Max, release build, with `cargo run --release
---example scrub_cost`, best of 6 runs on a shared machine: the worst input
-found costs about 57 ms of CPU per MiB of JSON (1 MiB of `ﷺ:`, a key
-character that NFKD expands to 18 letters). 1 MiB of `a:` costs 47 ms with
-the default policy and 52 ms with 100 extra keys of 100 bytes, and renaming
-60,000 IP-address keys takes 44 ms for 0.97 MB. A typical 2.8 KB SDK event
+--example scrub_cost`, best of 5 runs on a shared machine: the worst input
+found costs about 53 ms of CPU per MiB of JSON (1 MiB of `a:` with 100 extra
+keys of 100 bytes; 48 ms with the default policy). 1 MiB of `ﷺ:`, a key
+character that NFKD expands to 18 letters, costs 45 ms, 1,000 keys of 1 KB
+that fold to twice their size cost 12 ms, and renaming 60,000 IP-address
+keys takes 43 ms for 0.97 MB. A typical 2.8 KB SDK event
 costs about 36 microseconds more with scrubbing than without. So a request
 costs at most about 60 ms per MiB the memory budget lets it decode.
 
@@ -1378,6 +1389,7 @@ This is a conservative filter, not a detector of arbitrary encodings or
 natural-language personal information. Known gaps: a URL password that
 contains `/` (`https://u:a/b@host`), card numbers grouped with dots, an
 assignment whose key holds a space (`api key=...`), a key encoded more than
-3 times, an assignment with a non-ASCII separator (`password＝x`), and
-look-alike letters outside the fold table pass unchanged. Use the SDK's
-`beforeSend` for them.
+3 times, an assignment with a non-ASCII separator (`password＝x`), a
+sensitive name not wholly within the first or last 256 bytes of a longer
+key, and look-alike letters outside the fold table pass unchanged. Use
+the SDK's `beforeSend` for them.

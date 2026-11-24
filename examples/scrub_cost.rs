@@ -105,12 +105,18 @@ fn hostile() -> Vec<(String, Value)> {
     let wide: serde_json::Map<String, Value> = (0..4_000)
         .map(|i| (format!("{}{i:05}", "\u{fdfa}".repeat(83)), json!(1)))
         .collect();
+    // U+33AF folds to `rad-s2`, twice its bytes, the most a window can grow,
+    // and a key this long is folded at both ends.
+    let long: serde_json::Map<String, Value> = (0..1_000)
+        .map(|i| (format!("{}{i:05}", "\u{33af}".repeat(333)), json!(1)))
+        .collect();
     let lookalike: serde_json::Map<String, Value> = (0..60_000)
         .map(|i| (format!("\u{43e}\u{fdfa}{i}"), json!(1)))
         .collect();
     let mut cases = vec![
         ("60k-key object".to_owned(), Value::Object(keys)),
         ("4k 254-byte U+FDFA keys".to_owned(), Value::Object(wide)),
+        ("1k 1004-byte U+33AF keys".to_owned(), Value::Object(long)),
         ("60k non-ASCII keys".to_owned(), Value::Object(lookalike)),
         ("60k IP keys, renamed".to_owned(), Value::Object(addresses)),
         (

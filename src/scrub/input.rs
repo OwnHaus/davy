@@ -75,6 +75,10 @@ pub fn parse(json: &[u8], missing: Missing) -> Result<Policy> {
             key.bytes().any(|b| b.is_ascii_alphanumeric()),
             "extra key {key:?} has no ASCII letter or digit, and keys are compared by those alone"
         );
+        ensure!(
+            !key.contains(['%', '+']),
+            "extra key {key:?} holds % or +; give the decoded name, as form-encoded keys in text are decoded before they are compared"
+        );
     }
     policy.extra_keys = extra.iter().map(|key| keys::normalized(key)).collect();
     Ok(policy)

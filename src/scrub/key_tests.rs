@@ -69,6 +69,26 @@ fn look_alike_assignment_keys_in_text_are_hidden() {
 }
 
 #[test]
+fn a_long_key_is_checked_at_its_start_as_well() {
+    let filler = "x".repeat(300);
+    let plain = format!("password_{filler}");
+    let wide = format!("token_{}{filler}", "\u{fdfa}".repeat(100));
+    let mut value = json!({ plain.clone(): "abc", wide.clone(): "abc", filler.clone(): "kept" });
+    Policy::default().value(&mut value);
+    assert_eq!(
+        value,
+        json!({ plain: "[Filtered: sensitive]", wide: "[Filtered: sensitive]", filler.clone(): "kept" })
+    );
+    assert_eq!(
+        text(
+            &Policy::default(),
+            &format!("p%61ssword_{filler}=hunter2&ok=1")
+        ),
+        format!("p%61ssword_{filler}=[Filtered: sensitive]&ok=1")
+    );
+}
+
+#[test]
 fn a_long_key_that_folds_wider_keeps_its_end() {
     let wide = format!("{}_token", "\u{fdfa}".repeat(100));
     let mut value = json!({ wide.clone(): "abc", "\u{fdfa}".repeat(100): "kept" });
@@ -109,4 +129,43 @@ fn extra_keys_apply_with_the_keys_class_off() {
         "headers":[{"name":"customer-id","value":"[Filtered: sensitive]"}],
         "message":"customer_id=[Filtered: sensitive]&password=kept"})
     );
+}
+
+#[test]
+fn an_expanding_character_next_to_a_root_does_not_hide_it() {
+    let ligatures = "\u{fdfa}".repeat(15);
+    let filler = "x".repeat(250);
+    let keys = [
+        format!("password{ligatures}"),
+        format!("password{}", "\u{2167}".repeat(63)),
+        format!("{ligatures}password{filler}"),
+        format!("{}password{ligatures}", "x".repeat(253)),
+    ];
+    for key in &keys {
+        let mut value = json!({ key.clone(): "abc" });
+        Policy::default().value(&mut value);
+        assert_eq!(
+            value,
+            json!({ key.clone(): "[Filtered: sensitive]" }),
+            "{key}"
+        );
+    }
+    let encoded = format!("{}p%61ssword{filler}", "%EF%B7%BA".repeat(15));
+    assert_eq!(
+        text(&Policy::default(), &format!("{encoded}=hunter2&ok=1")),
+        format!("{encoded}=[Filtered: sensitive]&ok=1")
+    );
+}
+
+#[test]
+fn no_character_folds_to_more_than_twice_its_bytes() {
+    for c in (0..=0x10_FFFF).filter_map(char::from_u32) {
+        let mut raw = [0; 4];
+        let mut buf = [0; 2 * 256];
+        let folded = keys::fold(c.encode_utf8(&mut raw).as_bytes(), &mut buf);
+        assert!(
+            folded.len() <= 2 * c.len_utf8(),
+            "{c:?} folds to {folded:?}"
+        );
+    }
 }
