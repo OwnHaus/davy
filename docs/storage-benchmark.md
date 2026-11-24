@@ -121,6 +121,67 @@ The last column is the same case before day indexes stayed open between searches
 - **The benchmark found a search bug.** In the first run the request ID and hostname cases returned 0 rows. A bare word was parsed against the `attributes` JSON field, which matches only its root path, so no attribute value was ever found by a bare word. The `values` field fixed it (see the log storage section in `docs/design.md`). It costs 32% more disk (2.5 GB before, 3.3 GB after) and 21% more write time (172.1 s before, 208.9 s after). Query latency stayed within noise of the first run (measured).
 - **SQL over 400k events is about 100 ms when it reads every event.** The events table has no index for a group by day or release, and an agent asking that once per triage is fine. Indexed lookups stay under 1 ms.
 
+## Footprint for the forecast
+
+Measured on 2026-11-24 with `bench/footprint.sh` at commit `f34f3cd`. The coefficients are in `bench/footprint.json` (schema `davy.footprint`, version 1), which `davy forecast` is meant to read. Raw numbers per run are kept there too.
+
+**Machine.** A shared dev Mac: Mac14,5, Apple M2 Max, 12 cores, 32 GB RAM, macOS 26.5.1, APFS on the internal SSD. Other agents ran builds throughout, and the load average was 17 to 26. **Byte counts and ratios are reliable**: they depend on the data and the code, not on load. **CPU, time and RSS numbers are noisy** and only give the order of magnitude. `bench/footprint.json` lists the noisy fields under `noisy`. Runs on reference VPS sizes (vCPU, RAM, disk) are still to come.
+
+### Method
+
+- **Corpora.** The Loghub 2k samples of HDFS, Apache, OpenSSH, Linux and Spark. The full Loghub files from Zenodo record 8196385 where the download is reasonable: all of Apache, Linux and OpenSSH, the first 1M lines of Spark and the first 2M of HDFS (11M in total). The public nginx access log sample of `elastic/examples` (51,462 lines). 2M rows of the synthetic pino generator of `examples/load_logs.rs`, for continuity with the sections above. The script downloads each file to `.scratch/footprint/corpora` in the main checkout, checks its SHA-256, and unpacks an archive to stdout only. Nothing from a download is executed.
+- **Ingest.** Each corpus goes through `davy serve` over the Logtail route, gzip NDJSON in batches of 1000 from 4 connections, so the default scrubbing, parsing, commits and merges apply. A raw log line is sent as `message`. `nginx-parsed` splits each access log line into attributes (status, user agent and so on) the way a log shipper would, and its client IPs become `[Filtered: ip]` under the default scrub policy. Bytes that are not UTF-8 become U+FFFD. The timestamps are spread evenly over one day, or over 90 days for `hdfs-2m` and `synthetic-2m`.
+- **Disk.** `du` of the log directory after the server committed, ran its own merges and stopped (Disk / raw), then after a forced merge of each day into one segment (One segment / raw), the floor. Raw is the bytes of the lines as read. The share of a field (`values`) comes from Tantivy's space usage and counts against the index, docstore included.
+- **Peaks.** Disk is sampled every 0.2 s while the server ingests and while the forced merge runs. Peak extra disk is the highest sample above the final size. A 2k or 50k corpus finishes before the sampler sees a peak, so only corpora of 500k lines or more count for it.
+- **CPU and memory.** `/usr/bin/time -l` around the server gives CPU seconds and maximum RSS, for ingest and, in a second server start, for searches. CPU µs per row is the server's CPU over the stored rows. After the ingest of a 90-day corpus the script restarts the server and runs a search with no hit and a search for the newest 100 rows over the last 7, 30 and 90 days through MCP, reading the server's RSS after each window.
+- **Retention.** The 90-day corpora then lose all but 30 days in one retention pass of the log writer (`LogWriter::start` with 30 days), timed with what it frees.
+- **Errors.** A captured Node.js event (`e2e/fixtures/sentry-node-10/4.body`, 2747 bytes of JSON) is sent as 100k envelopes over 7 days: 5,000 issues of 20 events, and 10 issues of 10,000 events. Payload sampling is on, as always. `dbstat` gives the bytes of each table with its indexes, and a `VACUUM INTO` copy gives the same rows compacted.
+
+### Logs
+
+| Corpus | Lines | Raw B/line | Disk / raw | Disk B/line | One segment / raw | `values` | Peak extra disk | CPU µs/row | Peak RSS |
+|---|---|---|---|---|---|---|---|---|---|
+| apache | 56,482 | 91 | 0.69× | 63 | 0.69× | 2% | | 6.5 | 108 MB |
+| linux | 25,567 | 92 | 0.88× | 81 | 0.88× | 1% | | 7.4 | 78 MB |
+| openssh | 655,147 | 112 | 0.65× | 73 | 0.64× | 1% | 33 MB | 8.1 | 184 MB |
+| spark-1m | 1,000,000 | 105 | 0.71× | 74 | 0.70× | 1% | 51 MB | 9.5 | 290 MB |
+| hdfs-2m | 2,000,000 | 139 | 0.59× | 82 | 0.57× | 1% | 100 MB | 10.6 | 320 MB |
+| nginx | 51,462 | 136 | 0.52× | 71 | 0.52× | 1% | | 9.3 | 113 MB |
+| nginx-parsed | 51,462 | 136 | 0.65× | 88 | 0.65× | 24% | | 17.3 | 112 MB |
+| synthetic-2m | 2,000,000 | 260 | 0.69× | 180 | 0.70× | 20% | 360 MB | 27.6 | 540 MB |
+| the five 2k samples | 2,000 each | 86 to 144 | 0.91× to 1.10× | 86 to 158 | same | 1% | | 15 to 25 | 38 to 41 MB |
+
+Over 90 days:
+
+| Corpus | Disk / raw | Day indexes | RSS after start | after 7 days | after 30 days | after 90 days | Miss over 90 days | Retention to 30 days |
+|---|---|---|---|---|---|---|---|---|
+| hdfs-2m | 0.62× | 90 | 19 MB | 24 MB | 29 MB | 44 MB | 36 ms | 90 to 31 days, 112 MB freed in 0.05 s |
+| synthetic-2m | 0.79× | 90 | 19 MB | 24 MB | 31 MB | 49 MB | 23 ms | 90 to 31 days, 270 MB freed in 0.08 s |
+
+- **Real logs take 0.52× to 0.88× of their raw size, 74 bytes per line at the median (measured).** Seven corpora of 25k lines or more give 0.65× at the median. Logs with long repeated text compress best: nginx and HDFS at 0.52× and 0.59×, Linux syslog at 0.88× in its 25k lines. The synthetic pino rows take 0.69×, so the earlier sections were not flattered by the generator.
+- **A small corpus costs more per line.** The 2k samples take 0.91× to 1.10×, because a day index has a fixed cost and the docstore compresses better in larger blocks. The forecast should use the large corpora.
+- **Davy's own merges bring disk close to the floor.** A forced merge into one segment saved at most 3% (hdfs-2m, 0.59× to 0.57×) and made synthetic-2m 0.8% larger. The forecast can use Disk / raw as is.
+- **Parsed attributes cost about a quarter more.** The same nginx log takes 0.52× as one message and 0.65× split into attributes, because each attribute value is indexed twice, as a JSON path in `attributes` and as a bare word in `values` (24% of the index). The synthetic rows, all attributes, give `values` 20%. A raw line has no attributes, so `values` stays at about 1%, its cost per document.
+- **Spreading the same lines over 90 days costs 0.1 to 0.6 MB per extra day index (measured, two corpora).** hdfs-2m went from 0.59× in one day to 0.62× in 90, synthetic-2m from 0.69× to 0.79×.
+- **Disk needs headroom for merges.** While ingesting, the log directory rose up to 0.52× above its final size (median 0.26×). A forced merge into one segment needs up to a full copy of the day (0.61× to 1.0×). Davy's own merges rewrite only some segments at a time, so 1× of the largest day index is a safe reserve (inferred).
+- **Search memory grows with the days opened, not with the data.** The server starts at 19 MB. Searching 90 days of 2M rows took RSS to 44 to 49 MB, about 0.3 MB per open day (inferred from the steps between windows). A search with no hit over 90 days took 23 to 36 ms, the first to open the 60 older days, after the 7 and 30-day searches had opened the rest (noisy).
+- **Ingest memory is the writer heap plus the queue.** Peak RSS was 184 to 540 MB for corpora of 655k lines or more, highest for the 260-byte synthetic rows, against 38 to 41 MB for 2k lines (noisy).
+- **Ingest costs 6.5 to 27.6 µs of CPU per row (noisy).** A raw line costs 6.5 to 10.6 µs, a parsed or JSON row with attributes 17 to 28 µs.
+- **Retention is cheap.** Removing 59 day indexes took 0.05 to 0.08 s and freed 112 and 270 MB, because a day past retention is renamed into `.trash` and removed whole.
+
+### Errors
+
+| Issues × events | SQLite B/event | Row B/event | Compacted row B/event | Payloads/issue | B/payload | B/hourly row | B/tag row | B/issue | CPU µs/event |
+|---|---|---|---|---|---|---|---|---|---|
+| 5,000 × 20 | 2217 | 562 | 553 | 20 | 1572 | 37 | 66 | 600 | 302 |
+| 10 × 10,000 | 2148 | 2121 | 205 | 150 | 1570 | 44 | | | 285 |
+
+Row is the bytes of an event in the `events` table and its indexes, without its payload. A payload is the zstd event JSON, 0.57× of the 2747 bytes the SDK sent. Each event of the first run fell in an hour of its own, so each made an hourly row. The issue and tag bytes come from the 5,000-issue run only, since 10 issues fit in a few 4 KB pages.
+
+- **An event that keeps its payload costs its payload plus about 560 bytes (measured).** The cold-issue run kept every payload, as each issue had only 20 events.
+- **A hot issue keeps 150 payloads in 10,000 events, as designed, but its events take as much disk as if it kept them all.** Without its payload an event takes 205 bytes once compacted, yet 2,121 bytes as written, and 88% of the `events` table was free space inside its pages. The cause: each event is inserted with its payload, which is dropped by an `UPDATE` once a newer event of its issue arrives. By then the row sits on a page SQLite filled and left, so the space stays empty. The whole database was 215 MB as written and 23 MB after `VACUUM`. This benchmark found it, and this change does not fix it. Until a fix, the forecast should use 2,121 bytes per event of a hot issue.
+- **Error ingest costs about 0.3 ms of CPU per event (noisy).** The client sent one event per envelope, so this includes HTTP and envelope parsing for every event.
+
 ## Rerun
 
 ```sh
@@ -130,4 +191,5 @@ cargo build --release
 cd ../..
 bash bench/load-logs.sh 1000000 1000 4   # logs ingest through the server, about 1 minute
 bash bench/agent-search.sh               # agent search over 90 days, about 5 minutes and 4 GB of scratch
+bench/footprint.sh                       # footprint coefficients, about 5 minutes and 1.3 GB of downloads and corpora; `quick` for the 2k samples only
 ```
