@@ -63,3 +63,41 @@ fn a_newest_payload_row_naming_another_issues_event_goes_with_its_issue() {
     assert_eq!(s.rows("SELECT title FROM issues"), ["hang"]);
     assert_eq!(s.number("SELECT count(*) FROM latest_payloads"), 0);
 }
+
+#[test]
+fn a_batch_counts_the_newest_payload_in_its_work() {
+    let s = Server::new("errors-newest-work", &["api"]);
+    // 29 issues of one event, 51 work each, 1,479 in all. Digits in a
+    // message are grouped as one, so the issues take letters.
+    let letter = |n: i64| char::from(b'a' + u8::try_from(n).unwrap());
+    let singles = (0..29)
+        .map(|n| {
+            let message = format!("hang {}{}", letter(n / 26), letter(n % 26));
+            error(&message, day(1) + n, "prod", "v1")
+        })
+        .collect();
+    s.ingest(1, singles);
+    // Then one issue of 51 events: 51 for the first, 1 for each of the
+    // next 49, 1,579 so far. The newest, outside the sample, has about
+    // 240 KB of payload that zstd cannot shrink much, about 58 more.
+    let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+    let noise: String = (0..400_000)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            char::from(b'a' + u8::try_from(x % 26).unwrap())
+        })
+        .collect();
+    let mut timeouts: Vec<ErrorEvent> = (0..51)
+        .map(|n| error("timeout", day(2) + n, "prod", "v1"))
+        .collect();
+    timeouts[50].raw["extra"] = json!({ "noise": noise });
+    s.ingest(1, timeouts);
+    assert_eq!(s.number("SELECT count(*) FROM latest_payloads"), 1);
+    sweep(&s.c, day(20), Days::new(10).unwrap(), Duration::ZERO).unwrap();
+    // Counted, the newest payload takes the batch past 1,600, so it waits
+    // for the next one.
+    assert_eq!(s.number("SELECT count(*) FROM events"), 1);
+    assert_eq!(s.number("SELECT count(*) FROM latest_payloads"), 1);
+}

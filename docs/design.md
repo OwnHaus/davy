@@ -187,7 +187,7 @@ Reads pay for the second table. `reads` times each query 50 times per round, in 
 
 The `sql` tool sees the same tables: `events.payload` holds the sample, `latest_payloads.payload` an issue's newest, and the tool's description and `NOTES` say how to read both.
 
-Retention deletes an issue's `latest_payloads` row when its event expires. The work bound of a sweep does not count that row's payload, at most one per issue a batch touches.
+Retention deletes an issue's `latest_payloads` row when its event expires. The work bound of a sweep counts that row's payload as the event's own, read by the row's key.
 
 Migration 19 creates `latest_payloads` and moves into it each payload with the mark, found with one index lookup per issue on the issue's newest event, then clears it in `events`. `error_footprint upgrade` timed it on a store from `store` with 100,000 issues added by SQL, each with two events and a marked 2 KB payload on the newest. Over the 100,010 issues it took 3.3 to 4.0 s in two runs, and the file grew from 465 MB to 670 MB, because the payloads are written again and the space they leave in `events` is the same kind of hole as before. Space an existing store lost stays lost until retention empties those old pages, or until an offline `VACUUM`, which needs the server stopped and free disk the size of the store. Going back to an older Davy means restoring the backup taken before the upgrade.
 

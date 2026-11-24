@@ -83,9 +83,12 @@ struct Gone {
 /// CROSS JOIN keeps projects as the outer loop, so each project's expired
 /// events are one range of events_project_received, read in its order
 /// without a sort. The order is what lets [`untag`] look for tied events
-/// only.
-const PICK: &str =
-    "SELECT e.id, e.issue_id, coalesce(length(e.payload), 0) + coalesce(octet_length(e.user_id), 0)
+/// only. An event outside the sample has its payload in `latest_payloads`
+/// when it is its issue's newest, and [`recount`] frees that too, so it
+/// counts here, found by the row's key.
+const PICK: &str = "SELECT e.id, e.issue_id, coalesce(length(e.payload), (SELECT length(l.payload)
+         FROM latest_payloads l WHERE l.issue_id=e.issue_id AND l.event=e.id), 0)
+         + coalesce(octet_length(e.user_id), 0)
          + coalesce(octet_length(e.release), 0) + coalesce(octet_length(e.environment), 0)
          FROM projects p CROSS JOIN events e
          ON e.project_id=p.id AND e.received_at<?1-coalesce(p.error_retention_days,?2)*?3
