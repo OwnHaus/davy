@@ -124,3 +124,22 @@ fn a_day_without_counters_loads_empty() {
     assert!(DayTally::load(&dir).unwrap().projects.is_empty());
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_save_writes_past_anything_at_a_fixed_temporary_name() {
+    let dir = scratch("tally-temp");
+    std::fs::create_dir_all(dir.join(format!("{FILE}.tmp"))).unwrap();
+    let mut tally = DayTally::default();
+    count(&mut tally, &record(1, None, "user 1 logged in"));
+    tally.save(&dir).unwrap();
+    let loaded = DayTally::load(&dir).unwrap();
+    let entry = &loaded.projects[&1].patterns[&patterns::of("user 2 logged in").id];
+    assert_eq!(entry.services[""][2][0], 1);
+    let names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n != &format!("{FILE}.tmp"))
+        .collect();
+    assert_eq!(names, [FILE], "no temporary file is left");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

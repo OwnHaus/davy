@@ -24,7 +24,8 @@ use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    io,
+    fs::File,
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::{Arc, LazyLock, Mutex, PoisonError, Weak},
     time::Duration,
@@ -166,12 +167,36 @@ impl DayTally {
     /// Writes the counters to `dir`, whole or not at all.
     fn save(&mut self, dir: &Path) -> Result<()> {
         self.version = VERSION;
-        let tmp = dir.join(format!("{FILE}.tmp"));
-        std::fs::write(&tmp, serde_json::to_vec(self)?)?;
-        std::fs::rename(&tmp, dir.join(FILE))?;
+        write_durably(dir, FILE, &serde_json::to_vec(self)?)?;
         self.dirty = false;
         Ok(())
     }
+}
+
+/// Replaces `name` in `dir` with `bytes` so that a crash or a power loss
+/// leaves the old file or the new one, never a part. The temporary file
+/// has a name of its own, so a file left at that name by a crash or put
+/// there by anyone is neither followed nor in the way.
+fn write_durably(dir: &Path, name: &str, bytes: &[u8]) -> Result<()> {
+    let tmp = dir.join(format!("{name}.{}.tmp", uuid::Uuid::new_v4()));
+    let written = (|| -> io::Result<()> {
+        let mut file = File::options().write(true).create_new(true).open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, dir.join(name))
+    })();
+    if let Err(e) = written {
+        let e = anyhow::Error::from(e).context(format!("writing {}", dir.join(name).display()));
+        return Err(match std::fs::remove_file(&tmp) {
+            Err(left) if left.kind() != io::ErrorKind::NotFound => {
+                e.context(format!("{} is left: {left}", tmp.display()))
+            }
+            _ => e,
+        });
+    }
+    // The rename is durable only once the directory that holds it is.
+    File::open(dir)?.sync_all()?;
+    Ok(())
 }
 
 pub(super) fn level_index(level: LogLevel) -> usize {
@@ -181,7 +206,7 @@ pub(super) fn level_index(level: LogLevel) -> usize {
 /// What a record weighs as JSON text: its message, ids and attributes.
 pub(super) fn raw_bytes(r: &LogRecord) -> u64 {
     struct Counter(usize);
-    impl io::Write for Counter {
+    impl Write for Counter {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             self.0 += buf.len();
             Ok(buf.len())
