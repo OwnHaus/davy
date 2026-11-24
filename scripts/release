@@ -52,6 +52,12 @@ awk -v v="$version" '
 mv Cargo.toml.new Cargo.toml
 cargo update --workspace --quiet
 
+# A static badge: the dynamic one asks the GitHub API through shields.io,
+# and GitHub's image proxy gives up on it before it answers.
+grep -q 'badge/release-v[0-9.]*-' README.md || die 'README.md has no release badge'
+sed "s|badge/release-v[0-9.]*-|badge/release-v$version-|" README.md >README.md.new
+mv README.md.new README.md
+
 date=$(date -u +%Y-%m-%d)
 awk -v h="## $version ($date)" '
     $0 == "## Unreleased" && !done { print; print ""; print h; done = 1; next }

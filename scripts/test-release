@@ -44,6 +44,7 @@ chmod +x scripts/check
 printf '[package]\nname = "t"\nversion = "0.1.0"\nedition = "2024"\n' >Cargo.toml
 : >src/lib.rs
 printf 'target/\n' >.gitignore
+printf '<img alt="Latest release" src="https://img.shields.io/badge/release-v0.1.0-orange">\n' >README.md
 printf '# Changelog\n\n## Unreleased\n\n### Added\n\n' >CHANGELOG.md
 cargo generate-lockfile --quiet
 git add -A
@@ -77,6 +78,7 @@ check "$(tail -n 1 "$dir/out")" 'git push origin main v0.2.0' 'the push command'
 check "$(sed -n 3p Cargo.toml)" 'version = "0.2.0"' 'Cargo.toml'
 check "$(grep -A1 '^name = "t"' Cargo.lock | tail -n 1)" 'version = "0.2.0"' 'Cargo.lock'
 check "$(grep -n '^## ' CHANGELOG.md | tr '\n' ' ')" "3:## Unreleased 5:## 0.2.0 ($(date -u +%Y-%m-%d)) 11:## 0.1.0 (2026-01-01) " 'CHANGELOG.md headings'
+check "$(grep -o 'badge/release-[^"]*' README.md)" 'badge/release-v0.2.0-orange' 'the README badge'
 check "$(git log -1 --format=%s)" 'chore(release): release 0.2.0' 'the commit'
 check "$(git cat-file -t v0.2.0)" tag 'an annotated tag'
 check "$(git tag -l --format='%(contents)' v0.2.0 | grep -c '^- A thing.$')" 1 'the tag message holds the changelog section'
