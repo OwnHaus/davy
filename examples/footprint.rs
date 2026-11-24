@@ -34,6 +34,9 @@ mod pino;
 const DAY_MS: i64 = 86_400_000;
 const BATCH: usize = 1000;
 const CONNECTIONS: usize = 4;
+/// A server that has throttled one item this long accepts nothing, such as
+/// one whose writer stopped, so the run fails instead of waiting for ever.
+const STALL: Duration = Duration::from_secs(300);
 
 fn out(line: &str) -> Result<()> {
     writeln!(std::io::stdout(), "{line}")?;
@@ -137,7 +140,7 @@ impl Conn {
 }
 
 /// Posts every body from `CONNECTIONS` threads, retrying a `429` after
-/// 50 ms. Returns the number of `429`s.
+/// 50 ms for up to `STALL`. Returns the number of `429`s.
 fn send_all(
     addr: &str,
     path: &str,
@@ -159,9 +162,13 @@ fn send_all(
                         }
                         let body = body(i)?;
                         let mut errors = 0;
+                        let first = Instant::now();
                         loop {
                             match conn.post(path, headers, &body) {
                                 Ok(200 | 202) => break,
+                                Ok(429) if first.elapsed() > STALL => {
+                                    bail!("item {i}: still HTTP 429 after {} s", STALL.as_secs())
+                                }
                                 Ok(429) => {
                                     throttled.fetch_add(1, Ordering::Relaxed);
                                     std::thread::sleep(Duration::from_millis(50));

@@ -97,12 +97,50 @@ TPID=''
 SPID=''
 SAMPLER=''
 MERGER=''
+CHILD=''
+
+# Sends SIGTERM to process $1 and waits up to $2 seconds for it to exit,
+# then sends SIGKILL and returns 1.
+halt() {
+  local i
+  kill -TERM "$1" 2>/dev/null || return 0
+  for ((i = 0; i < $2 * 10; i++)); do
+    kill -0 "$1" 2>/dev/null || return 0
+    sleep 0.1
+  done
+  kill -KILL "$1" 2>/dev/null || true
+  return 1
+}
+
+# Stops the server within $1 seconds, by SIGKILL if SIGTERM was not enough,
+# and returns its exit status as /usr/bin/time passes it on.
+halt_server() {
+  local pid=$SPID status=0
+  # Cleanup can run before start_server has read the server's PID.
+  if [ -z "$pid" ]; then
+    for _ in {1..50}; do
+      pid=$(pgrep -P "$TPID" || true)
+      if [ -n "$pid" ] || ! kill -0 "$TPID" 2>/dev/null; then break; fi
+      sleep 0.1
+    done
+  fi
+  if ! halt "${pid:-$TPID}" "$1"; then
+    echo "footprint: davy serve did not stop within $1 s, killed it" >&2
+  fi
+  wait "$TPID" || status=$?
+  TPID=''
+  SPID=''
+  return "$status"
+}
+
 cleanup() {
   local status=$?
-  if [ -n "$MERGER" ]; then kill "$MERGER" 2>/dev/null || true; fi
-  if [ -n "$SPID" ]; then kill -TERM "$SPID" 2>/dev/null || true; fi
-  if [ -n "$TPID" ]; then wait "$TPID" 2>/dev/null || true; fi
-  if [ -n "$SAMPLER" ]; then kill "$SAMPLER" 2>/dev/null || true; fi
+  trap '' HUP INT TERM
+  set +e
+  if [ -n "$CHILD" ]; then halt "$CHILD" 10; wait "$CHILD" 2>/dev/null; fi
+  if [ -n "$MERGER" ]; then halt "$MERGER" 10; wait "$MERGER" 2>/dev/null; fi
+  if [ -n "$TPID" ]; then halt_server 60; fi
+  if [ -n "$SAMPLER" ]; then kill "$SAMPLER" 2>/dev/null; wait "$SAMPLER" 2>/dev/null; fi
   rm -f "$WORK/corpora/"*".part.$$" "$WORK/corpora/dl/"*".part.$$"
   if [ "$status" = 0 ]; then
     rm -rf "$RUNS"
@@ -112,6 +150,23 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+# A signal ends the script with a failure status, so cleanup keeps the
+# logs. Bash runs these only between commands, see `child`.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Runs a command in the background and waits for it, because `wait` is a
+# command a signal interrupts, so its trap runs now and cleanup stops the
+# command. Standard input is passed on, which `&` would replace.
+child() {
+  local status=0
+  "$@" 0<&0 &
+  CHILD=$!
+  wait "$CHILD" || status=$?
+  CHILD=''
+  return "$status"
+}
 
 kv() { printf '%s=%s\n' "$1" "$2" >> "$RUN/result.env"; }
 bytes() { echo $(( $(du -sk "$1" | cut -f1) * 1024 )); }
@@ -159,7 +214,7 @@ corpus() {
   if [ -s "$CORPUS" ] && [ "$(sha256 "$CORPUS")" = "$want" ]; then return; fi
   local part="$CORPUS.part.$$"
   if [ "$url" = synth ]; then
-    "$EX" synth "$lines" > "$part"
+    child "$EX" synth "$lines" > "$part"
   else
     local dl
     dl="$WORK/corpora/dl/$(basename "${url%%\?*}")"
@@ -175,30 +230,31 @@ corpus() {
 }
 
 # Starts `davy serve` on data dir $1 under /usr/bin/time, its log in $RUN/$2.
+# It is up once its own PID listens on the port, so neither a proxy nor
+# another process that took the port can pass for it.
 start_server() {
   PORT=$(free_port)
   DAVY_TOKEN="$TOKEN" /usr/bin/time -l -o "$RUN/$2.time" "$BIN" serve --data "$1" \
     --listen "127.0.0.1:$PORT" --public-url "http://127.0.0.1:$PORT" \
     --log-retention-days 100 > "$RUN/$2.log" 2>&1 &
   TPID=$!
-  local up=''
-  for _ in {1..100}; do
-    if curl -s -o /dev/null "http://127.0.0.1:$PORT/"; then up=1; break; fi
+  SPID=''
+  local deadline=$((SECONDS + 60))
+  until [ -n "$SPID" ] && lsof -a -p "$SPID" -nP -iTCP:"$PORT" -sTCP:LISTEN -t > /dev/null 2>&1; do
+    kill -0 "$TPID" 2>/dev/null || fail "davy serve exited at start, see $RUN/$2.log"
+    [ "$SECONDS" -lt "$deadline" ] || fail "davy serve did not listen within 60 s, see $RUN/$2.log"
+    [ -n "$SPID" ] || SPID=$(pgrep -P "$TPID" || true)
     sleep 0.1
   done
-  [ -n "$up" ] || fail "davy serve did not start, see $RUN/$2.log"
-  SPID=$(pgrep -P "$TPID")
 }
 
 # Stops the server, which commits and waits for its merges, and records what
 # /usr/bin/time saw under the prefix $1. Peak RSS counts the index files the
 # server mapped and read; peak footprint leaves out such clean file pages.
+# A slow merge at background priority can take minutes, hence the 600 s.
 stop_server() {
-  kill -TERM "$SPID"
   local status=0
-  wait "$TPID" || status=$?
-  TPID=''
-  SPID=''
+  halt_server 600 || status=$?
   [ "$status" = 0 ] || fail "davy serve exited with status $status, see $RUN/$1.log"
   local t="$RUN/$1.time"
   kv "${1}_wall_secs" "$(awk '/ real / {print $1}' "$t")"
@@ -207,11 +263,12 @@ stop_server() {
   kv "${1}_peak_footprint_bytes" "$(awk '/peak memory footprint/ {print $1}' "$t")"
 }
 
-# Samples the size of $1 every 0.2 s while process $2 runs, the peak into $3.
+# Samples the size of $1 every 0.2 s while process $2 and this script run,
+# the peak into $3.
 sample_peak() {
   (
     peak=0
-    while kill -0 "$2" 2>/dev/null; do
+    while kill -0 "$2" 2>/dev/null && kill -0 $$ 2>/dev/null; do
       k=$(du -sk "$1" 2>/dev/null | cut -f1 || true)
       if [ "${k:-0}" -gt "$peak" ]; then peak=$k; fi
       sleep 0.2
@@ -238,7 +295,7 @@ project() {
 # no hit, which opens every day in it, and the newest 100 rows. Both touch
 # little data, and the page cache is warm from the ingest just before.
 search_rss() {
-  python3 -I - "$PORT" "$TOKEN" "$SPID" >> "$RUN/result.env" <<'PY'
+  child python3 -I - "$PORT" "$TOKEN" "$SPID" >> "$RUN/result.env" <<'PY'
 import http.client, json, re, subprocess, sys, time
 port, token, pid = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 c = http.client.HTTPConnection("127.0.0.1", port)
@@ -286,7 +343,7 @@ retention() {
   local logs="$1/logs"
   kv retention_before_bytes "$(bytes "$logs")"
   kv retention_before_days "$(find "$logs" -maxdepth 1 -name '20*' | wc -l | tr -d ' ')"
-  "$EX" retain "$1" 30 >> "$RUN/result.env"
+  child "$EX" retain "$1" 30 >> "$RUN/result.env"
   kv retention_after_bytes "$(bytes "$logs")"
   kv retention_after_days "$(find "$logs" -maxdepth 1 -name '20*' | wc -l | tr -d ' ')"
 }
@@ -323,7 +380,7 @@ run_logs() {
   kv load_at_start "$(sysctl -n vm.loadavg)"
   echo "$name over $days days, scrub $scrub: load $(sysctl -n vm.loadavg)"
   sample_peak "$data/logs" "$SPID" "$RUN/ingest-peak"
-  "$EX" logs "127.0.0.1:$PORT" "$KEY" "$CORPUS" "$shape" "$days" >> "$RUN/result.env"
+  child "$EX" logs "127.0.0.1:$PORT" "$KEY" "$CORPUS" "$shape" "$days" >> "$RUN/result.env"
   stop_server ingest
   wait "$SAMPLER" || true; SAMPLER=''
   kv ingest_peak_disk_bytes "$(cat "$RUN/ingest-peak")"
@@ -352,9 +409,9 @@ run_errors() {
   start_server "$data" ingest
   kv load_at_start "$(sysctl -n vm.loadavg)"
   echo "errors $1 x $2: load $(sysctl -n vm.loadavg)"
-  "$EX" errors "127.0.0.1:$PORT" "$KEY" "$PROJECT" "$ENVELOPE" "$1" "$2" 7 >> "$RUN/result.env"
+  child "$EX" errors "127.0.0.1:$PORT" "$KEY" "$PROJECT" "$ENVELOPE" "$1" "$2" 7 >> "$RUN/result.env"
   stop_server ingest
-  python3 -I - "$data/davy.sqlite" "$data/compacted.sqlite" >> "$RUN/result.env" <<'PY'
+  child python3 -I - "$data/davy.sqlite" "$data/compacted.sqlite" >> "$RUN/result.env" <<'PY'
 import sqlite3, sys
 c = sqlite3.connect(sys.argv[1])
 one = lambda q: c.execute(q).fetchone()[0]
