@@ -294,3 +294,60 @@ fn a_file_past_the_bounds_or_too_big_is_not_read() {
     assert!(e.ends_with(": over 67108864 bytes"), "{e}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+const DAY: i64 = 86_400_000_000_000;
+
+/// A line of project 1 stamped `at` and seen `now`.
+fn line_at(at: i64, now: i64) -> LogRecord {
+    LogRecord {
+        timestamp: at,
+        observed_at: now,
+        ..record(1, None, "job done")
+    }
+}
+
+#[test]
+fn a_shutdown_writes_the_counters_of_a_day_a_failed_commit_dropped() {
+    let dir = scratch("tally-shutdown-dropped");
+    let now = now_ns();
+    let mut state = State::new(dir.clone(), 30, no_overrides());
+    state.add(vec![line_at(now, now)]).unwrap();
+    state.commit().unwrap();
+    // As a failed commit does: the writer goes, the counted logs stay.
+    state.discard(day_of(now));
+    state.close_all().unwrap();
+    assert_eq!(saved(&dir.join(day_of(now).to_string()), 1), 1);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_shutdown_closes_every_day_and_keeps_what_it_could_not_write() {
+    let dir = scratch("tally-shutdown-failed");
+    let now = now_ns();
+    let earlier = now - DAY;
+    let mut state = State::new(dir.clone(), 30, no_overrides());
+    state
+        .add(vec![line_at(earlier, now), line_at(now, now)])
+        .unwrap();
+    state.commit().unwrap();
+    state
+        .add(vec![line_at(earlier, now), line_at(now, now)])
+        .unwrap();
+    let old = dir.join(day_of(earlier).to_string());
+    std::fs::rename(&old, dir.join("gone")).unwrap();
+    assert!(state.close_all().is_err());
+    assert!(state.open.is_empty(), "a failed day does not stop the rest");
+    assert_eq!(saved(&dir.join(day_of(now).to_string()), 1), 2);
+    std::fs::create_dir(&old).unwrap();
+    state.flush_tallies(Instant::now());
+    // The lost commit took its count; the one before it holds.
+    assert_eq!(saved(&old, 1), 1);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn only_the_first_of_a_run_of_failed_writes_is_reported() {
+    let mut tally = DayTally::default();
+    let reported = [true, true, false, true, true].map(|failed| tally.note(failed));
+    assert_eq!(reported, [true, false, false, true, false]);
+}

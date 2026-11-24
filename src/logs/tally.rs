@@ -101,6 +101,8 @@ pub(super) struct ProjectDay {
 #[derive(Default)]
 pub(super) struct DayTally {
     pub(super) projects: HashMap<u64, ProjectDay>,
+    /// Whether the last write of a file of the day failed.
+    failing: bool,
 }
 
 pub(super) type Days = HashMap<Date, DayTally>;
@@ -312,6 +314,15 @@ impl DayTally {
         Ok((day, unread))
     }
 
+    /// Notes whether a write of the day failed, and returns whether to
+    /// report it: only the first failure of a run is, so a disk that stays
+    /// broken does not fill the log.
+    fn note(&mut self, failed: bool) -> bool {
+        let first = failed && !self.failing;
+        self.failing = failed;
+        first
+    }
+
     /// Writes the projects that changed, whatever their pace.
     fn save(&mut self, dir: &Path) -> Result<()> {
         let mut first = None;
@@ -374,10 +385,12 @@ impl State {
     }
 
     /// Writes the files of the projects that changed and are due at `now`,
-    /// and lets go of the days the writer no longer has open. The files are
-    /// written outside the lock, so readers do not wait for the disk.
+    /// and lets go of the days the writer no longer has open and has
+    /// written. The files are written outside the lock, so readers do not
+    /// wait for the disk. A file that could not be written is tried again
+    /// at its next turn.
     pub(super) fn flush_tallies(&mut self, now: Instant) {
-        let mut due = Vec::new();
+        let (mut due, mut failed) = (Vec::new(), Vec::new());
         for (day, tally) in self.tallies().iter_mut() {
             let ready = |p: &&mut ProjectDay| p.due() && p.next_save.is_none_or(|at| at <= now);
             for (project, counters) in tally.projects.iter_mut().filter(|(_, p)| ready(p)) {
@@ -391,10 +404,12 @@ impl State {
                 }
             }
         }
-        let mut failed = Vec::new();
+        let mut written: HashMap<Date, Option<anyhow::Error>> = HashMap::new();
         for (day, project, bytes) in due {
-            if let Err(e) = file::save(&self.root.join(day.to_string()), project, &bytes) {
-                report(day, "writing", &e);
+            let saved = file::save(&self.root.join(day.to_string()), project, &bytes);
+            let first = written.entry(day).or_default();
+            if let Err(e) = saved {
+                first.get_or_insert(e);
                 failed.push((day, project));
             }
         }
@@ -406,6 +421,14 @@ impl State {
                 .and_then(|t| t.projects.get_mut(&project))
             {
                 counters.dirty = true;
+            }
+        }
+        for (day, e) in written {
+            if let Some(tally) = tallies.get_mut(&day)
+                && tally.note(e.is_some())
+                && let Some(e) = e
+            {
+                report(day, "writing", &e);
             }
         }
         tallies.retain(|day, t| t.dirty() || open.contains(day));
@@ -425,14 +448,18 @@ impl State {
         }
     }
 
-    /// Writes the counters of `day` and lets go of them.
+    /// Writes the counters of `day` and lets go of them. Counters it could
+    /// not write it keeps, and the flush tries again, as for a day open.
     pub(super) fn close_tally(&mut self, day: Date) {
         let dir = self.root.join(day.to_string());
         let mut tallies = self.tallies();
-        if let Some(mut tally) = tallies.remove(&day)
-            && let Err(e) = tally.save(&dir)
-        {
-            report(day, "writing", &e);
+        let Some(tally) = tallies.get_mut(&day) else {
+            return;
+        };
+        match tally.save(&dir) {
+            Ok(()) => drop(tallies.remove(&day)),
+            Err(e) if tally.note(true) => report(day, "writing", &e),
+            Err(_) => {}
         }
     }
 

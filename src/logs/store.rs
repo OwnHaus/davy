@@ -346,18 +346,36 @@ impl State {
             .filter(|(_, o)| o.last_write.elapsed() >= IDLE_CLOSE)
             .map(|(d, _)| *d)
             .collect();
-        for day in idle {
-            self.close(day)?;
-        }
-        Ok(())
+        self.close_each(idle)
     }
 
+    /// Closes each of `days`, whatever fails on the way, and returns the
+    /// first error.
+    fn close_each(&mut self, mut days: Vec<Date>) -> Result<()> {
+        days.sort_unstable();
+        let mut first = None;
+        for day in days {
+            if let Err(e) = self.close(day) {
+                first.get_or_insert(e);
+            }
+        }
+        first.map_or(Ok(()), Err)
+    }
+
+    /// Closes every open day and writes the counters of every day, those
+    /// of a day whose writer a failed commit dropped too, whatever fails on
+    /// the way.
     pub(super) fn close_all(&mut self) -> Result<()> {
         let days: Vec<_> = self.open.keys().copied().collect();
-        for day in days {
-            self.close(day)?;
+        let closed = self.close_each(days);
+        let held: Vec<Date> = self.tallies.lock().map_or_else(
+            |poisoned| poisoned.into_inner().keys().copied().collect(),
+            |held| held.keys().copied().collect(),
+        );
+        for day in held {
+            self.close_tally(day);
         }
-        Ok(())
+        closed
     }
 }
 
