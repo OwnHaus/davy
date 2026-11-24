@@ -306,6 +306,7 @@ A coding agent should get from "there is an error" to a fix without a human copy
 | `connect_project` | `slug`, `sdk?` | Existing project DSN, SDK instructions and test command. New projects require local CLI access. |
 | `project_status` | `slug` | Event count, last event time (ms), issue count, last log time (ns) and `retention`: the days of logs and errors the project keeps. |
 | `set_retention` | `project`, `logs_days?`, `errors_days?` | What the project keeps now, as `retention` in `project_status`. A setting is 1 to 36,500 days or `"default"`, and may only keep data longer. |
+| `usage` | `project?`, `since?`, `what_if?` | What each project stores and when the disk fills: `disk`, `davy`, `growth_per_day`, `projects` with records and bytes per signal over the window and per day, and `no_forecast` when there is too little history. Sizes as `4.1 GB`. See "Usage and disk forecast". |
 | `release_health` | `project?`, `since?` | Per release and environment, newest first, at most 50: `sessions`, `errored`, `crashed`, `abnormal`, `crash_free_sessions`, `users`, `crashed_users`, `crash_free_users`, `first_hour`, `last_hour`. `since` defaults to `7d`. |
 | `issue_context` | `issue_id` | The issue, its latest event made compact, its recent events and releases, and the logs around the latest event. |
 | `mark_fixed` | `issue_id`, `release?` | A sentence that says which release the fix is expected in. |
@@ -371,7 +372,7 @@ The same library functions back three commands, for agents that run shell comman
 - Unit tests with literal values: `on_event` for every row of the regression rule; `sql` returns exact rows, refuses a write, refuses two statements, cuts at 500 rows, decompresses with `payload_json`, and interrupts a runaway recursive query; compaction of the `sentry-node-10` error fixture gives the exact exception, frames and context lines.
 - A store test resolves an issue in a release and asserts that an event from an older release keeps it resolved and one from a newer release reopens it.
 - HTTP contract tests: `/mcp` is 401 without the token or with a wrong one and 403 for a `Host` or `Origin` it does not serve; with the right one `tools/list` and `tools/call` of `sql` and `mark_fixed` answer. Without a configured token `serve` does not merge the MCP router, so there is no route to test.
-- `e2e/run.sh` connects with the official MCP TypeScript client (`@modelcontextprotocol/sdk`) over Streamable HTTP with the bearer token, lists the twelve tools, calls `issue_context` on an issue the Sentry SDKs created and asserts the exception type and an in-app frame, finds a log with `search_logs` and counts it with `count_logs`, finds its pattern with `log_patterns` and its lines by that pattern with `search_logs`, calls `mark_fixed` and reads the status back with `sql`, and lengthens a project's retention with `set_retention` and sees a shorter one refused.
+- `e2e/run.sh` connects with the official MCP TypeScript client (`@modelcontextprotocol/sdk`) over Streamable HTTP with the bearer token, lists the thirteen tools, calls `issue_context` on an issue the Sentry SDKs created and asserts the exception type and an in-app frame, finds a log with `search_logs` and counts it with `count_logs`, finds its pattern with `log_patterns` and its lines by that pattern with `search_logs`, calls `mark_fixed` and reads the status back with `sql`, lengthens a project's retention with `set_retention` and sees a shorter one refused, and reads the counts of the e2e projects with `usage`.
 - `scripts/check` passes.
 
 ## Milestone 5: source maps
@@ -1328,7 +1329,7 @@ that are null before the first record. The event count and time come from
 the issues index, which holds `event_count` and `last_seen`, and count the
 events the project still keeps. Logs become visible after the log writer
 commits. The two tools brought the MCP tool count to ten, and
-`set_retention` to eleven, and `log_patterns` to twelve. `retention` in `project_status` shows the days
+`set_retention` to eleven, `log_patterns` to twelve and `usage` to thirteen. `retention` in `project_status` shows the days
 of logs and errors in effect and the instant before which they are deleted. `scrub` shows the
 project's scrubbing settings.
 
@@ -1475,3 +1476,45 @@ assignment whose key holds a space (`api key=...`), a key encoded more than
 sensitive name not wholly within the first or last 256 bytes of a longer
 key, and look-alike letters outside the fold table pass unchanged. Use
 the SDK's `beforeSend` for them.
+
+## Usage and disk forecast
+
+An operator or an agent asks three questions: what Davy stores for each project, how fast it grows, and when the disk fills. Davy answers in resources, bytes and days, through the MCP tool `usage`, `davy usage` and a line of `davy doctor`.
+
+### What is counted
+
+- Migration 16 adds `usage_daily(day TEXT, project_id INTEGER, signal TEXT, records INTEGER, bytes INTEGER, PRIMARY KEY(day, project_id, signal)) WITHOUT ROWID`. `day` is the UTC day Davy accepted the data, as `YYYY-MM-DD`, the name of the log day directories. The signals are `errors`, `logs`, `sessions`, `feedback` and `checkins`.
+- A record is one error event, one log record, one session or session aggregate item, one feedback item or one check-in. Client reports are not counted. An event sent twice with the same id counts twice, as both were received.
+- `bytes` is the size of the item after decompression, as the SDK or shipper sent it: the envelope item's payload, the whole body of `/store/`, of a Logtail request or of an OTLP request. Scrubbing runs after it is measured. It replaces values with markers of about the same length, so the stored size differs by those markers only. `bytes` says how much data a project sends, not what it takes on disk: Tantivy and SQLite compress, index and keep payloads of only some events.
+- Data is counted when it was accepted: after the writer queue or the log queue took it. A refused request counts nothing, and when a full queue refuses the later parts of an envelope, only the parts queued before count.
+- Ingest adds to a map in memory, keyed by day, project and signal. A project is one that a key authenticated and the signals are fixed, so the map holds at most a few entries per project. Every 5 s a task moves the map into one `Job::Usage`, which the writer adds to the rows. A full queue puts the counts back for the next flush. On shutdown the server flushes once more after the last request ended. A crash loses at most the last 5 s of counts.
+- The writer's sweep keeps the rows of the last 400 days, today included, so a year can be compared with the one before it.
+
+### Disk
+
+Measured when asked, by walking the data directory, which holds a few thousand files. Sizes are allocated blocks, what the files take on the disk.
+
+- `logs`: each day directory under `logs`, closed days and today apart. A day after today counts with today.
+- `sqlite`: `davy.sqlite` with its `-wal` and `-shm` files.
+- `uploads`: `sourcemaps` and `chunks`.
+- `other`: everything else under the data directory, the log trash included.
+- The filesystem's total and free space, from `statvfs` through `fs4`. `used` is total minus free, so it counts files outside Davy too.
+
+### Forecast
+
+The forecast is a pure function of the sizes above, the log bytes in `usage_daily` and each project's log retention.
+
+- **Growth** is the median size of the last 7 closed log days. The median ignores one day of a burst or an outage. With fewer than 2 closed days there is no forecast, and the reason says so.
+- Growth splits across projects by each project's share of log `bytes` in `usage_daily` over those days. Without counts, all growth follows the server's default retention.
+- **Steady state** is where retention stops the growth: the sum of each project's daily log growth times its log retention days, plus what SQLite, uploads and other files take now.
+- **Headroom** is 10% of the filesystem. Filesystems reserve blocks for root, and Tantivy merges and SQLite checkpoints need room for a copy of what they rewrite.
+- Davy grows by the whole growth every day until it reaches steady state. When `used` plus what is left to steady state stays below total minus headroom, the disk never fills at the current rate. Otherwise `days_left` is the days until `used` reaches that limit, rounded up, and `full_on` that UTC day. A disk already past the limit has 0 days left.
+- A what-if changes one input and runs the same function: `logs_days` sets a project's log retention, or every project's without a project, and `logs_bytes_per_day` sets the daily log growth on disk, of one project or of all. A total `logs_bytes_per_day` gives a forecast without history.
+
+Limits: the forecast assumes the rate of the last week holds. SQLite grows too but is taken as it is now, and error retention is not modeled, because the default keeps errors for 100 years. Growing at the full rate until steady state errs early when a project with a short retention is already full. `davy usage` and `davy doctor` read the database while `davy serve` runs and cannot see its flags, so they assume a server default of 30 days of logs unless given `--log-retention-days`.
+
+### Interfaces
+
+- MCP tool `usage`, with `project`, `since` (default `7d`, at most `90d`, as `release_health` reads it) and `what_if`, such as `{"project":"shop","logs_days":14}` or `{"logs_bytes_per_day":2000000000}`. It answers compact JSON: `disk` (`used`, `free`, `total`, `full_on`, `days_left`, `steady_state`, `headroom`), `davy` (what Davy's files take), `growth_per_day`, `projects` with each signal's `records` and `bytes` over the window and per day and the project's retention, `window` and, without a forecast, `no_forecast` with the reason. Sizes are strings such as `4.1 GB`, in powers of 1000.
+- `davy usage --data DATA [--project SLUG] [--since 7d] [--logs-days N] [--logs-bytes-per-day N] [--log-retention-days N] [--json]` prints the same as text, or as JSON with sizes in bytes. It opens the database read-only, so it runs next to `davy serve`.
+- `davy doctor` extends its disk line: it warns when the forecast puts the disk full in under 14 days and fails under 2, with the fix to shorten retention with `davy project retention` or add disk. Without a forecast it judges free space alone, as before.

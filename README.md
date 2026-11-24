@@ -24,7 +24,7 @@ Davy replaces Sentry and Better Stack for a team that wants to run its own. It i
 - **Logs.** Takes logs from Logtail shippers (pino, Vector, Fluent Bit), OpenTelemetry and Sentry's logger, with full-text search, a histogram and live tail. Logs next to an error show up on the error.
 - **Uptime.** HTTP checks with status and keyword, and heartbeats for cron jobs, which also take the cron check-ins of the Sentry SDKs (`Sentry.withMonitor`) with their crontab schedule and time zone.
 - **Alerts.** A notice when an issue is new or regressed and when a monitor goes down or comes back, never on every event. To webhooks (signed), Slack and e-mail.
-- **Agents.** An MCP server with twelve tools: `schema`, `sql`, `search_logs`, `count_logs`, `log_patterns`, `release_health`, `issue_context`, `mark_fixed`, `submit_feedback`, `connect_project`, `project_status` and `set_retention`. Every operator step is also a CLI command with `--json`.
+- **Agents.** An MCP server with thirteen tools: `schema`, `sql`, `search_logs`, `count_logs`, `log_patterns`, `release_health`, `issue_context`, `mark_fixed`, `submit_feedback`, `connect_project`, `project_status`, `set_retention` and `usage`. Every operator step is also a CLI command with `--json`.
 - **Web UI.** Triage issues from the keyboard, read stack traces and breadcrumbs, search logs. Light and dark.
 
 ## Quick start
@@ -119,6 +119,7 @@ Log search takes the same query as `davy logs`. Drag across the histogram to zoo
 - `connect_project`: existing project DSN, SDK setup and a test-event command; creating projects requires local `davy connect`.
 - `project_status`: event and issue counts and last event/log times to confirm ingest, and how long the project keeps its logs and errors.
 - `set_retention`: how many days a project keeps its logs and its errors. Errors are kept 100 years and logs 30 days unless a project or `davy serve` says otherwise.
+- `usage`: what each project stores, how fast the logs grow and when the disk fills, with a what-if for another retention or log volume. `davy usage` prints the same in a terminal.
 - `release_health`: crash-free sessions and users per release, from the sessions the SDKs send, to tell whether a new release crashes more than the one before.
 - `mark_fixed`: resolves an issue in a release. It reopens only if the error comes back in that release or a newer one, not from older ones still running.
 - `submit_feedback`: tells whoever runs Davy that a tool was missing or wrong. Davy sends it nowhere else.

@@ -18,6 +18,7 @@ use crate::{
     store::{self, IssueStatus, Job},
     time,
     token::{self, Token},
+    usage,
 };
 use axum::{
     Router,
@@ -53,6 +54,7 @@ To triage, list open issues with `sql` (SELECT id,title,event_count,last_seen FR
 then call `issue_context` on one issue. It returns the stack with source lines, breadcrumbs, releases, the logs around the error and what users wrote about it. \
 Call `schema` before writing other SQL. To see how often a log line happens and since when, call `count_logs` before `search_logs`. To see what fills the logs, call `log_patterns`. To see whether a release crashes more than the one before, call `release_health`. After a fix ships, call `mark_fixed`. \
 `project_status` shows how long a project keeps its logs and errors, and `set_retention` changes it. \
+To see what each project stores, how fast it grows and when the disk fills, call `usage`; its what_if shows what another retention or log volume would do. \
 When a tool was missing, returned the wrong thing or needed a workaround, call `submit_feedback`.";
 
 const LOG_NOTES: &str = "
@@ -282,6 +284,17 @@ struct SetRetention {
     errors_days: Option<Setting>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct Usage {
+    /// Project slug. Leave out for every project.
+    project: Option<String>,
+    /// Start of the window the counts cover: 30m, 1h, 2d or an RFC 3339 timestamp, at most 90d back. Default 7d.
+    since: Option<String>,
+    /// Recompute the forecast with one project's, or every project's, log retention or daily log bytes changed. Nothing is changed.
+    what_if: Option<usage::forecast::WhatIf>,
+}
+
 type Reply = Result<String, String>;
 
 #[tool_router]
@@ -331,6 +344,23 @@ impl Tools {
         self.blocking(move |data| {
             let kept = retention::one(&query::open(data)?, &slug, defaults, time::now_ms())?;
             json(&kept.ok_or_else(|| anyhow::anyhow!(retention::unknown(&slug)))?)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "What Davy stores and when the disk fills. Returns sizes as text such as \"4.1 GB\" (powers of 1000): disk (used, free, total, the 10% headroom kept free, steady_state: what Davy takes once retention deletes as much as arrives, days_left and full_on, both null when it never fills), what Davy's files take, growth_per_day (median of the last 7 closed log days), and per project the log and error retention in days, its share of log growth and, per signal (errors, logs, sessions, feedback, checkins), records and bytes received in the window and per day. Bytes are what clients sent, decompressed. With fewer than 2 closed log days there is no forecast and no_forecast says why. Read-only."
+    )]
+    async fn usage(&self, Parameters(req): Parameters<Usage>) -> Reply {
+        let request = usage::Request {
+            project: req.project,
+            since: req.since,
+            what_if: req.what_if.unwrap_or_default(),
+            defaults: self.retention,
+        };
+        self.blocking(move |data| {
+            let c = query::open(data)?;
+            json(&usage::report(&c, data, &request, time::now_ns())?.json(true))
         })
         .await
     }

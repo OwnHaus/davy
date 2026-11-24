@@ -672,3 +672,6 @@ async fn log_patterns_shows_what_fills_the_logs_and_its_id_finds_the_lines() {
     let (text, is_error) = tool(&s.app, "count_logs", json!({"pattern": "users"})).await;
     assert!(is_error, "{text}");
 }
+
+#[path = "mcp_usage_tests.rs"]
+mod usage_tests;

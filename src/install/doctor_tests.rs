@@ -411,18 +411,83 @@ async fn an_smtp_reply_cannot_write_control_characters_to_the_terminal() {
 #[test]
 fn free_disk_space_warns_below_5_gib_and_fails_below_1_gib() {
     let data = Path::new("/var/lib/davy");
-    let fix = "free space on the disk of /var/lib/davy, or lower --log-retention-days";
-    assert_eq!(disk(data, Some(40 * GIB)), ok("disk", "40 GiB free"));
+    let fix = "shorten retention with davy project retention SLUG --data /var/lib/davy --logs N, or add disk";
+    assert_eq!(disk(data, Some(40 * GIB), None), ok("disk", "40 GiB free"));
     assert_eq!(
-        disk(data, Some(3 * GIB)),
+        disk(data, Some(3 * GIB), None),
         not_ok("disk", Status::Warn, "3 GiB free", fix)
     );
     assert_eq!(
-        disk(data, Some(512 << 20)),
+        disk(data, Some(512 << 20), None),
         not_ok("disk", Status::Fail, "512 MiB free", fix)
     );
     assert_eq!(
-        disk(data, None),
+        disk(data, None, None),
         not_ok("disk", Status::Warn, "free space is unknown", fix)
+    );
+}
+
+fn full_in(days: Option<u64>) -> Forecast {
+    let today: jiff::civil::Date = "2026-11-24".parse().unwrap();
+    let full_on = days.map(|n| {
+        let n = i64::try_from(n).unwrap();
+        today.checked_add(jiff::Span::new().days(n)).unwrap()
+    });
+    Forecast {
+        growth: GIB,
+        per_project: Vec::new(),
+        steady_state: 100 * GIB,
+        headroom: 10 * GIB,
+        days_left: days,
+        full_on,
+    }
+}
+
+#[test]
+fn the_disk_forecast_warns_under_14_days_and_fails_under_2() {
+    let data = Path::new("/var/lib/davy");
+    let fix = "shorten retention with davy project retention SLUG --data /var/lib/davy --logs N, or add disk";
+    let free = Some(40 * GIB);
+    assert_eq!(
+        disk(data, free, Some(Ok(full_in(Some(20))))),
+        ok(
+            "disk",
+            "40 GiB free, forecast full on 2026-12-14, in 20 days"
+        )
+    );
+    assert_eq!(
+        disk(data, free, Some(Ok(full_in(Some(13))))),
+        not_ok(
+            "disk",
+            Status::Warn,
+            "40 GiB free, forecast full on 2026-12-07, in 13 days",
+            fix
+        )
+    );
+    assert_eq!(
+        disk(data, free, Some(Ok(full_in(Some(1))))),
+        not_ok(
+            "disk",
+            Status::Fail,
+            "40 GiB free, forecast full on 2026-11-25, in 1 day",
+            fix
+        )
+    );
+    assert_eq!(
+        disk(data, Some(3 * GIB), Some(Ok(full_in(Some(0))))),
+        not_ok(
+            "disk",
+            Status::Fail,
+            "3 GiB free, forecast full on 2026-11-24, in 0 days",
+            fix
+        )
+    );
+    assert_eq!(
+        disk(data, free, Some(Ok(full_in(None)))),
+        ok("disk", "40 GiB free, never fills at the current rate")
+    );
+    assert_eq!(
+        disk(data, free, Some(Err("too little".into()))),
+        ok("disk", "40 GiB free, no forecast: too little")
     );
 }

@@ -6,6 +6,7 @@ use crate::{
     alert::mail::Smtp,
     secret::{self, MIN_TOKEN_CHARS},
     text,
+    usage::{self, forecast::Forecast},
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -130,7 +131,7 @@ pub async fn checks(data: &Path) -> Vec<Check> {
         },
     }
     checks.push(logs(&crate::logs::dir(data)));
-    checks.push(disk(data, fs4::available_space(data).ok()));
+    checks.push(disk(data, fs4::available_space(data).ok(), forecast(data)));
     checks
 }
 
@@ -404,19 +405,74 @@ async fn initialized(mut r: reqwest::Response) -> bool {
     })
 }
 
-fn disk(data: &Path, free: Option<u64>) -> Check {
-    let fix = format!(
-        "free space on the disk of {}, or lower --log-retention-days",
-        sh(&data.to_string_lossy())
-    );
-    match free {
-        None => not_ok("disk", Status::Warn, "free space is unknown", fix),
-        Some(b) if b < GIB => not_ok("disk", Status::Fail, format!("{} MiB free", b >> 20), fix),
-        Some(b) if b < 5 * GIB => {
-            not_ok("disk", Status::Warn, format!("{} GiB free", b / GIB), fix)
-        }
-        Some(b) => ok("disk", format!("{} GiB free", b / GIB)),
+/// The disk forecast, `None` while the data directory has no database to
+/// read. Projects without a retention of their own are taken to keep the
+/// default 30 days of logs, as doctor cannot read a running server's flags.
+fn forecast(data: &Path) -> Option<Result<Forecast, String>> {
+    if !data.join(crate::store::DB_FILE).exists() {
+        return None;
     }
+    let request = usage::Request {
+        project: None,
+        since: None,
+        what_if: usage::forecast::WhatIf::default(),
+        defaults: crate::retention::Defaults::default(),
+    };
+    let report = crate::query::open(data)
+        .and_then(|c| usage::report(&c, data, &request, crate::time::now_ns()));
+    Some(
+        report
+            .map_err(|e| format!("{e:#}"))
+            .and_then(|r| r.forecast),
+    )
+}
+
+/// Free space, and when the forecast puts the disk full: a warning under
+/// 14 days, a failure under 2.
+fn disk(data: &Path, free: Option<u64>, forecast: Option<Result<Forecast, String>>) -> Check {
+    let d = sh(&data.to_string_lossy());
+    let fix = format!(
+        "shorten retention with davy project retention SLUG --data {d} --logs N, or add disk"
+    );
+    let (status, free) = match free {
+        None => (Status::Warn, "free space is unknown".to_owned()),
+        Some(b) if b < GIB => (Status::Fail, format!("{} MiB free", b >> 20)),
+        Some(b) if b < 5 * GIB => (Status::Warn, format!("{} GiB free", b / GIB)),
+        Some(b) => (Status::Ok, format!("{} GiB free", b / GIB)),
+    };
+    let (by_forecast, said) = match forecast {
+        None => (Status::Ok, String::new()),
+        Some(Err(reason)) => (Status::Ok, format!(", no forecast: {reason}")),
+        Some(Ok(Forecast {
+            days_left: Some(n),
+            full_on: Some(on),
+            ..
+        })) => {
+            let unit = if n == 1 { "day" } else { "days" };
+            let status = match n {
+                0..2 => Status::Fail,
+                2..14 => Status::Warn,
+                _ => Status::Ok,
+            };
+            (status, format!(", forecast full on {on}, in {n} {unit}"))
+        }
+        Some(Ok(_)) => (Status::Ok, ", never fills at the current rate".to_owned()),
+    };
+    let status = worse(status, by_forecast);
+    let detail = free + &said;
+    match status {
+        Status::Ok => ok("disk", detail),
+        _ => not_ok("disk", status, detail, fix),
+    }
+}
+
+fn worse(a: Status, b: Status) -> Status {
+    let rank = |s| match s {
+        Status::Ok => 0,
+        Status::Warn => 1,
+        Status::Fail => 2,
+    };
+    if rank(b) > rank(a) { b } else { a }
 }
 
 #[cfg(unix)]

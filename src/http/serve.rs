@@ -77,6 +77,55 @@ fn admin_routes(
     Ok(admin)
 }
 
+type Tasks = [(&'static str, tokio::task::JoinHandle<()>); 4];
+
+/// Spawns the tasks that queue jobs for the writer on a timer.
+fn tasks(
+    data: &std::path::Path,
+    sender: &store::Sender,
+    retention: crate::retention::Defaults,
+    smtp: Option<alert::mail::Smtp>,
+    public_url: &url::Url,
+    usage: &crate::usage::Counter,
+) -> anyhow::Result<Tasks> {
+    let sweeper = store::sweep_every(sender.clone(), SWEEP_EVERY, retention.errors);
+    let checker = monitor::check::run(
+        store::open(data)?,
+        monitor::check::client(net::Reach::Any)?,
+        sender.clone(),
+        CHECK_EVERY,
+    );
+    let notifier = alert::deliver::run(
+        store::open(data)?,
+        alert::deliver::Transports::new(net::Reach::Any, smtp)?,
+        sender.clone(),
+        NOTIFY_EVERY,
+        public_url.clone(),
+    );
+    let flusher =
+        crate::usage::flush_every(usage.clone(), sender.clone(), crate::usage::FLUSH_EVERY);
+    Ok([
+        ("sweeper", tokio::spawn(sweeper)),
+        ("checker", tokio::spawn(checker)),
+        ("notifier", tokio::spawn(notifier)),
+        ("usage flusher", tokio::spawn(flusher)),
+    ])
+}
+
+/// Stops the tasks. They hold senders, and the writer thread ends only when
+/// every sender is gone. A notice in flight is sent again on the next start.
+async fn stop(tasks: Tasks) -> anyhow::Result<()> {
+    for (name, task) in tasks {
+        task.abort();
+        if let Err(e) = task.await
+            && e.is_panic()
+        {
+            anyhow::bail!("{name} panicked");
+        }
+    }
+    Ok(())
+}
+
 /// Serves ingest, and with a token `/mcp` and the source map upload.
 /// `public_url` is where clients reach this server.
 pub async fn serve(
@@ -95,7 +144,9 @@ pub async fn serve(
         logs: log_writer.queue.clone(),
         sourcemaps: Arc::new(sourcemaps::Store::open(data)),
         budget: body::Budget::new(body::MEMORY),
+        usage: crate::usage::Counter::default(),
     };
+    let usage = app.usage.clone();
     let maps = Arc::clone(&app.sourcemaps);
     let ui = crate::ui::serve(
         data,
@@ -117,21 +168,7 @@ pub async fn serve(
     let routes = router(app, admin.merge(ui));
     let listener = tokio::net::TcpListener::bind(listen).await?;
     crate::ready::notify()?;
-    let sweeper = store::sweep_every(writer.sender.clone(), SWEEP_EVERY, retention.errors);
-    let sweeper = tokio::spawn(sweeper);
-    let checker = tokio::spawn(monitor::check::run(
-        store::open(data)?,
-        monitor::check::client(net::Reach::Any)?,
-        writer.sender.clone(),
-        CHECK_EVERY,
-    ));
-    let notifier = tokio::spawn(alert::deliver::run(
-        store::open(data)?,
-        alert::deliver::Transports::new(net::Reach::Any, smtp)?,
-        writer.sender.clone(),
-        NOTIFY_EVERY,
-        public_url.clone(),
-    ));
+    let tasks = tasks(data, &writer.sender, retention, smtp, public_url, &usage)?;
     #[cfg(unix)]
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = axum::serve(listener, routes)
@@ -144,20 +181,9 @@ pub async fn serve(
             }
         })
         .await;
-    // These tasks hold senders, and the writer thread ends only when every
-    // sender is gone. A notice in flight is sent again on the next start.
-    for (name, task) in [
-        ("sweeper", sweeper),
-        ("checker", checker),
-        ("notifier", notifier),
-    ] {
-        task.abort();
-        if let Err(e) = task.await
-            && e.is_panic()
-        {
-            anyhow::bail!("{name} panicked");
-        }
-    }
+    stop(tasks).await?;
+    // The counts since the last flush, now that no request adds to them.
+    crate::usage::flush(&usage, &writer.sender).await;
     drop(writer.sender);
     drop(writer.ui);
     drop(log_writer.queue);

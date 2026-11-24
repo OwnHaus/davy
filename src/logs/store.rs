@@ -94,7 +94,7 @@ fn pattern_field(index: &Index) -> Option<Field> {
 /// The day `name` is the directory of: `YYYY-MM-DD`, the one name of each
 /// date. jiff also reads `+002026-01-05`, and prints a year past 9999 or
 /// before 0 with six digits, so a day has exactly 10 characters.
-fn parse_day(name: &str) -> Option<Date> {
+pub(crate) fn parse_day(name: &str) -> Option<Date> {
     let day: Date = name.parse().ok()?;
     (name.len() == 10 && day.to_string() == name).then_some(day)
 }

@@ -10,7 +10,7 @@ const client = new Client({ name: 'davy-e2e', version: '1.0.0' })
 await client.connect(transport)
 
 const { tools } = await client.listTools()
-assert.deepEqual(tools.map(t => t.name).sort(), ['connect_project', 'count_logs', 'issue_context', 'log_patterns', 'mark_fixed', 'project_status', 'release_health', 'schema', 'search_logs', 'set_retention', 'sql', 'submit_feedback'])
+assert.deepEqual(tools.map(t => t.name).sort(), ['connect_project', 'count_logs', 'issue_context', 'log_patterns', 'mark_fixed', 'project_status', 'release_health', 'schema', 'search_logs', 'set_retention', 'sql', 'submit_feedback', 'usage'])
 
 async function call(name, args) {
   const result = await client.callTool({ name, arguments: args })
@@ -48,6 +48,21 @@ assert.equal(toDefault.isError, true)
 assert.match(toDefault.text, /^an agent may not return logs to the server default: the project keeps them 90 days of its own/)
 const stillThere = JSON.parse((await call('project_status', { slug: 'e2e-connect' })).text)
 assert.equal(stillThere.event_count, 1)
+
+// Ingest counts reach usage_daily on the server's next flush, every 5 s.
+let used
+for (let i = 0; i < 150; i++) {
+  used = JSON.parse((await call('usage', { project: 'e2e-connect' })).text)
+  if (used.projects[0].signals.errors.records === 1) break
+  await new Promise(resolve => setTimeout(resolve, 100))
+}
+assert.equal(used.projects.length, 1)
+assert.deepEqual([used.projects[0].project, used.projects[0].logs_days, used.projects[0].signals.errors.records], ['e2e-connect', 90, 1])
+assert.match(used.disk.total, /^\d+(\.\d)? [KMGTP]?B$/)
+assert.match(used.projects[0].signals.errors.bytes, /^\d+(\.\d)? [KMGTP]?B$/)
+const whatIf = JSON.parse((await call('usage', { what_if: { logs_bytes_per_day: 1000000 } })).text)
+assert.equal(whatIf.growth_per_day, '1.0 MB')
+console.log(`PASS usage: 1 error counted for e2e-connect, ${used.projects[0].signals.errors.bytes}, forecast: ${whatIf.forecast}`)
 
 const schema = await call('schema', {})
 assert.match(schema.text, /CREATE TABLE issues/)
@@ -97,4 +112,4 @@ assert.deepEqual(feedback.rows[0].slice(1), ['e2e tried', 'e2e happened', null])
 assert.ok(feedback.rows[0][0], 'the client name comes from _meta or User-Agent')
 
 await client.close()
-console.log(`mcp: verified 12 tools, set_retention, sql, issue_context, search_logs, count_logs, log_patterns, release_health, mark_fixed on issue ${issue} and submit_feedback from client ${feedback.rows[0][0]}`)
+console.log(`mcp: verified 13 tools, set_retention, usage, sql, issue_context, search_logs, count_logs, log_patterns, release_health, mark_fixed on issue ${issue} and submit_feedback from client ${feedback.rows[0][0]}`)

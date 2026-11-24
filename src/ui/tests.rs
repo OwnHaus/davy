@@ -92,6 +92,7 @@ fn ui_with(hash_wait: Duration) -> Ui {
         sourcemaps: Arc::new(crate::sourcemaps::Store::open(std::path::Path::new(
             "target/no-sourcemaps",
         ))),
+        usage: crate::usage::Counter::default(),
     };
     let public_url = url::Url::parse("https://davy.example/").unwrap();
     let reads = super::issues::Reads::new(

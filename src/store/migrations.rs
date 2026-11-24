@@ -1,6 +1,6 @@
 /// Schema changes after the first release, applied in order. `PRAGMA
 /// user_version` counts how many ran.
-pub(super) const MIGRATIONS: [&str; 17] = [
+pub(super) const MIGRATIONS: [&str; 18] = [
     "CREATE TABLE releases(project_id INTEGER NOT NULL REFERENCES projects(id), version TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY(project_id, version));
 INSERT INTO releases SELECT project_id, release, min(received_at) FROM events WHERE release IS NOT NULL GROUP BY project_id, release;",
     "CREATE TABLE monitors(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), name TEXT NOT NULL, kind TEXT NOT NULL, url TEXT, expect TEXT, keyword TEXT, heartbeat_token TEXT UNIQUE, every_s INTEGER NOT NULL, timeout_s INTEGER, grace_s INTEGER, state TEXT NOT NULL, last_check_at INTEGER, last_ping_at INTEGER, created_at INTEGER NOT NULL);
@@ -69,4 +69,6 @@ CREATE INDEX session_seen_started ON session_seen(started);",
     // The issues whose last event expired and that user feedback still
     // points at, so the error sweep finds them without reading every issue.
     "CREATE INDEX IF NOT EXISTS issues_emptied ON issues(id) WHERE event_count=0;",
+    // Records and bytes stored per day, project and signal.
+    crate::usage::MIGRATION,
 ];

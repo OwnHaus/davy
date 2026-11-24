@@ -299,6 +299,8 @@ pub enum Job {
         what: crate::firsts::First,
         at: Timestamp,
     },
+    /// Records and bytes ingest accepted, see src/usage.rs.
+    Usage(Vec<crate::usage::Row>),
 }
 pub type Outcome = std::result::Result<(), String>;
 pub struct Write {
@@ -337,6 +339,11 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
             crate::accounts::store::sweep(c, *at)?;
             crate::items::client_report::prune(c, *at)?;
             crate::items::session::prune(c, *at)?;
+            crate::usage::prune(c, *at)?;
+            Ok(Ok(()))
+        }
+        Job::Usage(rows) => {
+            crate::usage::write(c, rows)?;
             Ok(Ok(()))
         }
         Job::Check {

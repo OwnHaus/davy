@@ -12,6 +12,7 @@ use crate::{
     store::{self, Job},
     time,
     token::bearer,
+    usage::{self, Count, Signal},
 };
 use axum::{
     Router,
@@ -105,6 +106,8 @@ pub struct App {
     pub sourcemaps: Arc<sourcemaps::Store>,
     /// The memory request bodies may hold while they are read and parsed.
     pub budget: body::Budget,
+    /// What ingest accepted, until the next flush.
+    pub usage: usage::Counter,
 }
 /// Ingest, the `admin` routes, and a 404 for anything else, all with
 /// [`protect`]ive headers.
@@ -290,6 +293,8 @@ struct Parsed {
     items: Vec<SdkItem>,
     /// The first check-in, as Sentry allows one per envelope.
     check_in: Option<monitor::checkin::Item>,
+    /// Records and bytes of what was parsed, counted once it is queued.
+    tally: usage::Tally,
 }
 fn too_many_records() -> Failure {
     (
@@ -329,16 +334,20 @@ fn parse_sentry(
     policy: &Policy,
 ) -> Result<Parsed, Failure> {
     if legacy {
+        let mut tally = usage::Tally::default();
+        let event = if bytes.len() > MAX_ITEM {
+            None
+        } else {
+            tally.add(Signal::Errors, Count::new(1, bytes.len()));
+            Some(event(bytes, maps, held, policy)?)
+        };
         return Ok(Parsed {
             id: None,
-            event: if bytes.len() > MAX_ITEM {
-                None
-            } else {
-                Some(event(bytes, maps, held, policy)?)
-            },
+            event,
             logs: Vec::new(),
             items: Vec::new(),
             check_in: None,
+            tally,
         });
     }
     let envelope = Envelope::parse(bytes).map_err(bad)?;
@@ -349,6 +358,7 @@ fn parse_sentry(
         logs: Vec::new(),
         items: Vec::new(),
         check_in: None,
+        tally: usage::Tally::default(),
     };
     for item in envelope
         .items
@@ -358,12 +368,23 @@ fn parse_sentry(
         match disposition(&item.kind) {
             Disposition::StoreError if parsed.event.is_none() => {
                 parsed.event = Some(event(item.payload, maps, held, policy)?);
+                let count = Count::new(1, item.payload.len());
+                parsed.tally.add(Signal::Errors, count);
             }
             Disposition::SdkItem if parsed.items.len() < MAX_SDK_ITEMS => {
-                parsed.items.extend(sdk_item(&item, held, policy)?);
+                let one = sdk_item(&item, held, policy)?;
+                if let Some(signal) = one.as_ref().and_then(signal_of) {
+                    parsed.tally.add(signal, Count::new(1, item.payload.len()));
+                }
+                parsed.items.extend(one);
             }
             Disposition::CheckIn if parsed.check_in.is_none() => {
-                parsed.check_in = Some(check_in(item.payload, held, policy)?);
+                let one = check_in(item.payload, held, policy)?;
+                if one.is_ok() {
+                    let count = Count::new(1, item.payload.len());
+                    parsed.tally.add(Signal::Checkins, count);
+                }
+                parsed.check_in = Some(one);
             }
             Disposition::StoreError
             | Disposition::Drop
@@ -383,11 +404,24 @@ fn parse_sentry(
                 // The tree is gone, and only the records stay.
                 let kept = records.iter().map(heap::of_record).sum::<usize>();
                 held.release(cost.saturating_sub(kept));
+                if !records.is_empty() {
+                    let count = Count::new(records.len(), item.payload.len());
+                    parsed.tally.add(Signal::Logs, count);
+                }
                 parsed.logs.extend(records);
             }
         }
     }
     Ok(parsed)
+}
+/// The signal an SDK item counts as. Client reports describe what the SDK
+/// dropped, so they count as none.
+fn signal_of(item: &SdkItem) -> Option<Signal> {
+    match item {
+        SdkItem::ClientReport(_) => None,
+        SdkItem::UserFeedback(_) => Some(Signal::Feedback),
+        SdkItem::Session(_) | SdkItem::Sessions(_) => Some(Signal::Sessions),
+    }
 }
 async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Response, Failure> {
     let (parts, raw) = req.into_parts();
@@ -425,8 +459,11 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
         .id
         .or_else(|| parsed.event.as_ref().map(|e| e.event_id.clone()))
         .unwrap_or_else(EventId::fresh);
+    let tally = parsed.tally;
+    let count = |signal| app.usage.add(project, signal, tally.get(signal));
     if !parsed.logs.is_empty() {
         app.logs.push(parsed.logs)?;
+        count(Signal::Logs);
     }
     if let Some(event) = parsed.event {
         let events = vec![event];
@@ -436,6 +473,7 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
             held,
         };
         store::submit(&app.sender, job).await?;
+        count(Signal::Errors);
     }
     // After the event, so a full queue costs a report or feedback, not an error.
     if !parsed.items.is_empty() {
@@ -445,17 +483,21 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
             items: parsed.items,
         };
         store::submit(&app.sender, job).await?;
+        count(Signal::Sessions);
+        count(Signal::Feedback);
     }
     if let Some(item) = parsed.check_in {
         let at = time::now_ms();
         store::submit(&app.sender, Job::CheckIn { project, at, item }).await?;
+        count(Signal::Checkins);
     }
     Ok(json_response(&json!({"id":id.0})))
 }
 /// Reads, decompresses and parses a log body, which `parse` pays for, and
-/// queues its records.
+/// queues its records, counted with the decompressed size of the body.
 async fn ingest_logs(
     app: &App,
+    project: i64,
     headers: &HeaderMap,
     raw: Body,
     policy: Arc<Policy>,
@@ -464,18 +506,20 @@ async fn ingest_logs(
     let mut held = app.budget.hold();
     let bytes = body::read(raw, &mut held).await?;
     let encoding = encoding(headers);
-    let (records, _held) = blocking(move || {
+    let (records, size, _held) = blocking(move || {
         let body = body::decode(bytes, &encoding, &mut held)?;
         let mut records = parse(&body, &mut held)?;
         if records.len() > MAX_RECORDS {
             return Err(too_many_records());
         }
         scrubbed_logs(&mut held, |meter| policy.logs(&mut records, meter))?;
-        Ok((records, held))
+        Ok((records, body.len(), held))
     })
     .await?;
     if !records.is_empty() {
+        let count = Count::new(records.len(), size);
         app.logs.push(records)?;
+        app.usage.add(project, Signal::Logs, count);
     }
     Ok(())
 }
@@ -486,6 +530,7 @@ async fn logtail_ingest(State(app): State<App>, req: Request) -> Response {
         let content_type = header_str(&parts.headers, header::CONTENT_TYPE).to_owned();
         ingest_logs(
             &app,
+            project,
             &parts.headers,
             raw,
             app.keys.policy(project)?,
@@ -514,6 +559,7 @@ async fn otlp_ingest(State(app): State<App>, req: Request) -> Response {
         })?;
         ingest_logs(
             &app,
+            project,
             &parts.headers,
             raw,
             app.keys.policy(project)?,

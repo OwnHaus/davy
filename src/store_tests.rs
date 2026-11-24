@@ -125,6 +125,7 @@ fn an_upgrade_builds_the_issue_timestamp_index_in_its_migration() {
     let c = open(&root).unwrap();
     c.execute_batch("DROP INDEX events_issue_timestamp; PRAGMA user_version=15;")
         .unwrap();
+    c.execute_batch(crate::usage::UNDO).unwrap();
     drop(c);
     let c = open(&root).unwrap();
     let built: i64 = c
@@ -137,6 +138,7 @@ fn an_upgrade_builds_the_issue_timestamp_index_in_its_migration() {
     let version: i64 = c
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!((built, version), (1, 17));
+    let latest = i64::try_from(MIGRATIONS.len()).unwrap();
+    assert_eq!((built, version), (1, latest));
     std::fs::remove_dir_all(&root).unwrap();
 }

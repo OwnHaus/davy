@@ -87,6 +87,9 @@ enum Command {
     /// Search logs, oldest first. QUERY uses Tantivy syntax over the message and
     /// attributes, e.g. `timeout` or `attributes.provider:acme`.
     Logs(Logs),
+    /// Prints what each project stores, how fast it grows and when the disk
+    /// fills. Opens the database read-only, so it runs next to `davy serve`.
+    Usage(davy::usage::Args),
     /// Runs one read-only SQL query against the error store. `davy sql schema`
     /// prints the tables and notes on units.
     Sql {
@@ -297,6 +300,7 @@ async fn main() -> anyhow::Result<()> {
             writeln!(out, "{}", serde_json::to_string_pretty(&payload)?)?;
         }
         Command::Logs(args) => logs(&mut out.lock(), args)?,
+        Command::Usage(args) => davy::usage::run(&mut out.lock(), &args)?,
         Command::Sql { query, data, json } => {
             let c = query::open(&data)?;
             if query.trim() == "schema" {

@@ -207,6 +207,15 @@ STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/js
 [ "$STATUS" = 401 ] || { echo "MCP without token gave $STATUS"; exit 1; }
 node "$ROOT/e2e/mcp.mjs" "$URL" "$TOKEN"
 "$BIN" feedback --data "$SCRATCH/data" | grep -qx '  tried: e2e tried' || { echo 'davy feedback does not list the MCP report'; exit 1; }
+"$BIN" usage --data "$SCRATCH/data" --project e2e-connect --json > "$SCRATCH/usage.json"
+python3 - "$SCRATCH/usage.json" <<'PY'
+import json,sys
+u=json.load(open(sys.argv[1]))
+[p]=u['projects']
+assert (p['project'],p['logs_days'],p['signals']['errors']['records'])==('e2e-connect',90,1),p
+assert isinstance(u['disk']['total'],int) and u['disk']['total']>u['disk']['free']>0,u['disk']
+print(f"usage CLI: next to davy serve, 1 error of {p['signals']['errors']['bytes']} bytes for e2e-connect")
+PY
 ISSUE=$("$BIN" sql --data "$SCRATCH/data" "SELECT i.id FROM issues i JOIN projects p ON p.id = i.project_id WHERE p.slug = 'sentry-node-7' AND i.title LIKE 'RangeError%'" | tail -n 1)
 "$BIN" context "$ISSUE" --data "$SCRATCH/data" > "$SCRATCH/context.json"
 "$BIN" resolve "$ISSUE" --data "$SCRATCH/data" --release e2e@2

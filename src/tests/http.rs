@@ -27,6 +27,7 @@ struct Server {
     error_inbox: crossbeam_channel::Receiver<store::Write>,
     logs: LogInbox,
     budget: Budget,
+    usage: crate::usage::Counter,
 }
 
 const BUDGET: usize = 32 << 20;
@@ -62,6 +63,7 @@ fn server() -> Server {
     let (errors, error_inbox) = crossbeam_channel::bounded(1);
     let (logs, log_inbox) = LogQueue::bounded(3, 1 << 20);
     let budget = Budget::new(BUDGET);
+    let usage = crate::usage::Counter::default();
     let app = router(
         App {
             budget: budget.clone(),
@@ -71,6 +73,7 @@ fn server() -> Server {
             sourcemaps: Arc::new(crate::sourcemaps::Store::open(std::path::Path::new(
                 "target/no-sourcemaps",
             ))),
+            usage: usage.clone(),
         },
         Router::new().route("/admin", axum::routing::get(|| async { "ok" })),
     );
@@ -80,6 +83,7 @@ fn server() -> Server {
         error_inbox,
         logs: log_inbox,
         budget,
+        usage,
     }
 }
 
@@ -687,8 +691,9 @@ async fn a_heartbeat_ping_to_a_full_queue_is_429() {
 
 #[path = "http_items.rs"]
 mod items;
-#[path = "http_surface.rs"]
-mod surface;
-
 #[path = "scrub_http.rs"]
 mod scrub_http;
+#[path = "http_surface.rs"]
+mod surface;
+#[path = "http_usage.rs"]
+mod usage_http;
