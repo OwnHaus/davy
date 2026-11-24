@@ -1,6 +1,7 @@
 mod escapes;
 pub mod logtail;
 pub mod otlp;
+pub mod patterns;
 pub mod sentry;
 pub mod store;
 
