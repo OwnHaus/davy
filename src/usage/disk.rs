@@ -1,21 +1,19 @@
 //! What Davy's files take on disk, measured when asked by walking the data
 //! directory, and the filesystem's free and total space.
 
+mod shared;
 #[cfg(unix)]
 mod walk;
 #[cfg(not(unix))]
 #[path = "disk/walk_std.rs"]
 mod walk;
 
+pub use shared::Shared;
+
 use crate::{logs, store};
 use anyhow::{Context as _, Result};
 use jiff::civil::Date;
-use std::{
-    ffi::OsStr,
-    path::Path,
-    sync::{Mutex, PoisonError},
-    time::Duration,
-};
+use std::{ffi::OsStr, path::Path, time::Duration};
 use walk::{Opened, Walk};
 
 /// The directories `sourcemaps::Store` keeps uploads in.
@@ -122,19 +120,14 @@ impl Disk {
     }
 }
 
-/// One measurement at a time per process: each walks the whole data
-/// directory, so many at once would only compete for the disk. The others
-/// wait their turn.
-static MEASURING: Mutex<()> = Mutex::new(());
-
-/// Measures `data`, with `today` the UTC day that is still open.
+/// Measures `data`, with `today` the UTC day that is still open. The
+/// server measures through [`Shared`], which runs one walk at a time.
 pub fn measure(data: &Path, today: Date) -> Result<Disk> {
     measure_within(data, today, Limits::default())
 }
 
 /// [`measure`], reading at most what `limits` allow.
 pub(crate) fn measure_within(data: &Path, today: Date, limits: Limits) -> Result<Disk> {
-    let _one = MEASURING.lock().unwrap_or_else(PoisonError::into_inner);
     let mut disk = Disk {
         free: fs4::available_space(data)
             .with_context(|| format!("free space of {}", data.display()))?,

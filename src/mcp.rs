@@ -88,6 +88,7 @@ pub fn router(
         public_url: public_url.clone(),
         writes,
         retention,
+        disk: usage::disk::Shared::default(),
         tool_router: Tools::tool_router(),
     };
     let config = StreamableHttpServerConfig::default()
@@ -142,6 +143,8 @@ struct Tools {
     data: Arc<Path>,
     writes: store::Sender,
     retention: Defaults,
+    /// The last disk measurement, shared by every session.
+    disk: usage::disk::Shared,
     tool_router: ToolRouter<Self>,
 }
 
@@ -349,7 +352,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "What Davy stores and when the disk fills. Returns sizes as text such as \"4.1 GB\" (powers of 1000): disk (used, free, total, the 10% headroom kept free, steady_state: what Davy takes once retention deletes as much as arrives, days_left and full_on, both null when it never fills), what Davy's files take, growth_per_day (all logs together: median of the newest 7 closed log days no retention has cut), longest_log_days (the longest log retention of any project, which caps steady_state), and per project the log and error retention in days and, per signal (errors, logs, sessions, feedback, checkins), records and bytes received in the window and per day. Bytes are what clients sent, decompressed. Counts are kept per UTC day, so the window starts at midnight UTC of the day since names. disk.partial, when not null, names what the disk walk left out, such as a directory Davy may not read, and why it stopped early; the sizes leave that out. disk_error replaces disk and davy when the walk failed. Without a forecast, no_forecast says why, such as too few closed log days or logs not measured in full. Read-only."
+        description = "What Davy stores and when the disk fills. Returns sizes as text such as \"4.1 GB\" (powers of 1000): disk (used, free, total, the 10% headroom kept free, steady_state: what Davy takes once retention deletes as much as arrives, days_left and full_on, both null when it never fills), what Davy's files take, growth_per_day (all logs together: median of the newest 7 closed log days no retention has cut), longest_log_days (the longest log retention of any project, which caps steady_state), and per project the log and error retention in days and, per signal (errors, logs, sessions, feedback, checkins), records and bytes received in the window and per day. Bytes are what clients sent, decompressed. Counts are kept per UTC day, so the window starts at midnight UTC of the day since names. disk.partial, when not null, names what the disk walk left out, such as a directory Davy may not read, and why it stopped early; the sizes leave that out. disk_error replaces disk and davy when the walk failed. The disk is measured at most once a minute, so calling again sooner returns the same disk. Without a forecast, no_forecast says why, such as too few closed log days or logs not measured in full. Read-only."
     )]
     async fn usage(&self, Parameters(req): Parameters<Usage>) -> Reply {
         let request = usage::Request {
@@ -358,11 +361,16 @@ impl Tools {
             what_if: req.what_if.unwrap_or_default(),
             defaults: self.retention,
         };
-        self.blocking(move |data| {
-            let c = query::open(data)?;
-            json(&usage::report(&c, data, &request, time::now_ns())?.json(true))
-        })
-        .await
+        let now = time::now_ns();
+        let prepared = self
+            .blocking_with(move |data| usage::prepare(&query::open(data)?, &request, now))
+            .await?;
+        // Waits for a walk as a task, so a caller holds no thread meanwhile.
+        let disk = self
+            .disk
+            .measure(Arc::clone(&self.data), prepared.today)
+            .await;
+        json(&prepared.finish(disk).json(true)).map_err(|e| format!("{e:#}"))
     }
 
     #[tool(
@@ -531,6 +539,14 @@ impl Tools {
         &self,
         f: impl FnOnce(&Path) -> anyhow::Result<String> + Send + 'static,
     ) -> Reply {
+        self.blocking_with(f).await
+    }
+
+    /// [`Tools::blocking`] for any value.
+    async fn blocking_with<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Path) -> anyhow::Result<T> + Send + 'static,
+    ) -> Result<T, String> {
         let data = Arc::clone(&self.data);
         tokio::task::spawn_blocking(move || f(&data))
             .await

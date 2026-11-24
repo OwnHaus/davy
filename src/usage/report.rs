@@ -47,7 +47,29 @@ pub struct Project {
     pub counts: [Count; 5],
 }
 
+/// The report on `data`, which walks the disk now.
 pub fn report(c: &Connection, data: &Path, req: &Request, now_ns: i64) -> Result<Report> {
+    let prepared = prepare(c, req, now_ns)?;
+    let disk = disk::measure(data, prepared.today).map_err(|e| format!("{e:#}"));
+    Ok(prepared.finish(disk))
+}
+
+/// What a report reads from the database, checked and counted, before the
+/// disk is measured.
+pub struct Prepared {
+    since: Date,
+    days: f64,
+    /// The UTC day that is still open, the day the disk is measured for.
+    pub today: Date,
+    /// Every project with its id and retention.
+    kept: Vec<(i64, retention::Retention)>,
+    what_if: WhatIf,
+    default_days: u32,
+    projects: Vec<Project>,
+}
+
+/// Checks `req` and reads the counts and retentions it asks for.
+pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
     let since =
         time::instant(req.since.as_deref().unwrap_or("7d"), now_ns).map_err(anyhow::Error::msg)?;
     if since > now_ns {
@@ -74,14 +96,6 @@ pub fn report(c: &Connection, data: &Path, req: &Request, now_ns: i64) -> Result
         None => None,
     };
     let counted = super::between(c, from, today, filter)?;
-    let disk = disk::measure(data, today).map_err(|e| format!("{e:#}"));
-    let forecast = match &disk {
-        Err(e) => Err(NoForecast::Other(format!("the disk was not measured: {e}"))),
-        Ok(d) => match d.logs_unmeasured() {
-            Some(why) => Err(NoForecast::Other(why)),
-            None => forecast::forecast(&input(d, &kept, req, today), &req.what_if),
-        },
-    };
     let projects = kept
         .iter()
         .filter(|(id, _)| filter.is_none_or(|f| f == *id))
@@ -94,36 +108,54 @@ pub fn report(c: &Connection, data: &Path, req: &Request, now_ns: i64) -> Result
         .collect();
     // Midnight UTC of the first day.
     let start = since.div_euclid(DAY_NS) * DAY_NS;
-    Ok(Report {
+    Ok(Prepared {
         since: from,
         days: days(now_ns.saturating_sub(start)),
-        disk,
-        forecast,
+        today,
+        kept,
         what_if: req.what_if.clone(),
+        default_days: req.defaults.logs.get(),
         projects,
     })
 }
 
-/// What the forecast reads: the closed log days and each project's log
-/// retention.
-fn input(
-    disk: &Disk,
-    kept: &[(i64, retention::Retention)],
-    req: &Request,
-    today: Date,
-) -> forecast::Input {
-    forecast::Input {
-        today,
-        closed: disk.closed.clone(),
-        davy: disk.davy(),
-        fixed: disk.fixed(),
-        used: disk.used(),
-        total: disk.total,
-        projects: kept
-            .iter()
-            .map(|(_, k)| (k.project.clone(), k.logs.days.get()))
-            .collect(),
-        default_days: req.defaults.logs.get(),
+impl Prepared {
+    /// The report with `disk`, what the walk measured or why it failed.
+    pub fn finish(self, disk: Result<Disk, String>) -> Report {
+        let forecast = match &disk {
+            Err(e) => Err(NoForecast::Other(format!("the disk was not measured: {e}"))),
+            Ok(d) => match d.logs_unmeasured() {
+                Some(why) => Err(NoForecast::Other(why)),
+                None => forecast::forecast(&self.input(d), &self.what_if),
+            },
+        };
+        Report {
+            since: self.since,
+            days: self.days,
+            disk,
+            forecast,
+            what_if: self.what_if,
+            projects: self.projects,
+        }
+    }
+
+    /// What the forecast reads: the closed log days and each project's log
+    /// retention.
+    fn input(&self, disk: &Disk) -> forecast::Input {
+        forecast::Input {
+            today: self.today,
+            closed: disk.closed.clone(),
+            davy: disk.davy(),
+            fixed: disk.fixed(),
+            used: disk.used(),
+            total: disk.total,
+            projects: self
+                .kept
+                .iter()
+                .map(|(_, k)| (k.project.clone(), k.logs.days.get()))
+                .collect(),
+            default_days: self.default_days,
+        }
     }
 }
 

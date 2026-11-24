@@ -21,7 +21,7 @@ pub mod disk;
 pub mod forecast;
 mod report;
 pub use cli::{Args, run};
-pub use report::{Report, Request, report};
+pub use report::{Prepared, Report, Request, prepare, report};
 
 pub const MIGRATION: &str = "CREATE TABLE usage_daily(day TEXT NOT NULL, project_id INTEGER NOT NULL REFERENCES projects(id), signal TEXT NOT NULL, records INTEGER NOT NULL, bytes INTEGER NOT NULL, PRIMARY KEY(day, project_id, signal)) WITHOUT ROWID;";
 /// Undoes [`MIGRATION`], for tests that run the migrations again.

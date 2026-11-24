@@ -1492,7 +1492,7 @@ An operator or an agent asks three questions: what Davy stores for each project,
 
 ### Disk
 
-Measured when asked, by walking the data directory, which holds a few thousand files. Sizes are allocated blocks, what the files take on the disk.
+Measured when asked, by walking the data directory. Sizes are allocated blocks, what the files take on the disk. Measured on an M2 Max with an APFS SSD, a release build and other builds running: 100,020 files in 31 directories took 2.0 s on the first walk and 0.25 s on the next two. A walk of 1,000,000 entries should take about ten times as long warm (an estimate, not measured), and longer on a cold spinning disk, which the time limit below bounds.
 
 The walk reads only what Davy owns, and only so much of it:
 
@@ -1501,7 +1501,7 @@ The walk reads only what Davy owns, and only so much of it:
 - It reads at most 1,000,000 entries for at most 20 s, and enters at most 32 levels of directories.
 - What it may not read, such as `lost+found` on an ext4 mount, what lies past a limit and what is not walked for the reasons above it leaves out, and the measurement is partial: `disk.partial` names the first 10 paths left out with why, such as `lost+found: permission denied`, counts them all in `skipped_count`, and says in `stopped` why the walk ended early. The sizes do not hold what was left out. A path left out beside `logs` leaves the forecast alone: it takes what is not logs as constant, and `used` comes from the filesystem. A path left out under `logs`, `logs` itself, or a walk that stopped early gives no forecast, because the growth of logs is then unknown, and `no_forecast` says so.
 - Any other failure, such as a data directory it cannot open, answers `disk_error` in place of `disk` and `davy`, and the counts come back all the same.
-- One measurement runs at a time per process. Others wait their turn rather than compete for the disk.
+- The server measures at most once a minute: the MCP tool `usage` answers from the last measurement while it is younger than 60 s and of the same UTC day, a failed one included. One walk runs at a time. A caller that arrives during it waits for that walk, not for one of its own, and waits as a task, so it holds no thread that ingest needs. The walk runs on one blocking thread in a task of its own, so a caller that gives up does not stop it and the next caller gets its result. `davy usage` and `davy doctor` walk each time they run.
 - A log day is a directory with a day's name. A file or link with that name counts as `other`, not as a closed day.
 - Systems without `openat` walk by path. They keep the limits and the partial measurement, but can follow a directory swapped for a link during the walk, size files by length rather than allocated blocks, and cannot tell another filesystem.
 
