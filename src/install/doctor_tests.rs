@@ -30,7 +30,7 @@ async fn server(token: Option<&str>) -> Url {
             writes,
             Token::new(t),
             &public,
-            crate::retention::Defaults::default(),
+            retention::Defaults::default(),
         ));
     }
     listen(app).await
@@ -59,7 +59,7 @@ fn install(url: &Url, mail_from: Option<&str>) -> PathBuf {
 }
 
 async fn run(data: &Path) -> Vec<Check> {
-    checks(data)
+    checks(data, retention::Defaults::default())
         .await
         .into_iter()
         .filter(|c| c.name != "disk")
@@ -482,6 +482,19 @@ fn the_disk_forecast_warns_under_14_days_and_fails_under_2() {
             fix
         )
     );
+    let past_the_calendar = Forecast {
+        full_on: None,
+        ..full_in(Some(5))
+    };
+    assert_eq!(
+        disk(data, free, Some(Ok(past_the_calendar))),
+        not_ok(
+            "disk",
+            Status::Warn,
+            "40 GiB free, forecast full in 5 days",
+            fix
+        )
+    );
     assert_eq!(
         disk(data, free, Some(Ok(full_in(None)))),
         ok("disk", "40 GiB free, never fills at the current rate")
@@ -490,4 +503,33 @@ fn the_disk_forecast_warns_under_14_days_and_fails_under_2() {
         disk(data, free, Some(Err("too little".into()))),
         ok("disk", "40 GiB free, no forecast: too little")
     );
+}
+
+#[test]
+fn the_forecast_takes_the_log_retention_doctor_is_given() {
+    let data = scratch("doctor-retention");
+    let c = crate::store::open(&data).unwrap();
+    crate::store::create_project(&c, "api").unwrap();
+    let today = crate::time::day_of(crate::time::now_ns());
+    let yesterday = today.checked_sub(jiff::Span::new().days(1)).unwrap();
+    let day = data.join("logs").join(yesterday.to_string());
+    std::fs::create_dir_all(&day).unwrap();
+    std::fs::write(day.join("segment"), [1_u8; 4096]).unwrap();
+    let keep = |days| retention::Defaults {
+        logs: retention::Days::new(days).unwrap(),
+        ..retention::Defaults::default()
+    };
+    // 30 days of logs need 2 closed days, 1 day of logs only yesterday.
+    let first = today.checked_sub(jiff::Span::new().days(30)).unwrap();
+    assert_eq!(
+        forecast(&data, keep(30)).unwrap().map(|f| f.longest_days),
+        Err(format!(
+            "closed log days since {first}, the first day no retention has cut: the disk has 1, a forecast needs 2"
+        ))
+    );
+    assert_eq!(
+        forecast(&data, keep(1)).unwrap().map(|f| f.longest_days),
+        Ok(1)
+    );
+    std::fs::remove_dir_all(&data).unwrap();
 }

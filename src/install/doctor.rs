@@ -4,6 +4,7 @@
 use super::{SMTP_FILE, Settings, TOKEN_FILE, encrypted_or_local, loopback, sh};
 use crate::{
     alert::mail::Smtp,
+    retention,
     secret::{self, MIN_TOKEN_CHARS},
     text,
     usage::{self, forecast::Forecast},
@@ -25,6 +26,11 @@ pub struct Args {
     pub data: PathBuf,
     #[arg(long)]
     pub json: bool,
+    /// The server's default log retention, as given to `davy serve`, which
+    /// doctor cannot read from a running server. The disk forecast uses it
+    /// for projects without a retention of their own.
+    #[arg(long, default_value_t = retention::DEFAULT_LOG_DAYS)]
+    pub log_retention_days: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -77,7 +83,11 @@ fn not_ok(
 }
 
 pub async fn run(out: &mut impl Write, args: &Args) -> anyhow::Result<()> {
-    let checks = checks(&args.data).await;
+    let defaults = retention::Defaults {
+        logs: retention::Days::new(args.log_retention_days).map_err(anyhow::Error::msg)?,
+        ..retention::Defaults::default()
+    };
+    let checks = checks(&args.data, defaults).await;
     if args.json {
         #[derive(Serialize)]
         struct Report<'a> {
@@ -103,8 +113,9 @@ pub async fn run(out: &mut impl Write, args: &Args) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Runs every check against the data directory `data`.
-pub async fn checks(data: &Path) -> Vec<Check> {
+/// Runs every check against the data directory `data`, with `defaults`
+/// the retention of the server that serves it.
+pub async fn checks(data: &Path, defaults: retention::Defaults) -> Vec<Check> {
     let d = sh(&data.to_string_lossy());
     let mut checks = vec![data_dir(data, &d, current_user())];
     let token = std::fs::read_to_string(data.join(TOKEN_FILE)).ok();
@@ -131,7 +142,11 @@ pub async fn checks(data: &Path) -> Vec<Check> {
         },
     }
     checks.push(logs(&crate::logs::dir(data)));
-    checks.push(disk(data, fs4::available_space(data).ok(), forecast(data)));
+    checks.push(disk(
+        data,
+        fs4::available_space(data).ok(),
+        forecast(data, defaults),
+    ));
     checks
 }
 
@@ -406,9 +421,8 @@ async fn initialized(mut r: reqwest::Response) -> bool {
 }
 
 /// The disk forecast, `None` while the data directory has no database to
-/// read. Projects without a retention of their own are taken to keep the
-/// default 30 days of logs, as doctor cannot read a running server's flags.
-fn forecast(data: &Path) -> Option<Result<Forecast, String>> {
+/// read. Projects without a retention of their own keep `defaults`.
+fn forecast(data: &Path, defaults: retention::Defaults) -> Option<Result<Forecast, String>> {
     if !data.join(crate::store::DB_FILE).exists() {
         return None;
     }
@@ -416,7 +430,7 @@ fn forecast(data: &Path) -> Option<Result<Forecast, String>> {
         project: None,
         since: None,
         what_if: usage::forecast::WhatIf::default(),
-        defaults: crate::retention::Defaults::default(),
+        defaults,
     };
     let report = crate::query::open(data)
         .and_then(|c| usage::report(&c, data, &request, crate::time::now_ns()));
@@ -443,9 +457,10 @@ fn disk(data: &Path, free: Option<u64>, forecast: Option<Result<Forecast, String
     let (by_forecast, said) = match forecast {
         None => (Status::Ok, String::new()),
         Some(Err(reason)) => (Status::Ok, format!(", no forecast: {reason}")),
+        // Days left alone decide, so a day past the calendar still warns.
         Some(Ok(Forecast {
             days_left: Some(n),
-            full_on: Some(on),
+            full_on,
             ..
         })) => {
             let unit = if n == 1 { "day" } else { "days" };
@@ -454,7 +469,8 @@ fn disk(data: &Path, free: Option<u64>, forecast: Option<Result<Forecast, String
                 2..14 => Status::Warn,
                 _ => Status::Ok,
             };
-            (status, format!(", forecast full on {on}, in {n} {unit}"))
+            let on = full_on.map(|on| format!("on {on}, ")).unwrap_or_default();
+            (status, format!(", forecast full {on}in {n} {unit}"))
         }
         Some(Ok(_)) => (Status::Ok, ", never fills at the current rate".to_owned()),
     };
