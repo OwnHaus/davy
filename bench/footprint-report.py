@@ -285,10 +285,15 @@ def main():
     if bad:
         print(f"incomplete runs, {out} not written: {bad}", file=sys.stderr)
         sys.exit(1)
-    with open(out + ".part", "w") as f:
-        json.dump(report, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    os.replace(out + ".part", out)
+    part = f"{out}.part.{os.getpid()}"
+    try:
+        with open(part, "w") as f:
+            json.dump(report, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(part, out)
+    finally:
+        if os.path.exists(part):
+            os.unlink(part)
 
 
 main()

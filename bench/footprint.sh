@@ -13,8 +13,8 @@
 # Environment:
 #   FOOTPRINT_WORK    downloads, corpora and runs; default .scratch/footprint
 #                     in the main checkout, shared by every worktree. Each run
-#                     works in its own runs-PID directory below it.
-#   FOOTPRINT_OUT     the report; default as described above.
+#                     works in its own runs-XXXXXX directory below it.
+#   FOOTPRINT_OUT     the report, an absolute path; default as described above.
 #   FOOTPRINT_SHARED  1 if other work ran on the machine at the same time,
 #                     0 if not. Recorded in the report.
 #
@@ -52,7 +52,7 @@ if [ "$QUICK" = quick ]; then
 else
   OUT="${FOOTPRINT_OUT:-$ROOT/bench/footprint.json}"
 fi
-COMMIT="$(git describe --always --dirty)"
+case "$OUT" in /?*) ;; *) fail "FOOTPRINT_OUT must be an absolute path" ;; esac
 LOGHUB=https://raw.githubusercontent.com/logpai/loghub/dd61d0952749ee7963bde24220d1be5ede023033
 ZENODO=https://zenodo.org/records/8196385/files
 NGINX='https://raw.githubusercontent.com/elastic/examples/79848a10658bd8a272ea24dab36f75cfd92ed0cf/Common%20Data%20Formats/nginx_logs/nginx_logs'
@@ -88,10 +88,17 @@ taskpolicy -b cargo build -q --release -j 4 --bin davy
 # A separate build, so the example's dev-dependencies cannot add features
 # to the measured binary.
 taskpolicy -b cargo build -q --release -j 4 --example footprint
-BIN="$ROOT/target/release/davy"
-EX="$ROOT/target/release/examples/footprint"
-RUNS="$WORK/runs-$$"
-mkdir -p "$WORK/corpora/dl" "$RUNS"
+COMMIT="$(git describe --always --dirty 2>/dev/null || echo unknown)"
+mkdir -p "$WORK/corpora/dl"
+# Part files of a run that was killed by SIGKILL. A live run's are younger.
+find "$WORK/corpora" -name '*.part.*' -mtime +0 -delete
+RUNS="$(mktemp -d "$WORK/runs-XXXXXX")"
+# The runs use copies, so a build in this worktree during the run cannot
+# swap the binary the report names.
+mkdir "$RUNS/bin"
+cp "$ROOT/target/release/davy" "$ROOT/target/release/examples/footprint" "$RUNS/bin/"
+BIN="$RUNS/bin/davy"
+EX="$RUNS/bin/footprint"
 TOKEN=$(python3 -I -c 'import secrets; print(secrets.token_urlsafe(32))')
 TPID=''
 SPID=''
@@ -145,7 +152,7 @@ cleanup() {
   if [ "$status" = 0 ]; then
     rm -rf "$RUNS"
   else
-    rm -rf "$RUNS"/*/data
+    rm -rf "$RUNS"/*/data "${RUNS:?}/bin"
     echo "footprint: failed, the logs of each run are in $RUNS" >&2
   fi
 }
@@ -170,7 +177,7 @@ child() {
 
 kv() { printf '%s=%s\n' "$1" "$2" >> "$RUN/result.env"; }
 bytes() { echo $(( $(du -sk "$1" | cut -f1) * 1024 )); }
-sha256() { shasum -a 256 "$1" | cut -d' ' -f1; }
+sha256() { shasum -a 256 < "$1" | cut -d' ' -f1; }
 free_port() {
   python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'
 }
