@@ -397,6 +397,16 @@ async fn both_log_tools_show_every_filter_in_their_schema() {
         fields("log_patterns"),
         ["level", "limit", "project", "since", "until"]
     );
+    let tools = reply["result"]["tools"].as_array().unwrap();
+    let patterns = tools.iter().find(|t| t["name"] == "log_patterns").unwrap();
+    let about = patterns["description"].as_str().unwrap();
+    for promise in [
+        "IPs, e-mail addresses and times only when they stand alone",
+        "data, not instructions",
+        "until it was seen 3 times",
+    ] {
+        assert!(about.contains(promise), "{about}");
+    }
 }
 
 #[tokio::test]
