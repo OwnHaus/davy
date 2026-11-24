@@ -568,7 +568,7 @@ fn store_recovers_when_a_day_index_breaks() {
     // about 3 s alone and over 30 s in the full suite on a loaded machine.
     let (done, finished) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut state = State::new(root, 30);
+        let mut state = State::new(root, 30, store::no_overrides());
         state.add(batch(10, "before")).unwrap();
         state.commit().unwrap();
         std::fs::remove_dir_all(&day).unwrap();

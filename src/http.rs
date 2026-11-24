@@ -6,7 +6,7 @@ use crate::{
     items::{SdkItem, client_report, session, user_feedback},
     logs::{
         self, LogRecord, logtail, otlp,
-        store::{LogQueue, LogWriter, QueueError},
+        store::{LogQueue, LogWriter, Overrides, QueueError},
     },
     mcp,
     monitor::{self, HeartbeatToken},
@@ -551,15 +551,15 @@ async fn otlp_ingest(State(app): State<App>, req: Request) -> Response {
     }
 }
 
-/// Starts the log writer, which reads each project's own log retention
-/// from the database before every retention pass.
+/// Starts the log writer, which reads the projects' log retention under `lock`.
 fn log_writer(
     data: &std::path::Path,
     retention: crate::retention::Defaults,
+    lock: crate::retention::Lock,
 ) -> anyhow::Result<LogWriter> {
     let projects = store::open(data)?;
-    let overrides = move || crate::retention::log_days(&projects);
-    LogWriter::start(logs::dir(data), retention.logs.get(), Box::new(overrides))
+    let overrides = Overrides::new(move || crate::retention::log_days(&projects), lock);
+    LogWriter::start(logs::dir(data), retention.logs.get(), overrides)
 }
 
 /// Waits for each thread to end, and names the first that panicked.
@@ -617,7 +617,7 @@ pub async fn serve(
     smtp: Option<alert::mail::Smtp>,
 ) -> anyhow::Result<()> {
     let writer = store::Writer::start(store::open(data)?, 1024);
-    let log_writer = log_writer(data, retention)?;
+    let log_writer = log_writer(data, retention, writer.retention.clone())?;
     let app = App {
         keys: Arc::new(Keys::new(store::open(data)?)),
         sender: writer.sender.clone(),

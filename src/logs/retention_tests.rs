@@ -1,10 +1,15 @@
 use crate::logs::{
     LogLevel, LogRecord, LogSource, ORIGINAL_TIMESTAMP,
-    store::{LogQuery, LogWriter, no_overrides, search},
+    store::{LogQuery, LogWriter, Overrides, no_overrides, search},
 };
+use crate::retention::Lock;
 use crate::test_support::scratch;
 use crate::time::{day_of, now_ns};
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 const DAY: i64 = 86_400_000_000_000;
 
@@ -27,7 +32,12 @@ fn record(project_id: i64, timestamp: i64, observed_at: i64, message: &str) -> L
 /// pass with `projects` as the settings, then the batch.
 fn run(dir: &Path, default: u32, projects: &[(u64, u32)], batch: Vec<LogRecord>) {
     let projects: HashMap<u64, u32> = projects.iter().copied().collect();
-    let overrides = Box::new(move || Ok(projects.clone()));
+    let read = move || Ok(projects.clone());
+    run_with(dir, default, Overrides::new(read, Lock::default()), batch);
+}
+
+/// [`run`] with the settings `overrides` reads.
+fn run_with(dir: &Path, default: u32, overrides: Overrides, batch: Vec<LogRecord>) {
     let writer = LogWriter::start(dir.to_path_buf(), default, overrides).unwrap();
     if !batch.is_empty() {
         assert!(writer.queue.push(batch).is_ok());
@@ -112,6 +122,51 @@ fn a_broken_day_is_skipped_and_the_trash_is_emptied() {
     assert_eq!(std::fs::read_dir(dir.join(".trash")).unwrap().count(), 0);
     std::fs::remove_dir(&broken).unwrap();
     assert_eq!(messages(&dir), ["web old"]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_pass_that_cannot_read_the_settings_deletes_nothing() {
+    let dir = scratch("logs-retention-unread");
+    let now = now_ns();
+    let old = now - 5 * DAY;
+    let batch = vec![
+        record(1, old, old, "api old"),
+        record(2, old + 1, old + 1, "web old"),
+    ];
+    run(&dir, 2, &[(1, 30)], batch);
+    // Read as no settings, the default of 2 days would delete the whole day,
+    // the logs of project 1, which keeps 30, included.
+    let unread = || Err(anyhow::anyhow!("database is locked"));
+    run_with(&dir, 2, Overrides::new(unread, Lock::default()), vec![]);
+    assert_eq!(messages(&dir), ["api old", "web old"]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_change_saved_during_a_pass_is_read_before_the_day_is_deleted_from() {
+    let dir = scratch("logs-retention-changed");
+    let now = now_ns();
+    let old = now - 5 * DAY;
+    let batch = vec![
+        record(1, old, old, "api old"),
+        record(2, old + 1, old + 1, "web old"),
+    ];
+    run(&dir, 30, &[], batch);
+    // Project 1 keeps 2 days when the pass starts, and 30 once a change
+    // is saved. Each read says whether the lock was held during it.
+    let lock = Lock::default();
+    let held = Arc::new(Mutex::new(Vec::new()));
+    let (seen, reads) = (lock.clone(), Arc::clone(&held));
+    let read = move || {
+        let mut reads = reads.lock().unwrap();
+        reads.push(seen.is_held());
+        let days = if reads.len() == 1 { 2 } else { 30 };
+        Ok(HashMap::from([(1, days)]))
+    };
+    run_with(&dir, 30, Overrides::new(read, lock), vec![]);
+    assert_eq!(messages(&dir), ["api old", "web old"]);
+    assert_eq!(*held.lock().unwrap(), [false, true]);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

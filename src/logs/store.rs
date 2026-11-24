@@ -160,6 +160,7 @@ pub(super) struct State {
     root: PathBuf,
     fields: Fields,
     policy: retention::Policy,
+    overrides: Overrides,
     /// What retention last deleted from each day.
     swept: HashMap<Date, retention::Cut>,
     open: HashMap<Date, OpenDay>,
@@ -167,11 +168,12 @@ pub(super) struct State {
 }
 
 impl State {
-    pub(super) fn new(root: PathBuf, retention_days: u32) -> Self {
+    pub(super) fn new(root: PathBuf, retention_days: u32, overrides: Overrides) -> Self {
         Self {
             root,
             fields: schema().1,
             policy: retention::Policy::new(retention_days, HashMap::new()),
+            overrides,
             swept: HashMap::new(),
             open: HashMap::new(),
             uncommitted: 0,
@@ -395,14 +397,14 @@ pub struct LogWriter {
 impl LogWriter {
     /// Starts the writer of the day indexes in `root`. A project keeps
     /// `retention_days` of logs unless `overrides` names it.
-    pub fn start(root: PathBuf, retention_days: u32, mut overrides: Overrides) -> Result<Self> {
+    pub fn start(root: PathBuf, retention_days: u32, overrides: Overrides) -> Result<Self> {
         anyhow::ensure!(
             (1..=MAX_RETENTION_DAYS).contains(&retention_days),
             "log retention must be 1 to {MAX_RETENTION_DAYS} days"
         );
         std::fs::create_dir_all(&root)?;
         let (queue, inbox) = LogQueue::bounded(QUEUE_ROWS, QUEUE_BYTES);
-        let mut state = State::new(root, retention_days);
+        let mut state = State::new(root, retention_days, overrides);
         let thread = thread::spawn(move || {
             #[expect(
                 clippy::print_stderr,
@@ -419,10 +421,6 @@ impl LogWriter {
                 // Retention goes first, so the first batch is settled with
                 // each project's own retention.
                 if Instant::now() >= next_retention {
-                    match overrides() {
-                        Ok(projects) => state.policy = state.policy.with_projects(projects),
-                        Err(e) => report("retention settings", Err(e)),
-                    }
                     report("retention", state.retention(now_ns(), RETENTION_BUDGET));
                     next_retention = Instant::now() + RETENTION_EVERY;
                 }

@@ -390,16 +390,25 @@ pub struct Writer {
     pub sender: Sender,
     /// Jobs from people in the web UI, [`UI_QUEUE`] deep and taken first.
     pub ui: Sender,
+    /// Held while a batch that changes a retention setting is written.
+    pub retention: crate::retention::Lock,
     pub thread: thread::JoinHandle<()>,
 }
 impl Writer {
     pub fn start(mut c: Connection, capacity: usize) -> Self {
         let (sender, ingest) = crossbeam_channel::bounded::<Write>(capacity);
         let (ui, people) = crossbeam_channel::bounded::<Write>(UI_QUEUE);
+        let retention = crate::retention::Lock::default();
+        let settings = retention.clone();
         let thread = thread::spawn(move || {
             let mut queues = Queues::new(people, ingest);
             while let Some(batch) = queues.next_batch() {
+                // Held until the change is committed, so the log writer
+                // reads either the old setting before it or the new one.
+                let changes = batch.iter().any(|w| matches!(w.job, Job::SetRetention(..)));
+                let held = changes.then(|| settings.hold());
                 let outcomes = write_batch(&mut c, &batch);
+                drop(held);
                 for (write, outcome) in batch.into_iter().zip(outcomes) {
                     #[expect(
                         clippy::let_underscore_must_use,
@@ -409,7 +418,12 @@ impl Writer {
                 }
             }
         });
-        Self { sender, ui, thread }
+        Self {
+            sender,
+            ui,
+            retention,
+            thread,
+        }
     }
 }
 /// The writer's two queues. A queue whose senders are all gone is replaced by

@@ -7,21 +7,30 @@
 //! deleted, and a merge rewrites the segments that held any, so they leave
 //! the disk and not only the results. A day left with no logs is deleted.
 //!
+//! The settings are read at the start of each pass and again right before
+//! each day is deleted from, under the lock a server takes while it saves a
+//! change. A change that was saved is therefore never followed by a deletion
+//! under the setting it replaced, and a pass that cannot read the settings
+//! deletes nothing.
+//!
 //! The pass remembers what it took from each day, so a day is read again
 //! only when a setting changed or the day outlived another project's
 //! retention. A pass that has deleted for longer than its budget stops, and
 //! the next one goes on, so writes wait at most about one day's merge.
 
 use super::{DAY_NS, Fields, State, WRITER_HEAP, days, parse_day};
-use crate::time::{day_of, now_ns};
-use anyhow::Result;
+use crate::{
+    retention::Lock,
+    time::{day_of, now_ns},
+};
+use anyhow::{Context, Result};
 use jiff::civil::Date;
 use std::{
     collections::{BTreeSet, HashMap},
     time::{Duration, Instant},
 };
 use tantivy::{
-    Index, IndexWriter, ReloadPolicy, Term,
+    Index, IndexReader, IndexWriter, ReloadPolicy, Term,
     collector::Count,
     index::SegmentId,
     indexer::NoMergePolicy,
@@ -29,13 +38,30 @@ use tantivy::{
     schema::IndexRecordOption,
 };
 
-/// Reads the projects that keep logs for a number of days of their own, by
-/// project id. The log writer calls it before each retention pass.
-pub type Overrides = Box<dyn FnMut() -> Result<HashMap<u64, u32>> + Send>;
+/// Where the log writer reads the projects that keep logs for a number of
+/// days of their own, and the lock a change of that takes.
+pub struct Overrides {
+    read: Box<dyn FnMut() -> Result<HashMap<u64, u32>> + Send>,
+    lock: Lock,
+}
+
+impl Overrides {
+    /// Settings that `read` returns by project id, and that change only
+    /// while `lock` is held.
+    pub fn new(
+        read: impl FnMut() -> Result<HashMap<u64, u32>> + Send + 'static,
+        lock: Lock,
+    ) -> Self {
+        Self {
+            read: Box::new(read),
+            lock,
+        }
+    }
+}
 
 /// Overrides for a server where no project has a setting of its own.
 pub fn no_overrides() -> Overrides {
-    Box::new(|| Ok(HashMap::new()))
+    Overrides::new(|| Ok(HashMap::new()), Lock::default())
 }
 
 /// How many days of logs each project keeps.
@@ -103,13 +129,37 @@ impl Cut {
     }
 }
 
+/// What deleting from one day left to do.
+enum Deleted {
+    /// Nothing in the day matched.
+    Nothing,
+    /// The whole day went.
+    Day,
+    /// Logs are marked deleted and committed, and wait for the merge that
+    /// takes them off the disk.
+    Marked {
+        index: Index,
+        writer: Box<IndexWriter>,
+        reader: IndexReader,
+    },
+}
+
 impl State {
+    /// Reads the projects' own settings into the policy.
+    fn refresh(&mut self) -> Result<()> {
+        let projects = (self.overrides.read)().context("reading the retention settings")?;
+        self.policy = self.policy.with_projects(projects);
+        Ok(())
+    }
+
     /// Deletes what expired at `now`, for at most about `budget` beyond the
     /// first day it deletes from or removes; the rest waits for the next
     /// call. A day that fails is reported and skipped, so one broken day
-    /// cannot stop the retention of every day after it.
+    /// cannot stop the retention of every day after it. Settings that cannot
+    /// be read stop the pass before it deletes anything.
     pub(super) fn retention(&mut self, now: i64, budget: Duration) -> Result<()> {
         let deadline = Instant::now().checked_add(budget);
+        self.refresh()?;
         self.empty_trash();
         let mut found = Vec::new();
         for entry in std::fs::read_dir(&self.root)? {
@@ -120,7 +170,7 @@ impl State {
         found.sort_unstable();
         self.swept.retain(|day, _| found.contains(day));
         for day in found {
-            match self.sweep_day(day, now) {
+            match self.sweep_day(day, now)? {
                 Ok(wrote) => {
                     if wrote && deadline.is_some_and(|d| Instant::now() >= d) {
                         return Ok(());
@@ -132,21 +182,108 @@ impl State {
         Ok(())
     }
 
-    /// Deletes what expired at `now` from `day`. Returns whether it wrote
-    /// to the disk, which is what costs time.
-    fn sweep_day(&mut self, day: Date, now: i64) -> Result<bool> {
-        let cut = self.policy.cut(day, now);
-        match &cut {
-            Cut::AllBut(kept) if kept.is_empty() => self.trash(day)?,
-            Cut::Only(gone) if gone.is_empty() => return Ok(false),
-            _ if self.swept.get(&day) == Some(&cut) => return Ok(false),
-            _ => {
-                if self.cut(day, &cut)? {
-                    self.swept.insert(day, cut);
-                }
-            }
+    /// Whether `cut` would delete from `day` what was not deleted before.
+    fn needs(&self, day: Date, cut: &Cut) -> bool {
+        match cut {
+            Cut::Only(gone) if gone.is_empty() => false,
+            _ => self.swept.get(&day) != Some(cut),
         }
-        Ok(true)
+    }
+
+    /// Deletes what expired at `now` from `day`. Returns whether it wrote
+    /// to the disk, which is what costs time. The outer error is settings
+    /// that cannot be read, which stops the pass; the inner one is this
+    /// day's.
+    fn sweep_day(&mut self, day: Date, now: i64) -> Result<Result<bool>> {
+        if !self.needs(day, &self.policy.cut(day, now)) {
+            return Ok(Ok(false));
+        }
+        // An index has one writer at a time, and the day's own may be busy
+        // merging the segments this one rewrites.
+        if let Err(e) = self.close(day) {
+            return Ok(Err(e));
+        }
+        let lock = self.overrides.lock.clone();
+        let held = lock.hold();
+        self.refresh()?;
+        let cut = self.policy.cut(day, now);
+        if !self.needs(day, &cut) {
+            return Ok(Ok(false));
+        }
+        Ok(match self.delete(day, &cut) {
+            Err(e) => Err(e),
+            Ok(Deleted::Day) => Ok(true),
+            Ok(Deleted::Nothing) => {
+                self.swept.insert(day, cut);
+                Ok(false)
+            }
+            Ok(Deleted::Marked {
+                index,
+                writer,
+                reader,
+            }) => {
+                // The deletion is committed, so a change saved from here on
+                // comes after it.
+                drop(held);
+                self.compact(day, cut, &index, *writer, &reader)
+                    .map(|()| true)
+            }
+        })
+    }
+
+    /// Marks what `cut` takes from `day` deleted and commits that, or
+    /// deletes the whole day when `cut` keeps nothing.
+    fn delete(&mut self, day: Date, cut: &Cut) -> Result<Deleted> {
+        if matches!(cut, Cut::AllBut(kept) if kept.is_empty()) {
+            self.trash(day)?;
+            return Ok(Deleted::Day);
+        }
+        let index = Index::open_in_dir(self.root.join(day.to_string()))?;
+        let reader: IndexReader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()?;
+        let query = cut.query(&self.fields);
+        if reader.searcher().search(&*query, &Count)? == 0 {
+            return Ok(Deleted::Nothing);
+        }
+        let mut writer: IndexWriter = index.writer_with_num_threads(1, WRITER_HEAP)?;
+        writer.set_merge_policy(Box::new(NoMergePolicy));
+        writer.delete_query(query)?;
+        writer.commit()?;
+        Ok(Deleted::Marked {
+            index,
+            writer: Box::new(writer),
+            reader,
+        })
+    }
+
+    /// Rewrites the segments of `day` that hold deleted logs, so the logs
+    /// leave the disk, and deletes the day when nothing is left.
+    fn compact(
+        &mut self,
+        day: Date,
+        cut: Cut,
+        index: &Index,
+        mut writer: IndexWriter,
+        reader: &IndexReader,
+    ) -> Result<()> {
+        let deleted: Vec<SegmentId> = index
+            .searchable_segment_metas()?
+            .iter()
+            .filter(|m| m.has_deletes())
+            .map(tantivy::index::SegmentMeta::id)
+            .collect();
+        if !deleted.is_empty() {
+            writer.merge(&deleted).wait()?;
+        }
+        writer.wait_merging_threads()?;
+        reader.reload()?;
+        if reader.searcher().num_docs() > 0 {
+            self.swept.insert(day, cut);
+            return Ok(());
+        }
+        self.trash(day)
     }
 
     /// Removes what a crash left in `.trash` between renaming a day there
@@ -160,42 +297,6 @@ impl State {
                 report_trash(&e);
             }
         }
-    }
-
-    /// Deletes `cut` from `day`. Returns false when the day is gone after.
-    fn cut(&mut self, day: Date, cut: &Cut) -> Result<bool> {
-        let index = Index::open_in_dir(self.root.join(day.to_string()))?;
-        let reader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::Manual)
-            .try_into()?;
-        let query = cut.query(&self.fields);
-        if reader.searcher().search(&*query, &Count)? == 0 {
-            return Ok(true);
-        }
-        // An index has one writer at a time, and the day's own may be busy
-        // merging the segments this one rewrites.
-        self.close(day)?;
-        let mut writer: IndexWriter = index.writer_with_num_threads(1, WRITER_HEAP)?;
-        writer.set_merge_policy(Box::new(NoMergePolicy));
-        writer.delete_query(query)?;
-        writer.commit()?;
-        let deleted: Vec<SegmentId> = index
-            .searchable_segment_metas()?
-            .iter()
-            .filter(|m| m.has_deletes())
-            .map(tantivy::index::SegmentMeta::id)
-            .collect();
-        if !deleted.is_empty() {
-            writer.merge(&deleted).wait()?;
-        }
-        writer.wait_merging_threads()?;
-        reader.reload()?;
-        if reader.searcher().num_docs() > 0 {
-            return Ok(true);
-        }
-        self.trash(day)?;
-        Ok(false)
     }
 
     /// Deletes the whole of `day`: renamed into `.trash` first, so a search

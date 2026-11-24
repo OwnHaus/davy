@@ -14,6 +14,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant},
 };
 
@@ -25,6 +26,27 @@ pub const DEFAULT_LOG_DAYS: u32 = 30;
 /// the most there is, so agents can ask about any error ever seen.
 pub const DEFAULT_ERROR_DAYS: u32 = MAX_DAYS;
 pub const DAY_MS: i64 = 86_400_000;
+
+/// Keeps a change of the retention settings apart from a deletion that
+/// depends on them, within one server. The writer holds it while it saves
+/// a change, the log writer while it reads the settings and deletes. The
+/// CLI writes from a process of its own and does not take it.
+#[derive(Clone, Debug, Default)]
+pub struct Lock(Arc<Mutex<()>>);
+
+impl Lock {
+    /// Waits for the lock. A holder that panicked guarded no data, so its
+    /// poison is ignored.
+    pub fn hold(&self) -> MutexGuard<'_, ()> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether someone holds the lock now.
+    #[cfg(test)]
+    pub fn is_held(&self) -> bool {
+        matches!(self.0.try_lock(), Err(std::sync::TryLockError::WouldBlock))
+    }
+}
 
 /// Each project's own settings, NULL for the server default. id_floor
 /// holds the highest id of a deleted issue, which a new issue's id exceeds.
