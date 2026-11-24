@@ -144,6 +144,38 @@ fn a_pass_that_cannot_read_the_settings_deletes_nothing() {
 }
 
 #[test]
+fn a_pass_whose_data_directory_another_process_holds_deletes_nothing_and_writes() {
+    let dir = scratch("logs-retention-held");
+    let old = now_ns() - 5 * DAY;
+    run(&dir, 30, &[], vec![record(1, old, old, "api old")]);
+    // A CLI that stopped while it held the lock on the data directory.
+    let data = scratch("logs-retention-held-data");
+    std::fs::create_dir_all(&data).unwrap();
+    let cli = Lock::default()
+        .with_dir(&data)
+        .waiting(crate::retention::CLI_WAIT);
+    let held = cli.hold_all().unwrap();
+    let lock = Lock::default()
+        .with_dir(&data)
+        .waiting(std::time::Duration::from_millis(50));
+    let (root, (ran, done)) = (dir.clone(), std::sync::mpsc::channel());
+    std::thread::spawn(move || {
+        let read = || Ok(HashMap::new());
+        let batch = vec![record(1, now_ns(), now_ns(), "api new")];
+        run_with(&root, 2, Overrides::new(read, lock), batch);
+        ran.send(()).unwrap();
+    });
+    assert_eq!(
+        done.recv_timeout(std::time::Duration::from_secs(10)),
+        Ok(())
+    );
+    assert_eq!(messages(&dir), ["api old", "api new"]);
+    drop(held);
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(&data).unwrap();
+}
+
+#[test]
 fn a_change_saved_during_a_pass_is_read_before_the_day_is_deleted_from() {
     let dir = scratch("logs-retention-changed");
     let now = now_ns();

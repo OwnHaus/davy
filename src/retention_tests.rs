@@ -10,7 +10,7 @@ fn a_lock_on_the_data_directory_waits_for_another_process_holding_it() {
     // Two locks on one data directory, as the server and the CLI have.
     let (server, cli) = (
         Lock::default().with_dir(&data),
-        Lock::default().with_dir(&data),
+        Lock::default().with_dir(&data).waiting(CLI_WAIT),
     );
     let held = server.hold_all().unwrap();
     let (took, taken) = std::sync::mpsc::channel();
@@ -26,6 +26,31 @@ fn a_lock_on_the_data_directory_waits_for_another_process_holding_it() {
     drop(held);
     assert_eq!(taken.recv_timeout(Duration::from_secs(10)), Ok(()));
     waiter.join().unwrap();
+    std::fs::remove_dir_all(&data).unwrap();
+}
+
+#[test]
+fn a_wait_for_the_data_directory_ends_with_an_error_naming_the_holder() {
+    let data = crate::test_support::scratch("retention-lock-wait");
+    std::fs::create_dir_all(&data).unwrap();
+    // A CLI that stopped while it held the lock.
+    let cli = Lock::default().with_dir(&data).waiting(CLI_WAIT);
+    let held = cli.hold_all().unwrap();
+    let server = Lock::default()
+        .with_dir(&data)
+        .waiting(Duration::from_millis(50));
+    let (gave_up, given_up) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let tried = server.hold_all().map(drop).map_err(|e| e.to_string());
+        gave_up.send(tried).unwrap();
+    });
+    let tried = given_up.recv_timeout(Duration::from_secs(10)).unwrap();
+    let expected = format!(
+        "{} is still locked after 0.05 s: another Davy process holds it, such as a server deleting logs or a stopped `davy project retention`",
+        data.display()
+    );
+    assert_eq!(tried, Err(expected));
+    drop(held);
     std::fs::remove_dir_all(&data).unwrap();
 }
 

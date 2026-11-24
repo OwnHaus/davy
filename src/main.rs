@@ -351,7 +351,9 @@ fn run_project(out: &mut impl Write, command: Project) -> anyhow::Result<()> {
             } else {
                 // A server's log writer may be deleting by the settings
                 // this replaces, so the change waits for it.
-                let lock = retention::Lock::default().with_dir(&data);
+                let lock = retention::Lock::default()
+                    .with_dir(&data)
+                    .waiting(retention::CLI_WAIT);
                 let _held = lock.hold_all()?;
                 retention::set(&c, &change, retention::By::Person)?
             };

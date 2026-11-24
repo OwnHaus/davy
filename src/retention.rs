@@ -29,6 +29,16 @@ pub const DEFAULT_LOG_DAYS: u32 = 30;
 pub const DEFAULT_ERROR_DAYS: u32 = MAX_DAYS;
 pub const DAY_MS: i64 = 86_400_000;
 
+/// How long the log writer waits for the lock on the data directory before
+/// it gives up the pass and tries again later. It writes logs on the same
+/// thread, so a CLI that stopped while it held the lock must not stop them.
+pub const SERVER_WAIT: Duration = Duration::from_secs(2);
+/// How long `davy project retention` waits for that lock: a deletion under
+/// way takes about one day's delete and its commit.
+pub const CLI_WAIT: Duration = Duration::from_secs(300);
+/// How often a wait for the lock on the data directory tries it again.
+const POLL: Duration = Duration::from_millis(10);
+
 /// Keeps a change of the retention settings apart from a deletion that
 /// depends on them. The server's writer holds it while it saves a change,
 /// the log writer while it reads the settings and deletes. The CLI saves a
@@ -37,7 +47,7 @@ pub const DAY_MS: i64 = 86_400_000;
 #[derive(Clone, Debug, Default)]
 pub struct Lock {
     held: Arc<Mutex<()>>,
-    dir: Option<Arc<Path>>,
+    dir: Option<(Arc<Path>, Duration)>,
 }
 
 /// The lock of both the server and the data directory, until dropped.
@@ -48,10 +58,21 @@ pub struct Held<'a> {
 
 impl Lock {
     /// This lock, which [`Lock::hold_all`] also takes on the data
-    /// directory `data`.
+    /// directory `data`, waiting at most [`SERVER_WAIT`] for another
+    /// process.
     #[must_use]
     pub fn with_dir(mut self, data: &Path) -> Self {
-        self.dir = Some(data.into());
+        self.dir = Some((data.into(), SERVER_WAIT));
+        self
+    }
+
+    /// This lock with the data directory [`Lock::with_dir`] gave, waiting
+    /// at most `wait` for it instead.
+    #[must_use]
+    pub fn waiting(mut self, wait: Duration) -> Self {
+        if let Some((_, waits)) = &mut self.dir {
+            *waits = wait;
+        }
         self
     }
 
@@ -64,12 +85,13 @@ impl Lock {
     /// Waits for the lock within this server, then for the lock on the data
     /// directory, which other processes take. Always in this order, and the
     /// server's writer and the CLI each take only one of them, so no two
-    /// wait for each other.
+    /// wait for each other. Fails when the data directory is still locked
+    /// after the wait it was given.
     pub fn hold_all(&self) -> Result<Held<'_>> {
         let server = self.hold();
         let dir = match &self.dir {
             None => None,
-            Some(path) => Some(lock_dir(path)?),
+            Some((path, wait)) => Some(lock_dir(path, *wait)?),
         };
         Ok(Held {
             _server: server,
@@ -87,13 +109,13 @@ impl Lock {
     }
 }
 
-/// The directory `data` opened and locked, waiting for another process
-/// that holds it. A directory, not a file in it: the server owns its data
+/// The directory `data` opened and locked, waiting at most `wait` for
+/// another process that holds it. A directory, not a file in it: the server owns its data
 /// directory and can always open it, while a lock file a CLI run as root
 /// created could be one the server may not open, and a file at that path
 /// could be a symlink or a FIFO. The lock goes when the directory is
 /// closed, a crash included.
-fn lock_dir(data: &Path) -> Result<File> {
+fn lock_dir(data: &Path, wait: Duration) -> Result<File> {
     use anyhow::Context as _;
     let dir = File::open(data).with_context(|| format!("opening {}", data.display()))?;
     anyhow::ensure!(
@@ -101,9 +123,23 @@ fn lock_dir(data: &Path) -> Result<File> {
         "{} is not a directory",
         data.display()
     );
-    dir.lock()
-        .with_context(|| format!("locking {}", data.display()))?;
-    Ok(dir)
+    let deadline = Instant::now().checked_add(wait);
+    loop {
+        match dir.try_lock() {
+            Ok(()) => return Ok(dir),
+            Err(std::fs::TryLockError::Error(e)) => {
+                return Err(e).with_context(|| format!("locking {}", data.display()));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {}
+        }
+        anyhow::ensure!(
+            deadline.is_none_or(|d| Instant::now() < d),
+            "{} is still locked after {} s: another Davy process holds it, such as a server deleting logs or a stopped `davy project retention`",
+            data.display(),
+            wait.as_secs_f64()
+        );
+        std::thread::sleep(POLL);
+    }
 }
 
 /// Each project's own settings, NULL for the server default. id_floor
