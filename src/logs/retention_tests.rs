@@ -598,3 +598,33 @@ fn a_failed_counter_cut_is_retried_by_the_writer_that_failed_it() {
     state.close_all().unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_counter_cut_is_done_before_the_retention_lock_is_let_go() {
+    let dir = scratch("logs-retention-tally-locked");
+    let now = now_ns();
+    let file = two_projects(&dir, now).join(name(2));
+    let lock = Lock::default();
+    let (seen, (sent, after), mut reads) = (lock.clone(), std::sync::mpsc::channel(), 0);
+    let read = move || {
+        reads += 1;
+        // The second read is the one under the lock, before the delete. A
+        // change saved once the lock is let go must find the cut done.
+        if reads == 2 {
+            let (lock, file, sent) = (seen.clone(), file.clone(), sent.clone());
+            std::thread::spawn(move || {
+                let _held = lock.hold();
+                sent.send(file.exists()).unwrap();
+            });
+        }
+        Ok(HashMap::from([(2, 3)]))
+    };
+    let mut state = State::new(dir.clone(), 30, Overrides::new(read, lock));
+    state.retention(now, std::time::Duration::MAX).unwrap();
+    assert_eq!(
+        after.recv_timeout(std::time::Duration::from_secs(10)),
+        Ok(false)
+    );
+    state.close_all().unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
