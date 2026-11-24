@@ -1200,7 +1200,8 @@ Per UTC day, project, pattern, service and level, Davy counts records and raw by
 
 Logs can come from a public DSN, so one sender could make every line a pattern of its own.
 
-- At most 1,000 patterns per project and day. A record of a new pattern past that counts under `other`, id 0, and the report names it `(patterns past the first 1000 of a project in a day)`. A pattern counted before keeps counting as itself.
+- At most 1,000 patterns per project and day. A record of a new pattern past that counts under `other`, id 0. A pattern counted before keeps counting as itself.
+- The first 500 patterns of a project and day are counted as they come. Past them a new pattern counts under `other` until it was seen 3 times that day, so lines seen once, junk or values the mask missed, cannot take the rest of the room from lines that recur: a sender who wants the room must send each pattern 3 times. Its sightings are kept for at most 1,000 new patterns. When that table is full, each pattern in it loses a sighting and those left with none go, as in the Misra-Gries count of frequent items: a pattern more frequent than one new line in a thousand gets in whatever junk comes between, and the table costs at most one step per sighting on average. The sightings before a pattern gets in stay under `other`, where they were counted and are found. The report names `other` `(patterns without a count of their own: past 500 of a project in a day until seen 3 times, past 1000 always)`.
 - At most 10,000 pairs of pattern and service per project and day. A new service past that counts under `(other services)`. A service name is cut to 128 bytes.
 - A template is at most 12 tokens of 64 bytes and an example 256 bytes. So a project's day costs at most about 1 MB for its patterns and 2.5 MB for its pairs, and the writer holds only the days it has open, at most 3, and those it failed to write.
 

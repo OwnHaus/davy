@@ -222,7 +222,10 @@ fn row(id: u64, s: Sum, total: u64) -> PatternRow {
         .collect();
     let template = if id == OTHER {
         format!(
-            "(patterns past the first {} of a project in a day)",
+            "(patterns without a count of their own: past {} of a project in a day \
+             until seen {} times, past {} always)",
+            tally::FREE_PATTERNS,
+            tally::ADMIT_AFTER,
             tally::MAX_PATTERNS
         )
     } else {

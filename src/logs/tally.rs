@@ -14,7 +14,8 @@
 //! another process see the files.
 //!
 //! Log text can come from a public DSN, so everything here is bounded per
-//! project and day: [`MAX_PATTERNS`] patterns, then [`OTHER`]; [`MAX_CELLS`]
+//! project and day: [`MAX_PATTERNS`] patterns, then [`OTHER`], and past
+//! [`FREE_PATTERNS`] only patterns seen [`ADMIT_AFTER`] times; [`MAX_CELLS`]
 //! pairs of pattern and service, then [`OTHER_SERVICES`]; and the length of
 //! each template, example and service name.
 
@@ -39,6 +40,15 @@ pub(super) mod file;
 
 /// Patterns a project counts in one day. The rest count under [`OTHER`].
 pub const MAX_PATTERNS: usize = 1000;
+/// Patterns a project counts in one day as they come. A new pattern past
+/// them counts under [`OTHER`] until it was seen [`ADMIT_AFTER`] times
+/// that day, so lines seen once, junk or values the mask missed, leave
+/// the rest of the room to lines that recur.
+pub const FREE_PATTERNS: usize = 500;
+/// Sightings that give a new pattern past [`FREE_PATTERNS`] its own count.
+pub const ADMIT_AFTER: u8 = 3;
+/// New patterns past [`FREE_PATTERNS`] whose sightings a project tracks.
+const CANDIDATES: usize = 1000;
 /// Pairs of pattern and service a project counts in one day. A new service
 /// of a pattern past it counts under [`OTHER_SERVICES`].
 pub const MAX_CELLS: usize = 10_000;
@@ -83,6 +93,8 @@ pub(super) struct ProjectDay {
     added: usize,
     /// Pairs of pattern and service in `pending` that `patterns` lacks.
     added_cells: usize,
+    /// Sightings of new patterns past [`FREE_PATTERNS`], see [`seen`].
+    candidates: HashMap<u64, u8>,
 }
 
 /// The counters of one day.
@@ -119,10 +131,37 @@ fn cut(s: &str, bytes: usize) -> &str {
     &s[..s.floor_char_boundary(bytes)]
 }
 
+/// Counts a sighting of `id`, a new pattern past [`FREE_PATTERNS`], and
+/// returns whether it now has its own count. A full table takes one
+/// sighting from each pattern it holds and drops those left with none, as
+/// in the Misra-Gries count of frequent items: a pattern that recurs more
+/// often than one new line in [`CANDIDATES`] gets in whatever comes between,
+/// and the table costs at most one step per sighting on average.
+fn seen(candidates: &mut HashMap<u64, u8>, id: u64) -> bool {
+    if let Some(n) = candidates.get_mut(&id) {
+        *n += 1;
+        if *n < ADMIT_AFTER {
+            return false;
+        }
+        candidates.remove(&id);
+        return true;
+    }
+    if candidates.len() < CANDIDATES {
+        candidates.insert(id, 1);
+    } else {
+        candidates.retain(|_, n| {
+            *n -= 1;
+            *n > 0
+        });
+    }
+    false
+}
+
 impl ProjectDay {
     /// Counts one record as pending and returns the pattern it counts
     /// under: its own, or [`OTHER`] when the project has no room for one
-    /// more pattern today. Pending patterns and pairs take room too, so the
+    /// more pattern today or the pattern has not earned it yet, see
+    /// [`FREE_PATTERNS`]. Pending patterns and pairs take room too, so the
     /// bounds hold whatever the commits do.
     fn count(&mut self, r: &LogRecord, pattern: patterns::Pattern, bytes: u64) -> u64 {
         let Self {
@@ -131,11 +170,13 @@ impl ProjectDay {
             pending,
             added,
             added_cells,
+            candidates,
             ..
         } = self;
         let known = patterns.contains_key(&pattern.id) || pending.contains_key(&pattern.id);
         let real = patterns.len() - usize::from(patterns.contains_key(&OTHER)) + *added;
-        let (id, template) = if known || real < MAX_PATTERNS {
+        let room = real < FREE_PATTERNS || (real < MAX_PATTERNS && seen(candidates, pattern.id));
+        let (id, template) = if known || room {
             (pattern.id, pattern.template)
         } else {
             (OTHER, String::new())

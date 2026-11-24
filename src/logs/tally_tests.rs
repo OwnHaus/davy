@@ -1,5 +1,6 @@
 use super::{
-    DayTally, EXAMPLE_BYTES, FLUSH_EVERY, MAX_CELLS, MAX_PATTERNS, OTHER_SERVICES, SERVICE_BYTES,
+    ADMIT_AFTER, DayTally, EXAMPLE_BYTES, FLUSH_EVERY, FREE_PATTERNS, MAX_CELLS, MAX_PATTERNS,
+    OTHER_SERVICES, SERVICE_BYTES,
     file::{self, MAX_FILE_BYTES, name},
     pace, raw_bytes,
 };
@@ -52,12 +53,24 @@ fn distinct(n: usize) -> String {
     format!("event {word} happened")
 }
 
+/// Counts a pattern of its own for each of `0..=MAX_PATTERNS` in project 1
+/// with `how`, each as often as it takes to get a count of its own, and
+/// returns the id of its last count.
+fn fill(tally: &mut DayTally, how: fn(&mut DayTally, &LogRecord) -> u64) -> Vec<u64> {
+    (0..=MAX_PATTERNS)
+        .map(|n| {
+            let r = record(1, None, &distinct(n));
+            let times = if n < FREE_PATTERNS { 1 } else { ADMIT_AFTER };
+            (1..times).for_each(|_| assert_eq!(how(tally, &r), OTHER));
+            how(tally, &r)
+        })
+        .collect()
+}
+
 #[test]
 fn a_project_counts_1000_patterns_a_day_and_the_rest_under_other() {
     let mut tally = DayTally::default();
-    let ids: Vec<u64> = (0..=MAX_PATTERNS)
-        .map(|n| count(&mut tally, &record(1, None, &distinct(n))))
-        .collect();
+    let ids = fill(&mut tally, count);
     assert!(ids[..MAX_PATTERNS].iter().all(|id| *id != OTHER));
     assert_eq!(ids[MAX_PATTERNS], OTHER);
     let again = count(&mut tally, &record(1, None, &distinct(7)));
@@ -65,6 +78,45 @@ fn a_project_counts_1000_patterns_a_day_and_the_rest_under_other() {
     let other_project = count(&mut tally, &record(2, None, &distinct(MAX_PATTERNS)));
     assert_ne!(other_project, OTHER, "the bound is per project");
     assert_eq!(tally.projects[&1].patterns.len(), MAX_PATTERNS + 1);
+}
+
+#[test]
+fn lines_seen_once_past_500_patterns_leave_the_room_to_lines_that_recur() {
+    let mut tally = DayTally::default();
+    for n in 0..FREE_PATTERNS {
+        count(&mut tally, &record(1, None, &distinct(n)));
+    }
+    let junk: Vec<u64> = (FREE_PATTERNS..FREE_PATTERNS + 5000)
+        .map(|n| count(&mut tally, &record(1, None, &distinct(n))))
+        .collect();
+    assert!(junk.iter().all(|id| *id == OTHER));
+    let real = record(1, None, "payment captured");
+    let ids: Vec<u64> = (0..3).map(|_| count(&mut tally, &real)).collect();
+    assert_eq!(ids, [OTHER, OTHER, patterns::of("payment captured").id]);
+    let project = &tally.projects[&1];
+    assert_eq!(project.patterns.len(), FREE_PATTERNS + 2);
+    assert_eq!(project.patterns[&OTHER].services[""][2][0], 5002);
+}
+
+#[test]
+fn a_line_that_recurs_among_more_junk_than_is_tracked_still_gets_in() {
+    let mut tally = DayTally::default();
+    for n in 0..FREE_PATTERNS {
+        count(&mut tally, &record(1, None, &distinct(n)));
+    }
+    let real = record(1, None, "payment captured");
+    let mut junk = FREE_PATTERNS..;
+    let mut ids = Vec::new();
+    // 400 new lines before each sighting: the table fills on the way to
+    // the third, which costs the line one sighting, so the fourth gets in.
+    for _ in 0..4 {
+        for n in junk.by_ref().take(400) {
+            assert_eq!(count(&mut tally, &record(1, None, &distinct(n))), OTHER);
+        }
+        ids.push(count(&mut tally, &real));
+    }
+    let id = patterns::of("payment captured").id;
+    assert_eq!(ids, [OTHER, OTHER, OTHER, id]);
 }
 
 #[test]
@@ -111,9 +163,7 @@ fn the_first_message_of_a_pattern_is_its_example() {
 #[test]
 fn pending_counts_take_room_and_show_only_once_settled() {
     let mut tally = DayTally::default();
-    let ids: Vec<u64> = (0..=MAX_PATTERNS)
-        .map(|n| pending(&mut tally, &record(1, None, &distinct(n))))
-        .collect();
+    let ids = fill(&mut tally, pending);
     assert_eq!(ids[MAX_PATTERNS], OTHER);
     assert!(tally.projects[&1].patterns.is_empty());
     tally.settle();
@@ -143,9 +193,7 @@ fn counters_are_saved_and_loaded_with_their_bounds() {
     let dir = scratch("tally-file");
     std::fs::create_dir_all(&dir).unwrap();
     let mut tally = DayTally::default();
-    for n in 0..=MAX_PATTERNS {
-        count(&mut tally, &record(1, None, &distinct(n)));
-    }
+    fill(&mut tally, count);
     tally.save(&dir).unwrap();
     assert!(dir.join(name(1)).exists());
     let mut loaded = DayTally::load(&dir, None).unwrap().0;

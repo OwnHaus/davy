@@ -4,7 +4,7 @@ use crate::logs::{
     patterns::{self as masks, OTHER},
     store::{
         LogQuery, LogWriter, Overrides, State, histogram, no_overrides, schema, search,
-        tally::{MAX_PATTERNS, file::name},
+        tally::{ADMIT_AFTER, FREE_PATTERNS, MAX_PATTERNS, file::name},
     },
 };
 use crate::test_support::scratch;
@@ -167,22 +167,33 @@ fn a_pattern_finds_its_lines_and_counts_as_many_as_the_report() {
 fn lines_over_the_bound_are_found_as_other() {
     let dir = scratch("patterns-other");
     let now = now_ns();
+    // The first 500 once, the rest as often as it takes to get in, the
+    // last 3 past the bound.
     let lines: Vec<LogRecord> = (0..MAX_PATTERNS + 3)
-        .map(|n| {
+        .flat_map(|n| {
             let word: String = format!("{n:04}")
                 .bytes()
                 .map(|d| char::from(b'a' + d - b'0'))
                 .collect();
-            info(1, now - 1, &format!("event {word}"))
+            let times = if n < FREE_PATTERNS { 1 } else { ADMIT_AFTER };
+            let line = info(1, now - 1, &format!("event {word}"));
+            std::iter::repeat_n(line, times.into())
         })
         .collect();
     run(&dir, &[], lines);
     let other = search(&dir, &logs(OTHER, now)).unwrap();
-    assert_eq!(other.len(), 3);
+    // Two sightings of each of the 500 before they got in, and 3 of 3.
+    let counts = histogram(&dir, &logs(OTHER, now)).unwrap();
+    assert_eq!(counts.counts.iter().sum::<u64>(), 1009);
     assert!(other.iter().all(|h| h.pattern.as_deref() == Some("other")));
     let r = report(&dir, &query(Some(1), now));
     let row = r.top.iter().find(|p| p.id == "other").unwrap();
-    assert_eq!(row.records, 3);
+    assert_eq!(row.records, 1009);
+    assert_eq!(
+        row.template,
+        "(patterns without a count of their own: past 500 of a project in a day \
+         until seen 3 times, past 1000 always)"
+    );
     assert_eq!(r.patterns, MAX_PATTERNS + 1);
     std::fs::remove_dir_all(&dir).unwrap();
 }
