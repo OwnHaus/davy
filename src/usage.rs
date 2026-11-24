@@ -4,11 +4,10 @@
 //! every few seconds.
 
 use crate::{
-    store::{self, Job, Write},
+    store::{self, Job, Refused},
     time,
 };
 use anyhow::Result;
-use crossbeam_channel::TrySendError;
 use jiff::{ToSpan as _, civil::Date};
 use rusqlite::Connection;
 use std::{
@@ -29,9 +28,13 @@ pub const MIGRATION: &str = "CREATE TABLE usage_daily(day TEXT NOT NULL, project
 #[cfg(test)]
 pub const UNDO: &str = "DROP TABLE usage_daily;";
 
-/// How often the counts in memory go to the writer, and so the most a
-/// crash loses.
+/// How often the counts in memory go to the writer. A crash loses the
+/// counts not committed yet: those of the last 5 seconds, or more while
+/// the writer is behind.
 pub const FLUSH_EVERY: Duration = Duration::from_secs(5);
+/// Counts in one write, so one job holds the writer only briefly.
+pub const MAX_ROWS: usize = 500;
+const QUEUE_FULL_WAIT: Duration = Duration::from_millis(50);
 /// Days of counts the sweep keeps, so a year compares with the one before.
 pub const KEEP_DAYS: i64 = 400;
 
@@ -133,9 +136,13 @@ impl Counter {
     }
     /// Takes every count out, sorted so tests can compare.
     pub fn take(&self) -> Vec<Row> {
-        let map = std::mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner));
+        self.take_up_to(usize::MAX)
+    }
+    /// Takes the first `n` counts out, sorted, and leaves the rest.
+    fn take_up_to(&self, n: usize) -> Vec<Row> {
+        let mut map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let mut rows: Vec<Row> = map
-            .into_iter()
+            .drain()
             .map(|((day, project, signal), count)| Row {
                 day,
                 project,
@@ -144,6 +151,9 @@ impl Counter {
             })
             .collect();
         rows.sort_by_key(|r| (r.day, r.project, r.signal as usize));
+        for r in rows.split_off(n.min(rows.len())) {
+            map.insert((r.day, r.project, r.signal), r.count);
+        }
         rows
     }
     fn put_back(&self, rows: Vec<Row>) {
@@ -188,38 +198,54 @@ pub fn prune(c: &Connection, at_ms: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Sends the counts to the writer every `period`. A full queue keeps them
-/// for the next tick. The task ends when the writer stops.
+/// Sends the counts to the writer every `period`. Counts the writer did
+/// not commit, because its queue was full or the write failed, wait for
+/// the next tick. The task ends when the writer stops.
 pub async fn flush_every(counter: Counter, sender: store::Sender, period: Duration) {
     let mut ticks = tokio::time::interval(period);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         ticks.tick().await;
-        let rows = counter.take();
-        if rows.is_empty() {
-            continue;
-        }
-        let (done, _) = tokio::sync::oneshot::channel();
-        match sender.try_send(Write {
-            job: Job::Usage(rows),
-            done,
-        }) {
-            Ok(()) => {}
-            Err(TrySendError::Full(write)) => {
-                if let Job::Usage(rows) = write.job {
-                    counter.put_back(rows);
-                }
-            }
-            Err(TrySendError::Disconnected(_)) => return,
+        match send(&counter, &sender).await {
+            Ok(()) | Err(Refused::Full) => {}
+            Err(Refused::Stopped) => return,
+            Err(e @ Refused::Failed(_)) => warn("counts not stored, kept for the next try", &e),
         }
     }
 }
 
-/// Sends what is left and waits until the writer stored it, for shutdown.
-pub async fn flush(counter: &Counter, sender: &store::Sender) {
-    let rows = counter.take();
-    if !rows.is_empty() {
-        store::queue_and_wait(sender, Job::Usage(rows)).await;
+/// Sends what is left and waits until the writer committed it, for
+/// shutdown. A full queue is tried again every 50 ms.
+pub async fn flush(counter: &Counter, sender: &store::Sender) -> Result<(), Refused> {
+    loop {
+        match send(counter, sender).await {
+            Err(Refused::Full) => tokio::time::sleep(QUEUE_FULL_WAIT).await,
+            done => return done,
+        }
+    }
+}
+
+#[expect(
+    clippy::print_stderr,
+    reason = "the server has no logger yet, stderr is its log"
+)]
+pub fn warn(what: &str, e: &Refused) {
+    eprintln!("usage flusher: {what}: {e}");
+}
+
+/// Hands the counts to the writer, at most [`MAX_ROWS`] in one job, and
+/// waits until each job is committed. A job the writer did not commit goes
+/// back into `counter`, with the counts not sent yet.
+async fn send(counter: &Counter, sender: &store::Sender) -> Result<(), Refused> {
+    loop {
+        let rows = counter.take_up_to(MAX_ROWS);
+        if rows.is_empty() {
+            return Ok(());
+        }
+        if let Err(e) = store::submit(sender, Job::Usage(rows.clone())).await {
+            counter.put_back(rows);
+            return Err(e);
+        }
     }
 }
 

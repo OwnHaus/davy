@@ -101,3 +101,39 @@ fn a_retention_change_waits_while_the_log_writer_deletes() {
     writer.thread.join().unwrap();
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn a_usage_write_that_fails_leaves_the_rest_of_its_batch_stored() {
+    let mut c = Connection::open_in_memory().unwrap();
+    super::super::init(&mut c).unwrap();
+    create_project(&c, "api").unwrap();
+    c.execute_batch(crate::usage::UNDO).unwrap();
+    let first = Job::First {
+        what: crate::firsts::First::Log,
+        at: 1_795_392_000_000,
+    };
+    let count = Job::Usage(vec![crate::usage::Row {
+        day: "2026-11-23".parse().unwrap(),
+        project: 1,
+        signal: crate::usage::Signal::Logs,
+        count: crate::usage::Count::new(1, 10),
+    }]);
+    let batch: Vec<Write> = [first, count]
+        .into_iter()
+        .map(|job| Write {
+            job,
+            done: oneshot::channel().0,
+        })
+        .collect();
+    let outcomes = write_batch(&mut c, &batch);
+    assert_eq!(
+        outcomes,
+        [Ok(()), Err("no such table: usage_daily".to_owned())]
+    );
+    let firsts: i64 = c
+        .query_row("SELECT count(*) FROM firsts WHERE what='log'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(firsts, 1);
+}

@@ -183,7 +183,9 @@ pub async fn serve(
         .await;
     stop(tasks).await?;
     // The counts since the last flush, now that no request adds to them.
-    crate::usage::flush(&usage, &writer.sender).await;
+    if let Err(e) = crate::usage::flush(&usage, &writer.sender).await {
+        crate::usage::warn("the counts since the last flush were not stored", &e);
+    }
     drop(writer.sender);
     drop(writer.ui);
     drop(log_writer.queue);

@@ -12,23 +12,47 @@ use tokio::sync::oneshot;
 const QUEUE_FULL_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
 const BATCH: usize = 64;
 
-/// Runs `batch` in one transaction. A database failure fails every job in
-/// it, a problem with one job only that job.
+/// Runs `batch`: every job in one transaction, but each [`Job::Usage`] in
+/// one of its own, so counting can neither roll back ingest nor be rolled
+/// back with it. A database failure fails every job of its transaction, a
+/// problem with one job only that job.
 pub(crate) fn write_batch(c: &mut Connection, batch: &[Write]) -> Vec<Outcome> {
+    let (alone, shared): (Vec<_>, Vec<_>) = batch
+        .iter()
+        .enumerate()
+        .partition(|(_, w)| matches!(w.job, Job::Usage(_)));
+    let mut outcomes = vec![Ok(()); batch.len()];
+    let jobs: Vec<&Job> = shared.iter().map(|(_, w)| &w.job).collect();
+    for ((i, _), outcome) in shared.iter().zip(transaction(c, &jobs)) {
+        outcomes[*i] = outcome;
+    }
+    for (i, w) in alone {
+        if let Some(outcome) = transaction(c, &[&w.job]).pop() {
+            outcomes[i] = outcome;
+        }
+    }
+    outcomes
+}
+
+/// Runs `jobs` in one transaction.
+fn transaction(c: &mut Connection, jobs: &[&Job]) -> Vec<Outcome> {
+    if jobs.is_empty() {
+        return Vec::new();
+    }
     (|| -> Result<Vec<Outcome>> {
         // IMMEDIATE takes the write lock first, waiting for a CLI that
         // writes: a batch that read first could not wait for it.
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut latest = Latest::default();
-        let outcomes = batch
+        let outcomes = jobs
             .iter()
-            .map(|w| apply(&tx, &w.job, &mut latest))
+            .map(|job| apply(&tx, job, &mut latest))
             .collect::<Result<_>>()?;
         latest.keep(&tx)?;
         tx.commit()?;
         Ok(outcomes)
     })()
-    .unwrap_or_else(|e| vec![Err(e.to_string()); batch.len()])
+    .unwrap_or_else(|e| vec![Err(e.to_string()); jobs.len()])
 }
 pub struct Writer {
     /// Ingest, checks, deliveries and sweeps.

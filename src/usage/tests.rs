@@ -91,6 +91,19 @@ fn counts_from_one_flush_that_found_the_queue_full_wait_for_the_next() {
     assert_eq!(counter.take(), []);
 }
 
+/// The next job the flush puts in `inbox`.
+async fn next(inbox: &crossbeam_channel::Receiver<store::Write>) -> (Vec<Row>, store::Write) {
+    loop {
+        if let Ok(mut write) = inbox.try_recv() {
+            let Job::Usage(rows) = std::mem::replace(&mut write.job, Job::Usage(Vec::new())) else {
+                panic!("a usage job");
+            };
+            return (rows, write);
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
 #[tokio::test]
 async fn the_flush_task_hands_the_counts_to_the_writer_and_stops_with_it() {
     let (sender, inbox) = crossbeam_channel::bounded(1);
@@ -101,19 +114,79 @@ async fn the_flush_task_hands_the_counts_to_the_writer_and_stops_with_it() {
         sender,
         Duration::from_millis(1),
     ));
-    let write = loop {
-        if let Ok(write) = inbox.try_recv() {
-            break write;
-        }
-        tokio::task::yield_now().await;
-    };
-    let Job::Usage(rows) = write.job else {
-        panic!("a usage job");
-    };
+    let (rows, write) = next(&inbox).await;
     assert_eq!(rows, [row("2026-11-24", 2, Signal::Feedback, 1, 60)]);
+    write.done.send(Ok(())).unwrap();
     drop(inbox);
     counter.put(day("2026-11-24"), 2, Signal::Feedback, Count::new(1, 60));
     task.await.unwrap();
+}
+
+#[tokio::test]
+async fn counts_the_writer_failed_to_store_go_out_again_on_the_next_tick() {
+    let (sender, inbox) = crossbeam_channel::bounded(1);
+    let counter = Counter::default();
+    counter.put(day("2026-11-24"), 1, Signal::Logs, Count::new(3, 300));
+    let task = tokio::spawn(flush_every(
+        counter.clone(),
+        sender,
+        Duration::from_millis(1),
+    ));
+    let (first, write) = next(&inbox).await;
+    write.done.send(Err("disk I/O error".into())).unwrap();
+    let (again, write) = next(&inbox).await;
+    assert_eq!(first, [row("2026-11-24", 1, Signal::Logs, 3, 300)]);
+    assert_eq!(again, first);
+    write.done.send(Ok(())).unwrap();
+    drop(inbox);
+    counter.put(day("2026-11-24"), 1, Signal::Logs, Count::new(1, 1));
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_flush_of_1001_counts_writes_500_500_and_1() {
+    let (sender, inbox) = crossbeam_channel::bounded(1);
+    let counter = Counter::default();
+    for project in 1..=1001 {
+        counter.put(
+            day("2026-11-24"),
+            project,
+            Signal::Errors,
+            Count::new(1, 10),
+        );
+    }
+    let flush = tokio::spawn({
+        let counter = counter.clone();
+        async move { flush(&counter, &sender).await }
+    });
+    let mut sizes = Vec::new();
+    for _ in 0..3 {
+        let (rows, write) = next(&inbox).await;
+        sizes.push(rows.len());
+        write.done.send(Ok(())).unwrap();
+    }
+    assert!(flush.await.unwrap().is_ok());
+    assert_eq!(sizes, [500, 500, 1]);
+    assert_eq!(counter.take(), []);
+}
+
+#[tokio::test]
+async fn a_shutdown_flush_the_writer_failed_says_why_and_keeps_the_counts() {
+    let (sender, inbox) = crossbeam_channel::bounded(1);
+    let counter = Counter::default();
+    counter.put(day("2026-11-24"), 2, Signal::Sessions, Count::new(4, 400));
+    let flush = tokio::spawn({
+        let counter = counter.clone();
+        async move { flush(&counter, &sender).await }
+    });
+    let (_, write) = next(&inbox).await;
+    write.done.send(Err("disk I/O error".into())).unwrap();
+    let refused = flush.await.unwrap().unwrap_err();
+    assert_eq!(refused.to_string(), "disk I/O error");
+    assert_eq!(
+        counter.take(),
+        [row("2026-11-24", 2, Signal::Sessions, 4, 400)]
+    );
 }
 
 #[test]
