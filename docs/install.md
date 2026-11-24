@@ -207,4 +207,6 @@ Follow [connect/agents.md](connect/agents.md). The agent then reads errors and l
 
 Repeat steps 1 and 2 with the new version, then `sudo systemctl restart davy` and step 8. On a Mac, restart with `launchctl kickstart -k "gui/$(id -u)/davy"`. The data directory and the token stay.
 
+A release that migrates data says so in the [changelog](../CHANGELOG.md). Under systemd the server reports it is ready only once the migration is done, and systemd stops a start that takes longer than 90 s and starts it again from the beginning. Before such an upgrade of a large database, run `sudo systemctl edit davy` and add `TimeoutStartSec=15min` under `[Service]`.
+
 A new version that changes the schema migrates the data the first time it opens it, and only while no other process has the database open. Restart the service before you run any other `davy` command with the new binary. Until then such a command waits 10 s, stops with an error that another process has the database open, and changes nothing. `sudo lsof /var/lib/davy/davy.sqlite` lists what holds it. Back up the data directory first: an older Davy refuses migrated data, so a downgrade means restoring that backup.
