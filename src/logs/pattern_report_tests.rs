@@ -261,7 +261,7 @@ fn logs_lost_in_a_failed_commit_are_not_counted() {
 }
 
 #[test]
-fn a_day_written_before_patterns_counts_but_finds_nothing_by_pattern() {
+fn a_day_written_before_patterns_is_neither_counted_nor_found_by_pattern() {
     let dir = scratch("patterns-old-day");
     let now = now_ns();
     let mut old = tantivy::schema::Schema::builder();
@@ -281,7 +281,8 @@ fn a_day_written_before_patterns_counts_but_finds_nothing_by_pattern() {
     let hits = search(&dir, &all).unwrap();
     assert_eq!(hits.len(), 5);
     assert!(hits.iter().all(|h| h.pattern.is_none()));
-    assert_eq!(report(&dir, &query(Some(1), now)).records, 4);
+    let r = report(&dir, &query(Some(1), now));
+    assert_eq!((r.records, r.patterns), (0, 0));
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

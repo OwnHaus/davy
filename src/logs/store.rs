@@ -261,7 +261,10 @@ impl State {
             self.swept.remove(&day);
             // A day that cannot be opened, such as a stray in its place,
             // loses its own logs, not those of the other days. Counted once
-            // the day is open, so a day that fails to open counts nothing.
+            // the day is open, so a day that fails to open counts nothing. A
+            // day index created before patterns has no field to stamp, so
+            // its records are not counted either: a report would list ids
+            // that find none of them.
             let stamp = match self.writer(day) {
                 Ok(open) => open.pattern,
                 Err(e) => {
@@ -270,9 +273,8 @@ impl State {
                     continue;
                 }
             };
-            let id = self.tally(day, &r);
+            let id = stamp.map(|field| (field, self.tally(day, &r)));
             let open = self.writer(day)?;
-            let id = stamp.map(|field| (field, id));
             if let Err(e) = open
                 .writer
                 .add_document(document(&fields, r, open.values, id))
