@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Davy: errors, logs, uptime and alerts in one self-hosted binary</title>
+<meta name="description" content="Davy is one self-hosted Rust binary for error tracking, logs, uptime and alerts. Apps keep their Sentry SDK and log shippers. Coding agents use it over MCP. AGPL-3.0.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 32'%3E%3Cpath d='M4.5 7.5h11v1.6h-11zM4 23.1h12v2.4H4zM3.4 25.5h13.2v4.6c0 .8-.6 1.4-1.4 1.4H4.8c-.8 0-1.4-.6-1.4-1.4z' fill='%231b1f17'/%3E%3Cpath d='M6 9v14M10 9v14M14 9v14' stroke='%231b1f17'/%3E%3Cpath d='M10 15.4c1 1.6 1.7 2.9 1.7 4.1 0 1.2-.8 2-1.7 2s-1.7-.8-1.7-2c0-1.2.7-2.5 1.7-4.1z' fill='%23d98a1f'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script>document.documentElement.classList.add('js')</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="head">
+  <div class="head-in wrap">
+    <a class="brand" href="#top" aria-label="Davy, back to top"><!--mark:start--><svg class="mark" viewBox="0 0 20 32" aria-hidden="true">
+    <ellipse cx="10" cy="3.6" rx="2.6" ry="2.8" fill="none" stroke="currentColor" stroke-width="1.2"/>
+    <path d="M4.5 7.5h11v1.6h-11z" fill="currentColor"/>
+    <path d="M6 9.1v14M8 9.1v14M10 9.1v14M12 9.1v14M14 9.1v14M6 12h8M6 15h8M6 18h8M6 21h8" stroke="currentColor" stroke-width=".55" opacity=".7"/>
+    <path class="mark-cap" d="M10 10.6c2.5 3.6 3.7 7 3.7 9.6 0 1.8-1.6 2.9-3.7 2.9s-3.7-1.1-3.7-2.9c0-2.6 1.2-6 3.7-9.6z"/>
+    <path class="mark-flame" d="M10 15.4c1 1.6 1.7 2.9 1.7 4.1 0 1.2-.8 2-1.7 2s-1.7-.8-1.7-2c0-1.2.7-2.5 1.7-4.1z"/>
+    <path d="M4 23.1h12v2.4H4zM3.4 25.5h13.2v4.6c0 .8-.6 1.4-1.4 1.4H4.8c-.8 0-1.4-.6-1.4-1.4z" fill="currentColor"/>
+  </svg><!--mark:end--><span>Davy</span></a>
+    <nav class="nav chamfer" aria-label="Sections">
+      <a href="#switch">Switch</a>
+      <a href="#life">One error</a>
+      <a href="#watch">Features</a>
+      <a href="#agents">Agents</a>
+      <a href="#inside">Inside</a>
+      <a href="#install">Install</a>
+    </nav>
+    <details class="toc">
+      <summary class="chamfer"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h7"/></svg><span>Contents</span></summary>
+      <nav class="toc-list chamfer" aria-label="Sections">
+        <a href="#switch"><i>I</i>Switch</a>
+        <a href="#life"><i>II</i>One error</a>
+        <a href="#watch"><i>III</i>Features</a>
+        <a href="#agents"><i>IV</i>Agents</a>
+        <a href="#inside"><i>V</i>Inside</a>
+        <a href="#install"><i>VI</i>Install</a>
+      </nav>
+    </details>
+    <div class="head-out">
+      <a href="https://github.com/dominikzabcik/davy/tree/main/docs">Docs</a>
+      <a class="gh" href="https://github.com/dominikzabcik/davy"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg><span>GitHub</span></a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="hero" id="top" aria-labelledby="h1">
+  <div class="plate wrap">
+    <h1 id="h1">Errors, logs, uptime and alerts in&nbsp;one&nbsp;binary.</h1>
+
+    <div class="hero-grid">
+      <div class="hero-text">
+        <p class="lede">Davy runs on your own server. It is one Rust binary of about 30&nbsp;MB with SQLite and Tantivy inside, and nothing to run next to it. Your apps keep their Sentry SDK and log shippers.</p>
+
+        <div class="prompt">
+          <p class="prompt-label">Give your coding agent this prompt in the app's repository:</p>
+          <div class="code-plate">
+            <pre id="agent-prompt"><code>Install Davy on this machine and connect this app to it.
+Follow docs/install.md in https://github.com/dominikzabcik/davy from top to bottom.</code></pre>
+            <button class="copy" type="button" data-copy="agent-prompt"><span>Copy</span></button>
+          </div>
+          <p class="prompt-after">It asks for the public URL, installs and checks the binary, sets up TLS, connects the SDK and adds MCP for itself. <a href="#install">Install by hand</a></p>
+        </div>
+      </div>
+
+      <figure class="hero-lamp" id="lamp">
+        <!--lamp:start--><svg class="lamp" viewBox="40 0 220 744" role="img" aria-labelledby="lamp-t">
+  <title id="lamp-t">An engraving of a miner's safety lamp: a brass vessel, a wire gauze cylinder with a flame inside, and a ring to carry it.</title><defs>
+    <linearGradient id="litg" gradientUnits="userSpaceOnUse" x1="0" y1="300" x2="0" y2="560">
+      <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+      <stop offset=".55" stop-color="#fff" stop-opacity=".9"/>
+      <stop offset=".85" stop-color="#fff" stop-opacity=".6"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <mask id="lit" maskUnits="userSpaceOnUse" x="0" y="0" width="300" height="800"><rect class="lit-rect" x="100" y="300" width="100" height="260" fill="url(#litg)"/></mask>
+  </defs>
+  <path class="hatch" stroke-width=".8" d="M112 702H236M118 707H233M124 712H218M130 717H215M136 722H200M142 727H197M148 732H182"/>
+  <path class="ln" d="M150 692V724"/><rect class="ln paper" x="144" y="716" width="12" height="9" rx="1.5"/>
+  <path class="paper" d="M86 676V690A64 11 0 0 0 214 690V676A64 11 0 0 1 86 676Z"/><path class="ln" d="M86 676V690A64 11 0 0 0 214 690V676"/><ellipse class="ln paper" cx="150" cy="676" rx="64" ry="11"/>
+  <g class="hatch"><path d="M140.4 686.9V700.9" stroke-width="0.45"/><path d="M159.6 686.9V700.9" stroke-width="0.51"/><path d="M169.7 686.5V700.5" stroke-width="0.58"/><path d="M177.6 685.9V699.9" stroke-width="0.64"/><path d="M184.1 685.3V699.3" stroke-width="0.7"/><path d="M189.6 684.6V698.6" stroke-width="0.76"/><path d="M194.3 683.9V697.9" stroke-width="0.8300000000000001"/><path d="M198.4 683.2V697.2" stroke-width="0.89"/><path d="M201.8 682.5V696.5" stroke-width="0.95"/><path d="M204.8 681.7V695.7" stroke-width="1.01"/><path d="M207.2 680.9V694.9" stroke-width="1.08"/><path d="M209.2 680.2V694.2" stroke-width="1.1400000000000001"/><path d="M210.9 679.4V693.4" stroke-width="1.2"/><path d="M212.1 678.6V692.6" stroke-width="1.26"/><path d="M213 677.9V691.9" stroke-width="1.33"/><path d="M213.6 677.2V691.2" stroke-width="1.3900000000000001"/><path d="M213.9 676.4V690.4" stroke-width="1.45"/></g>
+  <path class="paper" d="M90 552V676A60 11 0 0 0 210 676V552A60 11 0 0 1 90 552Z"/><path class="ln" d="M90 552V676A60 11 0 0 0 210 676V552"/><ellipse class="ln paper" cx="150" cy="552" rx="60" ry="11"/>
+  <g class="hatch"><path d="M141 566.9V686.9" stroke-width="0.45"/><path d="M153.2 567V687" stroke-width="0.48"/><path d="M159.8 566.9V686.9" stroke-width="0.52"/><path d="M165 566.6V686.6" stroke-width="0.55"/><path d="M169.6 566.4V686.4" stroke-width="0.58"/><path d="M173.6 566.1V686.1" stroke-width="0.62"/><path d="M177.2 565.8V685.8" stroke-width="0.65"/><path d="M180.4 565.5V685.5" stroke-width="0.6799999999999999"/><path d="M183.4 565.1V685.1" stroke-width="0.72"/><path d="M186.2 564.8V684.8" stroke-width="0.75"/><path d="M188.7 564.4V684.4" stroke-width="0.78"/><path d="M191 564V684" stroke-width="0.82"/><path d="M193.1 563.6V683.6" stroke-width="0.85"/><path d="M195.1 563.3V683.3" stroke-width="0.8800000000000001"/><path d="M196.9 562.9V682.9" stroke-width="0.9199999999999999"/><path d="M198.6 562.5V682.5" stroke-width="0.95"/><path d="M200.1 562.1V682.1" stroke-width="0.9800000000000001"/><path d="M201.5 561.6V681.6" stroke-width="1.02"/><path d="M202.8 561.2V681.2" stroke-width="1.05"/><path d="M203.9 560.8V680.8" stroke-width="1.08"/><path d="M204.9 560.4V680.4" stroke-width="1.1199999999999999"/><path d="M205.9 560V680" stroke-width="1.15"/><path d="M206.7 559.6V679.6" stroke-width="1.1800000000000002"/><path d="M207.4 559.2V679.2" stroke-width="1.22"/><path d="M208 558.8V678.8" stroke-width="1.25"/><path d="M208.6 558.4V678.4" stroke-width="1.28"/><path d="M209 558V678" stroke-width="1.3199999999999998"/><path d="M209.4 557.6V677.6" stroke-width="1.35"/><path d="M209.6 557.2V677.2" stroke-width="1.3800000000000001"/><path d="M209.8 556.8V676.8" stroke-width="1.42"/><path d="M210 556.4V676.4" stroke-width="1.45"/></g>
+  <path class="ln" d="M96 606h10v22h-10"/><path class="ln" d="M101 606v22" stroke-width=".6"/>
+  <path class="paper" d="M100 518V552A50 9 0 0 0 200 552V518A50 9 0 0 1 100 518Z"/><path class="ln" d="M100 518V552A50 9 0 0 0 200 552V518"/><ellipse class="ln paper" cx="150" cy="518" rx="50" ry="9"/>
+  <path class="hatch" stroke-width=".55" d="M100 526A50 9 0 0 0 200 526M100 529A50 9 0 0 0 200 529M100 532A50 9 0 0 0 200 532M100 535A50 9 0 0 0 200 535M100 538A50 9 0 0 0 200 538M100 541A50 9 0 0 0 200 541M100 544A50 9 0 0 0 200 544M100 547A50 9 0 0 0 200 547"/>
+  <g class="hatch"><path d="M169.5 526.3V560.3" stroke-width="0.45"/><path d="M179.1 525.3V559.3" stroke-width="0.52"/><path d="M183.7 524.7V558.7" stroke-width="0.5900000000000001"/><path d="M187.1 524V558" stroke-width="0.6599999999999999"/><path d="M189.8 523.5V557.5" stroke-width="0.74"/><path d="M192 522.9V556.9" stroke-width="0.8099999999999999"/><path d="M193.8 522.3V556.3" stroke-width="0.8800000000000001"/><path d="M195.3 521.8V555.8" stroke-width="0.95"/><path d="M196.6 521.3V555.3" stroke-width="1.02"/><path d="M197.6 520.8V554.8" stroke-width="1.09"/><path d="M198.4 520.3V554.3" stroke-width="1.16"/><path d="M199 519.8V553.8" stroke-width="1.24"/><path d="M199.5 519.3V553.3" stroke-width="1.31"/><path d="M199.8 518.8V552.8" stroke-width="1.3800000000000001"/><path d="M200 518.4V552.4" stroke-width="1.45"/></g>
+  <path class="ln faint" d="M150 96V520" stroke-width="3"/>
+  <path class="ln paper" d="M144 506h12v14h-12z"/><path class="ln" d="M147.5 506v-4h5v4" stroke-width="1"/>
+  <g class="cap"><path d="M150 286C171 352 186 426 186 468C186 494 171 507 150 507C129 507 114 494 114 468C114 426 129 352 150 286Z"/><path class="cap-edge" d="M150 286C171 352 186 426 186 468C186 494 171 507 150 507C129 507 114 494 114 468C114 426 129 352 150 286Z"/></g>
+  <g class="flame"><g class="flame-in"><path class="f-outer" d="M150 440C156 457 164 473 164 488C164 499 158 507 150 507C142 507 136 499 136 488C136 473 144 457 150 440Z"/><path class="f-core" d="M150 468C153.5 478 157 487 157 494C157 500.5 154 504 150 504C146 504 143 500.5 143 494C143 487 146.5 478 150 468Z"/><path class="f-blue" d="M143.5 500C145 504 147.5 506 150 506C152.5 506 155 504 156.5 500C154 502 146 502 143.5 500Z"/></g></g>
+  <path id="mesh" class="mesh" d="M114 104V520M114.2 104.7V520.7M114.8 105.5V521.5M115.8 106.2V522.2M117.1 106.8V522.8M118.8 107.5V523.5M120.9 108.1V524.1M123.2 108.7V524.7M125.9 109.2V525.2M128.8 109.7V525.7M132 110.1V526.1M135.4 110.4V526.4M138.9 110.7V526.7M142.5 110.8V526.8M146.2 111V527M150 111V527M153.8 111V527M157.5 110.8V526.8M161.1 110.7V526.7M164.6 110.4V526.4M168 110.1V526.1M171.2 109.7V525.7M174.1 109.2V525.2M176.8 108.7V524.7M179.1 108.1V524.1M181.2 107.5V523.5M182.9 106.8V522.8M184.2 106.2V522.2M185.2 105.5V521.5M185.8 104.7V520.7M186 104V520M114 104A36 7 0 0 0 186 104M114 109.2A36 7 0 0 0 186 109.2M114 114.4A36 7 0 0 0 186 114.4M114 119.6A36 7 0 0 0 186 119.6M114 124.8A36 7 0 0 0 186 124.8M114 130A36 7 0 0 0 186 130M114 135.2A36 7 0 0 0 186 135.2M114 140.4A36 7 0 0 0 186 140.4M114 145.6A36 7 0 0 0 186 145.6M114 150.8A36 7 0 0 0 186 150.8M114 156A36 7 0 0 0 186 156M114 161.2A36 7 0 0 0 186 161.2M114 166.4A36 7 0 0 0 186 166.4M114 171.6A36 7 0 0 0 186 171.6M114 176.8A36 7 0 0 0 186 176.8M114 182A36 7 0 0 0 186 182M114 187.2A36 7 0 0 0 186 187.2M114 192.4A36 7 0 0 0 186 192.4M114 197.6A36 7 0 0 0 186 197.6M114 202.8A36 7 0 0 0 186 202.8M114 208A36 7 0 0 0 186 208M114 213.2A36 7 0 0 0 186 213.2M114 218.4A36 7 0 0 0 186 218.4M114 223.6A36 7 0 0 0 186 223.6M114 228.8A36 7 0 0 0 186 228.8M114 234A36 7 0 0 0 186 234M114 239.2A36 7 0 0 0 186 239.2M114 244.4A36 7 0 0 0 186 244.4M114 249.6A36 7 0 0 0 186 249.6M114 254.8A36 7 0 0 0 186 254.8M114 260A36 7 0 0 0 186 260M114 265.2A36 7 0 0 0 186 265.2M114 270.4A36 7 0 0 0 186 270.4M114 275.6A36 7 0 0 0 186 275.6M114 280.8A36 7 0 0 0 186 280.8M114 286A36 7 0 0 0 186 286M114 291.2A36 7 0 0 0 186 291.2M114 296.4A36 7 0 0 0 186 296.4M114 301.6A36 7 0 0 0 186 301.6M114 306.8A36 7 0 0 0 186 306.8M114 312A36 7 0 0 0 186 312M114 317.2A36 7 0 0 0 186 317.2M114 322.4A36 7 0 0 0 186 322.4M114 327.6A36 7 0 0 0 186 327.6M114 332.8A36 7 0 0 0 186 332.8M114 338A36 7 0 0 0 186 338M114 343.2A36 7 0 0 0 186 343.2M114 348.4A36 7 0 0 0 186 348.4M114 353.6A36 7 0 0 0 186 353.6M114 358.8A36 7 0 0 0 186 358.8M114 364A36 7 0 0 0 186 364M114 369.2A36 7 0 0 0 186 369.2M114 374.4A36 7 0 0 0 186 374.4M114 379.6A36 7 0 0 0 186 379.6M114 384.8A36 7 0 0 0 186 384.8M114 390A36 7 0 0 0 186 390M114 395.2A36 7 0 0 0 186 395.2M114 400.4A36 7 0 0 0 186 400.4M114 405.6A36 7 0 0 0 186 405.6M114 410.8A36 7 0 0 0 186 410.8M114 416A36 7 0 0 0 186 416M114 421.2A36 7 0 0 0 186 421.2M114 426.4A36 7 0 0 0 186 426.4M114 431.6A36 7 0 0 0 186 431.6M114 436.8A36 7 0 0 0 186 436.8M114 442A36 7 0 0 0 186 442M114 447.2A36 7 0 0 0 186 447.2M114 452.4A36 7 0 0 0 186 452.4M114 457.6A36 7 0 0 0 186 457.6M114 462.8A36 7 0 0 0 186 462.8M114 468A36 7 0 0 0 186 468M114 473.2A36 7 0 0 0 186 473.2M114 478.4A36 7 0 0 0 186 478.4M114 483.6A36 7 0 0 0 186 483.6M114 488.8A36 7 0 0 0 186 488.8M114 494A36 7 0 0 0 186 494M114 499.2A36 7 0 0 0 186 499.2M114 504.4A36 7 0 0 0 186 504.4M114 509.6A36 7 0 0 0 186 509.6M114 514.8A36 7 0 0 0 186 514.8M114 520A36 7 0 0 0 186 520"/>
+  <path class="mesh" d="M114 104.4V196.4M114.4 105.1V197.1M115.2 105.8V197.8M116.4 106.5V198.5M117.9 107.2V199.2M119.8 107.8V199.8M122 108.4V200.4M124.5 108.9V200.9M127.3 109.4V201.4M130.4 109.9V201.9M133.7 110.2V202.2M137.1 110.5V202.5M140.7 110.8V202.8M144.4 110.9V202.9M148.1 111V203M151.9 111V203M155.6 110.9V202.9M159.3 110.8V202.8M162.9 110.5V202.5M166.3 110.2V202.2M169.6 109.9V201.9M172.7 109.4V201.4M175.5 108.9V200.9M178 108.4V200.4M180.2 107.8V199.8M182.1 107.2V199.2M183.6 106.5V198.5M184.8 105.8V197.8M185.6 105.1V197.1M186 104.4V196.4M114 106.6A36 7 0 0 0 186 106.6M114 111.8A36 7 0 0 0 186 111.8M114 117A36 7 0 0 0 186 117M114 122.2A36 7 0 0 0 186 122.2M114 127.4A36 7 0 0 0 186 127.4M114 132.6A36 7 0 0 0 186 132.6M114 137.8A36 7 0 0 0 186 137.8M114 143A36 7 0 0 0 186 143M114 148.2A36 7 0 0 0 186 148.2M114 153.4A36 7 0 0 0 186 153.4M114 158.6A36 7 0 0 0 186 158.6M114 163.8A36 7 0 0 0 186 163.8M114 169A36 7 0 0 0 186 169M114 174.2A36 7 0 0 0 186 174.2M114 179.4A36 7 0 0 0 186 179.4M114 184.6A36 7 0 0 0 186 184.6M114 189.8A36 7 0 0 0 186 189.8M114 195A36 7 0 0 0 186 195"/>
+  <g mask="url(#lit)"><use href="#mesh" class="mesh-lit"/></g>
+  <path class="ln" d="M114 104V520M186 104V520"/>
+  <path class="ln" stroke-width=".8" d="M114 196A36 7 0 0 0 186 196"/>
+  <g class="hatch" opacity=".55"><path d="M178.2 114.4V520.4" stroke-width="0.45"/><path d="M181.4 113.4V519.4" stroke-width="0.5599999999999999"/><path d="M182.8 112.9V518.9" stroke-width="0.67"/><path d="M183.8 112.4V518.4" stroke-width="0.78"/><path d="M184.5 112V518" stroke-width="0.89"/><path d="M185 111.6V517.6" stroke-width="1.01"/><path d="M185.4 111.3V517.3" stroke-width="1.1199999999999999"/><path d="M185.7 110.9V516.9" stroke-width="1.23"/><path d="M185.9 110.6V516.6" stroke-width="1.34"/><path d="M186 110.3V516.3" stroke-width="1.45"/></g>
+  <path class="pillar" d="M101 100V522h6V100z"/>
+  <path class="ln" stroke-width=".7" d="M105.4 104V518"/>
+  <path class="pillar" d="M193 100V522h6V100z"/>
+  <path class="ln" stroke-width=".7" d="M197.4 104V518"/>
+  <path class="paper" d="M98 90V104A52 9 0 0 0 202 104V90A52 9 0 0 1 98 90Z"/><path class="ln" d="M98 90V104A52 9 0 0 0 202 104V90"/><ellipse class="ln paper" cx="150" cy="90" rx="52" ry="9"/>
+  <g class="hatch"><path d="M142.2 98.9V112.9" stroke-width="0.45"/><path d="M160.8 98.8V112.8" stroke-width="0.53"/><path d="M170.4 98.3V112.3" stroke-width="0.62"/><path d="M177.7 97.6V111.6" stroke-width="0.7"/><path d="M183.5 96.9V110.9" stroke-width="0.78"/><path d="M188.3 96.1V110.1" stroke-width="0.8699999999999999"/><path d="M192.1 95.3V109.3" stroke-width="0.95"/><path d="M195.2 94.5V108.5" stroke-width="1.03"/><path d="M197.6 93.6V107.6" stroke-width="1.1199999999999999"/><path d="M199.4 92.8V106.8" stroke-width="1.2"/><path d="M200.8 92V106" stroke-width="1.28"/><path d="M201.6 91.2V105.2" stroke-width="1.3699999999999999"/><path d="M202 90.4V104.4" stroke-width="1.45"/></g>
+  <path class="ln paper" d="M136 90L142 70H158L164 90Z"/>
+  <path class="hatch" stroke-width=".7" d="M153 73L156 88M156 73L159.5 88"/>
+  <path class="ln paper" d="M146 70V58H154V70Z"/>
+  <ellipse class="ring" cx="150" cy="34" rx="19" ry="24"/>
+  <path class="ln" stroke-width=".7" d="M163 20C167 26 168 36 165 46"/>
+</svg><!--lamp:end-->
+        <figcaption><span class="fig">Fig. 1.</span> The lamp.</figcaption>
+      </figure>
+
+      <figure class="ledger" aria-labelledby="ledger-cap">
+        <p class="ledger-head"><span class="fig">Fig. 2.</span> <b>A demo stream.</b> <span>Invented events, made up in your browser.</span></p>
+        <div class="tally" aria-label="Demo totals">
+          <div><b data-n="events">281</b><span>events</span></div>
+          <svg class="tally-arrow" viewBox="0 0 28 12" aria-hidden="true"><path d="M2 6h22M19 1.5 24.5 6 19 10.5"/></svg>
+          <div><b data-n="issues">7</b><span>issues</span></div>
+          <svg class="tally-arrow" viewBox="0 0 28 12" aria-hidden="true"><path d="M2 6h22M19 1.5 24.5 6 19 10.5"/></svg>
+          <div><b data-n="notices">0</b><span>notices</span></div>
+        </div>
+        <ol class="rows">
+          <li><span class="t">TypeError: Cannot read properties of undefined (reading 'servings')</span><span class="m"><time>13:32:57</time> pantry-api</span><span class="r">#1 · 84</span></li>
+          <li><span class="t">Error: connect ETIMEDOUT 10.0.3.12:5432</span><span class="m"><time>13:32:41</time> pantry-api</span><span class="r">#2 · 67</span></li>
+          <li><span class="t">RangeError: Invalid time value</span><span class="m"><time>13:32:19</time> pantry-web</span><span class="r">#3 · 60</span></li>
+          <li><span class="t">TypeError: Cannot read properties of undefined (reading 'servings')</span><span class="m"><time>13:32:02</time> pantry-api</span><span class="r">#1 · 83</span></li>
+          <li><span class="t">KeyError: 'unit'</span><span class="m"><time>13:31:47</time> pantry-worker</span><span class="r">#5 · 24</span></li>
+          <li><span class="t">SyntaxError: Unexpected token '&lt;', "&lt;!DOCTYPE "... is not valid JSON</span><span class="m"><time>13:31:30</time> pantry-web</span><span class="r">#4 · 18</span></li>
+        </ol>
+        <div class="ledger-ctl">
+          <button type="button" class="btn" data-act="pause" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><path class="i-pause" d="M5.5 3.5v9M10.5 3.5v9"/><path class="i-play" d="M5 3.2v9.6L12.6 8z"/></svg><span>Pause</span></button>
+          <button type="button" class="btn" data-act="throw"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.2c1.9 2.9 3.4 5.2 3.4 7.4A3.4 3.4 0 0 1 8 13a3.4 3.4 0 0 1-3.4-3.4C4.6 7.4 6.1 5.1 8 2.2z"/></svg><span>Throw a new error</span></button>
+        </div>
+        <figcaption id="ledger-cap">In 1815 miners read the flame. In firedamp it grew tall under a pale blue cap. Davy's flame does that when an issue is new or comes back, not on every event. <a href="#life">Follow one error until it comes&nbsp;back</a></figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="switch wrap" id="switch" aria-labelledby="switch-h">
+  <div class="switch-head">
+    <h2 id="switch-h" class="say">Keep your SDK. Change the&nbsp;DSN.</h2>
+    <p class="intro">Davy takes what the official Sentry SDKs and the Better Stack log shippers send. Apps switch by changing one setting, not their code.</p>
+  </div>
+  <div class="switch-grid">
+    <div class="fittings">
+
+      <div class="fit">
+        <h3>Errors</h3>
+        <div class="code-plate"><pre><code><span class="l">Sentry.init({
+</span><span class="l">  dsn: 'https://&lt;key&gt;@davy.example.com/1',
+</span><span class="l">})</span></code></pre></div>
+      </div>
+      <div class="fit">
+        <h3>Logs from pino, Vector, Fluent Bit</h3>
+        <div class="code-plate"><pre><code><span class="l">endpoint:    https://davy.example.com
+</span><span class="l">sourceToken: &lt;key&gt;</span></code></pre></div>
+      </div>
+      <div class="fit">
+        <h3>OpenTelemetry logs</h3>
+        <div class="code-plate"><pre><code><span class="l">OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://davy.example.com/v1/logs
+</span><span class="l">OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $DAVY_LOG_KEY"</span></code></pre></div>
+      </div>
+      <div class="aside">
+        <div class="code-plate small"><pre><code><span class="l">davy connect my-app --sdk node \
+</span><span class="l">  --data /var/lib/davy</span></code></pre></div>
+        <p>prints the DSN, the SDK setup and a command that sends a test event.</p>
+      </div>
+    </div>
+
+    <div class="sdk-table">
+      <table>
+        <caption>SDK by SDK</caption>
+        <thead><tr><th scope="col">What you have</th><th scope="col">What changes</th></tr></thead>
+        <tbody>
+          <tr><td><code>@sentry/node</code></td><td>the DSN</td></tr>
+          <tr><td><code>@sentry/browser</code></td><td>the DSN, plus <code>sentry-cli</code> for source maps</td></tr>
+          <tr><td><code>sentry-sdk</code> for Python</td><td>the DSN</td></tr>
+          <tr><td><code>sentry-android</code></td><td>the DSN, with an unminified build</td></tr>
+          <tr><td><code>sentry</code> for Rust</td><td>the DSN</td></tr>
+          <tr><td><code>Sentry.AspNetCore</code></td><td>the DSN</td></tr>
+          <tr><td><code>sentry-go</code></td><td>the DSN</td></tr>
+          <tr><td>pino, Vector, Fluent Bit or another Logtail shipper</td><td>the endpoint and source token</td></tr>
+          <tr><td>an OpenTelemetry log exporter</td><td>two environment variables</td></tr>
+          <tr><td>Claude Code, Codex or Cursor</td><td>one MCP config from <code>davy mcp-config</code></td></tr>
+        </tbody>
+      </table>
+      <p class="note">The tests run the real <code>@sentry/node</code> 7 and 10, <code>@logtail/pino</code>, the OpenTelemetry exporters, <code>sentry-cli</code> and an MCP client against the release binary. The Python and Go SDKs speak the same protocol and are not in the tests yet.</p>
+    </div>
+  </div>
+</section>
+
+<section class="life wrap" id="life" aria-labelledby="life-h">
+  <div class="life-head">
+    <h2 id="life-h" class="say">The life of one&nbsp;error.</h2>
+    <p class="intro">One TypeError from the demo data in the screenshots, from the throw to the day it comes back. Figs. 3 and 4 are its real events. From the fix on, the releases and times are made up to show the rule.</p>
+  </div>
+
+  <div class="beats">
+    <figure class="beat b1">
+      <div class="beat-head"><svg class="mini" viewBox="0 0 20 32" aria-hidden="true"><ellipse class="m-ln" cx="10" cy="3.6" rx="2.6" ry="2.8"/><path class="m-mesh" d="M6 9.1v14M8 9.1v14M10 9.1v14M12 9.1v14M14 9.1v14M6 12h8M6 15h8M6 18h8M6 21h8"/><path class="m-cap" d="M10 10.6c2.5 3.6 3.7 7 3.7 9.6 0 1.8-1.6 2.9-3.7 2.9s-3.7-1.1-3.7-2.9c0-2.6 1.2-6 3.7-9.6z"/><path class="m-flame" d="M10 15.4c1 1.6 1.7 2.9 1.7 4.1 0 1.2-.8 2-1.7 2s-1.7-.8-1.7-2c0-1.2.7-2.5 1.7-4.1z"/><path class="m-body" d="M4.5 7.5h11v1.6h-11zM4 23.1h12v2.4H4zM3.4 25.5h13.2v4.6c0 .8-.6 1.4-1.4 1.4H4.8c-.8 0-1.4-.6-1.4-1.4z"/></svg><h3>Thrown</h3><time datetime="2026-11-22T14:09:51Z">Nov 22, 14:09:51 UTC</time></div>
+      <div class="code-plate small"><pre><code>TypeError: Cannot read properties of undefined (reading &#39;servings&#39;)
+  at <b>scaleRecipe</b>  src/lib/scale.ts:12:12
+  at <b>scaleHandler</b> src/routes/recipes.ts:48:12
+  at Layer.handle node_modules/express/lib/router/layer.js:95:5</code></pre></div>
+      <p class="beat-meta"><span>POST /v1/recipes/scale</span><span>pantry-api@2.4.1</span><span>node v22.12.0</span></p>
+      <figcaption><span class="fig">Fig. 3.</span> Sent by the official <code>@sentry/node</code>. The app changed nothing but its DSN.</figcaption>
+    </figure>
+
+    <figure class="beat b2">
+      <div class="beat-head"><svg class="mini tall" viewBox="0 0 20 32" aria-hidden="true"><ellipse class="m-ln" cx="10" cy="3.6" rx="2.6" ry="2.8"/><path class="m-mesh" d="M6 9.1v14M8 9.1v14M10 9.1v14M12 9.1v14M14 9.1v14M6 12h8M6 15h8M6 18h8M6 21h8"/><path class="m-cap" d="M10 10.6c2.5 3.6 3.7 7 3.7 9.6 0 1.8-1.6 2.9-3.7 2.9s-3.7-1.1-3.7-2.9c0-2.6 1.2-6 3.7-9.6z"/><path class="m-flame" d="M10 15.4c1 1.6 1.7 2.9 1.7 4.1 0 1.2-.8 2-1.7 2s-1.7-.8-1.7-2c0-1.2.7-2.5 1.7-4.1z"/><path class="m-body" d="M4.5 7.5h11v1.6h-11zM4 23.1h12v2.4H4zM3.4 25.5h13.2v4.6c0 .8-.6 1.4-1.4 1.4H4.8c-.8 0-1.4-.6-1.4-1.4z"/></svg><h3>Grouped into an issue</h3></div>
+      <div class="code-plate small"><pre><code><span class="c">fingerprint</span>
+type   TypeError
+frame  src/lib/scale.ts       scaleRecipe
+frame  src/routes/recipes.ts  scaleHandler</code></pre></div>
+      <p class="beat-note">Line and column numbers never count, so an edit higher up the file keeps the same issue. <code>Layer.handle</code> is a library frame and stays out.</p>
+      <p class="notice"><span class="notice-k">Notice</span> [pantry-api] New issue: TypeError: Cannot read properties of undefined (reading &#39;servings&#39;)</p>
+      <figcaption><span class="fig">Fig. 4.</span> The first event opens issue 1 and sends one notice. By Nov 23, 13:31 UTC it holds 84&nbsp;events (Fig.&nbsp;10).</figcaption>
+    </figure>
+
+    <figure class="beat b3">
+      <div class="beat-head"><svg class="mini" viewBox="0 0 20 32" aria-hidden="true"><ellipse class="m-ln" cx="10" cy="3.6" rx="2.6" ry="2.8"/><path class="m-mesh" d="M6 9.1v14M8 9.1v14M10 9.1v14M12 9.1v14M14 9.1v14M6 12h8M6 15h8M6 18h8M6 21h8"/><path class="m-cap" d="M10 10.6c2.5 3.6 3.7 7 3.7 9.6 0 1.8-1.6 2.9-3.7 2.9s-3.7-1.1-3.7-2.9c0-2.6 1.2-6 3.7-9.6z"/><path class="m-flame" d="M10 15.4c1 1.6 1.7 2.9 1.7 4.1 0 1.2-.8 2-1.7 2s-1.7-.8-1.7-2c0-1.2.7-2.5 1.7-4.1z"/><path class="m-body" d="M4.5 7.5h11v1.6h-11zM4 23.1h12v2.4H4zM3.4 25.5h13.2v4.6c0 .8-.6 1.4-1.4 1.4H4.8c-.8 0-1.4-.6-1.4-1.4z"/></svg><h3>An agent reads it and marks it fixed</h3><time datetime="2026-11-23T14:02:00Z">Nov 23, 14:02 UTC</time></div>
+      <div class="talk">
+        <p class="talk-say">The agent asks Davy for the issue over MCP.</p>
+        <div class="code-plate small"><pre><code><span class="dir">→</span> issue_context {"issue_id": 1}
+<span class="dir">←</span> {"issue": {"id": 1, "project": "pantry-api", "status": "unresolved",
+             "event_count": 84, …},
+    "latest_event": {"release": "pantry-api@2.4.1", "exceptions": […], …},
+    "logs": [{"message": "scaling recipe without a yield", …}, …], …}</code></pre></div>
+        <p class="talk-say">The log next to the error says it: imported recipes can have no yield. The agent guards <code>scaleRecipe</code>, the fix ships in 2.4.2, and it closes the issue.</p>
+        <div class="code-plate small"><pre><code><span class="dir">→</span> mark_fixed {"issue_id": 1, "release": "pantry-api@2.4.2"}
+<span class="dir">←</span> issue 1 resolved in release pantry-api@2.4.2</code></pre></div>
+      </div>
+      <figcaption><span class="fig">Fig. 5.</span> Two of the eleven tools. The replies are cut short here; <code>mark_fixed</code> answers in exactly these words.</figcaption>
+    </figure>
+
+    <figure class="beat b4">
+      <div class="beat-head"><svg class="mini" viewBox="0 0 20 32" aria-hidden="true"><ellipse class="m-ln" cx="10" cy="3.6" rx="2.6" ry="2.8"/><path class="m-mesh" d="M6 9.1v14M8 9.1v14M10 9.1v14M12 9.1v14M14 9.1v14M6 12h8M6 15h8M6 18h8M6 21h8"/><path class="m-cap" d="M10 10.6c2.5 3.6 3.7 7 3.7 9.6 0 1.8-1.6 2.9-3.7 2.9s-3.7-1.1-3.7-2.9c0-2.6 1.2-6 3.7-9.6z"/><path class="m-flame" d="M10 15.4c1 1.6 1.7 2.9 1.7 4.1 0 1.2-.8 2-1.7 2s-1.7-.8-1.7-2c0-1.2.7-2.5 1.7-4.1z"/><path class="m-body" d="M4.5 7.5h11v1.6h-11zM4 23.1h12v2.4H4zM3.4 25.5h13.2v4.6c0 .8-.6 1.4-1.4 1.4H4.8c-.8 0-1.4-.6-1.4-1.4z"/></svg><h3>An old release stays fixed</h3><time datetime="2026-11-23T14:05:12Z">Nov 23, 14:05:12 UTC</time></div>
+      <ol class="rows entry"><li class="is-fixed"><span class="t">TypeError: Cannot read properties of undefined (reading &#39;servings&#39;)</span><span class="m"><time>14:05:12</time> pantry-api · 2.4.1</span><span class="r">#1 stays fixed · 85</span></li></ol>
+      <p class="beat-note">One server still runs 2.4.1. Davy first saw that release on Nov 22, before the fix, and it is not the release the fix shipped in. The event is counted, the issue stays resolved, nobody is woken.</p>
+      <figcaption><span class="fig">Fig. 6.</span> No notice.</figcaption>
+    </figure>
+
+    <figure class="beat b5">
+      <div class="beat-head"><svg class="mini tall cap" viewBox="0 0 20 32" aria-hidden="true"><ellipse class="m-ln" cx="10" cy="3.6" rx="2.6" ry="2.8"/><path class="m-mesh" d="M6 9.1v14M8 9.1v14M10 9.1v14M12 9.1v14M14 9.1v14M6 12h8M6 15h8M6 18h8M6 21h8"/><path class="m-cap" d="M10 10.6c2.5 3.6 3.7 7 3.7 9.6 0 1.8-1.6 2.9-3.7 2.9s-3.7-1.1-3.7-2.9c0-2.6 1.2-6 3.7-9.6z"/><path class="m-flame" d="M10 15.4c1 1.6 1.7 2.9 1.7 4.1 0 1.2-.8 2-1.7 2s-1.7-.8-1.7-2c0-1.2.7-2.5 1.7-4.1z"/><path class="m-body" d="M4.5 7.5h11v1.6h-11zM4 23.1h12v2.4H4zM3.4 25.5h13.2v4.6c0 .8-.6 1.4-1.4 1.4H4.8c-.8 0-1.4-.6-1.4-1.4z"/></svg><h3>It comes back and reopens</h3><time datetime="2026-11-24T09:12:44Z">Nov 24, 09:12:44 UTC</time></div>
+      <ol class="rows entry"><li class="is-back"><span class="t">TypeError: Cannot read properties of undefined (reading &#39;servings&#39;)</span><span class="m"><time>09:12:44</time> pantry-api · 2.5.0</span><span class="r">#1 regressed · notice sent</span></li></ol>
+      <p class="beat-note">Davy first sees 2.5.0 with this event, after the fix. The issue turns unresolved, <code>regressed_at</code> is set, the fix is cleared, and the notice goes out:</p>
+      <p class="notice is-back"><span class="notice-k">Notice</span> [pantry-api] Issue regressed: TypeError: Cannot read properties of undefined (reading &#39;servings&#39;)</p>
+      <figcaption><span class="fig">Fig. 7.</span> Version numbers are never compared. What counts is when Davy first saw each release.</figcaption>
+    </figure>
+  </div>
+
+  <figure class="sim" aria-labelledby="sim-cap">
+    <div class="sim-intro">
+      <h3 class="sim-h">Send it an event.</h3>
+      <p>A resolved issue reopens when an event comes <b>without a release</b>, from <b>the release it was fixed in</b>, or from <b>a release Davy first saw after the fix</b>. Anything else counts and stays quiet.</p>
+      <p class="sim-story">Issue 1 came back in 2.5.0. The agent fixed it again in 2.5.1 at 10:02. The clock moves on with each event.</p>
+    </div>
+    <div class="sim-board">
+      <div class="sim-ctl">
+        <p class="sim-label" id="sim-rel-l">An event from <code>pantry-api@</code></p>
+        <div class="rel-list" role="group" aria-labelledby="sim-rel-l">
+          <button type="button" class="rel" data-rel="2.4.1"><b>2.4.1</b><span>first seen Nov 22, 14:09</span></button>
+          <button type="button" class="rel" data-rel="2.4.2"><b>2.4.2</b><span>first seen Nov 23, 13:58</span></button>
+          <button type="button" class="rel" data-rel="2.5.0"><b>2.5.0</b><span>first seen Nov 24, 09:12</span></button>
+          <button type="button" class="rel" data-rel="2.5.1"><b>2.5.1</b><span>first seen Nov 24, 09:58</span></button>
+          <button type="button" class="rel" data-rel="2.6.0"><b>2.6.0</b><span>not seen yet</span></button>
+          <button type="button" class="rel" data-rel=""><b>no release</b><span>the SDK sent none</span></button>
+        </div>
+        <p class="sim-label" id="sim-fix-l">Then the agent calls</p>
+        <div class="fix-list" role="group" aria-labelledby="sim-fix-l">
+          <button type="button" class="btn fix" data-fix="2.5.1" disabled><code>mark_fixed {"issue_id": 1, "release": "pantry-api@2.5.1"}</code></button>
+          <button type="button" class="btn fix" data-fix="" disabled><code>mark_fixed {"issue_id": 1}</code></button>
+        </div>
+        <button type="button" class="reset" data-sim="reset">Start over</button>
+      </div>
+      <div class="sim-out">
+        <div class="sim-lamp-row">
+          <svg class="mini sim-lamp" viewBox="0 0 20 32" aria-hidden="true"><ellipse class="m-ln" cx="10" cy="3.6" rx="2.6" ry="2.8"/><path class="m-mesh" d="M6 9.1v14M8 9.1v14M10 9.1v14M12 9.1v14M14 9.1v14M6 12h8M6 15h8M6 18h8M6 21h8"/><path class="m-cap" d="M10 10.6c2.5 3.6 3.7 7 3.7 9.6 0 1.8-1.6 2.9-3.7 2.9s-3.7-1.1-3.7-2.9c0-2.6 1.2-6 3.7-9.6z"/><path class="m-flame" d="M10 15.4c1 1.6 1.7 2.9 1.7 4.1 0 1.2-.8 2-1.7 2s-1.7-.8-1.7-2c0-1.2.7-2.5 1.7-4.1z"/><path class="m-body" d="M4.5 7.5h11v1.6h-11zM4 23.1h12v2.4H4zM3.4 25.5h13.2v4.6c0 .8-.6 1.4-1.4 1.4H4.8c-.8 0-1.4-.6-1.4-1.4z"/></svg>
+          <div>
+            <p class="sim-clock">Clock <time data-sim="clock">Nov 24, 10:05:00 UTC</time></p>
+            <p class="verdict" data-sim="verdict" aria-live="polite">Issue 1 is resolved in pantry-api@2.5.1. Pick a release.</p>
+          </div>
+        </div>
+        <dl class="record" aria-label="Issue 1 as Davy stores it">
+          <div><dt>status</dt><dd data-f="status">resolved</dd></div>
+          <div><dt>resolved_in_release</dt><dd data-f="in">pantry-api@2.5.1</dd></div>
+          <div><dt>resolved_at</dt><dd data-f="at">2026-11-24T10:02:00.000Z</dd></div>
+          <div><dt>regressed_at</dt><dd data-f="reg">2026-11-24T09:12:44.000Z</dd></div>
+          <div><dt>event_count</dt><dd data-f="n">86</dd></div>
+        </dl>
+        <ol class="rows sim-rows" data-sim="log"></ol>
+      </div>
+    </div>
+    <figcaption id="sim-cap"><span class="fig">Fig. 8.</span> The rule from <code>src/store.rs</code>, running in your browser. An ignored issue never reopens: it only counts. An open one counts without a new notice.</figcaption>
+  </figure>
+</section>
+
+<section class="watch" id="watch" aria-label="What it does">
+  <article class="part wrap">
+    <figure class="shot bleed-l">
+      <a class="shot-link" href="img/issues-light.webp" data-dark="img/issues-dark.webp" style="--fx: 100%; --fy: 17%; --z: 1.9"><picture>
+        <source media="(prefers-color-scheme: dark)" srcset="img/issues-dark-sm.webp 1000w, img/issues-dark.webp 1800w" sizes="(min-width: 860px) 75vw, (min-width: 641px) 100vw, 300vw">
+        <img src="img/issues-light.webp" srcset="img/issues-light-sm.webp 1000w, img/issues-light.webp 1800w" sizes="(min-width: 860px) 75vw, (min-width: 641px) 100vw, 300vw" width="1800" height="1125" loading="lazy" decoding="async" alt="The issue list: errors grouped into issues, each with a 24-hour strip of events, and an inspector with the latest stack trace.">
+      </picture><span class="shot-hint" aria-hidden="true">Tap for the full screenshot</span></a>
+      <figcaption><span class="fig">Fig. 9.</span> The issue list. Each issue carries a 24-hour strip of its events.</figcaption>
+    </figure>
+    <div class="notes">
+      <h2 class="runin">Errors</h2>
+      <p>Davy takes what the official Sentry SDKs send and groups it into issues. An issue reopens when the error comes back in the release that fixed it, or in a release Davy first saw after the fix.</p>
+      <p>Triage from the keyboard: <kbd>j</kbd> and <kbd>k</kbd> to move, <kbd>r</kbd> to resolve, <kbd>i</kbd> to ignore.</p>
+    </div>
+  </article>
+
+  <article class="part wrap flip">
+    <figure class="shot bleed-r">
+      <a class="shot-link" href="img/issue-light.webp" data-dark="img/issue-dark.webp" style="--fx: 22.5%; --fy: 74%; --z: 1.7"><picture>
+        <source media="(prefers-color-scheme: dark)" srcset="img/issue-dark-sm.webp 1000w, img/issue-dark.webp 1800w" sizes="(min-width: 860px) 75vw, (min-width: 641px) 100vw, 300vw">
+        <img src="img/issue-light.webp" srcset="img/issue-light-sm.webp 1000w, img/issue-light.webp 1800w" sizes="(min-width: 860px) 75vw, (min-width: 641px) 100vw, 300vw" width="1800" height="1125" loading="lazy" decoding="async" alt="An issue: the stack trace with source lines, breadcrumbs, context and the logs around the error.">
+      </picture><span class="shot-hint" aria-hidden="true">Tap for the full screenshot</span></a>
+      <figcaption><span class="fig">Fig. 10.</span> Issue 1: the stack with source, breadcrumbs, context, and the logs written around it.</figcaption>
+    </figure>
+    <div class="notes">
+      <h2 class="runin">Stacks</h2>
+      <p>Minified browser stacks turn back into source through maps uploaded with <code>sentry-cli</code>. Logs written next to an error show up on the error.</p>
+      <p>What users write in the SDK's feedback widget shows up on the issue. Release health counts the sessions the SDKs send: crash-free sessions and users per release.</p>
+    </div>
+  </article>
+
+  <article class="part wrap">
+    <figure class="shot bleed-l">
+      <a class="shot-link" href="img/logs-light.webp" data-dark="img/logs-dark.webp" style="--fx: 34%; --fy: 80%; --z: 1.7"><picture>
+        <source media="(prefers-color-scheme: dark)" srcset="img/logs-dark-sm.webp 1000w, img/logs-dark.webp 1800w" sizes="(min-width: 860px) 75vw, (min-width: 641px) 100vw, 300vw">
+        <img src="img/logs-light.webp" srcset="img/logs-light-sm.webp 1000w, img/logs-light.webp 1800w" sizes="(min-width: 860px) 75vw, (min-width: 641px) 100vw, 300vw" width="1800" height="1125" loading="lazy" decoding="async" alt="Log search: a histogram of the matches over 24 hours above a list of log lines with levels and services.">
+      </picture><span class="shot-hint" aria-hidden="true">Tap for the full screenshot</span></a>
+      <figcaption><span class="fig">Fig. 11.</span> Log search. Drag across the histogram to zoom, open a row to see every attribute.</figcaption>
+    </figure>
+    <div class="notes">
+      <h2 class="runin">Logs</h2>
+      <p>From pino, Vector, Fluent Bit and other Logtail shippers, from OpenTelemetry and from Sentry's logger. Full-text search, a histogram and live tail.</p>
+      <p>A bare word such as a request ID matches the message and every attribute value. The UI takes the same query as the CLI:</p>
+      <div class="code-plate small"><pre><code><span class="l">davy logs --data ./data \
+</span><span class="l">  --since 30d --count timeout</span></code></pre></div>
+    </div>
+  </article>
+
+  <div class="duo wrap">
+    <div class="duo-col">
+      <h2 class="runin">Uptime</h2>
+      <p>HTTP checks with status and keyword, and heartbeats for cron jobs. Heartbeats also take the cron check-ins of the Sentry SDKs (<code>Sentry.withMonitor</code>) with their crontab schedule and time zone.</p>
+      <div class="code-plate small"><pre><code><span class="l">davy monitor add my-app api --keyword ok \
+</span><span class="l">  --url https://api.example.com/health \
+</span><span class="l">  --data /var/lib/davy
+</span><span class="l">davy monitor add my-app backup \
+</span><span class="l">  --heartbeat --every 1d \
+</span><span class="l">  --data /var/lib/davy</span></code></pre></div>
+      <p class="aside">The heartbeat prints the path your job calls when it has run.</p>
+    </div>
+    <div class="duo-col">
+      <h2 class="runin">Alerts</h2>
+      <p>A notice when an issue is new or regressed and when a monitor goes down or comes back. Never on every event. Notices from one broken deploy wait up to 30&nbsp;seconds and arrive as one message.</p>
+      <div class="code-plate small"><pre><code><span class="l">davy channel add slack &lt;url&gt; --all \
+</span><span class="l">  --data /var/lib/davy</span></code></pre></div>
+      <p class="aside">To webhooks (signed), Slack and e-mail.</p>
+    </div>
+  </div>
+</section>
+
+<section class="agents wrap" id="agents" aria-labelledby="agents-h">
+  <div class="agents-open">
+    <div class="code-plate big"><pre id="mcp-cmd"><code><span class="l">davy mcp-config --client claude-code</span></code></pre><button class="copy" type="button" data-copy="mcp-cmd"><span>Copy</span></button></div>
+    <p class="agents-alt">or <code>--client codex</code>, <code>--client cursor</code></p>
+  </div>
+  <h2 id="agents-h" class="say">Your coding agent reads the same flame.</h2>
+  <p class="intro wide">An MCP server with eleven tools. The agent searches logs, reads an issue with its stack trace, runs read-only SQL and marks the issue fixed. Every operator step is also a CLI command with <code>--json</code>.</p>
+
+  <dl class="tools">
+    <div><dt><code>issue_context</code></dt><dd>The stack with source lines, breadcrumbs, releases, the logs around the error and what users wrote about it, in one call.</dd></div>
+    <div><dt><code>search_logs</code></dt><dd>The log search the UI uses. A bare word such as a request ID matches every attribute value.</dd></div>
+    <div><dt><code>count_logs</code></dt><dd>How many logs match per time bucket, to see how often something happens and since when.</dd></div>
+    <div><dt><code>sql</code> and <code>schema</code></dt><dd>One read-only SQLite query, and the tables to write it against.</dd></div>
+    <div><dt><code>mark_fixed</code></dt><dd>Resolves an issue in a release. It reopens if the error comes back in that release or in one Davy first sees after the fix.</dd></div>
+    <div><dt><code>release_health</code></dt><dd>Crash-free sessions and users per release, to tell whether a new release crashes more.</dd></div>
+    <div><dt><code>connect_project</code></dt><dd>An existing project's DSN, SDK setup and a test-event command.</dd></div>
+    <div><dt><code>project_status</code></dt><dd>Event and issue counts and last event times, to confirm ingest.</dd></div>
+    <div><dt><code>set_retention</code></dt><dd>How many days a project keeps its logs and its errors.</dd></div>
+    <div><dt><code>submit_feedback</code></dt><dd>Tells whoever runs Davy that a tool was missing or wrong. Davy sends it nowhere else.</dd></div>
+  </dl>
+
+  <div class="cli">
+    <p>The same in the CLI:</p>
+    <div class="code-plate"><pre><code><span class="l">davy issues --data ./data
+</span><span class="l">davy context 1 --data ./data
+</span><span class="l">davy logs --data ./data --since 1h \
+</span><span class="l">  --project my-app --level warn \
+</span><span class="l">  'timeout AND attributes.provider:acme'
+</span><span class="l">davy resolve 1 --data ./data --release 2.4.2</span></code></pre></div>
+  </div>
+</section>
+
+<section class="inside wrap" id="inside" aria-labelledby="inside-h">
+  <figure class="cut-fig">
+    <!--cutaway:start--><svg class="cutaway" viewBox="40 30 440 570" role="img" aria-labelledby="cut-t">
+  <title id="cut-t">A cutaway drawing of the lamp's gauze cylinder with six shelves inside, lettered A to F. The key beside it names each part.</title>
+  <path class="ln faint" d="M60 56A200 36 0 0 1 460 56"/>
+  <path class="mesh" d="M60 56V548M60.6 58.8V550.8M62.5 61.6V553.6M65.5 64.4V556.4M69.8 67.1V559.1M75.2 69.8V561.8M81.8 72.3V564.3M89.5 74.8V566.8M98.2 77.2V569.2M107.9 79.4V571.4M412.1 79.4V571.4M421.8 77.2V569.2M430.5 74.8V566.8M438.2 72.3V564.3M444.8 69.8V561.8M450.2 67.1V559.1M454.5 64.4V556.4M457.5 61.6V553.6M459.4 58.8V550.8M460 56V548M60 56A200 36 0 0 0 111.4 80.1M408.6 80.1A200 36 0 0 0 460 56M60 63A200 36 0 0 0 111.4 87.1M408.6 87.1A200 36 0 0 0 460 63M60 70A200 36 0 0 0 111.4 94.1M408.6 94.1A200 36 0 0 0 460 70M60 77A200 36 0 0 0 111.4 101.1M408.6 101.1A200 36 0 0 0 460 77M60 84A200 36 0 0 0 111.4 108.1M408.6 108.1A200 36 0 0 0 460 84M60 91A200 36 0 0 0 111.4 115.1M408.6 115.1A200 36 0 0 0 460 91M60 98A200 36 0 0 0 111.4 122.1M408.6 122.1A200 36 0 0 0 460 98M60 105A200 36 0 0 0 111.4 129.1M408.6 129.1A200 36 0 0 0 460 105M60 112A200 36 0 0 0 111.4 136.1M408.6 136.1A200 36 0 0 0 460 112M60 119A200 36 0 0 0 111.4 143.1M408.6 143.1A200 36 0 0 0 460 119M60 126A200 36 0 0 0 111.4 150.1M408.6 150.1A200 36 0 0 0 460 126M60 133A200 36 0 0 0 111.4 157.1M408.6 157.1A200 36 0 0 0 460 133M60 140A200 36 0 0 0 111.4 164.1M408.6 164.1A200 36 0 0 0 460 140M60 147A200 36 0 0 0 111.4 171.1M408.6 171.1A200 36 0 0 0 460 147M60 154A200 36 0 0 0 111.4 178.1M408.6 178.1A200 36 0 0 0 460 154M60 161A200 36 0 0 0 111.4 185.1M408.6 185.1A200 36 0 0 0 460 161M60 168A200 36 0 0 0 111.4 192.1M408.6 192.1A200 36 0 0 0 460 168M60 175A200 36 0 0 0 111.4 199.1M408.6 199.1A200 36 0 0 0 460 175M60 182A200 36 0 0 0 111.4 206.1M408.6 206.1A200 36 0 0 0 460 182M60 189A200 36 0 0 0 111.4 213.1M408.6 213.1A200 36 0 0 0 460 189M60 196A200 36 0 0 0 111.4 220.1M408.6 220.1A200 36 0 0 0 460 196M60 203A200 36 0 0 0 111.4 227.1M408.6 227.1A200 36 0 0 0 460 203M60 210A200 36 0 0 0 111.4 234.1M408.6 234.1A200 36 0 0 0 460 210M60 217A200 36 0 0 0 111.4 241.1M408.6 241.1A200 36 0 0 0 460 217M60 224A200 36 0 0 0 111.4 248.1M408.6 248.1A200 36 0 0 0 460 224M60 231A200 36 0 0 0 111.4 255.1M408.6 255.1A200 36 0 0 0 460 231M60 238A200 36 0 0 0 111.4 262.1M408.6 262.1A200 36 0 0 0 460 238M60 245A200 36 0 0 0 111.4 269.1M408.6 269.1A200 36 0 0 0 460 245M60 252A200 36 0 0 0 111.4 276.1M408.6 276.1A200 36 0 0 0 460 252M60 259A200 36 0 0 0 111.4 283.1M408.6 283.1A200 36 0 0 0 460 259M60 266A200 36 0 0 0 111.4 290.1M408.6 290.1A200 36 0 0 0 460 266M60 273A200 36 0 0 0 111.4 297.1M408.6 297.1A200 36 0 0 0 460 273M60 280A200 36 0 0 0 111.4 304.1M408.6 304.1A200 36 0 0 0 460 280M60 287A200 36 0 0 0 111.4 311.1M408.6 311.1A200 36 0 0 0 460 287M60 294A200 36 0 0 0 111.4 318.1M408.6 318.1A200 36 0 0 0 460 294M60 301A200 36 0 0 0 111.4 325.1M408.6 325.1A200 36 0 0 0 460 301M60 308A200 36 0 0 0 111.4 332.1M408.6 332.1A200 36 0 0 0 460 308M60 315A200 36 0 0 0 111.4 339.1M408.6 339.1A200 36 0 0 0 460 315M60 322A200 36 0 0 0 111.4 346.1M408.6 346.1A200 36 0 0 0 460 322M60 329A200 36 0 0 0 111.4 353.1M408.6 353.1A200 36 0 0 0 460 329M60 336A200 36 0 0 0 111.4 360.1M408.6 360.1A200 36 0 0 0 460 336M60 343A200 36 0 0 0 111.4 367.1M408.6 367.1A200 36 0 0 0 460 343M60 350A200 36 0 0 0 111.4 374.1M408.6 374.1A200 36 0 0 0 460 350M60 357A200 36 0 0 0 111.4 381.1M408.6 381.1A200 36 0 0 0 460 357M60 364A200 36 0 0 0 111.4 388.1M408.6 388.1A200 36 0 0 0 460 364M60 371A200 36 0 0 0 111.4 395.1M408.6 395.1A200 36 0 0 0 460 371M60 378A200 36 0 0 0 111.4 402.1M408.6 402.1A200 36 0 0 0 460 378M60 385A200 36 0 0 0 111.4 409.1M408.6 409.1A200 36 0 0 0 460 385M60 392A200 36 0 0 0 111.4 416.1M408.6 416.1A200 36 0 0 0 460 392M60 399A200 36 0 0 0 111.4 423.1M408.6 423.1A200 36 0 0 0 460 399M60 406A200 36 0 0 0 111.4 430.1M408.6 430.1A200 36 0 0 0 460 406M60 413A200 36 0 0 0 111.4 437.1M408.6 437.1A200 36 0 0 0 460 413M60 420A200 36 0 0 0 111.4 444.1M408.6 444.1A200 36 0 0 0 460 420M60 427A200 36 0 0 0 111.4 451.1M408.6 451.1A200 36 0 0 0 460 427M60 434A200 36 0 0 0 111.4 458.1M408.6 458.1A200 36 0 0 0 460 434M60 441A200 36 0 0 0 111.4 465.1M408.6 465.1A200 36 0 0 0 460 441M60 448A200 36 0 0 0 111.4 472.1M408.6 472.1A200 36 0 0 0 460 448M60 455A200 36 0 0 0 111.4 479.1M408.6 479.1A200 36 0 0 0 460 455M60 462A200 36 0 0 0 111.4 486.1M408.6 486.1A200 36 0 0 0 460 462M60 469A200 36 0 0 0 111.4 493.1M408.6 493.1A200 36 0 0 0 460 469M60 476A200 36 0 0 0 111.4 500.1M408.6 500.1A200 36 0 0 0 460 476M60 483A200 36 0 0 0 111.4 507.1M408.6 507.1A200 36 0 0 0 460 483M60 490A200 36 0 0 0 111.4 514.1M408.6 514.1A200 36 0 0 0 460 490M60 497A200 36 0 0 0 111.4 521.1M408.6 521.1A200 36 0 0 0 460 497M60 504A200 36 0 0 0 111.4 528.1M408.6 528.1A200 36 0 0 0 460 504M60 511A200 36 0 0 0 111.4 535.1M408.6 535.1A200 36 0 0 0 460 511M60 518A200 36 0 0 0 111.4 542.1M408.6 542.1A200 36 0 0 0 460 518M60 525A200 36 0 0 0 111.4 549.1M408.6 549.1A200 36 0 0 0 460 525M60 532A200 36 0 0 0 111.4 556.1M408.6 556.1A200 36 0 0 0 460 532M60 539A200 36 0 0 0 111.4 563.1M408.6 563.1A200 36 0 0 0 460 539M60 546A200 36 0 0 0 111.4 570.1M408.6 570.1A200 36 0 0 0 460 546"/>
+  <g class="hatch" opacity=".6"><path d="M416.7 84.4V566.4" stroke-width="0.45"/><path d="M433.6 79.9V561.9" stroke-width="0.55"/><path d="M441.1 77.3V559.3" stroke-width="0.65"/><path d="M446.3 75.1V557.1" stroke-width="0.75"/><path d="M450.3 73.1V555.1" stroke-width="0.85"/><path d="M453.3 71.3V553.3" stroke-width="0.95"/><path d="M455.6 69.5V551.5" stroke-width="1.05"/><path d="M457.3 67.9V549.9" stroke-width="1.15"/><path d="M458.5 66.4V548.4" stroke-width="1.25"/><path d="M459.4 64.9V546.9" stroke-width="1.35"/><path d="M459.8 63.4V545.4" stroke-width="1.45"/></g>
+  <path class="paper ln" d="M110 118V130A150 22 0 0 0 410 130V118A150 22 0 0 0 110 118Z"/>
+  <ellipse class="ln shelf-top" cx="260" cy="118" rx="150" ry="22"/>
+  <g class="hatch"><path d="M331.9 138.3V149.3" stroke-width="0.45"/><path d="M363.8 134.9V145.9" stroke-width="0.5599999999999999"/><path d="M378 132.6V143.6" stroke-width="0.67"/><path d="M387.9 130.5V141.5" stroke-width="0.78"/><path d="M395.2 128.5V139.5" stroke-width="0.89"/><path d="M400.7 126.6V137.6" stroke-width="1.01"/><path d="M404.6 124.8V135.8" stroke-width="1.1199999999999999"/><path d="M407.3 123.1V134.1" stroke-width="1.23"/><path d="M409.1 121.5V132.5" stroke-width="1.34"/><path d="M409.9 119.9V130.9" stroke-width="1.45"/></g>
+  <text class="key" x="260" y="119" text-anchor="middle" dominant-baseline="central">A</text>
+  <path class="paper ln" d="M110 192V204A150 22 0 0 0 410 204V192A150 22 0 0 0 110 192Z"/>
+  <ellipse class="ln shelf-top" cx="260" cy="192" rx="150" ry="22"/>
+  <g class="hatch"><path d="M331.9 212.3V223.3" stroke-width="0.45"/><path d="M363.8 208.9V219.9" stroke-width="0.5599999999999999"/><path d="M378 206.6V217.6" stroke-width="0.67"/><path d="M387.9 204.5V215.5" stroke-width="0.78"/><path d="M395.2 202.5V213.5" stroke-width="0.89"/><path d="M400.7 200.6V211.6" stroke-width="1.01"/><path d="M404.6 198.8V209.8" stroke-width="1.1199999999999999"/><path d="M407.3 197.1V208.1" stroke-width="1.23"/><path d="M409.1 195.5V206.5" stroke-width="1.34"/><path d="M409.9 193.9V204.9" stroke-width="1.45"/></g>
+  <text class="key" x="260" y="193" text-anchor="middle" dominant-baseline="central">B</text>
+  <path class="paper ln" d="M110 266V278A150 22 0 0 0 410 278V266A150 22 0 0 0 110 266Z"/>
+  <ellipse class="ln shelf-top" cx="260" cy="266" rx="150" ry="22"/>
+  <g class="hatch"><path d="M331.9 286.3V297.3" stroke-width="0.45"/><path d="M363.8 282.9V293.9" stroke-width="0.5599999999999999"/><path d="M378 280.6V291.6" stroke-width="0.67"/><path d="M387.9 278.5V289.5" stroke-width="0.78"/><path d="M395.2 276.5V287.5" stroke-width="0.89"/><path d="M400.7 274.6V285.6" stroke-width="1.01"/><path d="M404.6 272.8V283.8" stroke-width="1.1199999999999999"/><path d="M407.3 271.1V282.1" stroke-width="1.23"/><path d="M409.1 269.5V280.5" stroke-width="1.34"/><path d="M409.9 267.9V278.9" stroke-width="1.45"/></g>
+  <text class="key" x="260" y="267" text-anchor="middle" dominant-baseline="central">C</text>
+  <path class="paper ln" d="M110 340V352A150 22 0 0 0 410 352V340A150 22 0 0 0 110 340Z"/>
+  <ellipse class="ln shelf-top" cx="260" cy="340" rx="150" ry="22"/>
+  <g class="hatch"><path d="M331.9 360.3V371.3" stroke-width="0.45"/><path d="M363.8 356.9V367.9" stroke-width="0.5599999999999999"/><path d="M378 354.6V365.6" stroke-width="0.67"/><path d="M387.9 352.5V363.5" stroke-width="0.78"/><path d="M395.2 350.5V361.5" stroke-width="0.89"/><path d="M400.7 348.6V359.6" stroke-width="1.01"/><path d="M404.6 346.8V357.8" stroke-width="1.1199999999999999"/><path d="M407.3 345.1V356.1" stroke-width="1.23"/><path d="M409.1 343.5V354.5" stroke-width="1.34"/><path d="M409.9 341.9V352.9" stroke-width="1.45"/></g>
+  <text class="key" x="260" y="341" text-anchor="middle" dominant-baseline="central">D</text>
+  <path class="paper ln" d="M110 414V426A150 22 0 0 0 410 426V414A150 22 0 0 0 110 414Z"/>
+  <ellipse class="ln shelf-top" cx="260" cy="414" rx="150" ry="22"/>
+  <g class="hatch"><path d="M331.9 434.3V445.3" stroke-width="0.45"/><path d="M363.8 430.9V441.9" stroke-width="0.5599999999999999"/><path d="M378 428.6V439.6" stroke-width="0.67"/><path d="M387.9 426.5V437.5" stroke-width="0.78"/><path d="M395.2 424.5V435.5" stroke-width="0.89"/><path d="M400.7 422.6V433.6" stroke-width="1.01"/><path d="M404.6 420.8V431.8" stroke-width="1.1199999999999999"/><path d="M407.3 419.1V430.1" stroke-width="1.23"/><path d="M409.1 417.5V428.5" stroke-width="1.34"/><path d="M409.9 415.9V426.9" stroke-width="1.45"/></g>
+  <text class="key" x="260" y="415" text-anchor="middle" dominant-baseline="central">E</text>
+  <path class="paper ln" d="M110 488V500A150 22 0 0 0 410 500V488A150 22 0 0 0 110 488Z"/>
+  <ellipse class="ln shelf-top" cx="260" cy="488" rx="150" ry="22"/>
+  <g class="hatch"><path d="M331.9 508.3V519.3" stroke-width="0.45"/><path d="M363.8 504.9V515.9" stroke-width="0.5599999999999999"/><path d="M378 502.6V513.6" stroke-width="0.67"/><path d="M387.9 500.5V511.5" stroke-width="0.78"/><path d="M395.2 498.5V509.5" stroke-width="0.89"/><path d="M400.7 496.6V507.6" stroke-width="1.01"/><path d="M404.6 494.8V505.8" stroke-width="1.1199999999999999"/><path d="M407.3 493.1V504.1" stroke-width="1.23"/><path d="M409.1 491.5V502.5" stroke-width="1.34"/><path d="M409.9 489.9V500.9" stroke-width="1.45"/></g>
+  <text class="key" x="260" y="489" text-anchor="middle" dominant-baseline="central">F</text>
+  <path class="ln cut" d="M111.4 80.1V572.1M408.6 80.1V572.1"/>
+  <path class="ln" d="M60 56V548A200 36 0 0 0 460 548V56"/>
+  <path class="ln" d="M60 56A200 36 0 0 0 111.4 80.1M408.6 80.1A200 36 0 0 0 460 56"/>
+  <path class="ln" d="M60 548A200 36 0 0 0 460 548" stroke-width="1.6"/>
+</svg><!--cutaway:end-->
+    <figcaption><span class="fig">Fig. 12.</span> The gauze, cut open.</figcaption>
+  </figure>
+  <div class="inside-text">
+    <h2 id="inside-h" class="say">One binary. Nothing next&nbsp;to&nbsp;it.</h2>
+    <p class="intro">Davy's gauze kept the flame in and the gas out. The binary works the same way: one process and one data directory, with no database server, queue or cache to run beside it.</p>
+    <ol class="key">
+      <li><b>A</b><span>Ingest over HTTP: Sentry envelopes, Logtail, OpenTelemetry logs, heartbeats.</span></li>
+      <li><b>B</b><span>Grouping, and source maps that turn minified stacks back into source.</span></li>
+      <li><b>C</b><span>SQLite for issues, events, monitors and alerts. One writer thread.</span></li>
+      <li><b>D</b><span>Tantivy for logs, one index per UTC day.</span></li>
+      <li><b>E</b><span>Uptime checks and the alert sender.</span></li>
+      <li><b>F</b><span>The web UI, the CLI and the MCP server.</span></li>
+    </ol>
+    <div class="code-plate small ls"><pre tabindex="0" aria-label="Binary sizes of the 0.1.0 release"><code><span class="c">$ wc -c davy-*</span>
+ 28383824 davy-aarch64-apple-darwin
+ 31375328 davy-aarch64-unknown-linux-musl
+ 30034560 davy-x86_64-apple-darwin
+ 33172840 davy-x86_64-unknown-linux-musl
+122966552 total</code></pre></div>
+    <ul class="facts">
+      <li>28 to 33&nbsp;MB, from the 0.1.0 release. Static builds for Linux on x86_64 and aarch64, builds for macOS on Apple silicon and Intel, and a signed multi-arch image.</li>
+      <li>Under a burst, ingest answers 429 and the SDKs back off.</li>
+      <li>Errors are kept 100 years and logs 30 days, unless a project or <code>davy serve</code> says otherwise.</li>
+    </ul>
+  </div>
+</section>
+
+<section class="install wrap" id="install" aria-labelledby="install-h">
+  <h2 id="install-h" class="say">Install</h2>
+  <div class="tabs">
+    <div class="tablist" role="tablist" aria-label="Ways to install" hidden>
+      <button role="tab" id="tab-docker" aria-controls="p-docker" aria-selected="true" tabindex="0">Docker</button>
+      <button role="tab" id="tab-binary" aria-controls="p-binary" aria-selected="false" tabindex="-1">Binary</button>
+      <button role="tab" id="tab-agent" aria-controls="p-agent" aria-selected="false" tabindex="-1">Coding agent</button>
+    </div>
+
+    <div class="panel" role="tabpanel" id="p-docker" aria-labelledby="tab-docker">
+      <h3 class="panel-h">Docker</h3>
+      <div class="code-plate"><pre id="c-docker"><code><span class="l">docker volume create davy
+</span><span class="l">docker run --rm -v davy:/data \
+</span><span class="l">  ghcr.io/dominikzabcik/davy setup \
+</span><span class="l">  --data /data \
+</span><span class="l">  --public-url http://127.0.0.1:8000 \
+</span><span class="l">  --listen 0.0.0.0:8000
+</span><span class="l">docker run -d --name davy \
+</span><span class="l">  --restart unless-stopped \
+</span><span class="l">  -p 127.0.0.1:8000:8000 -v davy:/data \
+</span><span class="l">  ghcr.io/dominikzabcik/davy \
+</span><span class="l">  serve --data /data
+</span><span class="l">
+</span><span class="l"><span class="c"># prints the DSN</span>
+</span><span class="l">docker exec davy /davy project create \
+</span><span class="l">  my-app --data /data
+</span><span class="l"><span class="c"># prints a sign-in link</span>
+</span><span class="l">docker exec davy /davy user add \
+</span><span class="l">  you@example.com --data /data</span></code></pre><button class="copy" type="button" data-copy="c-docker"><span>Copy</span></button></div>
+      <p>Open the link, set a password, and put the DSN into <code>Sentry.init({ dsn })</code>. The UI is at <code>http://127.0.0.1:8000/ui/</code>. <a href="https://github.com/dominikzabcik/davy/blob/main/docs/docker.md">docs/docker.md</a> adds TLS, MCP, backups and upgrades.</p>
+    </div>
+
+    <div class="panel" role="tabpanel" id="p-binary" aria-labelledby="tab-binary">
+      <h3 class="panel-h">Binary</h3>
+      <div class="code-plate"><pre id="c-binary"><code><span class="l">FILE=davy-aarch64-apple-darwin
+</span><span class="l">URL=https://github.com/dominikzabcik/davy/releases/latest/download
+</span><span class="l">curl -fsSLO "$URL/$FILE"
+</span><span class="l">curl -fsSLO "$URL/SHA256SUMS"
+</span><span class="l"><span class="c"># on Linux: sha256sum -c - instead of shasum</span>
+</span><span class="l">grep " $FILE\$" SHA256SUMS | shasum -a 256 -c -
+</span><span class="l">install -m 755 "$FILE" ./davy
+</span><span class="l">
+</span><span class="l">./davy setup --data ./data \
+</span><span class="l">  --public-url http://127.0.0.1:8000
+</span><span class="l">./davy serve --data ./data &amp;
+</span><span class="l">./davy project create my-app --data ./data
+</span><span class="l">./davy user add you@example.com --data ./data</span></code></pre><button class="copy" type="button" data-copy="c-binary"><span>Copy</span></button></div>
+      <p>This is a Mac with Apple silicon. Builds for Linux (static, x86_64 and aarch64) and macOS (Apple silicon and Intel) are on the <a href="https://github.com/dominikzabcik/davy/releases/latest">releases page</a>. <a href="https://github.com/dominikzabcik/davy/blob/main/docs/install.md">docs/install.md</a> covers a server with systemd and TLS.</p>
+    </div>
+
+    <div class="panel" role="tabpanel" id="p-agent" aria-labelledby="tab-agent">
+      <h3 class="panel-h">With a coding agent</h3>
+      <div class="code-plate"><pre id="c-agent"><code>Install Davy on this machine and connect this app to it.
+Follow docs/install.md in https://github.com/dominikzabcik/davy from top to bottom.</code></pre><button class="copy" type="button" data-copy="c-agent"><span>Copy</span></button></div>
+      <p>The agent asks for the public URL and, optionally, an SMTP server. It installs and checks the binary, sets up the service and TLS, connects the SDK in your app and adds MCP for itself. <code>davy doctor</code> tells it what is still wrong and the command that fixes it.</p>
+    </div>
+  </div>
+</section>
+
+<section class="open wrap" id="open" aria-labelledby="open-h">
+  <div class="open-a">
+    <h2 id="open-h" class="license">AGPL-3.0</h2>
+    <p>Davy is open source. The code, the docs and the issues are on <a href="https://github.com/dominikzabcik/davy">GitHub</a>.</p>
+    <p>Every release ships with checksums, a CycloneDX SBOM per binary, build provenance and a signed multi-arch image. Before 0.1.0 the server and the web UI each went through an internal penetration test. The reports list every finding: <a href="https://github.com/dominikzabcik/davy/blob/main/docs/security/pentest-0.1.0.md">server</a>, <a href="https://github.com/dominikzabcik/davy/blob/main/docs/security/pentest-ui-0.1.0.md">web UI</a>.</p>
+  </div>
+  <div class="open-b">
+    <h3>What 0.1.0 does not do yet</h3>
+    <ul>
+      <li>One team per server, no roles or SSO.</li>
+      <li>No tracing or performance monitoring, session replay or dashboards.</li>
+      <li>Uptime has no status pages, regions, TCP, DNS or TLS expiry checks, and no on-call or escalation.</li>
+      <li>Monitors, channels and projects are created from the CLI, not the UI.</li>
+    </ul>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="foot-in wrap">
+    <nav class="foot-links" aria-label="Project links">
+      <a href="https://github.com/dominikzabcik/davy">GitHub</a>
+      <a href="https://github.com/dominikzabcik/davy/blob/main/docs/install.md">Install guide</a>
+      <a href="https://github.com/dominikzabcik/davy/blob/main/docs/design.md">Design</a>
+      <a href="https://github.com/dominikzabcik/davy/blob/main/docs/architecture.md">Architecture</a>
+      <a href="https://github.com/dominikzabcik/davy/blob/main/CHANGELOG.md">Changelog</a>
+      <a href="https://github.com/dominikzabcik/davy/blob/main/SECURITY.md">Security</a>
+      <a href="https://github.com/dominikzabcik/davy/blob/main/llms.txt">llms.txt</a>
+    </nav>
+    <p class="colophon">Named for Humphry Davy, whose safety lamp of 1815 went down the mine and warned early. Set in Bagnard by Sébastien Sanfilippo, drawn from the graffiti of a prisoner of the Napoleonic wars.</p>
+  </div>
+  <div class="foot-word" aria-hidden="true">Davy</div>
+</footer>
+
+<script src="app.js" defer></script>
+</body>
+</html>
