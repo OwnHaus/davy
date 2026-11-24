@@ -192,8 +192,19 @@ Over 90 days:
 Row is the bytes of an event in the `events` table and its indexes, without its payload. A payload is the zstd event JSON, 0.57× of the 2747 bytes the SDK sent. Each event of the first run fell in an hour of its own, so each made an hourly row. The issue and tag bytes come from the 5,000-issue run only, since 10 issues fit in a few 4 KB pages. Every figure here is for this one event shape; a larger event has a larger payload and scales the payload bytes with it. The figures also describe the current storage, where the newest payload of an issue sits in its row of `events`. They will change when that payload moves out of `events`, the hot-issue figures most.
 
 - **An event that keeps its payload costs its payload plus about 560 bytes (measured).** The cold-issue run kept every payload, as each issue had only 20 events.
-- **A hot issue keeps 150 payloads in 10,000 events, as designed, but as written its events take almost as much disk as if it kept them all.** Without its payload an event takes 205 bytes once compacted, yet 2,082 bytes as written, and 92% of the `events` table was free space inside its pages. The cause: in each write transaction the newest event of an issue keeps its payload, which an `UPDATE` drops once a newer event of the issue arrives in a later transaction. By then the row sits on a page SQLite filled and left, so the space stays empty. The whole database was 211 MB as written and 23 MB after `VACUUM`. So the 2,082 bytes is measured for a 1,570-byte payload and for 10 hot issues sent from 4 connections: it grows with the payload, and with how few events of one issue share a transaction, and it is not a fixed cost per event. This benchmark found it, and this change does not fix it. Until a fix, the forecast should count an event of a hot issue like one that keeps its payload, its compressed payload plus about 560 bytes: this run's 2,082 bytes is 512 above the payload, close to that worst case of one dropped payload per event (inferred).
+- **A hot issue keeps 150 payloads in 10,000 events, as designed, but as written its events take almost as much disk as if it kept them all.** Without its payload an event takes 205 bytes once compacted, yet 2,082 bytes as written, and 92% of the `events` table was free space inside its pages. The cause: in each write transaction the newest event of an issue keeps its payload, which an `UPDATE` drops once a newer event of the issue arrives in a later transaction. By then the row sits on a page SQLite filled and left, so the space stays empty. The whole database was 211 MB as written and 23 MB after `VACUUM`. So the 2,082 bytes is measured for a 1,570-byte payload and for 10 hot issues sent from 4 connections: it grows with the payload, and with how few events of one issue share a transaction, and it is not a fixed cost per event. This benchmark found it, and "Error events of hot issues" below measures the fix. Until a fix, the forecast should count an event of a hot issue like one that keeps its payload, its compressed payload plus about 560 bytes: this run's 2,082 bytes is 512 above the payload, close to that worst case of one dropped payload per event (inferred).
 - **Error ingest cost about 1.2 ms of CPU per event here, 0.3 ms in the previous run (noisy).** The client sent one event per envelope, so this includes HTTP and envelope parsing for every event. Peak footprint was 12 MB, peak RSS 25 MB.
+
+## Error events of hot issues
+
+Measured on 2026-11-24 with `examples/error_footprint.rs` through the real writer, on an M2 Max (32 GB) with a load average of 15 to 25: 10 issues of 10,000 Sentry Node events each, interleaved, past two rounds of retention. "Payloads of hot issues" in `docs/design.md` has the designs compared, the reads and the upgrade.
+
+| | Bytes per event, 1 event per transaction | Bytes per event, 64 per transaction | Writer, µs per event, 64 per transaction |
+|---|---|---|---|
+| Newest payload in its `events` row, cleared later | 2,169 | 573 | 64.0 |
+| Newest payload in `latest_payloads` | 271 | 271 | 59.9 |
+
+The store compacts to 241 bytes per event (measured). Reading an issue's newest payload went from 5.4 to 8.1 µs and a page of 50 events from 25.1 to 28.3 µs (median of 15 rounds).
 
 ## Rerun
 
@@ -209,4 +220,7 @@ bench/footprint.sh                       # footprint coefficients, macOS only, a
                                          # a full run refuses background priority unless FOOTPRINT_LOW_PRIORITY=1
                                          # FOOTPRINT_WORK, FOOTPRINT_OUT, FOOTPRINT_SHARED, FOOTPRINT_LOW_PRIORITY: see the script's header
 python3 -I bench/footprint-report.py --tables bench/footprint.json   # the footprint tables above, from the committed report
+cargo build --release --example error_footprint
+target/release/examples/error_footprint store .scratch/hot 10 10000 64   # error disk per event, about 15 s
+target/release/examples/error_footprint sim side .scratch/side 10 10000 64   # one design as bare SQL: current, table, side or autovacuum
 ```
