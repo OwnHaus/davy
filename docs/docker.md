@@ -79,12 +79,13 @@ To upgrade, back up first, then start the new version on the same volume:
 
 ```sh
 docker pull ghcr.io/dominikzabcik/davy:0.2.0
-docker rm -f davy
+docker stop davy
+docker rm davy
 docker run -d --name davy --restart unless-stopped \
   -p 127.0.0.1:8000:8000 -v davy:/data ghcr.io/dominikzabcik/davy:0.2.0 serve --data /data
 ```
 
-A newer Davy migrates the data of an older one. It refuses to migrate while another process has the data open, so stop the old container before the new one starts, and never run two versions on one volume at once. An older one refuses data that a newer one migrated and says so, so a downgrade means restoring the backup taken before the upgrade, without what arrived since. The [changelog](../CHANGELOG.md) says when a release migrates data.
+A newer Davy migrates the data of an older one. It waits up to 10 s for other processes to close the data and then refuses to migrate, so stop the old container before the new one starts, and never run two versions on one volume at once. For the same reason a rolling update that starts the new container before it stops the old one cannot finish: stop first, as Kubernetes `Recreate` does. An older one refuses data that a newer one migrated and says so, so a downgrade means restoring the backup taken before the upgrade, without what arrived since. The [changelog](../CHANGELOG.md) says when a release migrates data.
 
 An upgrade that migrates runs in one transaction before the server answers, so ingest waits until it is done. The release that adds retention per project builds two indexes over every stored event: a database with tens of millions of events waits about a minute or more. Each index takes about 20 bytes per stored event, and SQLite writes it to its write-ahead log first, so leave free disk of about 80 bytes per stored event, next to the backup.
 
