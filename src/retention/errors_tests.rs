@@ -419,6 +419,55 @@ fn an_issue_with_much_feedback_is_unlinked_a_batch_at_a_time_then_goes() {
     assert_eq!(s.number("SELECT id FROM id_floor WHERE name='issues'"), 1);
 }
 
+/// The types of the notices queued so far, oldest first.
+fn notices(s: &Server) -> Vec<String> {
+    s.rows(
+        "SELECT type || ' ' || json_extract(payload, '$.issue.id') FROM notifications ORDER BY id",
+    )
+}
+
+/// A webhook channel for every project, so issue notices are queued.
+fn channel(s: &Server) {
+    let hook = crate::monitor::CheckUrl::parse("https://hooks.example/x").unwrap();
+    crate::alert::store::add(
+        &s.c,
+        None,
+        &crate::alert::Destination::Webhook(hook),
+        false,
+        0,
+    )
+    .unwrap();
+}
+
+#[test]
+fn an_issue_whose_feedback_expires_with_its_last_event_goes_and_returns_new() {
+    let s = Server::new("errors-unlink-same-sweep", &["api"]);
+    channel(&s);
+    let thrown = error("timeout", day(1), "prod", "v1");
+    let event_id = thrown.event_id.0.clone();
+    s.ingest(1, vec![thrown]);
+    s.c.execute("UPDATE issues SET status='ignored'", [])
+        .unwrap();
+    // The SDK sends the feedback a second after the event, so one sweep
+    // finds both expired.
+    feedback_on(&s, &event_id, 1, day(1) + 1_000);
+    sweep(
+        &s.c,
+        day(20),
+        Days::new(10).unwrap(),
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    assert_eq!(s.number("SELECT count(*) FROM issues"), 0);
+    assert_eq!(s.number("SELECT id FROM id_floor WHERE name='issues'"), 1);
+    s.ingest(1, vec![error("timeout", day(20), "prod", "v1")]);
+    assert_eq!(
+        s.rows("SELECT id || ' ' || status FROM issues"),
+        ["2 unresolved"]
+    );
+    assert_eq!(notices(&s), ["issue.new 1", "issue.new 2"]);
+}
+
 #[test]
 fn an_issue_with_no_events_but_new_ones_keeps_its_feedback() {
     let s = Server::new("errors-unlink-back", &["api"]);

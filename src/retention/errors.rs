@@ -224,7 +224,7 @@ fn recount(c: &Connection, issue: i64, taken: &Taken) -> Result<()> {
 
 /// Deletes an issue that has no event left. While user feedback points at
 /// the issue it stays, with an `event_count` of 0, until [`unlink`] has
-/// unlinked the last. A row of another table that points at it keeps it
+/// unlinked the last or [`feedback`] has deleted it. A row of another table that points at it keeps it
 /// the same way rather than fail the writer's batch, ingest included.
 fn forget(c: &Connection, issue: i64) -> Result<()> {
     c.prepare_cached("DELETE FROM issue_hourly WHERE issue_id=?1")?
@@ -287,16 +287,33 @@ fn unlink(c: &Connection) -> Result<bool> {
     Ok(i64::try_from(linked.len()).is_ok_and(|n| n >= UNLINK))
 }
 
-/// Deletes up to [`BATCH`] expired user feedback. Returns whether the
-/// batch was full.
+/// Deletes up to [`BATCH`] expired user feedback, and each issue with no
+/// event left that the feedback was the last to point at. Returns whether
+/// the batch was full.
 fn feedback(c: &Connection, at: i64, default: Days) -> Result<bool> {
-    let deleted = c
+    let linked: Vec<Option<i64>> = c
         .prepare_cached(
             "DELETE FROM user_feedback WHERE id IN (SELECT f.id FROM projects p CROSS JOIN user_feedback f
-             ON f.project_id=p.id AND f.received_at<?1-coalesce(p.error_retention_days,?2)*?3 LIMIT ?4)",
+             ON f.project_id=p.id AND f.received_at<?1-coalesce(p.error_retention_days,?2)*?3 LIMIT ?4)
+             RETURNING issue_id",
         )?
-        .execute(params![at, default.get(), super::DAY_MS, BATCH])?;
-    Ok(i64::try_from(deleted).is_ok_and(|n| n >= BATCH))
+        .query_map(params![at, default.get(), super::DAY_MS, BATCH], |r| {
+            r.get(0)
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let full = i64::try_from(linked.len()).is_ok_and(|n| n >= BATCH);
+    // An issue whose last event expired in this sweep waits for its
+    // feedback, and `unlink` finds an issue only through feedback left.
+    let mut emptied = c.prepare_cached(
+        "SELECT EXISTS(SELECT 1 FROM issues WHERE id=?1 AND event_count=0
+         AND NOT EXISTS(SELECT 1 FROM events WHERE issue_id=?1))",
+    )?;
+    for issue in linked.into_iter().flatten().collect::<BTreeSet<i64>>() {
+        if emptied.query_row([issue], |r| r.get(0))? {
+            forget(c, issue)?;
+        }
+    }
+    Ok(full)
 }
 
 #[cfg(test)]
