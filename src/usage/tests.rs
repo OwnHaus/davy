@@ -464,24 +464,62 @@ fn a_project_created_while_a_report_reads_is_in_none_of_it() {
     std::fs::remove_dir_all(&data).unwrap();
 }
 
-#[test]
-fn a_disk_that_fills_on_a_day_past_the_calendar_still_says_it_fills() {
-    let r = Report {
+/// A report on a forecast with `kept` the shortest and longest log
+/// retention, full in `days_left`.
+fn forecast_report(kept: (u32, u32), days_left: Option<u64>) -> Report {
+    Report {
         since: day("2026-11-24"),
         days: 1.0,
         disk: Ok(disk::Disk::default()),
         forecast: Ok(forecast::Forecast {
-            growth: 1_000_000_000,
-            longest_days: 30,
-            steady_state: 40_000_000_000,
-            headroom: 0,
-            days_left: Some(5),
-            full_on: None,
+            growth: 10_000_000_000,
+            shortest_days: kept.0,
+            longest_days: kept.1,
+            steady_state: 3_663_000_000_000,
+            headroom: 100_000_000_000,
+            days_left,
+            full_on: days_left.map(|_| day("2027-01-19")),
+            unseen: Some("the forecast cannot show this what-if".into()),
         }),
         what_if: forecast::WhatIf::default(),
         projects: Vec::new(),
-    };
-    assert_eq!(r.summary(), "full in 5 days, at 1.0 GB of logs a day");
+    }
+}
+
+#[test]
+fn a_worst_case_says_so_in_the_summary_and_the_json() {
+    let worst = forecast_report((30, 365), Some(56));
+    assert_eq!(
+        worst.summary(),
+        "full on 2027-01-19, in 56 days at the earliest, at 10.0 GB of logs a day. This is a worst case: projects keep logs 30 to 365 days and share one index per day, so Davy cannot tell each project's share and takes all logs as kept 365 days. The disk fills on this day or later, or never. Watch free space over a few days before you shorten a retention for this date"
+    );
+    let v = worst.json(false);
+    assert_eq!(
+        (
+            &v["disk"]["worst_case"],
+            &v["shortest_log_days"],
+            &v["what_if_note"]
+        ),
+        (
+            &json!(true),
+            &json!(30),
+            &json!("the forecast cannot show this what-if")
+        )
+    );
+    let one = forecast_report((30, 30), Some(56));
+    assert_eq!(
+        one.summary(),
+        "full on 2027-01-19, in 56 days, at 10.0 GB of logs a day"
+    );
+    assert_eq!(one.json(false)["disk"]["worst_case"], json!(false));
+    assert_eq!(
+        forecast_report((30, 365), None).summary(),
+        "logs never fill the disk at the current rate: even the longest log retention, 365 days, holds Davy at 3.7 TB"
+    );
+    assert_eq!(
+        forecast_report((30, 365), Some(0)).summary(),
+        "the disk is past total minus headroom now"
+    );
 }
 
 #[test]

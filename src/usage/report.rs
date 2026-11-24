@@ -212,6 +212,7 @@ impl Report {
             "window": {"since": self.since.to_string(), "days": (self.days * 10.0).round() / 10.0},
             "growth_per_day": f.map(|f| size(f.growth)),
             "longest_log_days": f.map(|f| f.longest_days),
+            "shortest_log_days": f.map(|f| f.shortest_days),
             "forecast": self.summary(),
             "projects": self.projects.iter().map(|p| self.project(p, &size)).collect::<Vec<_>>(),
         });
@@ -234,6 +235,9 @@ impl Report {
         if !self.what_if.is_empty() {
             out["what_if"] = json!(self.what_if);
         }
+        if let Some(note) = f.and_then(|f| f.unseen.as_ref()) {
+            out["what_if_note"] = json!(note);
+        }
         out
     }
 
@@ -248,6 +252,7 @@ impl Report {
             "headroom_reason": HEADROOM_REASON,
             "steady_state": f.map(|f| size(f.steady_state)),
             "days_left": f.and_then(|f| f.days_left),
+            "worst_case": f.map(Forecast::worst_case),
             "full_on": f.and_then(|f| f.full_on).map(|d| d.to_string()),
             "partial": (!g.is_empty()).then(|| json!({
                 "skipped": g.skipped,
@@ -279,23 +284,33 @@ impl Report {
         })
     }
 
-    /// One sentence on when the disk fills.
+    /// When the disk fills, in a sentence, and in a worst case why the
+    /// day is the earliest.
     pub fn summary(&self) -> String {
-        match &self.forecast {
-            Err(reason) => format!("no forecast: {reason}"),
-            Ok(f) => match f.days_left {
-                Some(0) => "the disk is past total minus headroom now".to_owned(),
-                Some(n) => {
-                    let on = f.full_on.map(|on| format!("on {on}, ")).unwrap_or_default();
-                    format!("full {on}in {n} days, at {} of logs a day", human(f.growth))
-                }
-                None => format!(
-                    "never fills at the current rate: even the longest log retention, {} days, holds Davy at {}",
-                    f.longest_days,
-                    human(f.steady_state)
-                ),
-            },
+        let f = match &self.forecast {
+            Err(reason) => return format!("no forecast: {reason}"),
+            Ok(f) => f,
+        };
+        let Some(n) = f.days_left else {
+            return format!(
+                "logs never fill the disk at the current rate: even the longest log retention, {} days, holds Davy at {}",
+                f.longest_days,
+                human(f.steady_state)
+            );
+        };
+        if n == 0 {
+            return "the disk is past total minus headroom now".to_owned();
         }
+        let on = f.full_on.map(|on| format!("on {on}, ")).unwrap_or_default();
+        let rate = human(f.growth);
+        if !f.worst_case() {
+            return format!("full {on}in {n} days, at {rate} of logs a day");
+        }
+        format!(
+            "full {on}in {n} days at the earliest, at {rate} of logs a day. This is a worst case: projects keep logs {} to {l} days and share one index per day, so Davy cannot tell each project's share and takes all logs as kept {l} days. The disk fills on this day or later, or never. Watch free space over a few days before you shorten a retention for this date",
+            f.shortest_days,
+            l = f.longest_days,
+        )
     }
 
     /// The report for a terminal.

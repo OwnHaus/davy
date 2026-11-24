@@ -44,6 +44,7 @@ fn a_disk_that_fills_says_when() {
         Forecast {
             growth: 8 * GB,
             longest_days: 30,
+            shortest_days: 30,
             // 8 GB for 30 closed days and today, and 10 GB of SQLite and
             // uploads.
             steady_state: 258 * GB,
@@ -51,8 +52,10 @@ fn a_disk_that_fills_says_when() {
             // 150 GB to the limit at 8 GB a day.
             days_left: Some(19),
             full_on: Some(day("2026-12-13")),
+            unseen: None,
         }
     );
+    assert!(!f.worst_case());
 }
 
 #[test]
@@ -110,6 +113,7 @@ fn a_short_retention_with_most_of_the_logs_cannot_hide_a_filling_disk() {
         ),
         (10 * GB, 30, 320 * GB, Some(15), Some(day("2026-12-09")))
     );
+    assert_eq!((f.shortest_days, f.worst_case()), (1, true));
 }
 
 #[test]
@@ -167,6 +171,76 @@ fn a_shorter_retention_lowers_the_forecast_only_when_it_lowers_the_longest() {
         (f.longest_days, f.steady_state, f.days_left),
         (30, 258 * GB, Some(19))
     );
+    assert_eq!(
+        f.unseen.as_deref(),
+        Some(
+            "the forecast cannot show this what-if: it takes the logs of every project as kept 30 days, as long as api keeps them, and logs of all projects share one index per day, so Davy cannot tell how much of the growth is shop's. The worst case stays as it is, though shop's own logs would take less disk with a shorter retention and more with a longer one"
+        )
+    );
+    let same = WhatIf {
+        logs_days: Some(30),
+        ..shop
+    };
+    assert_eq!(forecast(&filling(), &same).unwrap().unseen, None);
+}
+
+/// api sends 9.9 GB of logs a day and keeps 30 days, audit sends 0.1 GB
+/// and keeps 365. The disk holds 340 GB of 1 TB and has for months.
+fn mixed() -> Input {
+    Input {
+        closed: closed(&[10 * GB; 7]),
+        davy: 300 * GB,
+        fixed: 3 * GB,
+        used: 340 * GB,
+        total: 1000 * GB,
+        projects: projects(&[("api", 30), ("audit", 365)]),
+        ..filling()
+    }
+}
+
+#[test]
+fn mixed_retentions_give_a_worst_case() {
+    let f = forecast(&mixed(), &WhatIf::default()).unwrap();
+    // 560 GB to the limit at 10 GB a day, were every log kept 365 days.
+    assert_eq!(
+        (
+            f.shortest_days,
+            f.longest_days,
+            f.days_left,
+            f.full_on,
+            f.worst_case()
+        ),
+        (30, 365, Some(56), Some(day("2027-01-19")), true)
+    );
+}
+
+#[test]
+fn a_what_if_the_worst_case_cannot_show_says_why() {
+    let api = WhatIf {
+        project: Some("api".into()),
+        logs_days: Some(7),
+        ..WhatIf::default()
+    };
+    let f = forecast(&mixed(), &api).unwrap();
+    assert_eq!((f.days_left, f.worst_case()), (Some(56), true));
+    assert_eq!(
+        f.unseen.as_deref(),
+        Some(
+            "the forecast cannot show this what-if: it takes the logs of every project as kept 365 days, as long as audit keeps them, and logs of all projects share one index per day, so Davy cannot tell how much of the growth is api's. The worst case stays as it is, though api's own logs would take less disk with a shorter retention and more with a longer one"
+        )
+    );
+    // Cutting the project that holds the longest retention moves it, and
+    // with one retention left the forecast is no worst case.
+    let audit = WhatIf {
+        project: Some("audit".into()),
+        logs_days: Some(30),
+        ..WhatIf::default()
+    };
+    let f = forecast(&mixed(), &audit).unwrap();
+    assert_eq!(
+        (f.longest_days, f.days_left, f.worst_case(), f.unseen),
+        (30, None, false, None)
+    );
 }
 
 #[test]
@@ -214,31 +288,34 @@ fn a_disk_past_the_limit_is_full_today() {
 
 #[test]
 fn a_what_if_must_name_a_project_that_exists_keep_logs_and_not_split_bytes() {
+    let check = |what_if: WhatIf| what_if.check(["api", "shop"].into_iter());
     let unknown = WhatIf {
         project: Some("nope".into()),
         logs_days: Some(7),
         ..WhatIf::default()
     };
-    assert_eq!(
-        forecast(&filling(), &unknown),
-        Err(NoForecast::Other(crate::retention::unknown("nope")))
-    );
+    assert_eq!(check(unknown), Err(crate::retention::unknown("nope")));
     let zero = WhatIf {
         logs_days: Some(0),
         ..WhatIf::default()
     };
-    assert_eq!(
-        forecast(&filling(), &zero),
-        Err(NoForecast::Other("logs_days must be 1 to 36500".into()))
-    );
+    assert_eq!(check(zero), Err("logs_days must be 1 to 36500".into()));
     let one = WhatIf {
         project: Some("shop".into()),
         logs_bytes_per_day: Some(GB),
         ..WhatIf::default()
     };
     assert_eq!(
-        forecast(&filling(), &one),
-        Err(NoForecast::Other("logs_bytes_per_day is for all projects together: logs of every project share one index per day, so Davy cannot tell one project's bytes on disk".into()))
+        check(one),
+        Err("logs_bytes_per_day is for all projects together: logs of every project share one index per day, so Davy cannot tell one project's bytes on disk".into())
+    );
+    let nothing = WhatIf {
+        project: Some("shop".into()),
+        ..WhatIf::default()
+    };
+    assert_eq!(
+        check(nothing),
+        Err("a what-if for project shop needs logs_days, the days of logs it would keep".into())
     );
 }
 

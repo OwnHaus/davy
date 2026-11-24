@@ -4,9 +4,11 @@
 //! Logs of all projects share one index per day, so Davy cannot measure
 //! one project's bytes on disk. The forecast takes the growth of all logs
 //! together and caps it with the longest log retention of any project, a
-//! bound no split of the growth can exceed.
+//! bound no split of the growth can exceed. When projects keep logs for
+//! different times, the forecast is therefore a worst case: the disk fills
+//! on its day or later, or never.
 
-use jiff::{ToSpan as _, civil::Date};
+use jiff::{Span, ToSpan as _, civil::Date};
 use rmcp::schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -54,11 +56,16 @@ impl WhatIf {
     }
 
     /// Why the what-if cannot run against the projects `slugs`, if it
-    /// cannot.
+    /// cannot. [`forecast`] takes a what-if that passed.
     pub fn check<'a>(&self, mut slugs: impl Iterator<Item = &'a str>) -> Result<(), String> {
         if let Some(slug) = &self.project {
             if self.logs_bytes_per_day.is_some() {
                 return Err(ONE_PROJECTS_BYTES.to_owned());
+            }
+            if self.logs_days.is_none() {
+                return Err(format!(
+                    "a what-if for project {slug} needs logs_days, the days of logs it would keep"
+                ));
             }
             if !slugs.any(|s| s == slug) {
                 return Err(crate::retention::unknown(slug));
@@ -84,7 +91,8 @@ const ONE_PROJECTS_BYTES: &str = "logs_bytes_per_day is for all projects togethe
 pub enum NoForecast {
     /// Too few closed log days, as on a new server: nothing is wrong.
     History(String),
-    /// Anything else, such as a disk Davy could not measure in full.
+    /// Anything else, such as a disk Davy could not measure in full. The
+    /// report finds these, [`forecast`] never returns one.
     Other(String),
 }
 
@@ -102,33 +110,41 @@ pub struct Forecast {
     pub growth: u64,
     /// The longest log retention of any project, which caps the growth.
     pub longest_days: u32,
+    /// The shortest log retention of any project. Below `longest_days`,
+    /// the forecast is a worst case: see [`Forecast::worst_case`].
+    pub shortest_days: u32,
     /// The most Davy takes once retention deletes as much as arrives: the
     /// longest retention's closed days and today, each a day's growth.
     pub steady_state: u64,
     pub headroom: u64,
-    /// `None` when the disk never fills at this rate.
+    /// `None` when logs never fill the disk at this rate.
     pub days_left: Option<u64>,
-    /// The UTC day of `days_left`, `None` when it never fills or the day
-    /// is past the last date there is.
+    /// The UTC day of `days_left`. `days_left` is at most the longest
+    /// retention and a day, so the day is always a date.
     pub full_on: Option<Date>,
+    /// Why the forecast cannot show what a what-if for one project does,
+    /// when it cannot.
+    pub unseen: Option<String>,
 }
 
-/// The forecast, or why there is none.
+impl Forecast {
+    /// Whether projects keep logs for different times. The forecast then
+    /// takes all logs as kept the longest of them, so `days_left` is the
+    /// fewest days there can be: the disk fills that day or later, or
+    /// never.
+    pub fn worst_case(&self) -> bool {
+        self.shortest_days < self.longest_days
+    }
+}
+
+/// The forecast for a what-if that passed [`WhatIf::check`], or why there
+/// is none.
 pub fn forecast(input: &Input, what_if: &WhatIf) -> Result<Forecast, NoForecast> {
-    what_if
-        .check(input.projects.iter().map(|(s, _)| s.as_str()))
-        .map_err(NoForecast::Other)?;
     // What is on disk follows the settings, the cap follows the what-if.
     let shortest = input.projects.iter().map(|(_, n)| *n).min();
-    let longest = input
-        .projects
-        .iter()
-        .map(|(slug, n)| match what_if.logs_days {
-            Some(days) if what_if.project.as_ref().is_none_or(|p| p == slug) => days,
-            _ => *n,
-        })
-        .max()
-        .unwrap_or(what_if.logs_days.unwrap_or(input.default_days));
+    let after = kept_after(input, what_if);
+    let longest = after.iter().map(|(_, n)| *n).max();
+    let longest = longest.unwrap_or(what_if.logs_days.unwrap_or(input.default_days));
     let growth = match what_if.logs_bytes_per_day {
         Some(bytes) => bytes,
         None => measured(input, shortest.unwrap_or(input.default_days))?,
@@ -140,17 +156,57 @@ pub fn forecast(input: &Input, what_if: &WhatIf) -> Result<Forecast, NoForecast>
         .saturating_add(input.fixed);
     let headroom = input.total / 100 * HEADROOM_PERCENT;
     let days_left = days_left(input, growth, steady_state, headroom);
-    let full_on = days_left.and_then(|n| {
-        let n = i64::try_from(n).ok()?;
-        input.today.checked_add(n.days()).ok()
+    let full_on = days_left.map(|n| {
+        let span = i64::try_from(n)
+            .ok()
+            .and_then(|n| Span::new().try_days(n).ok());
+        span.and_then(|s| input.today.checked_add(s).ok())
+            .unwrap_or(Date::MAX)
     });
     Ok(Forecast {
         growth,
         longest_days: longest,
+        shortest_days: after.iter().map(|(_, n)| *n).min().unwrap_or(longest),
         steady_state,
         headroom,
         days_left,
         full_on,
+        unseen: unseen(input, what_if, &after, longest),
+    })
+}
+
+/// Each project's slug and the days of logs it keeps with the what-if.
+fn kept_after<'a>(input: &'a Input, what_if: &WhatIf) -> Vec<(&'a str, u32)> {
+    input
+        .projects
+        .iter()
+        .map(|(slug, n)| match what_if.logs_days {
+            Some(days) if what_if.project.as_ref().is_none_or(|p| p == slug) => {
+                (slug.as_str(), days)
+            }
+            _ => (slug.as_str(), *n),
+        })
+        .collect()
+}
+
+/// Why the what-if for one project leaves the forecast as it is, when it
+/// does: another project keeps logs `longest` days with it and without
+/// it. The bound already takes the project's logs as kept that long, and
+/// Davy cannot tell the project's share of the growth.
+fn unseen(input: &Input, what_if: &WhatIf, after: &[(&str, u32)], longest: u32) -> Option<String> {
+    let project = what_if.project.as_deref()?;
+    let now = input.projects.iter().find(|(s, _)| s == project)?.1;
+    if what_if.logs_days == Some(now) {
+        return None;
+    }
+    let before = input.projects.iter().map(|(_, n)| *n).max()?;
+    let (holder, _) = after
+        .iter()
+        .find(|(slug, n)| *slug != project && *n == longest)?;
+    (before == longest).then(|| {
+        format!(
+            "the forecast cannot show this what-if: it takes the logs of every project as kept {longest} days, as long as {holder} keeps them, and logs of all projects share one index per day, so Davy cannot tell how much of the growth is {project}'s. The worst case stays as it is, though {project}'s own logs would take less disk with a shorter retention and more with a longer one"
+        )
     })
 }
 

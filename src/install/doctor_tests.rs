@@ -436,10 +436,12 @@ fn full_in(days: Option<u64>) -> Forecast {
     Forecast {
         growth: GIB,
         longest_days: 30,
+        shortest_days: 30,
         steady_state: 100 * GIB,
         headroom: 10 * GIB,
         days_left: days,
         full_on,
+        unseen: None,
     }
 }
 
@@ -482,22 +484,28 @@ fn the_disk_forecast_warns_under_14_days_and_fails_under_2() {
             fix
         )
     );
-    let past_the_calendar = Forecast {
-        full_on: None,
-        ..full_in(Some(5))
-    };
     assert_eq!(
-        disk(data, free, Some(Ok(past_the_calendar))),
+        disk(data, free, Some(Ok(full_in(Some(14))))),
+        ok(
+            "disk",
+            "40 GiB free, forecast full on 2026-12-08, in 14 days"
+        )
+    );
+    assert_eq!(
+        disk(data, free, Some(Ok(full_in(Some(2))))),
         not_ok(
             "disk",
             Status::Warn,
-            "40 GiB free, forecast full in 5 days",
+            "40 GiB free, forecast full on 2026-11-26, in 2 days",
             fix
         )
     );
     assert_eq!(
         disk(data, free, Some(Ok(full_in(None)))),
-        ok("disk", "40 GiB free, never fills at the current rate")
+        ok(
+            "disk",
+            "40 GiB free, logs never fill it at the current rate"
+        )
     );
     assert_eq!(
         disk(
@@ -506,6 +514,35 @@ fn the_disk_forecast_warns_under_14_days_and_fails_under_2() {
             Some(Err(NoForecast::History("too little".into())))
         ),
         ok("disk", "40 GiB free, no forecast: too little")
+    );
+}
+
+#[test]
+fn a_worst_case_says_so_and_only_warns_until_the_disk_is_past_its_limit() {
+    let data = Path::new("/var/lib/davy");
+    let fix = "the day takes the logs of every project as kept 365 days; watch free space over a few days before you shorten a retention with davy project retention SLUG --data /var/lib/davy --logs N, or add disk";
+    let worst = |days| Forecast {
+        shortest_days: 7,
+        longest_days: 365,
+        ..full_in(Some(days))
+    };
+    assert_eq!(
+        disk(data, Some(40 * GIB), Some(Ok(worst(1)))),
+        not_ok(
+            "disk",
+            Status::Warn,
+            "40 GiB free, forecast full on 2026-11-25, in 1 day at the earliest, if every project kept logs 365 days",
+            fix
+        )
+    );
+    assert_eq!(
+        disk(data, Some(3 * GIB), Some(Ok(worst(0)))),
+        not_ok(
+            "disk",
+            Status::Fail,
+            "3 GiB free, forecast full on 2026-11-24, in 0 days",
+            fix
+        )
     );
 }
 

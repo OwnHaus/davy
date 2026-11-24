@@ -44,6 +44,7 @@ async fn usage_shows_the_counts_and_the_forecast_with_human_sizes() {
             "growth_per_day",
             "longest_log_days",
             "projects",
+            "shortest_log_days",
             "what_if",
             "window"
         ]
@@ -59,7 +60,8 @@ async fn usage_shows_the_counts_and_the_forecast_with_human_sizes() {
             "partial",
             "steady_state",
             "total",
-            "used"
+            "used",
+            "worst_case"
         ]
     );
     assert_eq!(v["disk"]["partial"], Value::Null);
@@ -108,6 +110,14 @@ async fn usage_refuses_a_what_if_or_since_it_cannot_answer() {
     )
     .await;
     assert_eq!(ghost, ("unknown project \"web\"".to_owned(), true));
+    let nothing = tool(&s.app, "usage", json!({"what_if": {"project": "api"}})).await;
+    assert_eq!(
+        nothing,
+        (
+            "a what-if for project api needs logs_days, the days of logs it would keep".to_owned(),
+            true
+        )
+    );
     let zero = tool(&s.app, "usage", json!({"what_if": {"logs_days": 0}})).await;
     assert_eq!(zero, ("logs_days must be 1 to 36500".to_owned(), true));
     let later = time::day_of(time::now_ns())

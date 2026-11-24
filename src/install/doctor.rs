@@ -445,40 +445,34 @@ fn forecast(data: &Path, defaults: retention::Defaults) -> Option<Result<Forecas
 }
 
 /// Free space, and when the forecast puts the disk full: a warning under
-/// 14 days, a failure under 2.
+/// 14 days, a failure under 2. A worst case, which mixed log retentions
+/// give, only warns until the disk is past its limit: the disk may never
+/// fill on its day.
 fn disk(data: &Path, free: Option<u64>, forecast: Option<Result<Forecast, NoForecast>>) -> Check {
     let d = sh(&data.to_string_lossy());
-    let fix = format!(
-        "shorten retention with davy project retention SLUG --data {d} --logs N, or add disk"
-    );
+    let retention = format!("davy project retention SLUG --data {d} --logs N");
     let (status, free) = match free {
         None => (Status::Warn, "free space is unknown".to_owned()),
         Some(b) if b < GIB => (Status::Fail, format!("{} MiB free", b >> 20)),
         Some(b) if b < 5 * GIB => (Status::Warn, format!("{} GiB free", b / GIB)),
         Some(b) => (Status::Ok, format!("{} GiB free", b / GIB)),
     };
+    let mut fix = format!("shorten retention with {retention}, or add disk");
     let (by_forecast, said) = match forecast {
         None => (Status::Ok, String::new()),
         // Too little history is a new server. Anything else hides a
         // forecast that may say the disk fills.
         Some(Err(NoForecast::History(reason))) => (Status::Ok, format!(", no forecast: {reason}")),
         Some(Err(NoForecast::Other(reason))) => (Status::Warn, format!(", no forecast: {reason}")),
-        // Days left alone decide, so a day past the calendar still warns.
-        Some(Ok(Forecast {
-            days_left: Some(n),
-            full_on,
-            ..
-        })) => {
-            let unit = if n == 1 { "day" } else { "days" };
-            let status = match n {
-                0..2 => Status::Fail,
-                2..14 => Status::Warn,
-                _ => Status::Ok,
-            };
-            let on = full_on.map(|on| format!("on {on}, ")).unwrap_or_default();
-            (status, format!(", forecast full {on}in {n} {unit}"))
+        Some(Ok(f)) => {
+            if f.worst_case() {
+                fix = format!(
+                    "the day takes the logs of every project as kept {} days; watch free space over a few days before you shorten a retention with {retention}, or add disk",
+                    f.longest_days
+                );
+            }
+            by_days(&f)
         }
-        Some(Ok(_)) => (Status::Ok, ", never fills at the current rate".to_owned()),
     };
     let status = worse(status, by_forecast);
     let detail = free + &said;
@@ -486,6 +480,36 @@ fn disk(data: &Path, free: Option<u64>, forecast: Option<Result<Forecast, NoFore
         Status::Ok => ok("disk", detail),
         _ => not_ok("disk", status, detail, fix),
     }
+}
+
+/// What the forecast's days left say, which alone decide its status.
+fn by_days(f: &Forecast) -> (Status, String) {
+    let Some(n) = f.days_left else {
+        return (
+            Status::Ok,
+            ", logs never fill it at the current rate".to_owned(),
+        );
+    };
+    let unit = if n == 1 { "day" } else { "days" };
+    let status = match n {
+        0..2 if n > 0 && f.worst_case() => Status::Warn,
+        0..2 => Status::Fail,
+        2..14 => Status::Warn,
+        _ => Status::Ok,
+    };
+    let on = f.full_on.map(|on| format!("on {on}, ")).unwrap_or_default();
+    let earliest = if f.worst_case() && n > 0 {
+        format!(
+            " at the earliest, if every project kept logs {} days",
+            f.longest_days
+        )
+    } else {
+        String::new()
+    };
+    (
+        status,
+        format!(", forecast full {on}in {n} {unit}{earliest}"),
+    )
 }
 
 fn worse(a: Status, b: Status) -> Status {
