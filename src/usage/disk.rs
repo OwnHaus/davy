@@ -1,10 +1,20 @@
 //! What Davy's files take on disk, measured when asked by walking the data
 //! directory, and the filesystem's free and total space.
 
+#[cfg(unix)]
+mod walk;
+#[cfg(not(unix))]
+#[path = "disk/walk_std.rs"]
+mod walk;
+
 use crate::{logs, store};
 use anyhow::{Context as _, Result};
 use jiff::civil::Date;
-use std::{fs, io, path::Path};
+use std::{
+    path::Path,
+    sync::{Mutex, PoisonError},
+};
+use walk::{Opened, Walk};
 
 /// The directories `sourcemaps::Store` keeps uploads in.
 const UPLOADS: [&str; 2] = ["sourcemaps", "chunks"];
@@ -43,8 +53,19 @@ impl Disk {
     }
 }
 
+/// One measurement at a time per process: each walks the whole data
+/// directory, so many at once would only compete for the disk. The others
+/// wait their turn.
+static MEASURING: Mutex<()> = Mutex::new(());
+
 /// Measures `data`, with `today` the UTC day that is still open.
 pub fn measure(data: &Path, today: Date) -> Result<Disk> {
+    measure_at_most(data, today, walk::MAX_ENTRIES)
+}
+
+/// [`measure`], reading at most `limit` entries.
+pub(crate) fn measure_at_most(data: &Path, today: Date, limit: u64) -> Result<Disk> {
+    let _one = MEASURING.lock().unwrap_or_else(PoisonError::into_inner);
     let mut disk = Disk {
         free: fs4::available_space(data)
             .with_context(|| format!("free space of {}", data.display()))?,
@@ -53,30 +74,38 @@ pub fn measure(data: &Path, today: Date) -> Result<Disk> {
     };
     let db = store::DB_FILE;
     let sqlite = [db.to_owned(), format!("{db}-wal"), format!("{db}-shm")];
-    let logs = logs::dir(data);
-    for entry in entries(data)? {
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if path == logs {
-            measure_logs(&path, today, &mut disk)?;
-        } else if sqlite.iter().any(|s| *s == name) {
-            disk.sqlite += size(&path)?;
-        } else if UPLOADS.contains(&&*name) {
-            disk.uploads += size(&path)?;
+    let (mut walk, root) = Walk::new(data, limit)?;
+    for name in walk.names(&root)? {
+        if name == logs::DIR {
+            if let Some(dir) = walk.open(&root, &name)? {
+                measure_logs(&mut walk, &dir, today, &mut disk)?;
+            }
+            continue;
+        }
+        let bytes = walk.size(&root, &name)?;
+        if sqlite.contains(&name) {
+            disk.sqlite += bytes;
+        } else if UPLOADS.contains(&name.as_str()) {
+            disk.uploads += bytes;
         } else {
-            disk.other += size(&path)?;
+            disk.other += bytes;
         }
     }
     disk.closed.sort_unstable();
     Ok(disk)
 }
 
-fn measure_logs(dir: &Path, today: Date, disk: &mut Disk) -> Result<()> {
-    for entry in entries(dir)? {
-        let path = entry.path();
-        let bytes = size(&path)?;
-        match logs::store::parse_day(&entry.file_name().to_string_lossy()) {
+/// Sorts the log directory's entries: a directory named for a day before
+/// `today` is a closed day, one for today or later is today's.
+fn measure_logs(walk: &mut Walk, dir: &Opened, today: Date, disk: &mut Disk) -> Result<()> {
+    for name in walk.names(dir)? {
+        let bytes = walk.size(dir, &name)?;
+        // A day is a directory: a file or link named like one is not.
+        let day = match logs::store::parse_day(&name) {
+            Some(day) if walk.open(dir, &name)?.is_some() => Some(day),
+            _ => None,
+        };
+        match day {
             Some(day) if day < today => disk.closed.push((day, bytes)),
             Some(_) => disk.today += bytes,
             None => disk.other += bytes,
@@ -85,41 +114,6 @@ fn measure_logs(dir: &Path, today: Date, disk: &mut Disk) -> Result<()> {
     Ok(())
 }
 
-/// The entries of `dir`, none when it does not exist.
-fn entries(dir: &Path) -> Result<Vec<fs::DirEntry>> {
-    match fs::read_dir(dir) {
-        Ok(read) => Ok(read.collect::<io::Result<_>>()?),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(e) => Err(e).with_context(|| format!("reading {}", dir.display())),
-    }
-}
-
-/// What `path` and everything under it takes on disk. Symbolic links are
-/// not followed, and a file retention deletes during the walk counts 0.
-fn size(path: &Path) -> Result<u64> {
-    let meta = match fs::symlink_metadata(path) {
-        Ok(m) => m,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
-        Err(e) => return Err(e).with_context(|| format!("measuring {}", path.display())),
-    };
-    let mut total = allocated(&meta);
-    if meta.is_dir() {
-        for entry in entries(path)? {
-            total += size(&entry.path())?;
-        }
-    }
-    Ok(total)
-}
-
-/// Bytes the file takes on disk, which for a sparse or compressed file is
-/// less than its length.
-#[cfg(unix)]
-fn allocated(meta: &fs::Metadata) -> u64 {
-    use std::os::unix::fs::MetadataExt as _;
-    meta.blocks() * 512
-}
-
-#[cfg(not(unix))]
-fn allocated(meta: &fs::Metadata) -> u64 {
-    meta.len()
-}
+#[cfg(test)]
+#[path = "disk_tests.rs"]
+mod tests;

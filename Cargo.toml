@@ -41,7 +41,7 @@ crossbeam-channel = "0.5"
 unicode-normalization = { version = "0.1", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.32", default-features = false, features = ["fs", "user"] }
+nix = { version = "0.32", default-features = false, features = ["dir", "fs", "user"] }
 
 [dev-dependencies]
 brotli = "9"

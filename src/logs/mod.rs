@@ -66,9 +66,12 @@ pub enum LogLevel {
     Fatal = 6,
 }
 
+/// The directory under the data directory the log indexes live in.
+pub const DIR: &str = "logs";
+
 /// Where the log indexes of the data directory `data` live.
 pub fn dir(data: &std::path::Path) -> std::path::PathBuf {
-    data.join("logs")
+    data.join(DIR)
 }
 
 impl LogLevel {

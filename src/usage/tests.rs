@@ -214,39 +214,6 @@ fn the_migration_goes_down_and_up_again() {
 }
 
 #[test]
-fn the_disk_splits_into_log_days_sqlite_uploads_and_the_rest() {
-    let data = scratch("usage-disk");
-    let file = |path: &str, bytes: usize| {
-        let path = data.join(path);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, vec![1_u8; bytes]).unwrap();
-    };
-    file("logs/2026-11-22/a", 100_000);
-    file("logs/2026-11-23/a", 200_000);
-    file("logs/2026-11-24/a", 50_000);
-    file("logs/.trash/x", 10_000);
-    file("davy.sqlite", 30_000);
-    file("davy.sqlite-wal", 30_000);
-    file("sourcemaps/b/map", 20_000);
-    file("chunks/c", 20_000);
-    file("setup.json", 1_000);
-    let disk = disk::measure(&data, day("2026-11-24")).unwrap();
-    let days: Vec<Date> = disk.closed.iter().map(|(d, _)| *d).collect();
-    assert_eq!(days, [day("2026-11-22"), day("2026-11-23")]);
-    // Allocated blocks round each file and directory up, so compare to
-    // the bytes written with the rounding allowed.
-    let near = |got: u64, want: u64| got >= want && got < want + 40_000;
-    assert!(near(disk.closed[0].1, 100_000), "{disk:?}");
-    assert!(near(disk.closed[1].1, 200_000), "{disk:?}");
-    assert!(near(disk.today, 50_000), "{disk:?}");
-    assert!(near(disk.sqlite, 60_000), "{disk:?}");
-    assert!(near(disk.uploads, 40_000), "{disk:?}");
-    assert!(near(disk.other, 11_000), "{disk:?}");
-    assert!(disk.total > disk.free && disk.free > 0, "{disk:?}");
-    std::fs::remove_dir_all(&data).unwrap();
-}
-
-#[test]
 fn sizes_read_in_powers_of_1000() {
     let cases = [
         (0, "0 B"),
