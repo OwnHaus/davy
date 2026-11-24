@@ -231,7 +231,14 @@ fn a_failed_read_before_a_day_stops_the_pass_there() {
         }
         Ok(HashMap::from([(1, 2)]))
     };
-    run_with(&dir, 30, Overrides::new(read, Lock::default()), vec![]);
+    // No time budget, so only the failed read can end the pass early.
+    let mut state = State::new(dir.clone(), 30, Overrides::new(read, Lock::default()));
+    let pass = state.retention(now, std::time::Duration::MAX);
+    assert_eq!(
+        pass.map_err(|e| format!("{e:#}")),
+        Err("reading the retention settings: database is locked".into())
+    );
+    drop(state);
     assert_eq!(messages(&dir), ["web first", "api second", "web second"]);
     assert_eq!(*count.lock().unwrap(), 3);
     std::fs::remove_dir_all(&dir).unwrap();
