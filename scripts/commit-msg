@@ -7,7 +7,7 @@ set -eu
 types='feat fix perf refactor test docs build ci chore revert'
 # Each scope is explained in CONTRIBUTING.md. scripts/test-commit-msg fails
 # when one is missing there.
-scopes='http errors logs sourcemaps mcp monitor alert core net cli ui e2e bench deps release security repo'
+scopes='http errors logs sourcemaps mcp monitor alert core net cli ui e2e bench deps release security repo site'
 
 if [ "$1" = --scopes ]; then
     printf '%s\n' $scopes

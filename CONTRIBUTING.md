@@ -83,6 +83,7 @@ The scope says which part of the code changes, not who the change is for. A chan
 | `release` | Versions, the changelog at release time, the release workflow and `scripts/release` |
 | `security` | `SECURITY.md`, the threat model and security tooling |
 | `repo` | Repo-wide rules and docs: `AGENTS.md`, this file, the gate, hooks and CI |
+| `site` | The project website in `site/` |
 
 ## Changelog
 
