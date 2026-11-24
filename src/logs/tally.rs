@@ -94,9 +94,12 @@ pub(super) struct ProjectDay {
     dirty: bool,
     /// When the file may be written again, see [`pace`].
     next_save: Option<Instant>,
-    /// The file could be neither read nor set aside, so it is never
-    /// written over.
+    /// The file could not be read, for a reason other than what it holds,
+    /// or the day's files could not be listed, so it is never written over.
     blocked: bool,
+    /// The counters started again from nothing that day, because a file
+    /// of them could not be read, so they count less than the logs hold.
+    restarted: bool,
     /// What was counted since the day's last commit. It joins `patterns`
     /// when the commit holds and goes with the logs when it fails, so no
     /// reader and no file sees a count of a log that search cannot find.
@@ -117,6 +120,9 @@ pub(super) struct DayTally {
     failing: bool,
     /// When the writer closed the day, `None` while it has the day open.
     closed: Option<Instant>,
+    /// The day's directory could not be listed, so the writer cannot tell
+    /// which files hold counters and writes none.
+    blocked: bool,
 }
 
 pub(super) type Days = HashMap<Date, DayTally>;
@@ -298,7 +304,11 @@ impl DayTally {
     /// Counts one record as pending, see [`ProjectDay::count`].
     pub(super) fn count(&mut self, r: &LogRecord, pattern: patterns::Pattern, bytes: u64) -> u64 {
         let project = r.project_id.cast_unsigned();
-        let day = self.projects.entry(project).or_default();
+        let blocked = self.blocked;
+        let day = self.projects.entry(project).or_insert_with(|| ProjectDay {
+            blocked,
+            ..ProjectDay::default()
+        });
         day.count(r, pattern, bytes)
     }
 
@@ -306,6 +316,17 @@ impl DayTally {
     /// counters, once that commit holds.
     pub(super) fn settle(&mut self) {
         self.projects.values_mut().for_each(ProjectDay::settle);
+    }
+
+    /// Whether counters of the day, of `project` alone when it is named,
+    /// started again from nothing, see [`ProjectDay::restarted`].
+    pub(super) fn restarted(&self, project: Option<u64>) -> bool {
+        let restarted = |p: &ProjectDay| p.restarted;
+        self.blocked
+            || match project {
+                Some(project) => self.projects.get(&project).is_some_and(restarted),
+                None => self.projects.values().any(restarted),
+            }
     }
 
     fn dirty(&self) -> bool {
@@ -334,19 +355,21 @@ impl DayTally {
 
     /// The counters of the day in `dir`, of `project` alone when it is
     /// named, empty when there are none yet. A file that cannot be read is
-    /// left out and returned with its error.
+    /// left out and returned with its error. A project whose file was set
+    /// aside has [`ProjectDay::restarted`].
     pub(super) fn load(dir: &Path, project: Option<u64>) -> Result<(Self, Unread)> {
-        let projects = match project {
-            Some(project) => vec![project],
-            None => file::projects(dir)?,
-        };
+        let named = |p: &u64| project.is_none_or(|named| named == *p);
+        let (projects, aside) = file::projects(dir)?;
         let (mut day, mut unread) = (Self::default(), Vec::new());
-        for project in projects {
+        for project in projects.into_iter().filter(named) {
             match file::load(dir, project) {
                 Ok(Some(counters)) => drop(day.projects.insert(project, counters)),
                 Ok(None) => {}
                 Err(e) => unread.push((project, e)),
             }
+        }
+        for project in aside.into_iter().filter(named) {
+            day.projects.entry(project).or_default().restarted = true;
         }
         Ok((day, unread))
     }
@@ -539,23 +562,40 @@ impl State {
 }
 
 /// The counters of `day` in `dir`, for the writer. A file it cannot read
-/// is set aside and its project starts again from nothing; a file it can
-/// neither read nor set aside is never written over.
+/// starts its project again from nothing. A damaged file is set aside. A
+/// file the disk or its rights kept from being read, or one it cannot set
+/// aside, is never written over, and neither is any file of a day whose
+/// files it cannot list.
 fn open(day: Date, dir: &Path) -> DayTally {
-    let (mut tally, unread) = DayTally::load(dir, None).unwrap_or_else(|e| {
-        report(day, "reading", &e);
-        (DayTally::default(), Vec::new())
-    });
+    let (mut tally, unread) = match DayTally::load(dir, None) {
+        Ok(read) => read,
+        Err(e) => {
+            report(day, "reading", &e.context("no file of the day is written"));
+            return DayTally {
+                blocked: true,
+                ..DayTally::default()
+            };
+        }
+    };
     for (project, e) in unread {
         let counters = tally.projects.entry(project).or_default();
-        let e = match file::set_aside(dir, project) {
-            Ok(to) => e.context(format!("set aside as {}", to.display())),
-            Err(moved) => {
-                counters.blocked = true;
-                e.context(format!("left alone and not written over: {moved:#}"))
+        counters.restarted = true;
+        let e = if file::damaged(&e) {
+            match file::set_aside(dir, project) {
+                Ok(to) => e.context(format!("set aside as {}", to.display())),
+                Err(moved) => {
+                    counters.blocked = true;
+                    e.context(format!("left alone and not written over: {moved:#}"))
+                }
             }
+        } else {
+            counters.blocked = true;
+            e.context("left alone and not written over")
         };
         report(day, "reading", &e);
+    }
+    if let Err(e) = file::remove_temporary(dir) {
+        report(day, "cleaning up", &e);
     }
     tally
 }

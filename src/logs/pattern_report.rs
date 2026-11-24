@@ -56,6 +56,11 @@ pub struct PatternReport {
     /// Days with counters that could not be read, left out of the report.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unread: Vec<String>,
+    /// Days whose counters started again from nothing that day, because a
+    /// file of them could not be read, so they count fewer logs than the
+    /// day holds.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub restarted: Vec<String>,
     /// The window held more than a report reads, [`MAX_REPORT_DAYS`] days
     /// or [`MAX_MERGED`] patterns and pairs, so the days before `from` are
     /// left out.
@@ -101,7 +106,9 @@ pub fn top_patterns(root: &Path, q: &PatternQuery) -> Result<PatternReport> {
     };
     days.sort_unstable_by(|a, b| b.cmp(a));
     let live = tally::live(root);
-    let (mut sums, mut unread, mut merged) = (HashMap::new(), Vec::new(), 0);
+    let project = q.project.map(i64::cast_unsigned);
+    let (mut sums, mut unread, mut restarted) = (HashMap::new(), Vec::new(), Vec::new());
+    let mut merged = 0;
     let (mut from, mut truncated) = (first, false);
     for (n, day) in days.into_iter().enumerate() {
         if n == MAX_REPORT_DAYS || merged >= MAX_MERGED {
@@ -113,15 +120,21 @@ pub fn top_patterns(root: &Path, q: &PatternQuery) -> Result<PatternReport> {
             let held = live.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(tally) = held.get(&day) {
                 add(&mut sums, &mut merged, tally, q);
+                if tally.restarted(project) {
+                    restarted.push(day.to_string());
+                }
                 continue;
             }
         }
         let dir = root.join(day.to_string());
-        match DayTally::load(&dir, q.project.map(i64::cast_unsigned)) {
+        match DayTally::load(&dir, project) {
             Ok((tally, failed)) => {
                 add(&mut sums, &mut merged, &tally, q);
                 if !failed.is_empty() {
                     unread.push(day.to_string());
+                }
+                if tally.restarted(project) {
+                    restarted.push(day.to_string());
                 }
             }
             Err(_) => unread.push(day.to_string()),
@@ -129,6 +142,7 @@ pub fn top_patterns(root: &Path, q: &PatternQuery) -> Result<PatternReport> {
     }
     let mut report = report(sums, if truncated { from } else { first }, last, q.limit);
     report.unread = unread;
+    report.restarted = restarted;
     report.truncated = truncated;
     Ok(report)
 }
@@ -202,6 +216,7 @@ fn report(sums: HashMap<u64, Sum>, first: Date, last: Date, limit: usize) -> Pat
         patterns,
         top: rows.into_iter().map(|(id, s)| row(id, s, bytes)).collect(),
         unread: Vec::new(),
+        restarted: Vec::new(),
         truncated: false,
     }
 }

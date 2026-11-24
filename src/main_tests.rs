@@ -395,6 +395,7 @@ fn logs_patterns_names_the_days_it_left_out_and_why() {
         patterns: 0,
         top: vec![],
         unread: vec!["2026-11-02".into(), "2026-11-01".into()],
+        restarted: vec!["2026-11-02".into()],
         truncated: true,
     };
     let mut out = Vec::new();
@@ -403,6 +404,7 @@ fn logs_patterns_names_the_days_it_left_out_and_why() {
         String::from_utf8(out).unwrap(),
         "2026-11-01 to 2026-11-02: 0 logs, 0 B, 0 patterns\n\
          left out, counters unreadable: 2026-11-02, 2026-11-01\n\
+         counted in part, counters restarted: 2026-11-02\n\
          left out, past the bound of a report: the days before 2026-11-01\n"
     );
 }

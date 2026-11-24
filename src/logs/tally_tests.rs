@@ -2,7 +2,7 @@ use super::{
     ADMIT_AFTER, DayTally, EXAMPLE_BYTES, FLUSH_EVERY, FREE_PATTERNS, MAX_CELLS, MAX_PATTERNS,
     OTHER_SERVICES, SERVICE_BYTES,
     file::{self, MAX_FILE_BYTES, name},
-    pace, raw_bytes,
+    open, pace, raw_bytes,
 };
 use crate::logs::{
     LogLevel, LogRecord, LogSource,
@@ -454,5 +454,111 @@ fn past_3_closed_days_the_one_closed_first_is_written_and_let_go() {
     assert_eq!(files, [true, false, false, false, false, false, false]);
     assert_eq!(saved(&dir.join(day_of(days[0]).to_string()), 1), 1);
     state.close_all().unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The names in `dir`, sorted.
+fn names_in(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort_unstable();
+    names
+}
+
+/// Writes counters of two lines of project 1 in `dir` and returns the
+/// bytes of the file.
+fn two_lines(dir: &Path) -> Vec<u8> {
+    std::fs::create_dir_all(dir).unwrap();
+    let mut tally = DayTally::default();
+    count(&mut tally, &record(1, None, "job done"));
+    count(&mut tally, &record(1, None, "job done"));
+    tally.save(dir).unwrap();
+    std::fs::read(dir.join(name(1))).unwrap()
+}
+
+fn chmod(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// Counts a line of project 1 now in `state` as a commit that held does,
+/// with the rights of `path` set to `mode` while the writer opens the day,
+/// and returns whether the day's counters restarted.
+fn count_with(state: &mut State, path: &Path, mode: u32) -> bool {
+    let now = now_ns();
+    chmod(path, mode);
+    state.tally(day_of(now), &line_at(now, now));
+    chmod(path, 0o700);
+    let mut tallies = state.tallies();
+    let tally = tallies.get_mut(&day_of(now)).unwrap();
+    tally.settle();
+    tally.restarted(Some(1))
+}
+
+#[test]
+fn a_file_the_writer_may_not_read_is_neither_set_aside_nor_written_over() {
+    let dir = scratch("tally-denied");
+    let day = dir.join(day_of(now_ns()).to_string());
+    let before = two_lines(&day);
+    let mut state = State::new(dir.clone(), 30, no_overrides());
+    let restarted = count_with(&mut state, &day.join(name(1)), 0o000);
+    state.flush_tallies(Instant::now() + Duration::from_secs(3600));
+    state.close_all().unwrap();
+    assert!(restarted);
+    assert_eq!(names_in(&day), [name(1)]);
+    assert_eq!(std::fs::read(day.join(name(1))).unwrap(), before);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_day_whose_files_cannot_be_listed_writes_none_of_them() {
+    let dir = scratch("tally-unlisted");
+    let day = dir.join(day_of(now_ns()).to_string());
+    let before = two_lines(&day);
+    let mut state = State::new(dir.clone(), 30, no_overrides());
+    let restarted = count_with(&mut state, &day, 0o300);
+    state.flush_tallies(Instant::now() + Duration::from_secs(3600));
+    state.close_all().unwrap();
+    assert!(restarted);
+    assert_eq!(names_in(&day), [name(1)]);
+    assert_eq!(std::fs::read(day.join(name(1))).unwrap(), before);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_symlink_in_place_of_a_file_is_not_followed_and_is_set_aside() {
+    let dir = scratch("tally-symlink");
+    let (day, elsewhere) = (dir.join("day"), dir.join("elsewhere"));
+    let before = two_lines(&elsewhere);
+    std::fs::create_dir_all(&day).unwrap();
+    std::os::unix::fs::symlink(elsewhere.join(name(1)), day.join(name(1))).unwrap();
+    let (tally, unread) = DayTally::load(&day, None).unwrap();
+    let e = format!("{:#}", unread[0].1);
+    assert!(e.ends_with(": not a regular file"), "{e}");
+    assert_eq!((tally.projects.len(), unread.len()), (0, 1));
+    let tally = open(day_of(now_ns()), &day);
+    assert!(tally.restarted(Some(1)));
+    let names = names_in(&day);
+    assert!(
+        names[0].starts_with(&format!("{}.unread-", name(1))),
+        "{names:?}"
+    );
+    assert_eq!(names.len(), 1);
+    assert_eq!(std::fs::read(elsewhere.join(name(1))).unwrap(), before);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn opening_a_day_removes_the_temporary_files_a_crash_left() {
+    let dir = scratch("tally-crash");
+    two_lines(&dir);
+    let left = format!("{}.{}.tmp", name(2), uuid::Uuid::new_v4());
+    std::fs::write(dir.join(left), "{").unwrap();
+    std::fs::write(dir.join("other.tmp"), "").unwrap();
+    let tally = open(day_of(now_ns()), &dir);
+    assert_eq!(names_in(&dir), ["other.tmp".to_owned(), name(1)]);
+    assert_eq!(tally.projects.len(), 1);
     std::fs::remove_dir_all(&dir).unwrap();
 }

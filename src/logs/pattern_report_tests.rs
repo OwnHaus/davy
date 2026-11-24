@@ -294,13 +294,15 @@ fn an_unreadable_file_is_left_out_named_and_set_aside_by_the_writer() {
     let day = dir.join(day_of(now).to_string());
     std::fs::write(day.join(name(1)), "{").unwrap();
     let r = report(&dir, &query(None, now));
+    let today = vec![day_of(now).to_string()];
     assert_eq!(
-        (r.records, r.unread.clone()),
-        (1, vec![day_of(now).to_string()])
+        (r.records, r.unread.clone(), r.restarted.len()),
+        (1, today.clone(), 0)
     );
     run(&dir, &[], vec![info(1, now, "GET /users/5 took 2ms")]);
     let r = report(&dir, &query(Some(1), now));
-    assert_eq!((r.records, r.unread.len()), (1, 0));
+    assert_eq!((r.records, r.unread.len(), r.restarted), (1, 0, today));
+    assert_eq!(report(&dir, &query(Some(2), now)).restarted.len(), 0);
     let aside: Vec<String> = std::fs::read_dir(&day)
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())

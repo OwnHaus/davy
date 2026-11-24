@@ -565,6 +565,10 @@ fn print_patterns(out: &mut impl Write, r: &PatternReport, json: bool) -> anyhow
         let days = r.unread.join(", ");
         writeln!(out, "left out, counters unreadable: {days}")?;
     }
+    if !r.restarted.is_empty() {
+        let days = r.restarted.join(", ");
+        writeln!(out, "counted in part, counters restarted: {days}")?;
+    }
     if r.truncated {
         writeln!(
             out,

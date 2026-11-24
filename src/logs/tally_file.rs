@@ -15,6 +15,10 @@ use std::{
 
 const PREFIX: &str = "patterns-";
 const SUFFIX: &str = ".json";
+/// What follows a file's name in the name of its copy set aside.
+const ASIDE: &str = ".unread-";
+/// How the name of a temporary file ends, see [`write_durably`].
+const TEMPORARY: &str = ".tmp";
 const VERSION: u32 = 1;
 /// Bytes a file may have. The bounds keep one project's day under about
 /// 20 MB even when every byte of its text is escaped, so a bigger file is
@@ -62,13 +66,38 @@ fn names(dir: &Path) -> Result<Vec<String>> {
     }
 }
 
-/// The projects with counters in `dir`.
-pub(super) fn projects(dir: &Path) -> Result<Vec<u64>> {
-    Ok(names(dir)?
-        .iter()
-        .filter_map(|n| project_of(n))
-        .filter_map(|(project, file)| file.then_some(project))
-        .collect())
+/// The projects with counters in `dir`, and those whose file was set
+/// aside, see [`set_aside`].
+pub(super) fn projects(dir: &Path) -> Result<(Vec<u64>, Vec<u64>)> {
+    let (mut projects, mut aside) = (Vec::new(), Vec::new());
+    for file in names(dir)? {
+        match project_of(&file) {
+            Some((project, true)) => projects.push(project),
+            Some((project, false)) if file.starts_with(&format!("{}{ASIDE}", name(project))) => {
+                aside.push(project);
+            }
+            _ => {}
+        }
+    }
+    Ok((projects, aside))
+}
+
+/// Removes the temporary files a crash left in `dir`. Only the writer
+/// writes a day's files, so none of them is being written.
+pub(super) fn remove_temporary(dir: &Path) -> Result<()> {
+    for file in names(dir)? {
+        if project_of(&file).is_some_and(|(_, file)| !file) && file.ends_with(TEMPORARY) {
+            let path = dir.join(&file);
+            std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether `e`, an error of [`load`], says the file is not counters Davy
+/// wrote, rather than that the disk or its rights kept it from being read.
+pub(super) fn damaged(e: &anyhow::Error) -> bool {
+    e.root_cause().downcast_ref::<io::Error>().is_none()
 }
 
 /// The counters of `project` in `dir`, if it has any. A file past the
@@ -77,9 +106,9 @@ pub(super) fn projects(dir: &Path) -> Result<Vec<u64>> {
 pub(super) fn load(dir: &Path, project: u64) -> Result<Option<ProjectDay>> {
     let path = dir.join(name(project));
     let text = match read_capped(&path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(anyhow::Error::from(e).context(format!("reading {}", path.display()))),
+        Ok(Some(text)) => text,
+        Ok(None) => return Ok(None),
+        Err(e) => return Err(e.context(format!("reading {}", path.display()))),
     };
     let read = (|| {
         let read: In = serde_json::from_slice(&text)?;
@@ -95,10 +124,34 @@ pub(super) fn load(dir: &Path, project: u64) -> Result<Option<ProjectDay>> {
     }))
 }
 
-fn read_capped(path: &Path) -> io::Result<Vec<u8>> {
-    let file = File::open(path)?;
-    let too_big = || io::Error::other(format!("over {MAX_FILE_BYTES} bytes"));
-    if file.metadata()?.len() > MAX_FILE_BYTES {
+/// The bytes of the file at `path`, none when it is gone. Only a regular
+/// file is read: a symlink is not followed, so a file cannot make Davy
+/// read another, and a FIFO does not hold up the reader.
+fn read_capped(path: &Path) -> Result<Option<Vec<u8>>> {
+    let gone = |e: &io::Error| e.kind() == io::ErrorKind::NotFound;
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => anyhow::ensure!(meta.is_file(), "not a regular file"),
+        Err(e) if gone(&e) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    }
+    let mut options = File::options();
+    options.read(true);
+    // Whatever replaced the file since it was checked is not followed or
+    // waited for either.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(
+        &mut options,
+        nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK,
+    );
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(e) if gone(&e) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let meta = file.metadata()?;
+    anyhow::ensure!(meta.is_file(), "not a regular file");
+    let too_big = || anyhow::anyhow!("over {MAX_FILE_BYTES} bytes");
+    if meta.len() > MAX_FILE_BYTES {
         return Err(too_big());
     }
     let mut text = Vec::new();
@@ -106,7 +159,7 @@ fn read_capped(path: &Path) -> io::Result<Vec<u8>> {
     if u64::try_from(text.len()).unwrap_or(u64::MAX) > MAX_FILE_BYTES {
         return Err(too_big());
     }
-    Ok(text)
+    Ok(Some(text))
 }
 
 /// Checks `patterns` against the bounds and returns its pairs of pattern
@@ -148,7 +201,7 @@ fn check(patterns: &HashMap<u64, Entry>) -> Result<usize> {
 /// rest of the project's files.
 pub(super) fn set_aside(dir: &Path, project: u64) -> Result<PathBuf> {
     let from = dir.join(name(project));
-    let to = dir.join(format!("{}.unread-{}", name(project), now_ns()));
+    let to = dir.join(format!("{}{ASIDE}{}", name(project), now_ns()));
     std::fs::rename(&from, &to).with_context(|| format!("renaming {}", from.display()))?;
     Ok(to)
 }
@@ -199,7 +252,7 @@ pub(super) fn remove(dir: &Path, cut: &Cut) -> Result<()> {
 /// has a name of its own, so a file left at that name by a crash or put
 /// there by anyone is neither followed nor in the way.
 fn write_durably(dir: &Path, name: &str, bytes: &[u8]) -> Result<()> {
-    let tmp = dir.join(format!("{name}.{}.tmp", uuid::Uuid::new_v4()));
+    let tmp = dir.join(format!("{name}.{}{TEMPORARY}", uuid::Uuid::new_v4()));
     let written = (|| -> io::Result<()> {
         let mut file = File::options().write(true).create_new(true).open(&tmp)?;
         file.write_all(bytes)?;
