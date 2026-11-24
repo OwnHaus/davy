@@ -101,6 +101,7 @@ fn filter(q: &Query) -> Result<(LogQuery, Option<String>), Refusal> {
         until,
         min_level: min_level.map_err(Refusal::bad)?,
         text,
+        pattern: None,
         limit: PAGE,
         skip: 0,
     };

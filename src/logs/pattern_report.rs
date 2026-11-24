@@ -1,0 +1,215 @@
+//! The top log patterns of a window, from the counters in [`super::tally`].
+
+use super::{
+    parse_day,
+    tally::{self, DayTally, Levels, level_index},
+};
+use crate::{
+    logs::{
+        LogLevel,
+        patterns::{self, OTHER},
+    },
+    text::size,
+    time::day_of,
+};
+use anyhow::Result;
+use jiff::civil::Date;
+use serde::Serialize;
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::Path,
+    sync::PoisonError,
+};
+
+/// Rows a report holds at most.
+pub const MAX_PATTERN_ROWS: usize = 100;
+/// Services a row names. The rest are summed in one more entry.
+const SERVICES: usize = 3;
+
+#[derive(Debug, Clone)]
+pub struct PatternQuery {
+    pub project: Option<i64>,
+    pub since: i64,
+    pub until: i64,
+    pub min_level: Option<LogLevel>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+pub struct PatternReport {
+    /// The first UTC day counted. Counters are per day, so the report covers
+    /// whole days from the day of `since` to the day of `until`.
+    pub from: String,
+    pub to: String,
+    pub records: u64,
+    pub bytes: String,
+    /// Patterns in the window, shown or not.
+    pub patterns: usize,
+    /// The patterns with the most bytes first.
+    pub top: Vec<PatternRow>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+pub struct PatternRow {
+    pub id: String,
+    pub template: String,
+    pub example: String,
+    pub records: u64,
+    pub bytes: String,
+    /// Of the bytes of the window, in percent.
+    pub share: String,
+    /// Records by level, the levels with none left out.
+    pub levels: BTreeMap<&'static str, u64>,
+    /// Records by service, most first, `null` for records without one.
+    pub services: Vec<(Option<String>, u64)>,
+}
+
+#[derive(Default)]
+struct Sum {
+    template: String,
+    example: String,
+    records: u64,
+    bytes: u64,
+    levels: [u64; 6],
+    services: HashMap<Box<str>, u64>,
+}
+
+/// The `q.limit` patterns with the most bytes from `q.since` to `q.until`.
+pub fn top_patterns(root: &Path, q: &PatternQuery) -> Result<PatternReport> {
+    let (first, last) = (day_of(q.since), day_of(q.until));
+    let mut days: Vec<Date> = match std::fs::read_dir(root) {
+        Ok(entries) => entries
+            .filter_map(|e| parse_day(&e.ok()?.file_name().to_string_lossy()))
+            .filter(|d| (first..=last).contains(d))
+            .collect(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e.into()),
+    };
+    days.sort_unstable_by(|a, b| b.cmp(a));
+    let live = tally::live(root);
+    let mut sums: HashMap<u64, Sum> = HashMap::new();
+    for day in days {
+        if let Some(live) = &live {
+            let held = live.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(tally) = held.get(&day) {
+                add(&mut sums, tally, q);
+                continue;
+            }
+        }
+        add(&mut sums, &DayTally::load(&root.join(day.to_string()))?, q);
+    }
+    Ok(report(sums, first, last, q.limit))
+}
+
+fn add(sums: &mut HashMap<u64, Sum>, tally: &DayTally, q: &PatternQuery) {
+    let projects = tally
+        .projects
+        .iter()
+        .filter(|(p, _)| q.project.is_none_or(|want| want.cast_unsigned() == **p));
+    let lowest = q.min_level.map_or(0, level_index);
+    for (id, entry) in projects.flat_map(|(_, day)| &day.patterns) {
+        let services: Vec<_> = entry
+            .services
+            .iter()
+            .map(|(service, levels)| (service, levels, counted(levels, lowest)))
+            .filter(|(_, _, (records, _))| *records > 0)
+            .collect();
+        if services.is_empty() {
+            continue;
+        }
+        let s = sums.entry(*id).or_default();
+        if s.template.is_empty() {
+            s.template.clone_from(&entry.template);
+            s.example.clone_from(&entry.example);
+        }
+        for (service, levels, (records, bytes)) in services {
+            s.records += records;
+            s.bytes += bytes;
+            for (i, [n, _]) in levels.iter().enumerate().skip(lowest) {
+                s.levels[i] += n;
+            }
+            *s.services.entry(service.clone()).or_default() += records;
+        }
+    }
+}
+
+fn counted(levels: &Levels, lowest: usize) -> (u64, u64) {
+    levels[lowest..]
+        .iter()
+        .fold((0, 0), |(r, b), [n, bytes]| (r + n, b + bytes))
+}
+
+fn report(sums: HashMap<u64, Sum>, first: Date, last: Date, limit: usize) -> PatternReport {
+    let records = sums.values().map(|s| s.records).sum();
+    let bytes: u64 = sums.values().map(|s| s.bytes).sum();
+    let patterns = sums.len();
+    let mut rows: Vec<(u64, Sum)> = sums.into_iter().collect();
+    rows.sort_unstable_by(|(a_id, a), (b_id, b)| {
+        (b.bytes, b.records, a_id).cmp(&(a.bytes, a.records, b_id))
+    });
+    rows.truncate(limit.min(MAX_PATTERN_ROWS));
+    PatternReport {
+        from: first.to_string(),
+        to: last.to_string(),
+        records,
+        bytes: size(bytes),
+        patterns,
+        top: rows.into_iter().map(|(id, s)| row(id, s, bytes)).collect(),
+    }
+}
+
+fn row(id: u64, s: Sum, total: u64) -> PatternRow {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a share is shown to one decimal"
+    )]
+    let share = if total == 0 {
+        0.0
+    } else {
+        s.bytes as f64 * 100.0 / total as f64
+    };
+    let levels = (1..=6)
+        .map(LogLevel::from_code)
+        .zip(s.levels)
+        .filter(|(_, n)| *n > 0)
+        .map(|(level, n)| (level.as_str(), n))
+        .collect();
+    let template = if id == OTHER {
+        format!(
+            "(patterns past the first {} of a project in a day)",
+            tally::MAX_PATTERNS
+        )
+    } else {
+        s.template
+    };
+    PatternRow {
+        id: patterns::show(id),
+        template,
+        example: s.example,
+        records: s.records,
+        bytes: size(s.bytes),
+        share: format!("{share:.1}%"),
+        levels,
+        services: services(s.services),
+    }
+}
+
+fn services(by_name: HashMap<Box<str>, u64>) -> Vec<(Option<String>, u64)> {
+    let mut all: Vec<(Box<str>, u64)> = by_name.into_iter().collect();
+    all.sort_unstable_by(|(a, an), (b, bn)| (bn, a).cmp(&(an, b)));
+    let rest: u64 = all.iter().skip(SERVICES).map(|(_, n)| n).sum();
+    let more = all.len().saturating_sub(SERVICES);
+    let mut shown: Vec<(Option<String>, u64)> = all
+        .into_iter()
+        .take(SERVICES)
+        .map(|(name, n)| ((!name.is_empty()).then(|| name.into()), n))
+        .collect();
+    if more > 0 {
+        shown.push((Some(format!("({more} more)")), rest));
+    }
+    shown
+}
+
+#[cfg(test)]
+#[path = "pattern_report_tests.rs"]
+mod tests;

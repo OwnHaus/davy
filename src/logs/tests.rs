@@ -371,6 +371,7 @@ fn query(since: i64, until: i64) -> LogQuery {
         until,
         min_level: None,
         text: None,
+        pattern: None,
         limit: 100,
         skip: 0,
     }
@@ -483,6 +484,7 @@ fn search_filters_by_project_level_text_and_limit() {
         (
             LogQuery {
                 text: Some("timed".into()),
+                pattern: None,
                 ..window.clone()
             },
             &["payment provider timed out"],
@@ -490,6 +492,7 @@ fn search_filters_by_project_level_text_and_limit() {
         (
             LogQuery {
                 text: Some("attributes.provider:acme".into()),
+                pattern: None,
                 project: Some(2),
                 ..window.clone()
             },
@@ -589,6 +592,7 @@ fn store_recovers_when_a_day_index_breaks() {
         &dir,
         &LogQuery {
             text: Some("after".into()),
+            pattern: None,
             limit: 50_000,
             skip: 0,
             ..query(now - 1_000_000_000, now + 1)

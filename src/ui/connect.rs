@@ -144,6 +144,7 @@ async fn any_log(reads: &Arc<Reads>) -> Result<Option<Timestamp>, Refusal> {
         until: now_ns(),
         min_level: None,
         text: None,
+        pattern: None,
         limit: 1,
         skip: 0,
     };

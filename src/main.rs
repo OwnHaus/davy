@@ -379,6 +379,7 @@ fn logs(out: &mut impl Write, args: Logs) -> anyhow::Result<()> {
         until: args.until.unwrap_or_else(now_ns),
         min_level: args.level,
         text: args.query,
+        pattern: None,
         limit: args.limit,
         skip: 0,
     };

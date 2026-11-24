@@ -37,6 +37,7 @@ fn messages(dir: &std::path::Path, now: i64, text: &str) -> Vec<String> {
         until: now + 1000,
         min_level: None,
         text: Some(text.into()),
+        pattern: None,
         limit: 10,
         skip: 0,
     };

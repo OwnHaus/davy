@@ -235,7 +235,7 @@ One timestamp function for every source. A number below 1e11 is seconds (fractio
 ### Storage (Tantivy, one index per UTC day)
 
 - `data/logs/YYYY-MM-DD/` is one Tantivy index for the UTC day of `timestamp`. Docstore compressed with zstd, as in the benchmark.
-- Fields: `project` u64 indexed and fast. `ts` i64 indexed, fast and stored. `observed` i64 stored. `level` u64 indexed, fast and stored, so `--level warn` is a range query. `source` u64 stored. `service`, `trace_id` and `span_id` raw strings, indexed and stored. `message` text, stored. `attributes` a JSON field, indexed with the default tokenizer and stored, so `attributes.user_id:42` works. `values` text, not stored, holds every string and number in `attributes` at any depth. A bare word in a JSON default field matches only the root path, which no attribute has, so without `values` a request ID in `attributes.req.id` was found only by its path. Day indexes created before `values` existed keep their schema, and the writer and search look the field up per day.
+- Fields: `project` u64 indexed and fast. `ts` i64 indexed, fast and stored. `observed` i64 stored. `level` u64 indexed, fast and stored, so `--level warn` is a range query. `source` u64 stored. `service`, `trace_id` and `span_id` raw strings, indexed and stored. `message` text, stored. `attributes` a JSON field, indexed with the default tokenizer and stored, so `attributes.user_id:42` works. `values` text, not stored, holds every string and number in `attributes` at any depth. A bare word in a JSON default field matches only the root path, which no attribute has, so without `values` a request ID in `attributes.req.id` was found only by its path. Day indexes created before `values` existed keep their schema, and the writer and search look the field up per day. `pattern` u64 indexed and stored, the id of the record's pattern ("Log patterns"); a day created before it has none.
 - The JSON field stays. On 1M synthetic rows it took 0.48× the raw NDJSON size, under the 1.0× bar set before measuring, so the flat text variant was not measured. Numbers in `docs/storage-benchmark.md`, section "Logs ingest".
 - One log writer thread owns the open `IndexWriter`s (at most 3 days open, least recently written one closed first, a day idle for 10 minutes closed). It reads batches of `LogRecord` from a queue bounded at 50k rows and 128 MiB of heap, counted in records rather than batches because one batch holds one record or thousands and memory follows the records. A record's heap is priced by `heap::of_record`: the record, its text and its attribute tree with the allocator's slack, so 50k records of 1 MiB each, or of a thousand empty attributes each, cannot fill memory. A batch holds its share from the moment it is queued until the writer has indexed it, not only while it waits. A full queue is the `429`. A batch larger than the whole queue is `413`, because it would never fit. A bound of 256 batches let 1M rows in batches of 1000 push RSS to 828 MB (measured). Each writer uses 1 indexing thread and a 64 MB heap (1 thread was faster in the benchmark).
 - The writer commits every second when anything changed, and at once when 100k documents are uncommitted. It commits everything on shutdown.
@@ -247,7 +247,8 @@ One timestamp function for every source. A number below 1e11 is seconds (fractio
 
 ```rust
 pub struct LogQuery { pub project: Option<i64>, pub since: i64, pub until: i64,
-                      pub min_level: Option<LogLevel>, pub text: Option<String>, pub limit: usize }
+                      pub min_level: Option<LogLevel>, pub text: Option<String>,
+                      pub pattern: Option<u64>, pub limit: usize, pub skip: usize }
 pub fn search(data: &Path, q: &LogQuery) -> anyhow::Result<Vec<LogHit>>   // newest first
 ```
 
@@ -258,7 +259,9 @@ pub fn search(data: &Path, q: &LogQuery) -> anyhow::Result<Vec<LogHit>>   // new
 
 ### CLI
 
-`davy logs --data <dir> [--project <slug>] [--since 1h|30m|2d|<RFC 3339>] [--until ...] [--level warn] [--limit 100] [--json] [query]`
+`davy logs --data <dir> [--project <slug>] [--since 1h|30m|2d|<RFC 3339>] [--until ...] [--level warn] [--pattern <id>] [--limit 100] [--json] [query]`
+
+`davy logs --patterns` prints the top patterns of the window instead ("Log patterns").
 
 - Defaults: `--since 24h`, `--limit 100`.
 - Text output prints the newest `limit` hits oldest first, like `tail`: `2026-11-20T10:00:00.123Z WARN api message key=value ...`.
@@ -297,8 +300,9 @@ A coding agent should get from "there is an error" to a fix without a human copy
 |---|---|---|
 | `schema` | none | The `CREATE TABLE` statements of the SQLite tables, what the columns mean, and the log query syntax. |
 | `sql` | `query` | `{columns, rows, truncated}`. One read-only statement. |
-| `search_logs` | `query?`, `project?`, `since?`, `until?`, `level?`, `limit?` | Hits as `davy logs --json` prints them, oldest first. When more match than `limit`, the newest win. |
-| `count_logs` | `query?`, `project?`, `since?`, `until?`, `level?` | `{total, step, buckets}` as `davy logs --count --json` prints it. At most 200 buckets of a round width, and only those with logs, as `[start, count]`. |
+| `search_logs` | `query?`, `project?`, `since?`, `until?`, `level?`, `pattern?`, `limit?` | Hits as `davy logs --json` prints them, oldest first. When more match than `limit`, the newest win. |
+| `count_logs` | `query?`, `project?`, `since?`, `until?`, `level?`, `pattern?` | `{total, step, buckets}` as `davy logs --count --json` prints it. At most 200 buckets of a round width, and only those with logs, as `[start, count]`. |
+| `log_patterns` | `project?`, `since?`, `until?`, `level?`, `limit?` | The patterns with the most bytes, as "Log patterns" says: id, template, example, records, bytes, share, levels and services. `since` defaults to `24h`, `limit` to 20, at most 100. |
 | `connect_project` | `slug`, `sdk?` | Existing project DSN, SDK instructions and test command. New projects require local CLI access. |
 | `project_status` | `slug` | Event count, last event time (ms), issue count, last log time (ns) and `retention`: the days of logs and errors the project keeps. |
 | `set_retention` | `project`, `logs_days?`, `errors_days?` | What the project keeps now, as `retention` in `project_status`. A setting is 1 to 36,500 days or `"default"`, and may only keep data longer. |
@@ -367,7 +371,7 @@ The same library functions back three commands, for agents that run shell comman
 - Unit tests with literal values: `on_event` for every row of the regression rule; `sql` returns exact rows, refuses a write, refuses two statements, cuts at 500 rows, decompresses with `payload_json`, and interrupts a runaway recursive query; compaction of the `sentry-node-10` error fixture gives the exact exception, frames and context lines.
 - A store test resolves an issue in a release and asserts that an event from an older release keeps it resolved and one from a newer release reopens it.
 - HTTP contract tests: `/mcp` is 401 without the token or with a wrong one and 403 for a `Host` or `Origin` it does not serve; with the right one `tools/list` and `tools/call` of `sql` and `mark_fixed` answer. Without a configured token `serve` does not merge the MCP router, so there is no route to test.
-- `e2e/run.sh` connects with the official MCP TypeScript client (`@modelcontextprotocol/sdk`) over Streamable HTTP with the bearer token, lists the eleven tools, calls `issue_context` on an issue the Sentry SDKs created and asserts the exception type and an in-app frame, finds a log with `search_logs` and counts it with `count_logs`, calls `mark_fixed` and reads the status back with `sql`, and lengthens a project's retention with `set_retention` and sees a shorter one refused.
+- `e2e/run.sh` connects with the official MCP TypeScript client (`@modelcontextprotocol/sdk`) over Streamable HTTP with the bearer token, lists the twelve tools, calls `issue_context` on an issue the Sentry SDKs created and asserts the exception type and an in-app frame, finds a log with `search_logs` and counts it with `count_logs`, finds its pattern with `log_patterns` and its lines by that pattern with `search_logs`, calls `mark_fixed` and reads the status back with `sql`, and lengthens a project's retention with `set_retention` and sees a shorter one refused.
 - `scripts/check` passes.
 
 ## Milestone 5: source maps
@@ -1164,6 +1168,63 @@ All projects share one Tantivy index per UTC day, so a project's own retention c
 - Ingest waits while a day is cut, and the queue of 50,000 records absorbs that. Measured on an M2 Max: cutting half of a day of about 1,000,000 logs (176 MB) took 4.4 s, and a day of 120 MB 3.4 s. A shipper that sends more than the queue holds in that time gets `429` and retries. A cut happens once per day and project with a shorter retention, and after a change. A log written to a day makes the next pass check that day again: it opens the index and counts, and writes nothing when nothing expired, so a shipper that backfills an old day has it checked every minute while it lasts. Moving the cut off the log ingest thread is deferred work.
 - A log that arrives late is judged by its own project's retention: in a project that keeps 7 days, a log stamped 10 days ago takes the time it arrived and keeps the original in `davy.original_timestamp`, as every project did under the server default, so it is not deleted the moment it is written.
 
+## Log patterns
+
+An agent asks what fills a project's logs and what it could drop. Patterns answer that: a line's pattern is the line with its values masked, and Davy counts records and bytes per pattern.
+
+### The mask (pure function, versioned)
+
+`logs::patterns::of(message) -> Pattern { id, template }` in `src/logs/patterns.rs`. There is no clustering: a line's pattern depends on the line alone, so a line has the same id in every process, on every day and after a restart, and an id an agent noted yesterday still finds today's lines.
+
+- It reads the first 4 KiB of the message, which is already scrubbed, and splits it into tokens at whitespace. Inside braces a comma ends a token too, so compact JSON such as `{"a":1,"b":2}` has one token per key. Only the first 12 tokens count, because the start of a line names what happened and the tail is mostly values. A token is cut at 64 bytes and ends in `...`.
+- What is masked: UUIDs become `<UUID>`. IPv4 with or without a port, IPv6 and the scrubber's `[Filtered: ip]` become `<IP>`. E-mail addresses and `[Filtered: email]` become `<EMAIL>`. RFC 3339 times become `<TS>`. `0x` hex and words of 8 or more hex digits with a digit among them become `<HEX>`. Numbers become `<NUM>`: a run of numbers and separators such as `24/Nov/2026:10:23:45` folds into as few as it can, and a number with a unit, `23ms` or `4194304kB`, keeps the unit. Other words that mix letters and digits become `<ID>`. Quoted strings become `<STR>`.
+- Words without a digit stay, so `deadbeef` stays and `user_id=8812` keeps its key. Other scrub markers stay as they are.
+- Two kinds of quoted string keep their words, masked one by one: the value of the JSON key `msg`, `message`, `error`, `err` or `event`, which is the prose of a JSON line, and an HTTP request line such as `"GET /api/users/123 HTTP/1.1"`, which names the route.
+- A quote opens a string only after a byte that is not a letter, a digit or a backslash, and only when it closes, so `user's` and `can't` stay words.
+- The id is the first 48 bits of blake3 over a version and the template, printed as 12 hex digits. The version is part of the hash, so a change to the mask bumps it and its ids cannot mix with the old ones. 0 is never a pattern's id: it is `other`, below.
+
+`patterns_tests.rs` has lines in the shape of nginx access logs, JSON and key=value app logs, syslog, Java, Spark and HDFS, written for the test, and the template each must give.
+
+### Counters
+
+Per UTC day, project, pattern, service and level, Davy counts records and raw bytes. Per day, project and pattern it keeps the template and one example, the first message it counted, cut to 256 bytes. The message is scrubbed before it is counted, so an example holds nothing the logs do not.
+
+- Raw bytes are the message, the service, trace and span ids, and the attributes as compact JSON: about what a shipper sends for the record, before Davy compresses it.
+- The log writer counts each record as it indexes it, and stamps the record with the id it counted it under, in the indexed field `pattern`. It decides overflow at that moment, so a record counted under `other` is found under `other`, and the report and `count_logs` with a pattern agree.
+- **A file per day index, not SQLite.** A day's counters live in `patterns.json` in the day's directory, written whole (a temporary file, then a rename) every 10 s when they changed and when the writer closes the day. They have the partitioning and the life of the logs they count. Retention that removes a day removes its counters, a cut of projects from a day cuts their counters, and no counter outlives its logs. In SQLite the counters would be one more job per batch in the one writer queue that error ingest waits on, a migration, and a second retention pass that must stay in step with the day indexes. SQLite would let `sql` query them. The tool and the command below answer what an agent asks.
+- While the writer has a day open its counters are in memory. Readers in the server process, MCP among them, read that memory, so a report is as fresh as search. The CLI, in a process of its own, reads the files, at most 10 s behind. A crash loses at most the last 10 s of counts while the logs lose at most 1 s, so after a crash the counters can show fewer records than the logs, never more.
+- Logs indexed before this version have no pattern and no counts. A day index created before it keeps its schema for the rest of that day, so its new records are counted but not found by pattern.
+
+### Bounds
+
+Logs can come from a public DSN, so one sender could make every line a pattern of its own.
+
+- At most 1,000 patterns per project and day. A record of a new pattern past that counts under `other`, id 0, and the report names it `(patterns past the first 1000 of a project in a day)`. A pattern counted before keeps counting as itself.
+- At most 10,000 pairs of pattern and service per project and day. A new service past that counts under `(other services)`. A service name is cut to 128 bytes.
+- A template is at most 12 tokens of 64 bytes and an example 256 bytes. So a project's day costs at most about 1 MB for its patterns and 2.5 MB for its pairs, and the writer holds only the days it has open, at most 3, and those it failed to write.
+
+### Reading
+
+- `search_logs` and `count_logs` take `pattern`: 12 hex digits, or `other`. The CLI takes `davy logs --pattern <id>`. In a day without the field, nothing matches.
+- The MCP tool `log_patterns` and `davy logs --patterns [--json]` take `project?`, `since?` (default 24 hours), `until?`, `level?` (the lowest level) and `limit?` (default 20 for the tool and 100 for the CLI, at most 100). They answer `{from, to, records, bytes, patterns, top}`, with `patterns` the number of patterns in the window and `top` the rows with the most bytes first, each `{id, template, example, records, bytes, share, levels, services}`. Sizes are strings such as `1.2 MB`, `share` is a percent of the window's bytes with one decimal, `levels` the records per level with the empty ones left out, and `services` the top 3 by records and one `(N more)` entry for the rest. The counters are per day, so the window is whole UTC days, from `from` to `to`.
+
+### Overhead
+
+Masking and counting run in the log writer thread, once per record, after the scrubber and before the index. Ingest answers 202 before that, so they cost writer throughput, not request latency.
+
+Measured with `examples/fill_logs DATA 300000 24 4` (300,000 records of the made-up API over 24 hours in 4 projects, through `LogWriter`, wall time including the last commit), on an Apple M2 Max with load average 8 to 10. Six rounds, alternating which binary ran first, built from the commit before patterns and from this one:
+
+| | median | fastest |
+| --- | --- | --- |
+| before | 11.80 µs per record | 11.44 µs |
+| with patterns | 12.02 µs per record | 11.55 µs |
+
+The rounds differ from each other by up to 1.5 µs, so the cost, about 0.2 µs per record (2%), is near the noise. The masker reads at most 4 KiB and 12 tokens of a message, so its cost has a ceiling however long the message is. Counting the raw bytes serializes the attributes once more, which grows with their size.
+
+### Not in this feature
+
+Rules that drop a pattern at ingest, suggestions of what to drop, when a pattern was last searched, and a view in the web UI.
+
 ## Hardening
 
 A security review of `370e4cd` showed that a client without a key could make the server allocate 4.4 GB with one 194 KB request (measured with a release build on a developer laptop: a gzip body that inflates to 190 MiB of `[0,0,...]` sent to `/store/`). The rules below close that class. Each has a test that a request over the limit is refused.
@@ -1263,7 +1324,7 @@ that are null before the first record. The event count and time come from
 the issues index, which holds `event_count` and `last_seen`, and count the
 events the project still keeps. Logs become visible after the log writer
 commits. The two tools brought the MCP tool count to ten, and
-`set_retention` to eleven. `retention` in `project_status` shows the days
+`set_retention` to eleven, and `log_patterns` to twelve. `retention` in `project_status` shows the days
 of logs and errors in effect and the instant before which they are deleted. `scrub` shows the
 project's scrubbing settings.
 

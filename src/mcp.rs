@@ -186,6 +186,7 @@ impl LogFilter {
             until: instant(self.until.as_deref(), "0s")?,
             min_level,
             text: self.query,
+            pattern: None,
             limit,
             skip: 0,
         })

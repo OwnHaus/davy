@@ -45,6 +45,7 @@ CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::se
 - `src/logs/mod.rs` defines `LogRecord`, `LogLevel` and the timestamp and level rules shared by every log source.
 - `src/logs/{logtail,otlp,sentry}.rs` are the log adapters. Each is a pure function from a request body to `Vec<LogRecord>`.
 - `src/logs/store.rs` owns the Tantivy schema, the log writer thread and search. `src/logs/retention.rs` deletes from it the logs each project keeps no longer.
+- `src/logs/patterns.rs` masks the values in a log message to its pattern, a pure function. `src/logs/tally.rs` counts records and bytes per pattern in the writer thread and keeps them in each day's `patterns.json`, and `src/logs/pattern_report.rs` reads them for `log_patterns`.
 - `src/retention.rs` holds how long each project keeps its logs and errors: the server defaults, a project's own settings, their limits and the change the writer applies. `src/retention/errors.rs` deletes expired events and user feedback on the writer thread and keeps issue counts, first seen and tags true.
 - `src/tests.rs` and `src/logs/tests.rs` hold the unit and contract tests. `e2e/` runs real SDKs against the built binary. `bench/` and `examples/load_logs.rs` are benchmarks, not tests.
 

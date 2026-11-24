@@ -1,4 +1,4 @@
-use super::{LogLevel, LogRecord, LogSource, ORIGINAL_TIMESTAMP};
+use super::{LogLevel, LogRecord, LogSource, ORIGINAL_TIMESTAMP, patterns};
 use crate::{
     heap,
     time::{day_of, now_ns, rfc3339},
@@ -12,7 +12,7 @@ use std::{
     ops::Bound,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering::SeqCst},
         mpsc,
     },
@@ -22,7 +22,7 @@ use std::{
 use tantivy::{
     Document, Index, IndexSettings, IndexWriter, Order, TantivyDocument, Term,
     collector::TopDocs,
-    query::{BooleanQuery, Occur, Query, QueryParser, RangeQuery, TermQuery},
+    query::{BooleanQuery, EmptyQuery, Occur, Query, QueryParser, RangeQuery, TermQuery},
     schema::{FAST, Field, INDEXED, IndexRecordOption, STORED, STRING, Schema, TEXT},
     store::{Compressor, ZstdCompressor},
     tokenizer::TokenizerManager,
@@ -81,12 +81,21 @@ fn schema() -> (Schema, Fields) {
         attributes: b.add_json_field("attributes", TEXT | STORED),
         values: b.add_text_field("values", TEXT),
     };
+    // The id of the record's pattern, [`patterns::OTHER`] past the bound.
+    // Days written before it existed lack it, so it is looked up by name in
+    // each day: see [`pattern_field`].
+    b.add_u64_field("pattern", INDEXED | STORED);
     (b.build(), f)
 }
 
 /// Whether a day index has [`Fields::values`].
 fn has_values(index: &Index) -> bool {
     index.schema().get_field("values").is_ok()
+}
+
+/// The `pattern` field as the day index numbers it, if it has the field.
+fn pattern_field(index: &Index) -> Option<Field> {
+    index.schema().get_field("pattern").ok()
 }
 
 /// The day `name` is the directory of: `YYYY-MM-DD`, the one name of each
@@ -113,13 +122,21 @@ fn open_index(root: &Path, day: Date) -> Result<Index> {
         .create_in_dir(&dir)?)
 }
 
-fn document(f: &Fields, r: LogRecord, values: bool) -> TantivyDocument {
+fn document(
+    f: &Fields,
+    r: LogRecord,
+    values: bool,
+    pattern: Option<(Field, u64)>,
+) -> TantivyDocument {
     let mut d = TantivyDocument::default();
     d.add_u64(f.project, r.project_id.cast_unsigned());
     d.add_i64(f.ts, r.timestamp);
     d.add_i64(f.observed, r.observed_at);
     d.add_u64(f.level, r.level as u64);
     d.add_u64(f.source, r.source.code());
+    if let Some((field, id)) = pattern {
+        d.add_u64(field, id);
+    }
     if let Some(s) = r.service {
         d.add_text(f.service, s);
     }
@@ -161,6 +178,8 @@ fn add_values(d: &mut TantivyDocument, field: Field, attributes: &Map<String, Va
 struct OpenDay {
     writer: IndexWriter,
     values: bool,
+    /// The day's own `pattern` field, `None` in a day written before it.
+    pattern: Option<Field>,
     last_write: Instant,
     dirty: bool,
 }
@@ -176,12 +195,15 @@ pub(super) struct State {
     strays: HashSet<String>,
     open: HashMap<Date, OpenDay>,
     uncommitted: usize,
+    tallies: Arc<Mutex<tally::Days>>,
 }
 
 impl State {
     pub(super) fn new(root: PathBuf, retention_days: u32, overrides: Overrides) -> Self {
+        let tallies = tally::register(&root);
         Self {
             root,
+            tallies,
             fields: schema().1,
             policy: retention::Policy::new(retention_days, HashMap::new()),
             overrides,
@@ -215,12 +237,14 @@ impl State {
             }
             let index = open_index(&self.root, day)?;
             let values = has_values(&index);
+            let pattern = pattern_field(&index);
             let writer = index.writer_with_num_threads(1, WRITER_HEAP)?;
             self.open.insert(
                 day,
                 OpenDay {
                     writer,
                     values,
+                    pattern,
                     last_write: Instant::now(),
                     dirty: false,
                 },
@@ -243,16 +267,23 @@ impl State {
             // through already. The next pass checks the day again.
             self.swept.remove(&day);
             // A day that cannot be opened, such as a stray in its place,
-            // loses its own logs, not those of the other days.
-            let open = match self.writer(day) {
-                Ok(open) => open,
+            // loses its own logs, not those of the other days. Counted once
+            // the day is open, so a day that fails to open counts nothing.
+            let stamp = match self.writer(day) {
+                Ok(open) => open.pattern,
                 Err(e) => {
                     failed.insert(day);
                     first.get_or_insert(e);
                     continue;
                 }
             };
-            if let Err(e) = open.writer.add_document(document(&fields, r, open.values)) {
+            let id = self.tally(day, &r);
+            let open = self.writer(day)?;
+            let id = stamp.map(|field| (field, id));
+            if let Err(e) = open
+                .writer
+                .add_document(document(&fields, r, open.values, id))
+            {
                 self.discard(day);
                 return Err(e.into());
             }
@@ -294,6 +325,7 @@ impl State {
             open.writer.commit()?;
             open.writer.wait_merging_threads()?;
         }
+        self.close_tally(day);
         Ok(())
     }
 
@@ -445,6 +477,7 @@ impl LogWriter {
                 }
             };
             let mut next_commit = Instant::now() + COMMIT_EVERY;
+            let mut next_flush = Instant::now() + tally::FLUSH_EVERY;
             let mut next_retention = Instant::now();
             let mut retry = RETENTION_RETRY;
             loop {
@@ -475,6 +508,10 @@ impl LogWriter {
                     report("close idle", state.close_idle());
                     next_commit = now + COMMIT_EVERY;
                 }
+                if now >= next_flush {
+                    state.flush_tallies();
+                    next_flush = now + tally::FLUSH_EVERY;
+                }
             }
             report("shutdown", state.close_all());
         });
@@ -489,6 +526,8 @@ pub struct LogQuery {
     pub until: i64,
     pub min_level: Option<LogLevel>,
     pub text: Option<String>,
+    /// Only logs of this pattern, see [`patterns::of`].
+    pub pattern: Option<u64>,
     pub limit: usize,
     /// The newest hits at exactly `until` to pass over without reading them,
     /// at most: those an earlier page showed.
@@ -506,6 +545,9 @@ pub struct LogHit {
     pub message: String,
     pub trace_id: Option<String>,
     pub span_id: Option<String>,
+    /// As [`patterns::show`] prints it, `None` in a day written before
+    /// patterns.
+    pub pattern: Option<String>,
     pub attributes: Map<String, Value>,
 }
 
@@ -555,6 +597,17 @@ impl Day {
                     Bound::Unbounded,
                 )),
             ));
+        }
+        if let Some(id) = q.pattern {
+            clauses.push(if let Some(field) = pattern_field(&self.index) {
+                let term = Term::from_field_u64(field, id);
+                (
+                    Occur::Must,
+                    Box::new(TermQuery::new(term, IndexRecordOption::Basic)),
+                )
+            } else {
+                (Occur::Must, Box::new(EmptyQuery))
+            });
         }
         if let Some(text) = q.text.as_deref().filter(|t| !t.trim().is_empty()) {
             let words = if has_values(&self.index) {
@@ -638,6 +691,11 @@ fn hit(schema: &Schema, f: &Fields, doc: &TantivyDocument) -> Result<LogHit> {
         message: string(f.message).unwrap_or_default(),
         trace_id: string(f.trace_id),
         span_id: string(f.span_id),
+        // By name: in a day without the field its id names another one.
+        pattern: v
+            .get("pattern")
+            .and_then(|a| a.get(0)?.as_u64())
+            .map(patterns::show),
         attributes: match first(f.attributes) {
             Some(Value::Object(m)) => m,
             _ => Map::new(),
@@ -660,6 +718,13 @@ pub use retention::{Overrides, no_overrides};
 #[path = "histogram.rs"]
 mod histogram;
 pub use histogram::{Histogram, LogCounts, MAX_BUCKETS, histogram};
+
+#[path = "tally.rs"]
+mod tally;
+
+#[path = "pattern_report.rs"]
+mod pattern_report;
+pub use pattern_report::{MAX_PATTERN_ROWS, PatternQuery, PatternReport, PatternRow, top_patterns};
 
 #[cfg(test)]
 #[path = "queue_tests.rs"]

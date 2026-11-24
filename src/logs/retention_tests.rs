@@ -55,6 +55,7 @@ fn messages(dir: &Path) -> Vec<String> {
         until: now_ns() + DAY,
         min_level: None,
         text: None,
+        pattern: None,
         limit: 100,
         skip: 0,
     };
@@ -461,6 +462,7 @@ fn a_late_log_is_dated_by_its_own_projects_retention() {
         until: now + DAY,
         min_level: None,
         text: None,
+        pattern: None,
         limit: 10,
         skip: 0,
     };

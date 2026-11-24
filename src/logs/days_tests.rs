@@ -37,6 +37,7 @@ fn messages(root: &Path, since: i64) -> anyhow::Result<Vec<String>> {
         until: now_ns(),
         min_level: None,
         text: None,
+        pattern: None,
         limit: 10,
         skip: 0,
     };

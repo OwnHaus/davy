@@ -145,6 +145,7 @@ fn text_output_replaces_control_characters() {
         message: "line\n\u{1b}[2Jgone".into(),
         trace_id: None,
         span_id: None,
+        pattern: None,
         attributes: serde_json::json!({"k\u{1b}": "v\u{7}"})
             .as_object()
             .unwrap()

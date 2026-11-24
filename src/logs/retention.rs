@@ -270,6 +270,7 @@ impl State {
         writer.set_merge_policy(Box::new(NoMergePolicy));
         writer.delete_query(query)?;
         writer.commit()?;
+        self.cut_tally(day, cut)?;
         Ok(Deleted::Marked {
             index,
             writer: Box::new(writer),
@@ -336,6 +337,7 @@ impl State {
     /// Deletes the whole of `day`: renamed into `.trash` first, so a search
     /// sees all of it or none.
     fn trash(&mut self, day: Date) -> Result<()> {
+        self.drop_tally(day);
         self.close(day)?;
         self.swept.remove(&day);
         days::forget(&self.root, day);

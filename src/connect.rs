@@ -167,6 +167,7 @@ pub fn status(data: &Path, slug: &str, defaults: retention::Defaults) -> anyhow:
         until: time::now_ns(),
         min_level: None,
         text: None,
+        pattern: None,
         limit: 1,
         skip: 0,
     };
