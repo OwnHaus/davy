@@ -2,122 +2,184 @@
 # Usage: bench/footprint.sh [quick]
 # Measures what Davy needs in disk, memory and CPU for public log corpora,
 # the synthetic pino generator and error events, and writes the coefficients
-# to bench/footprint.json (schema `davy.footprint`) for a disk and RAM
-# forecast. `quick` runs only the 2k-line samples and small error runs, to
-# test the script.
+# (schema `davy.footprint`) for a disk and RAM forecast. A full run replaces
+# bench/footprint.json, and only when every run in it is complete. `quick`
+# runs only the 2k-line samples and small error runs, to test the script,
+# and writes its report to the work directory.
+#
+# macOS only: it needs taskpolicy, /usr/bin/time -l, sysctl and shasum, and a python3 whose SQLite has `dbstat`.
+#
+# Environment:
+#   FOOTPRINT_WORK    downloads, corpora and runs; default .scratch/footprint
+#                     in the main checkout, shared by every worktree. Each run
+#                     works in its own runs-PID directory below it.
+#   FOOTPRINT_OUT     the report; default as described above.
+#   FOOTPRINT_SHARED  1 if other work ran on the machine at the same time,
+#                     0 if not. Recorded in the report.
 #
 # Every log corpus goes through `davy serve` over the Logtail route, so the
 # default scrubbing, parsing and the writer's commits and merges all apply.
 # Downloads are untrusted data. Each is checked against a SHA-256 below,
 # read only as text, and an archive is unpacked to stdout, never to the
-# paths it names. They live in the main checkout's .scratch/footprint, not
-# in the repo.
+# paths it names. A download or a corpus is kept only after its SHA-256
+# matched, so a broken or partial one is never reused.
 #
 # Run it at normal priority: under `taskpolicy -b` times are 3 to 4x slower.
 set -euo pipefail
+fail() { echo "footprint: $*" >&2; exit 1; }
+[ "$(uname)" = Darwin ] || fail "macOS only, see the header"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-MAIN="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"
-WORK="${FOOTPRINT_WORK:-$MAIN/.scratch/footprint}"
-OUT="${FOOTPRINT_OUT:-$ROOT/bench/footprint.json}"
 QUICK="${1:-}"
-LOGHUB=https://raw.githubusercontent.com/logpai/loghub/master
+case "$QUICK" in '' | quick) ;; *) fail "usage: bench/footprint.sh [quick]" ;; esac
+if [ -n "${FOOTPRINT_WORK:-}" ]; then
+  WORK="$FOOTPRINT_WORK"
+else
+  COMMON="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  MAIN="${COMMON%/.git}"
+  if [ -z "$COMMON" ] || [ "$MAIN" = "$COMMON" ] || [ ! -d "$MAIN/.git" ]; then
+    fail "not in a git checkout with a .git directory, set FOOTPRINT_WORK"
+  fi
+  WORK="$MAIN/.scratch/footprint"
+fi
+case "$WORK" in /?*) ;; *) fail "FOOTPRINT_WORK must be an absolute path" ;; esac
+if [ "$QUICK" = quick ]; then
+  OUT="${FOOTPRINT_OUT:-$WORK/footprint-quick.json}"
+else
+  OUT="${FOOTPRINT_OUT:-$ROOT/bench/footprint.json}"
+fi
+COMMIT="$(git describe --always --dirty)"
+LOGHUB=https://raw.githubusercontent.com/logpai/loghub/dd61d0952749ee7963bde24220d1be5ede023033
 ZENODO=https://zenodo.org/records/8196385/files
-NGINX='https://raw.githubusercontent.com/elastic/examples/master/Common%20Data%20Formats/nginx_logs/nginx_logs'
+NGINX='https://raw.githubusercontent.com/elastic/examples/79848a10658bd8a272ea24dab36f75cfd92ed0cf/Common%20Data%20Formats/nginx_logs/nginx_logs'
 ENVELOPE="$ROOT/e2e/fixtures/sentry-node-10/4.body"
 
-# name|shape|url|sha256 of the download|archive member|lines, 0 for all
+# name|shape|url|sha256 of the download|archive member|first lines only, 0
+# for all|sha256 of the corpus
 SMALL=(
-  "hdfs-2k|line|$LOGHUB/HDFS/HDFS_2k.log|7c967000980c086ed55fa6544ba4f05fe66d44622795e890c68caf8bbb635035||0"
-  "apache-2k|line|$LOGHUB/Apache/Apache_2k.log|c7efa3eb686e3a96bd2f8f4457b2a7887e9cf2f3649327f1b4e87af841363ce8||0"
-  "openssh-2k|line|$LOGHUB/OpenSSH/OpenSSH_2k.log|1e4912727fa88245113d41b16a0cd25ceadba7f931e1c406542885b91254264f||0"
-  "linux-2k|line|$LOGHUB/Linux/Linux_2k.log|b3e20bc1afe732ab1bf3ed1de4bf9c809e4194e02f7dea911d918e5342e8e173||0"
-  "spark-2k|line|$LOGHUB/Spark/Spark_2k.log|2e8b9a37fc5c238253e0b8e18a8bd5e489671def91767ae1192d28c8e1f95901||0"
+  "hdfs-2k|line|$LOGHUB/HDFS/HDFS_2k.log|7c967000980c086ed55fa6544ba4f05fe66d44622795e890c68caf8bbb635035||0|7c967000980c086ed55fa6544ba4f05fe66d44622795e890c68caf8bbb635035"
+  "apache-2k|line|$LOGHUB/Apache/Apache_2k.log|c7efa3eb686e3a96bd2f8f4457b2a7887e9cf2f3649327f1b4e87af841363ce8||0|c7efa3eb686e3a96bd2f8f4457b2a7887e9cf2f3649327f1b4e87af841363ce8"
+  "openssh-2k|line|$LOGHUB/OpenSSH/OpenSSH_2k.log|1e4912727fa88245113d41b16a0cd25ceadba7f931e1c406542885b91254264f||0|1e4912727fa88245113d41b16a0cd25ceadba7f931e1c406542885b91254264f"
+  "linux-2k|line|$LOGHUB/Linux/Linux_2k.log|b3e20bc1afe732ab1bf3ed1de4bf9c809e4194e02f7dea911d918e5342e8e173||0|b3e20bc1afe732ab1bf3ed1de4bf9c809e4194e02f7dea911d918e5342e8e173"
+  "spark-2k|line|$LOGHUB/Spark/Spark_2k.log|2e8b9a37fc5c238253e0b8e18a8bd5e489671def91767ae1192d28c8e1f95901||0|2e8b9a37fc5c238253e0b8e18a8bd5e489671def91767ae1192d28c8e1f95901"
 )
 LARGE=(
-  "apache|line|$ZENODO/Apache.tar.gz|f2cb5014453c8a0f71596838e1639a2131ff6d360839ad280409f621a6cac452|Apache.log|0"
-  "linux|line|$ZENODO/Linux.tar.gz|7e1f820d8d45ae086032e515d9ce8d079a102a9b37dcff5b41a8e60b1f857820|Linux.log|0"
-  "openssh|line|$ZENODO/SSH.tar.gz|296610a35773f58b7c295e5407fc5ccdf48beb3c544fc14a6309addf904a2712|SSH.log|0"
-  "spark-1m|line|$ZENODO/Spark.tar.gz|f11e5df5a98ce25d0f80adb7631b022ae6f1193f510079387447ef4e0fdccef7|*|1000000"
-  "hdfs-2m|line|$ZENODO/HDFS_v1.zip|04f919f2185821f23f045dca611a7586429bdabc601bd7b43f30005f8e289b01|HDFS.log|2000000"
-  "nginx|line|$NGINX|526832433ab552466dc8623390fd92dc052b4f301b2eec94836a5c42a46937df||0"
-  "nginx-parsed|nginx|$NGINX|526832433ab552466dc8623390fd92dc052b4f301b2eec94836a5c42a46937df||0"
-  "synthetic-2m|json|synth|||2000000"
+  "apache|line|$ZENODO/Apache.tar.gz|f2cb5014453c8a0f71596838e1639a2131ff6d360839ad280409f621a6cac452|Apache.log|0|23e616a1ed529bab9b20b9bc345d37035061eee971d246102bcc4937e51a039b"
+  "linux|line|$ZENODO/Linux.tar.gz|7e1f820d8d45ae086032e515d9ce8d079a102a9b37dcff5b41a8e60b1f857820|Linux.log|0|b541078328bf5402c254e7e8971a95963c464858031889ff6e15b6d1a857d490"
+  "openssh|line|$ZENODO/SSH.tar.gz|296610a35773f58b7c295e5407fc5ccdf48beb3c544fc14a6309addf904a2712|SSH.log|0|89eee9e36c182722f9fadc6e5617a4818ffc66109e7e222b8f9e8b78fc3aa2f3"
+  "spark-1m|line|$ZENODO/Spark.tar.gz|f11e5df5a98ce25d0f80adb7631b022ae6f1193f510079387447ef4e0fdccef7|*|1000000|ec36a80261f128fc9abc6619c43eb83403f1323b3a8060244dc50edd49198bb9"
+  "hdfs-2m|line|$ZENODO/HDFS_v1.zip|04f919f2185821f23f045dca611a7586429bdabc601bd7b43f30005f8e289b01|HDFS.log|2000000|65fdb863a03ea681cf512c6f13081e1e141b775650b9c7d569eca4eae53fc242"
+  "nginx|line|$NGINX|526832433ab552466dc8623390fd92dc052b4f301b2eec94836a5c42a46937df||0|526832433ab552466dc8623390fd92dc052b4f301b2eec94836a5c42a46937df"
+  "nginx-parsed|nginx|$NGINX|526832433ab552466dc8623390fd92dc052b4f301b2eec94836a5c42a46937df||0|526832433ab552466dc8623390fd92dc052b4f301b2eec94836a5c42a46937df"
+  "synthetic-2m|json|synth|||2000000|04e7685e1b1648bff19002b26274cf1f4df849f3a642ab210142a88483c0f9d4"
 )
 # The corpora that also run spread over 90 days, for search memory,
 # retention and the cost of a day.
 SPREAD=(hdfs-2m synthetic-2m)
 
-taskpolicy -b cargo build --release -j 4 --bin davy --example footprint 2>&1 | tail -1
+taskpolicy -b cargo build -q --release -j 4 --bin davy
+# A separate build, so the example's dev-dependencies cannot add features
+# to the measured binary.
+taskpolicy -b cargo build -q --release -j 4 --example footprint
 BIN="$ROOT/target/release/davy"
 EX="$ROOT/target/release/examples/footprint"
-rm -rf "$WORK/runs"
-mkdir -p "$WORK/corpora/dl" "$WORK/runs"
+RUNS="$WORK/runs-$$"
+mkdir -p "$WORK/corpora/dl" "$RUNS"
 TOKEN=$(python3 -I -c 'import secrets; print(secrets.token_urlsafe(32))')
 TPID=''
 SPID=''
 SAMPLER=''
+MERGER=''
 cleanup() {
+  local status=$?
+  if [ -n "$MERGER" ]; then kill "$MERGER" 2>/dev/null || true; fi
   if [ -n "$SPID" ]; then kill -TERM "$SPID" 2>/dev/null || true; fi
   if [ -n "$TPID" ]; then wait "$TPID" 2>/dev/null || true; fi
   if [ -n "$SAMPLER" ]; then kill "$SAMPLER" 2>/dev/null || true; fi
+  rm -f "$WORK/corpora/"*".part.$$" "$WORK/corpora/dl/"*".part.$$"
+  if [ "$status" = 0 ]; then
+    rm -rf "$RUNS"
+  else
+    rm -rf "$RUNS"/*/data
+    echo "footprint: failed, the logs of each run are in $RUNS" >&2
+  fi
 }
 trap cleanup EXIT
 
 kv() { printf '%s=%s\n' "$1" "$2" >> "$RUN/result.env"; }
 bytes() { echo $(( $(du -sk "$1" | cut -f1) * 1024 )); }
+sha256() { shasum -a 256 "$1" | cut -d' ' -f1; }
 free_port() {
   python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'
 }
 
+# Removes $1 and stops unless its SHA-256 is $2.
+verify() {
+  local got
+  got=$(sha256 "$1")
+  if [ "$got" != "$2" ]; then
+    rm -f "$1"
+    fail "$1 has SHA-256 $got, expected $2"
+  fi
+}
+
+# Downloads $1 to $3 unless a file with SHA-256 $2 is there already.
+fetch() {
+  if [ -s "$3" ] && [ "$(sha256 "$3")" = "$2" ]; then return; fi
+  local part="$3.part.$$"
+  curl --proto '=https' --proto-redir '=https' -fsSL --connect-timeout 20 \
+    --max-time 1800 --retry 2 --max-filesize 300000000 -o "$part" "$1?download=1"
+  verify "$part" "$2"
+  mv "$part" "$3"
+}
+
+# Writes member $2 of archive $1 to stdout.
+unpack() {
+  case "$1" in
+    *.tar.gz) if [ "$2" = '*' ]; then tar -xzOf "$1"; else tar -xzOf "$1" "$2"; fi ;;
+    *.zip) unzip -p "$1" "$2" ;;
+    *) cat "$1" ;;
+  esac
+}
+
 limit() { if [ "$1" = 0 ]; then cat; else head -n "$1"; fi; }
 
-# Prints the path of corpus $1, fetching and checking it first.
+# Sets CORPUS to the path of corpus $1, fetching and unpacking it first
+# unless it is there with the expected SHA-256.
 corpus() {
-  local name=$1 url=$3 sha=$4 member=$5 lines=$6
-  local file="$WORK/corpora/$name.log"
+  local name=$1 url=$3 sha=$4 member=$5 lines=$6 want=$7
+  CORPUS="$WORK/corpora/$name.log"
+  if [ -s "$CORPUS" ] && [ "$(sha256 "$CORPUS")" = "$want" ]; then return; fi
+  local part="$CORPUS.part.$$"
   if [ "$url" = synth ]; then
-    [ -s "$file" ] || "$EX" synth "$lines" > "$file"
-    echo "$file"
-    return
-  fi
-  local dl
-  dl="$WORK/corpora/dl/$(basename "${url%%\?*}")"
-  if [ ! -s "$dl" ]; then
-    curl -fsSL --max-filesize 300000000 -o "$dl.part" "$url?download=1"
-    mv "$dl.part" "$dl"
-  fi
-  local got
-  got=$(shasum -a 256 "$dl" | cut -d' ' -f1)
-  if [ "$got" != "$sha" ]; then
-    echo "footprint: $dl has SHA-256 $got, expected $sha" >&2
-    exit 1
-  fi
-  if [ ! -s "$file" ]; then
-    # head closes the pipe early, so tar and unzip may die of SIGPIPE.
-    case "$dl" in
-      *.tar.gz) if [ "$member" = '*' ]; then { tar -xzOf "$dl" || true; }; else { tar -xzOf "$dl" "$member" || true; }; fi ;;
-      *.zip) { unzip -p "$dl" "$member" || true; } ;;
-      *) cat "$dl" ;;
-    esac | limit "$lines" > "$file.part"
-    local n
-    n=$(wc -l < "$file.part" | tr -d ' ')
-    if [ "$n" = 0 ] || { [ "$lines" != 0 ] && [ "$n" != "$lines" ]; }; then
-      echo "footprint: $name has $n lines, expected $lines (0 for any but none)" >&2
-      exit 1
+    "$EX" synth "$lines" > "$part"
+  else
+    local dl
+    dl="$WORK/corpora/dl/$(basename "${url%%\?*}")"
+    fetch "$url" "$sha" "$dl"
+    # head closes the pipe early and tar reports that as an error, so only
+    # a whole member must unpack cleanly. The SHA-256 catches a short prefix.
+    if ! unpack "$dl" "$member" | limit "$lines" > "$part"; then
+      [ "$lines" != 0 ] || { rm -f "$part"; fail "unpacking $member of $dl failed"; }
     fi
-    mv "$file.part" "$file"
   fi
-  echo "$file"
+  verify "$part" "$want"
+  mv "$part" "$CORPUS"
 }
 
 # Starts `davy serve` on data dir $1 under /usr/bin/time, its log in $RUN/$2.
 start_server() {
   PORT=$(free_port)
-  DAVY_TOKEN="$TOKEN" /usr/bin/time -l "$BIN" serve --data "$1" --listen "127.0.0.1:$PORT" \
-    --public-url "http://127.0.0.1:$PORT" --log-retention-days 100 > "$RUN/$2.log" 2>&1 &
+  DAVY_TOKEN="$TOKEN" /usr/bin/time -l -o "$RUN/$2.time" "$BIN" serve --data "$1" \
+    --listen "127.0.0.1:$PORT" --public-url "http://127.0.0.1:$PORT" \
+    --log-retention-days 100 > "$RUN/$2.log" 2>&1 &
   TPID=$!
-  for _ in {1..100}; do curl -s -o /dev/null "http://127.0.0.1:$PORT/" && break; sleep 0.1; done
+  local up=''
+  for _ in {1..100}; do
+    if curl -s -o /dev/null "http://127.0.0.1:$PORT/"; then up=1; break; fi
+    sleep 0.1
+  done
+  [ -n "$up" ] || fail "davy serve did not start, see $RUN/$2.log"
   SPID=$(pgrep -P "$TPID")
 }
 
@@ -125,13 +187,15 @@ start_server() {
 # /usr/bin/time saw under the prefix $1.
 stop_server() {
   kill -TERM "$SPID"
-  wait "$TPID" || true
+  local status=0
+  wait "$TPID" || status=$?
   TPID=''
   SPID=''
-  local log="$RUN/$1.log"
-  kv "${1}_wall_secs" "$(awk '/ real / {print $1}' "$log")"
-  kv "${1}_cpu_secs" "$(awk '/ real / {print $3 + $5}' "$log")"
-  kv "${1}_peak_rss_bytes" "$(awk '/maximum resident set size/ {print $1}' "$log")"
+  [ "$status" = 0 ] || fail "davy serve exited with status $status, see $RUN/$1.log"
+  local t="$RUN/$1.time"
+  kv "${1}_wall_secs" "$(awk '/ real / {print $1}' "$t")"
+  kv "${1}_cpu_secs" "$(awk '/ real / {print $3 + $5}' "$t")"
+  kv "${1}_peak_rss_bytes" "$(awk '/maximum resident set size/ {print $1}' "$t")"
 }
 
 # Samples the size of $1 every 0.2 s while process $2 runs, the peak into $3.
@@ -149,9 +213,8 @@ sample_peak() {
 }
 
 new_run() {
-  RUN="$WORK/runs/$1"
-  rm -rf "$RUN"
-  mkdir -p "$RUN"
+  RUN="$RUNS/$1"
+  mkdir "$RUN"
 }
 
 project() {
@@ -162,8 +225,9 @@ project() {
 }
 
 # Times searches over the last 7, 30 and 90 days through MCP, and reads the
-# server's RSS after each window. Each window runs a query with no hit, which
-# opens every day in it, and the newest 100 rows.
+# server's RSS after each window. Each window runs a query with
+# no hit, which opens every day in it, and the newest 100 rows. Both touch
+# little data, and the page cache is warm from the ingest just before.
 search_rss() {
   python3 -I - "$PORT" "$TOKEN" "$SPID" >> "$RUN/result.env" <<'PY'
 import http.client, json, subprocess, sys, time
@@ -211,20 +275,34 @@ retention() {
   kv retention_after_days "$(find "$logs" -maxdepth 1 -name '20*' | wc -l | tr -d ' ')"
 }
 
+# Forces a merge of each day into one segment and measures its peak disk.
+merge_days() {
+  "$EX" merge "$1" >> "$RUN/result.env" &
+  MERGER=$!
+  sample_peak "$1/logs" "$MERGER" "$RUN/merge-peak"
+  wait "$MERGER"
+  MERGER=''
+  wait "$SAMPLER" || true; SAMPLER=''
+  kv merge_peak_disk_bytes "$(cat "$RUN/merge-peak")"
+  kv one_segment_bytes "$(bytes "$1/logs")"
+}
+
 # run_logs ENTRY DAYS: ingests one corpus, then measures it.
 run_logs() {
-  IFS='|' read -r name shape url sha member lines <<< "$1"
-  local days=$2 file data
-  file=$(corpus "$name" "$shape" "$url" "$sha" "$member" "$lines")
+  local name shape url sha member lines want
+  IFS='|' read -r name shape url sha member lines want <<< "$1"
+  local days=$2 data
+  corpus "$name" "$shape" "$url" "$sha" "$member" "$lines" "$want"
   new_run "logs-$name-${days}d"
   data="$RUN/data"
   project "$data"
   kv kind logs; kv corpus "$name"; kv shape "$shape"; kv days "$days"
-  kv source "$url"; kv sha256 "$sha"; kv member "$member"
+  kv source "$url"; kv sha256 "$sha"; kv member "$member"; kv corpus_sha256 "$want"
   start_server "$data" ingest
+  kv load_at_start "$(sysctl -n vm.loadavg)"
   echo "$name over $days days: load $(sysctl -n vm.loadavg)"
   sample_peak "$data/logs" "$SPID" "$RUN/ingest-peak"
-  "$EX" logs "127.0.0.1:$PORT" "$KEY" "$file" "$shape" "$days" >> "$RUN/result.env"
+  "$EX" logs "127.0.0.1:$PORT" "$KEY" "$CORPUS" "$shape" "$days" >> "$RUN/result.env"
   stop_server ingest
   wait "$SAMPLER" || true; SAMPLER=''
   kv ingest_peak_disk_bytes "$(cat "$RUN/ingest-peak")"
@@ -237,13 +315,7 @@ run_logs() {
     stop_server search
     retention "$data"
   else
-    "$EX" merge "$data" >> "$RUN/result.env" &
-    local merger=$!
-    sample_peak "$data/logs" "$merger" "$RUN/merge-peak"
-    wait "$merger"
-    wait "$SAMPLER" || true; SAMPLER=''
-    kv merge_peak_disk_bytes "$(cat "$RUN/merge-peak")"
-    kv one_segment_bytes "$(bytes "$data/logs")"
+    merge_days "$data"
   fi
   rm -rf "$data"
 }
@@ -257,6 +329,7 @@ run_errors() {
   kv kind errors; kv issues "$1"; kv per_issue "$2"; kv days 7
   kv envelope "${ENVELOPE#"$ROOT"/}"
   start_server "$data" ingest
+  kv load_at_start "$(sysctl -n vm.loadavg)"
   echo "errors $1 x $2: load $(sysctl -n vm.loadavg)"
   "$EX" errors "127.0.0.1:$PORT" "$KEY" "$PROJECT" "$ENVELOPE" "$1" "$2" 7 >> "$RUN/result.env"
   stop_server ingest
@@ -283,8 +356,9 @@ print(f"tag_rows={one('SELECT count(*) FROM issue_tags')}")
 # An event's payload is dropped by an UPDATE once a newer event of its
 # issue arrives, which leaves the space in its page. A compacted copy shows
 # what the same rows take without those holes.
-unused = c.execute("SELECT sum(unused) FROM dbstat WHERE name='events'").fetchone()[0]
+unused, btree = c.execute("SELECT sum(unused), sum(pgsize) FROM dbstat WHERE name='events'").fetchone()
 print(f"events_unused_bytes={unused}")
+print(f"events_btree_bytes={btree}")
 c.execute("VACUUM INTO ?", (sys.argv[2],))
 v = sqlite3.connect(sys.argv[2])
 print(f"compacted_sqlite_bytes={v.execute('PRAGMA page_count').fetchone()[0] * v.execute('PRAGMA page_size').fetchone()[0]}")
@@ -294,20 +368,24 @@ PY
   rm -rf "$data"
 }
 
+# run_entry ENTRY: one corpus over one day, then over 90 if it is listed.
+run_entry() {
+  local name=${1%%|*} s
+  run_logs "$1" 1
+  for s in "${SPREAD[@]}"; do
+    if [ "$name" = "$s" ]; then run_logs "$1" 90; fi
+  done
+}
+
 echo "load at start: $(sysctl -n vm.loadavg)"
 for entry in "${SMALL[@]}"; do run_logs "$entry" 1; done
 if [ "$QUICK" = quick ]; then
   run_errors 100 20
   run_errors 2 1000
 else
-  for entry in "${LARGE[@]}"; do
-    run_logs "$entry" 1
-    for s in "${SPREAD[@]}"; do
-      if [ "${entry%%|*}" = "$s" ]; then run_logs "$entry" 90; fi
-    done
-  done
+  for entry in "${LARGE[@]}"; do run_entry "$entry"; done
   run_errors 5000 20
   run_errors 10 10000
 fi
 echo "load at end: $(sysctl -n vm.loadavg)"
-python3 -I "$ROOT/bench/footprint-report.py" "$WORK/runs" "$OUT" "$(git rev-parse --short HEAD)"
+python3 -I "$ROOT/bench/footprint-report.py" "$RUNS" "$OUT" "$COMMIT" "${FOOTPRINT_SHARED:-}"

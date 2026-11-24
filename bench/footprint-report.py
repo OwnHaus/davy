@@ -1,7 +1,10 @@
 """Turns the runs of bench/footprint.sh into bench/footprint.json and prints
 the tables for docs/storage-benchmark.md.
 
-python3 -I bench/footprint-report.py RUNS OUT COMMIT
+python3 -I bench/footprint-report.py RUNS OUT COMMIT SHARED
+
+OUT is written only when every run is complete. SHARED is 1 if other work
+ran on the machine at the same time, 0 if not, empty if unknown.
 """
 
 import json
@@ -26,6 +29,17 @@ ISSUE_TABLES = ("issues", "issues_text", "issues_text_data", "issues_text_idx",
                 "issues_text_docsize", "issues_text_config", "issues_text_content")
 HOURLY_TABLES = ("issue_hourly",)
 TAG_TABLES = ("issue_tags",)
+# The payload sampling of src/store/latest.rs: an issue keeps the payload of
+# its first 50 events, of every 100th after, and of its newest. Each error
+# run checks that the stored payloads follow it.
+FIRST_PAYLOADS = 50
+PAYLOAD_EVERY = 100
+
+
+def kept_payloads(events):
+    """The payloads an issue of `events` events keeps."""
+    sampled = lambda n: n < FIRST_PAYLOADS or (n + 1) % PAYLOAD_EVERY == 0
+    return sum(map(sampled, range(events))) + (0 if sampled(events - 1) else 1)
 
 
 def read_runs(root):
@@ -65,6 +79,7 @@ def logs_row(r):
     row = {
         "corpus": r["corpus"], "shape": r["shape"], "days": r["days"],
         "source": r["source"], "sha256": r["sha256"] or None, "member": r["member"] or None,
+        "corpus_sha256": r["corpus_sha256"], "load_average_at_start": r["load_at_start"],
         "lines": lines, "raw_bytes": raw, "raw_bytes_per_line": round(raw / lines, 1),
         "stored_docs": r["docs"], "complete": r["docs"] == lines,
         "segments": r["segments"], "day_indexes": r["day_indexes"],
@@ -100,18 +115,20 @@ def size(r, names):
 def errors_row(r):
     n, issues = r["stored_events"], r["stored_issues"]
     payload = r["payload_bytes"]
+    row = (size(r, EVENT_TABLES) - payload) / n
     return {
         "issues": r["issues"], "events_per_issue": r["per_issue"], "days": r["days"],
         "envelope": r["envelope"], "events": r["events"], "stored_events": n,
         "complete": n == r["events"],
         "sqlite_bytes": r["sqlite_bytes"], "sqlite_bytes_per_event": round(r["sqlite_bytes"] / n, 1),
-        "row_bytes_per_event": round((size(r, EVENT_TABLES) - payload) / n, 1),
-        "events_unused_share": round(r["events_unused_bytes"] / size(r, EVENT_TABLES), 4),
+        "row_bytes_per_event": round(row, 1),
+        "events_unused_share": round(r["events_unused_bytes"] / r["events_btree_bytes"], 4),
         "compacted_sqlite_bytes": r["compacted_sqlite_bytes"],
         "compacted_row_bytes_per_event": round((r["compacted_table_events_bytes"] - payload) / n, 1),
         "payloads": r["payloads"], "payloads_per_issue": round(r["payloads"] / issues, 1),
         "raw_event_bytes": r["raw_event_bytes"],
         "bytes_per_payload": round(payload / max(1, r["payloads"]), 1),
+        "payloads_follow_sampling": r["payloads"] == issues * kept_payloads(r["per_issue"]),
         "payload_per_raw": round(payload / max(1, r["payloads"]) / r["raw_event_bytes"], 4),
         "hourly_rows": r["hourly_rows"],
         "bytes_per_hourly_row": round(size(r, HOURLY_TABLES) / max(1, r["hourly_rows"]), 1),
@@ -123,17 +140,18 @@ def errors_row(r):
         "ingest_accept_events_per_s": r["accept_events_per_s"],
         "ingest_peak_rss_bytes": r["ingest_peak_rss_bytes"],
         "throttled": r["throttled"],
+        "load_average_at_start": r["load_at_start"],
     }
 
 
-def machine():
+def machine(shared):
     sysctl = lambda k: subprocess.run(["sysctl", "-n", k], capture_output=True, text=True).stdout.strip()
     return {
         "model": sysctl("hw.model"), "cpu": sysctl("machdep.cpu.brand_string"),
         "cores": int(sysctl("hw.ncpu")), "ram_bytes": int(sysctl("hw.memsize")),
         "os": f"macOS {platform.mac_ver()[0]}" if platform.mac_ver()[0] else f"{platform.system()} {platform.release()}",
         "load_average_at_report": sysctl("vm.loadavg"),
-        "shared": True,
+        "shared": {"1": True, "0": False}.get(shared),
     }
 
 
@@ -186,7 +204,7 @@ def coefficients(logs, errors):
             "bytes_per_hourly_row": spread([e["bytes_per_hourly_row"] for e in done]),
             "bytes_per_tag_row": spread([e["tag_bytes_per_row"] for e in many]),
             "issue_bytes_per_issue": spread([e["issue_bytes_per_issue"] for e in many]),
-            "payload_sampling": {"first": 50, "then_every": 100, "plus_newest": True},
+            "payload_sampling": {"first": FIRST_PAYLOADS, "then_every": PAYLOAD_EVERY, "plus_newest": True},
         },
     }
 
@@ -218,24 +236,24 @@ def tables(logs, errors):
               f"retention {ret['days_before']} -> {ret['days_after']} days freed {mb(ret['freed_bytes'])} "
               f"in {ret['secs']:.2f} s; peak ingest RSS {mb(r['ingest_peak_rss_bytes'])}")
     print()
-    print("| Issues × events | SQLite B/event | Row B/event | Compacted row B/event | Payloads/issue | B/payload (raw) | B/hourly row | B/issue | Tags B/issue | CPU µs/event |")
+    print("| Issues × events | SQLite B/event | Row B/event | Compacted row B/event | Payloads/issue | B/payload | B/hourly row | B/tag row | B/issue | CPU µs/event |")
     print("|---|---|---|---|---|---|---|---|---|---|")
     for e in errors:
         print(f"| {e['issues']:,} × {e['events_per_issue']:,} | {e['sqlite_bytes_per_event']:.0f} "
               f"| {e['row_bytes_per_event']:.0f} | {e['compacted_row_bytes_per_event']:.0f} | {e['payloads_per_issue']:.0f} "
-              f"| {e['bytes_per_payload']:.0f} ({e['raw_event_bytes']}) | {e['bytes_per_hourly_row']:.0f} "
-              f"| {e['issue_bytes_per_issue']:.0f} | {e['tag_bytes_per_issue']:.0f} | {e['ingest_cpu_us_per_event']:.0f} |")
+              f"| {e['bytes_per_payload']:.0f} | {e['bytes_per_hourly_row']:.0f} "
+              f"| {e['tag_bytes_per_row']:.0f} | {e['issue_bytes_per_issue']:.0f} | {e['ingest_cpu_us_per_event']:.0f} |")
 
 
 def main():
-    root, out, commit = sys.argv[1], sys.argv[2], sys.argv[3]
+    root, out, commit, shared = sys.argv[1:5]
     runs = read_runs(root)
     logs = [logs_row(r) for r in runs if r.get("kind") == "logs"]
     errors = [errors_row(r) for r in runs if r.get("kind") == "errors"]
     report = {
         "schema": SCHEMA, "version": VERSION,
         "measured": time.strftime("%Y-%m-%d"), "davy_commit": commit,
-        "machine": machine(),
+        "machine": machine(shared),
         "noisy": ["ingest_cpu_us_per_row", "ingest_cpu_us_per_event", "ingest_accept_rows_per_s",
                   "ingest_accept_events_per_s", "ingest_peak_rss_bytes", "search", "merge_secs",
                   "retention.secs"],
@@ -243,14 +261,16 @@ def main():
         "logs": logs,
         "errors": errors,
     }
-    with open(out, "w") as f:
+    tables(logs, errors)
+    bad = [r["corpus"] for r in logs if not r["complete"]]
+    bad += [f"errors {e['issues']}" for e in errors if not (e["complete"] and e["payloads_follow_sampling"])]
+    if bad:
+        print(f"incomplete runs, {out} not written: {bad}", file=sys.stderr)
+        sys.exit(1)
+    with open(out + ".part", "w") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
         f.write("\n")
-    tables(logs, errors)
-    bad = [r["corpus"] for r in logs if not r["complete"]] + [f"errors {e['issues']}" for e in errors if not e["complete"]]
-    if bad:
-        print(f"incomplete runs: {bad}", file=sys.stderr)
-        sys.exit(1)
+    os.replace(out + ".part", out)
 
 
 main()
