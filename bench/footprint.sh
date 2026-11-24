@@ -7,7 +7,8 @@
 # runs only the 2k-line samples and small error runs, to test the script,
 # and writes its report to the work directory.
 #
-# macOS only: it needs taskpolicy, /usr/bin/time -l, sysctl and shasum, and a python3 whose SQLite has `dbstat`.
+# macOS only: it needs taskpolicy, /usr/bin/time -l, footprint, sysctl and
+# shasum, and a python3 whose SQLite has `dbstat`.
 #
 # Environment:
 #   FOOTPRINT_WORK    downloads, corpora and runs; default .scratch/footprint
@@ -76,6 +77,9 @@ LARGE=(
 # The corpora that also run spread over 90 days, for search memory,
 # retention and the cost of a day.
 SPREAD=(hdfs-2m synthetic-2m)
+# The corpora full of IP addresses, which also run with IP scrubbing off:
+# the default policy replaces each address with `[Filtered: ip]`.
+KEEP_IP=(nginx openssh)
 
 taskpolicy -b cargo build -q --release -j 4 --bin davy
 # A separate build, so the example's dev-dependencies cannot add features
@@ -184,7 +188,8 @@ start_server() {
 }
 
 # Stops the server, which commits and waits for its merges, and records what
-# /usr/bin/time saw under the prefix $1.
+# /usr/bin/time saw under the prefix $1. Peak RSS counts the index files the
+# server mapped and read; peak footprint leaves out such clean file pages.
 stop_server() {
   kill -TERM "$SPID"
   local status=0
@@ -196,6 +201,7 @@ stop_server() {
   kv "${1}_wall_secs" "$(awk '/ real / {print $1}' "$t")"
   kv "${1}_cpu_secs" "$(awk '/ real / {print $3 + $5}' "$t")"
   kv "${1}_peak_rss_bytes" "$(awk '/maximum resident set size/ {print $1}' "$t")"
+  kv "${1}_peak_footprint_bytes" "$(awk '/peak memory footprint/ {print $1}' "$t")"
 }
 
 # Samples the size of $1 every 0.2 s while process $2 runs, the peak into $3.
@@ -225,12 +231,12 @@ project() {
 }
 
 # Times searches over the last 7, 30 and 90 days through MCP, and reads the
-# server's RSS after each window. Each window runs a query with
+# server's RSS and footprint after each window. Each window runs a query with
 # no hit, which opens every day in it, and the newest 100 rows. Both touch
 # little data, and the page cache is warm from the ingest just before.
 search_rss() {
   python3 -I - "$PORT" "$TOKEN" "$SPID" >> "$RUN/result.env" <<'PY'
-import http.client, json, subprocess, sys, time
+import http.client, json, re, subprocess, sys, time
 port, token, pid = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 c = http.client.HTTPConnection("127.0.0.1", port)
 session = None
@@ -248,6 +254,11 @@ def rpc(method, params, id=1):
   return json.loads(raw) if raw else None
 def rss():
   return int(subprocess.run(["ps", "-o", "rss=", "-p", pid], capture_output=True, text=True).stdout) * 1024
+UNITS = {"B": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3}
+def footprint():
+  out = subprocess.run(["footprint", "-p", pid], capture_output=True, text=True).stdout
+  n, unit = re.search(r"Footprint: ([\d.]+) (B|KB|MB|GB)", out).groups()
+  return round(float(n) * UNITS[unit])
 def search(args):
   t = time.perf_counter()
   out = rpc("tools/call", {"name": "search_logs", "arguments": args})
@@ -257,12 +268,14 @@ rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                    "clientInfo": {"name": "footprint-bench", "version": "1"}})
 rpc("notifications/initialized", {}, id=None)
 print(f"search_rss_start_bytes={rss()}")
+print(f"search_footprint_start_bytes={footprint()}")
 for days in (7, 30, 90):
   miss = search({"since": f"{days}d", "query": "nothingmatchesthis", "limit": 10})
   newest = search({"since": f"{days}d", "limit": 100})
   print(f"search_{days}d_miss_first_ms={miss:.1f}")
   print(f"search_{days}d_newest_ms={newest:.1f}")
   print(f"search_rss_{days}d_bytes={rss()}")
+  print(f"search_footprint_{days}d_bytes={footprint()}")
 PY
 }
 
@@ -287,20 +300,25 @@ merge_days() {
   kv one_segment_bytes "$(bytes "$1/logs")"
 }
 
-# run_logs ENTRY DAYS: ingests one corpus, then measures it.
+# run_logs ENTRY DAYS SCRUB: ingests one corpus, then measures it. SCRUB is
+# `default` or `keep-ip`.
 run_logs() {
   local name shape url sha member lines want
   IFS='|' read -r name shape url sha member lines want <<< "$1"
-  local days=$2 data
+  local days=$2 scrub=$3 data suffix=''
   corpus "$name" "$shape" "$url" "$sha" "$member" "$lines" "$want"
-  new_run "logs-$name-${days}d"
+  if [ "$scrub" = keep-ip ]; then suffix=-keep-ip; fi
+  new_run "logs-$name-${days}d$suffix"
   data="$RUN/data"
   project "$data"
-  kv kind logs; kv corpus "$name"; kv shape "$shape"; kv days "$days"
+  if [ "$scrub" = keep-ip ]; then
+    "$BIN" project scrub bench --data "$data" --settings '{"ip": false}' > /dev/null
+  fi
+  kv kind logs; kv corpus "$name"; kv shape "$shape"; kv days "$days"; kv scrub "$scrub"
   kv source "$url"; kv sha256 "$sha"; kv member "$member"; kv corpus_sha256 "$want"
   start_server "$data" ingest
   kv load_at_start "$(sysctl -n vm.loadavg)"
-  echo "$name over $days days: load $(sysctl -n vm.loadavg)"
+  echo "$name over $days days, scrub $scrub: load $(sysctl -n vm.loadavg)"
   sample_peak "$data/logs" "$SPID" "$RUN/ingest-peak"
   "$EX" logs "127.0.0.1:$PORT" "$KEY" "$CORPUS" "$shape" "$days" >> "$RUN/result.env"
   stop_server ingest
@@ -368,17 +386,20 @@ PY
   rm -rf "$data"
 }
 
-# run_entry ENTRY: one corpus over one day, then over 90 if it is listed.
+# run_entry ENTRY: one corpus over one day, then the variants it is listed for.
 run_entry() {
   local name=${1%%|*} s
-  run_logs "$1" 1
+  run_logs "$1" 1 default
+  for s in "${KEEP_IP[@]}"; do
+    if [ "$name" = "$s" ]; then run_logs "$1" 1 keep-ip; fi
+  done
   for s in "${SPREAD[@]}"; do
-    if [ "$name" = "$s" ]; then run_logs "$1" 90; fi
+    if [ "$name" = "$s" ]; then run_logs "$1" 90 default; fi
   done
 }
 
 echo "load at start: $(sysctl -n vm.loadavg)"
-for entry in "${SMALL[@]}"; do run_logs "$entry" 1; done
+for entry in "${SMALL[@]}"; do run_logs "$entry" 1 default; done
 if [ "$QUICK" = quick ]; then
   run_errors 100 20
   run_errors 2 1000

@@ -77,7 +77,7 @@ def logs_row(r):
              for k, v in r.items() if k.startswith("field_") and k.endswith("_bytes")}
     share["store"] = round(r["store_bytes"] / total, 4)
     row = {
-        "corpus": r["corpus"], "shape": r["shape"], "days": r["days"],
+        "corpus": r["corpus"], "shape": r["shape"], "days": r["days"], "scrub": r["scrub"],
         "source": r["source"], "sha256": r["sha256"] or None, "member": r["member"] or None,
         "corpus_sha256": r["corpus_sha256"], "load_average_at_start": r["load_at_start"],
         "lines": lines, "raw_bytes": raw, "raw_bytes_per_line": round(raw / lines, 1),
@@ -90,6 +90,7 @@ def logs_row(r):
         "ingest_cpu_us_per_row": round(r["ingest_cpu_secs"] * 1e6 / lines, 2),
         "ingest_accept_rows_per_s": r["accept_rows_per_s"],
         "ingest_peak_rss_bytes": r["ingest_peak_rss_bytes"],
+        "ingest_peak_footprint_bytes": r["ingest_peak_footprint_bytes"],
         "throttled": r["throttled"],
     }
     if "one_segment_bytes" in r:
@@ -139,6 +140,7 @@ def errors_row(r):
         "ingest_cpu_us_per_event": round(r["ingest_cpu_secs"] * 1e6 / n, 1),
         "ingest_accept_events_per_s": r["accept_events_per_s"],
         "ingest_peak_rss_bytes": r["ingest_peak_rss_bytes"],
+        "ingest_peak_footprint_bytes": r["ingest_peak_footprint_bytes"],
         "throttled": r["throttled"],
         "load_average_at_start": r["load_at_start"],
     }
@@ -156,14 +158,16 @@ def machine(shared):
 
 
 def coefficients(logs, errors):
-    one_day = [r for r in logs if r["days"] == 1 and r["complete"]]
+    # The forecast is for the default scrub policy; the runs that keep IP
+    # addresses only show what that policy saves.
+    one_day = [r for r in logs if r["days"] == 1 and r["complete"] and r["scrub"] == "default"]
     real = [r for r in one_day if r["lines"] >= MIN_LINES and r["shape"] != "json"]
     synthetic = [r for r in one_day if r["shape"] == "json"]
     pairs = {r["corpus"]: r for r in one_day}
     # The same lines spread over more day indexes: what each extra day costs.
     per_day = [(r["disk_bytes"] - pairs[r["corpus"]]["disk_bytes"])
                / (r["day_indexes"] - pairs[r["corpus"]]["day_indexes"])
-               for r in logs if r["days"] > 1 and r["corpus"] in pairs]
+               for r in logs if r["days"] > 1 and r["corpus"] in pairs and r["scrub"] == "default"]
     # Only a run long enough for the 0.2 s disk sampler, and a merge that
     # had more than one segment to merge, says anything about headroom.
     big = [r for r in one_day if r["lines"] >= BIG_LINES]
@@ -187,17 +191,30 @@ def coefficients(logs, errors):
             "merge_peak_extra_disk_per_disk": spread([r["merge_peak_extra_disk_bytes"] / r["disk_bytes"] for r in merged]),
             "ingest_cpu_us_per_row": by(real + synthetic, "ingest_cpu_us_per_row"),
             "ingest_peak_rss_bytes": by(big, "ingest_peak_rss_bytes"),
+            "ingest_peak_footprint_bytes": by(big, "ingest_peak_footprint_bytes"),
             "peak_rss_bytes_2k_lines": by([r for r in one_day if r["lines"] < MIN_LINES], "ingest_peak_rss_bytes"),
+            "peak_footprint_bytes_2k_lines": by([r for r in one_day if r["lines"] < MIN_LINES], "ingest_peak_footprint_bytes"),
         },
         "errors": {
+            # Every error coefficient comes from one event shape: the captured
+            # Node.js event, raw_event_bytes of JSON.
+            "event_shape": cold and {"envelope": cold["envelope"], "raw_event_bytes": cold["raw_event_bytes"]},
             "event_with_payload": cold and {
                 "measured_at_events_per_issue": cold["events_per_issue"],
                 "row_bytes": cold["row_bytes_per_event"],
                 "payload_per_raw_event_json": cold["payload_per_raw"],
             },
+            # The newest event of an issue in each write transaction gets a
+            # payload that the next transaction drops, and the dropped bytes
+            # stay as a hole in the page. So row_bytes_as_written grows with
+            # payload_bytes and with how few events of one issue share a
+            # transaction: it is measured for this event shape and this run,
+            # and it scales with both, not a constant per event.
             "event_without_payload": hot and {
                 "measured_at_events_per_issue": hot["events_per_issue"],
+                "measured_at_issues": hot["issues"],
                 "row_bytes_as_written": hot["row_bytes_per_event"],
+                "payload_bytes": hot["bytes_per_payload"],
                 "row_bytes_compacted": hot["compacted_row_bytes_per_event"],
                 "events_table_unused_share": hot["events_unused_share"],
             },
@@ -255,8 +272,8 @@ def main():
         "measured": time.strftime("%Y-%m-%d"), "davy_commit": commit,
         "machine": machine(shared),
         "noisy": ["ingest_cpu_us_per_row", "ingest_cpu_us_per_event", "ingest_accept_rows_per_s",
-                  "ingest_accept_events_per_s", "ingest_peak_rss_bytes", "search", "merge_secs",
-                  "retention.secs"],
+                  "ingest_accept_events_per_s", "ingest_peak_rss_bytes", "ingest_peak_footprint_bytes",
+                  "search", "merge_secs", "retention.secs"],
         "coefficients": coefficients(logs, errors),
         "logs": logs,
         "errors": errors,
