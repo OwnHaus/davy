@@ -42,7 +42,9 @@ const BATCH: i64 = 200;
 const UNLINK: i64 = 50;
 /// The work one batch of events may do, in units of about one event
 /// deleted, about 6 µs. An event costs 1, and 1 more per 4 KiB of payload,
-/// which SQLite frees page by page. The first event of an issue in a batch
+/// user id, release and environment, which SQLite frees page by page. Each
+/// of the last three is capped at ingest, but a row stored before its cap
+/// keeps its size. The first event of an issue in a batch
 /// costs [`ISSUE_WORK`] more, for the statements that keep the issue's
 /// counts and tags. So a batch stops after about 10 ms of work, and a sweep
 /// ends at most that much past its budget, however its events spread over
@@ -143,7 +145,9 @@ fn pick(c: &Connection, at: i64, default: Days) -> Result<(Vec<i64>, bool)> {
     // without a sort. The order is what lets `untag` look for tied events
     // only.
     let mut q = c.prepare_cached(
-        "SELECT e.id, e.issue_id, coalesce(length(e.payload), 0) FROM projects p CROSS JOIN events e
+        "SELECT e.id, e.issue_id, coalesce(length(e.payload), 0) + coalesce(octet_length(e.user_id), 0)
+         + coalesce(octet_length(e.release), 0) + coalesce(octet_length(e.environment), 0)
+         FROM projects p CROSS JOIN events e
          ON e.project_id=p.id AND e.received_at<?1-coalesce(p.error_retention_days,?2)*?3
          ORDER BY p.id, e.received_at, e.id LIMIT ?4",
     )?;

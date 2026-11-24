@@ -106,6 +106,9 @@ fn parse_session_refuses_what_it_cannot_count() {
     assert_eq!(without("shop@1.4.0", " "), None);
     assert_eq!(without("shop@1.4.0", "shop\\u0000"), None);
     assert_eq!(without("shop@1.4.0", &"r".repeat(201)), None);
+    assert_eq!(without("shop@1.4.0", &"é".repeat(201)), None);
+    let kept = without("shop@1.4.0", &"é".repeat(200)).map(|s| s.release.chars().count());
+    assert_eq!(kept, Some(200));
     assert_eq!(parse_session(b"[]"), None);
     let plain = format!(
         r#"{{"sid": "{SID}", "started": "2024-10-02T07:12:30Z", "attrs": {{"release": "1.0"}}}}"#

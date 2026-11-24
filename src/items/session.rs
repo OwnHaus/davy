@@ -7,7 +7,7 @@
 //! can tell whether a new release crashes more than the one before.
 
 use crate::{
-    event::{MAX_ENVIRONMENT, MAX_RELEASE, Timestamp},
+    event::{MAX_ENVIRONMENT, MAX_RELEASE, MAX_USER_ID, Timestamp},
     items::client_report::Discarded,
     text,
 };
@@ -192,7 +192,7 @@ fn start(s: &str) -> Option<Timestamp> {
 }
 
 fn user(did: &str) -> Option<String> {
-    clean(did, 256)
+    clean(did, MAX_USER_ID)
 }
 
 /// Counts one update of a session for `project`, received at `at`. Returns

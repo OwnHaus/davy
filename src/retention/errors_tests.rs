@@ -559,6 +559,57 @@ fn a_release_or_environment_over_its_limit_is_dropped_and_the_event_kept() {
     assert_eq!(s.number("SELECT length(version) FROM releases"), 200);
 }
 
+#[test]
+fn the_caps_of_an_event_count_characters_not_bytes() {
+    let parsed = |n: usize| {
+        let v = "é".repeat(n);
+        ErrorEvent::parse(json!({"release": v, "environment": v, "user": {"id": v}})).unwrap()
+    };
+    let kept = |n| {
+        let e = parsed(n);
+        let len = |v: Option<String>| v.map(|s| s.chars().count());
+        (len(e.release), len(e.environment), len(e.user_id))
+    };
+    assert_eq!(kept(64), (Some(64), Some(64), Some(64)));
+    assert_eq!(kept(65), (Some(65), None, Some(65)));
+    assert_eq!(kept(200), (Some(200), None, Some(200)));
+    assert_eq!(kept(201), (None, None, Some(201)));
+    assert_eq!(kept(256), (None, None, Some(256)));
+    assert_eq!(kept(257), (None, None, None));
+}
+
+#[test]
+fn a_user_id_over_its_limit_is_dropped_and_the_event_kept() {
+    let s = Server::new("errors-user-cap", &["api"]);
+    let with_user = |id: String, at| {
+        let mut e = ErrorEvent::parse(json!({"message": "timeout", "user": {"id": id}})).unwrap();
+        e.received_at = at;
+        e.timestamp = at;
+        e
+    };
+    let (kept, over) = ("u".repeat(256), "u".repeat(1 << 20));
+    s.ingest(1, vec![with_user(kept, day(1)), with_user(over, day(2))]);
+    assert_eq!(
+        s.rows("SELECT coalesce(CAST(length(user_id) AS TEXT), 'none') FROM events ORDER BY id"),
+        ["256", "none"]
+    );
+}
+
+#[test]
+fn a_batch_prices_the_user_id_of_an_event_stored_before_its_cap() {
+    let s = Server::new("errors-user-work", &["api"]);
+    let events = (0..200)
+        .map(|n| error("timeout", day(1) + n, "prod", "v1"))
+        .collect();
+    s.ingest(1, events);
+    s.c.execute("UPDATE events SET user_id=hex(zeroblob(32768))", [])
+        .unwrap();
+    sweep(&s.c, day(20), Days::new(10).unwrap(), Duration::ZERO).unwrap();
+    // 64 KiB of user id costs 16 units more, so the first event costs
+    // 1 + 16 + ISSUE_WORK and each one after it 17, and 91 fit in WORK.
+    assert_eq!(s.number("SELECT count(*) FROM events"), 109);
+}
+
 /// What `EXPLAIN QUERY PLAN` says for `sql`, one line per step.
 fn plan(c: &Connection, sql: &str, params: impl rusqlite::Params) -> Vec<String> {
     let mut q = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();

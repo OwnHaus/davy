@@ -126,9 +126,13 @@ fn string(v: &Value) -> Option<String> {
 pub const MAX_RELEASE: usize = 200;
 /// The longest environment an event keeps, in characters, as Sentry takes it.
 pub const MAX_ENVIRONMENT: usize = 64;
+/// The longest user id an event keeps, in characters, as long as the
+/// device id a session may carry.
+pub const MAX_USER_ID: usize = 256;
 /// `v` as a string of at most `max` characters. A longer one is dropped and
-/// the event kept without it, because each is stored in a column, a tag and
-/// the releases table, and the DSN that sends it may be public.
+/// the event kept without it, because each is stored in a column, and a
+/// release and an environment also in a tag and the releases table, and
+/// the DSN that sends it may be public.
 fn capped(v: &Value, max: usize) -> Option<String> {
     v.as_str()
         .filter(|s| s.chars().count() <= max)
@@ -176,7 +180,7 @@ impl ErrorEvent {
                     })
                     .collect()
             }),
-            user_id: string(&raw["user"]["id"])
+            user_id: capped(&raw["user"]["id"], MAX_USER_ID)
                 .or_else(|| raw["user"]["id"].as_i64().map(|n| n.to_string())),
             trace_id: raw["contexts"]["trace"]["trace_id"]
                 .as_str()
