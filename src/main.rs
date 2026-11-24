@@ -3,7 +3,10 @@ use davy::{
     alert, context, feedback, install, issues,
     logs::{
         self, LogLevel,
-        store::{LogCounts, LogHit, LogQuery, histogram, search},
+        store::{
+            LogCounts, LogHit, LogQuery, PatternQuery, PatternReport, histogram, search,
+            top_patterns,
+        },
     },
     monitor::{self, CheckUrl},
     query, retention, store, text,
@@ -133,12 +136,20 @@ struct Logs {
     /// Minimum level: trace, debug, info, warn, error, fatal.
     #[arg(long, value_parser = level)]
     level: Option<LogLevel>,
-    /// At most this many logs, the newest ones in the window.
+    /// Only the logs of this pattern: an id `--patterns` prints, or `other`.
+    #[arg(long, value_parser = logs::patterns::parse)]
+    pattern: Option<u64>,
+    /// At most this many logs, the newest ones in the window, or with
+    /// --patterns this many patterns, at most 100.
     #[arg(long, default_value_t = 100, conflicts_with = "count")]
     limit: usize,
     /// Prints how many logs match per time bucket instead of the logs.
     #[arg(long)]
     count: bool,
+    /// Prints the patterns with the most bytes in the window instead of the
+    /// logs, counted in whole UTC days.
+    #[arg(long, conflicts_with_all = ["count", "query", "pattern"])]
+    patterns: bool,
     #[arg(long)]
     json: bool,
 }
@@ -373,13 +384,24 @@ fn logs(out: &mut impl Write, args: Logs) -> anyhow::Result<()> {
         Some(slug) => Some(store::project_by_slug(&store::open(&args.data)?, &slug)?),
         None => None,
     };
+    let until = args.until.unwrap_or_else(now_ns);
+    if args.patterns {
+        let q = PatternQuery {
+            project,
+            since: args.since,
+            until,
+            min_level: args.level,
+            limit: args.limit,
+        };
+        return print_patterns(out, &top_patterns(&logs::dir(&args.data), &q)?, args.json);
+    }
     let q = LogQuery {
         project,
         since: args.since,
-        until: args.until.unwrap_or_else(now_ns),
+        until,
         min_level: args.level,
         text: args.query,
-        pattern: None,
+        pattern: args.pattern,
         limit: args.limit,
         skip: 0,
     };
@@ -528,6 +550,28 @@ fn cell(v: &serde_json::Value) -> String {
         other => safe(&other.to_string()).into_owned(),
     }
 }
+/// The report, a line per pattern with the most bytes first, after a summary.
+fn print_patterns(out: &mut impl Write, r: &PatternReport, json: bool) -> anyhow::Result<()> {
+    if json {
+        writeln!(out, "{}", serde_json::to_string(r)?)?;
+        return Ok(());
+    }
+    writeln!(
+        out,
+        "{} to {}: {} logs, {}, {} patterns",
+        r.from, r.to, r.records, r.bytes, r.patterns
+    )?;
+    for p in &r.top {
+        let template = safe(&p.template);
+        writeln!(
+            out,
+            "{}\t{}\t{}\t{}\t{template}",
+            p.bytes, p.share, p.records, p.id
+        )?;
+    }
+    Ok(())
+}
+
 /// Text from ingest with every control character replaced by U+FFFD, so a
 /// stored string cannot move the cursor, retitle the terminal or split a line.
 fn safe(s: &str) -> Cow<'_, str> {

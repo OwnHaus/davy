@@ -10,6 +10,8 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 
 ### Added
 
+- See what fills the logs: MCP `log_patterns` and `davy logs --patterns` list the line shapes with the most bytes in a window, each with an example, records, share, levels and services. `search_logs`, `count_logs` and `davy logs` filter by a pattern's id. Each day directory gains `patterns.json`, at most 1,000 patterns per project and day. Logs indexed before this version have no pattern.
+
 - Follow Android, Rust and ASP.NET Core connect guides with DSN storage and SDK-specific limits.
 
 - Agents can retrieve connection instructions and confirm ingest with MCP `connect_project` and `project_status`.

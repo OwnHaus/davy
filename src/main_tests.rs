@@ -329,3 +329,58 @@ fn project_retention_prints_and_changes_a_projects_own_settings() {
     assert_eq!(refused.to_string(), "unknown project \"web\"");
     std::fs::remove_dir_all(&data).unwrap();
 }
+
+#[test]
+fn logs_patterns_prints_a_summary_and_a_line_per_pattern() {
+    use davy::logs::{LogRecord, LogSource, store::LogWriter};
+    let data = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("test-cli-patterns-{}", uuid::Uuid::new_v4()));
+    store::create_project(&store::open(&data).unwrap(), "api").unwrap();
+    let now = now_ns();
+    let log = |message: &str| LogRecord {
+        project_id: 1,
+        timestamp: now - 1,
+        observed_at: now,
+        source: LogSource::Logtail,
+        level: LogLevel::Warn,
+        message: message.into(),
+        service: None,
+        trace_id: None,
+        span_id: None,
+        attributes: serde_json::Map::new(),
+    };
+    let writer = LogWriter::start(logs::dir(&data), 30, logs::store::no_overrides()).unwrap();
+    let batch = vec![log("disk 91% full\u{1b}[J"), log("disk 93% full\u{1b}[J")];
+    assert!(writer.queue.push(batch).is_ok());
+    drop(writer.queue);
+    writer.thread.join().unwrap();
+    let run = |extra: &[&str]| {
+        let mut args = vec![
+            "davy",
+            "logs",
+            "--patterns",
+            "--data",
+            data.to_str().unwrap(),
+        ];
+        args.extend(extra);
+        let Command::Logs(args) = Cli::try_parse_from(args).unwrap().command else {
+            panic!("not the logs command");
+        };
+        let mut out = Vec::new();
+        logs(&mut out, args).unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    let id = logs::patterns::show(logs::patterns::of("disk 1% full\u{1b}[J").id);
+    let from = time::day_of(now - 86_400_000_000_000);
+    assert_eq!(
+        run(&[]),
+        format!(
+            "{from} to {}: 2 logs, 32 B, 1 patterns\n32 B\t100.0%\t2\t{id}\tdisk <NUM>% full\u{fffd}[J\n",
+            time::day_of(now)
+        )
+    );
+    let json: serde_json::Value = serde_json::from_str(&run(&["--json"])).unwrap();
+    assert_eq!(json["top"][0]["levels"], serde_json::json!({"warn": 2}));
+    std::fs::remove_dir_all(&data).unwrap();
+}
