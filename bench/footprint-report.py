@@ -2,10 +2,12 @@
 the tables for docs/storage-benchmark.md.
 
 python3 -I bench/footprint-report.py RUNS OUT COMMIT SHARED PRIORITY
+python3 -I bench/footprint-report.py --tables bench/footprint.json
 
 OUT is written only when every run is complete. SHARED is 1 if other work
 ran on the machine at the same time, 0 if not, empty if unknown. PRIORITY is
 how footprint.sh found itself scheduled: normal, background or lowered.
+With --tables it only prints the tables of a report already written.
 """
 
 import json
@@ -38,6 +40,8 @@ TAG_TABLES = ("issue_tags",)
 # run checks that the stored payloads follow it.
 FIRST_PAYLOADS = 50
 PAYLOAD_EVERY = 100
+# SQLite pages are 4 KB, so bytes per issue need this many issues.
+MANY_ISSUES = 1000
 
 
 def kept_payloads(events):
@@ -180,10 +184,10 @@ def coefficients(logs, errors):
     by = lambda rows, key: spread([r[key] for r in rows])
     done = [e for e in errors if e["complete"]]
     # Every event of a cold issue keeps its payload; nearly no event of a hot
-    # one does. SQLite pages are 4 KB, so per-issue bytes need many issues.
+    # one does.
     cold = min(done, key=lambda e: e["events_per_issue"], default=None)
     hot = max(done, key=lambda e: e["events_per_issue"], default=None)
-    many = [e for e in done if e["issues"] >= 1000]
+    many = [e for e in done if e["issues"] >= MANY_ISSUES]
     return {
         "logs": {
             "disk_per_raw_real": by(real, "disk_per_raw"),
@@ -231,44 +235,95 @@ def coefficients(logs, errors):
     }
 
 
-def mb(b):
-    return f"{b / 1e6:.1f} MB"
+def mb(b, digits=0):
+    return f"{b / 1e6:.{digits}f} MB"
+
+
+def span(values, fmt):
+    """`fmt` of the lowest and the highest value, or of the one value."""
+    lo, hi = fmt(min(values)), fmt(max(values))
+    if lo == hi:
+        return lo
+    # "37 to 39 MB" rather than "37 MB to 39 MB".
+    unit = hi.rpartition(" ")[2]
+    if " " in hi and lo.endswith(" " + unit):
+        lo = lo[: -len(unit) - 1]
+    return f"{lo} to {hi}"
+
+
+def row(cells):
+    print("| " + " | ".join(cells) + " |")
+
+
+def header(names):
+    row(names)
+    print("|" + "---|" * len(names))
+
+
+def logs_line(rows):
+    """One line of the logs table, with ranges when it sums up several runs."""
+    col = lambda key, fmt: span([r[key] for r in rows], fmt)
+    ratio = lambda v: f"{v:.2f}×"
+    if len(rows) == 1:
+        r = rows[0]
+        name = r["corpus"] + (", IP kept" if r["scrub"] == "keep-ip" else "")
+    else:
+        name = f"the {len(rows)} small samples"
+    lines = col("lines", lambda v: f"{v:,}")
+    if len(rows) > 1 and " to " not in lines:
+        lines += " each"
+    one = col("one_segment_per_raw", ratio) if all("one_segment_per_raw" in r for r in rows) else ""
+    # The sampler sees the ingest peak only in a long run.
+    big = all(r["lines"] >= BIG_LINES for r in rows)
+    row([name, lines, col("raw_bytes_per_line", lambda v: f"{v:.0f}"), col("disk_per_raw", ratio),
+         col("disk_bytes_per_line", lambda v: f"{v:.0f}"), one, col("segments", str),
+         span([r["share_of_index"].get("values", 0) for r in rows], lambda v: f"{v:.0%}"),
+         col("ingest_peak_extra_disk_bytes", mb) if big else "",
+         col("ingest_cpu_us_per_row", lambda v: f"{v:.1f}"),
+         col("ingest_peak_rss_bytes", mb), col("ingest_peak_footprint_bytes", mb)])
 
 
 def tables(logs, errors):
-    print("| Corpus | Lines | Raw B/line | Disk / raw | Disk B/line | One segment / raw | `values` | Peak extra disk | CPU µs/row | Peak RSS |")
-    print("|---|---|---|---|---|---|---|---|---|---|")
-    for r in logs:
-        if r["days"] != 1:
-            continue
-        one = f"{r['one_segment_per_raw']:.2f}×" if "one_segment_per_raw" in r else ""
-        extra = max(r["ingest_peak_extra_disk_bytes"], r.get("merge_peak_extra_disk_bytes", 0))
-        values = r["share_of_index"].get("values", 0)
-        name = r["corpus"] + (", IP kept" if r.get("scrub") == "keep-ip" else "")
-        print(f"| {name} | {r['lines']:,} | {r['raw_bytes_per_line']:.0f} | {r['disk_per_raw']:.2f}× "
-              f"| {r['disk_bytes_per_line']:.0f} | {one} | {values:.0%} | {mb(extra)} "
-              f"| {r['ingest_cpu_us_per_row']:.1f} | {mb(r['ingest_peak_rss_bytes'])} |")
+    """The tables of docs/storage-benchmark.md, as they appear there."""
+    header(["Corpus", "Lines", "Raw B/line", "Disk / raw", "Disk B/line", "One segment / raw",
+            "Segments", "`values`", "Ingest peak extra disk", "CPU µs/row", "Peak RSS", "Peak footprint"])
+    one_day = [r for r in logs if r["days"] == 1]
+    for r in one_day:
+        if r["lines"] >= MIN_LINES:
+            logs_line([r])
+    small = [r for r in one_day if r["lines"] < MIN_LINES]
+    if small:
+        logs_line(small)
     print()
+    header(["Corpus", "Disk / raw", "Day indexes", "Segments", "RSS (footprint) after start",
+            "after 7 days", "after 30 days", "after 90 days", "Retention to 30 days"])
     for r in logs:
         if r["days"] == 1:
             continue
         s, ret = r["search"], r["retention"]
-        print(f"{r['corpus']} over {r['days']} days: disk {mb(r['disk_bytes'])} ({r['disk_per_raw']:.2f}×), "
-              f"RSS start {mb(s['search_rss_start_bytes'])}, 7d {mb(s['search_rss_7d_bytes'])}, "
-              f"30d {mb(s['search_rss_30d_bytes'])}, 90d {mb(s['search_rss_90d_bytes'])}; "
-              f"retention {ret['days_before']} -> {ret['days_after']} days freed {mb(ret['freed_bytes'])} "
-              f"in {ret['secs']:.2f} s; peak ingest RSS {mb(r['ingest_peak_rss_bytes'])}")
+        memory = lambda at: f"{mb(s[f'search_rss_{at}bytes'])} ({mb(s[f'search_footprint_{at}bytes'], 1)})"
+        row([r["corpus"], f"{r['disk_per_raw']:.2f}×", str(r["day_indexes"]), str(r["segments"]),
+             memory("start_"), memory("7d_"), memory("30d_"), memory("90d_"),
+             f"{ret['days_before']} to {ret['days_after']} days, {mb(ret['freed_bytes'])} freed in {ret['secs']:.2f} s"])
     print()
-    print("| Issues × events | SQLite B/event | Row B/event | Compacted row B/event | Payloads/issue | B/payload | B/hourly row | B/tag row | B/issue | CPU µs/event |")
-    print("|---|---|---|---|---|---|---|---|---|---|")
+    header(["Issues × events", "SQLite B/event", "Row B/event", "Compacted row B/event", "Payloads/issue",
+            "B/payload", "B/hourly row", "B/tag row", "B/issue", "CPU µs/event"])
     for e in errors:
-        print(f"| {e['issues']:,} × {e['events_per_issue']:,} | {e['sqlite_bytes_per_event']:.0f} "
-              f"| {e['row_bytes_per_event']:.0f} | {e['compacted_row_bytes_per_event']:.0f} | {e['payloads_per_issue']:.0f} "
-              f"| {e['bytes_per_payload']:.0f} | {e['bytes_per_hourly_row']:.0f} "
-              f"| {e['tag_bytes_per_row']:.0f} | {e['issue_bytes_per_issue']:.0f} | {e['ingest_cpu_us_per_event']:.0f} |")
+        # A few issues fit in a few pages, so their bytes per issue say nothing.
+        many = e["issues"] >= MANY_ISSUES
+        row([f"{e['issues']:,} × {e['events_per_issue']:,}", f"{e['sqlite_bytes_per_event']:.0f}",
+             f"{e['row_bytes_per_event']:.0f}", f"{e['compacted_row_bytes_per_event']:.0f}",
+             f"{e['payloads_per_issue']:.0f}", f"{e['bytes_per_payload']:.0f}", f"{e['bytes_per_hourly_row']:.0f}",
+             f"{e['tag_bytes_per_row']:.0f}" if many else "", f"{e['issue_bytes_per_issue']:.0f}" if many else "",
+             f"{e['ingest_cpu_us_per_event']:.0f}"])
 
 
 def main():
+    if sys.argv[1:2] == ["--tables"]:
+        with open(sys.argv[2]) as f:
+            report = json.load(f)
+        tables(report["logs"], report["errors"])
+        return
     root, out, commit, shared, priority = sys.argv[1:6]
     runs = read_runs(root)
     logs = [logs_row(r) for r in runs if r.get("kind") == "logs"]

@@ -123,7 +123,7 @@ The last column is the same case before day indexes stayed open between searches
 
 ## Footprint for the forecast
 
-Measured on 2026-11-24 with `bench/footprint.sh` at commit `b54aaa7` (`v0.1.0-50-gb54aaa7`), under `taskpolicy -b`, which `bench/footprint.json` records as `machine.priority`. The coefficients are in `bench/footprint.json` (schema `davy.footprint`, version 1), which `davy forecast` is meant to read. Raw numbers per run are kept there too. The last column of the logs table and the comparisons marked "previous run" come from an earlier run at normal priority, at commit `f34f3cd`, before the timestamps were fixed to whole days.
+Measured on 2026-11-24 with `bench/footprint.sh` at commit `b54aaa7` (`v0.1.0-50-gb54aaa7`), under `taskpolicy -b`, which `bench/footprint.json` records as `machine.priority`. The coefficients are in `bench/footprint.json` (schema `davy.footprint`, version 1), which `davy forecast` is meant to read. Raw numbers per run are kept there too. The comparisons marked "previous run" come from an earlier run at normal priority, at commit `f34f3cd`, before the timestamps were fixed to whole days. Its report is `bench/footprint.json` as of commit `06fbcbe` (`git show 06fbcbe:bench/footprint.json`).
 
 **Machine.** A shared dev Mac: Mac14,5, Apple M2 Max, 12 cores, 32 GB RAM, macOS 26.5.1, APFS on the internal SSD. Other agents ran builds throughout, and the load average was 13 to 23 at the start of the runs. `bench/footprint.json` records it per run, and lists the noisy fields under `noisy`. Runs on reference VPS sizes (vCPU, RAM, disk) are still to come.
 
@@ -140,26 +140,28 @@ Measured on 2026-11-24 with `bench/footprint.sh` at commit `b54aaa7` (`v0.1.0-50
 - **Timestamps.** The lines carry no usable time, so each gets a synthetic one, spaced evenly over the whole UTC day before the run, or over the 90 whole days before it for `hdfs-2m` and `synthetic-2m`. So the bytes do not depend on the hour a run starts. `ts` is about a quarter of a raw log index of 25k lines or more (23% to 28%, 10% for the synthetic rows), and real timestamps come in bursts, which may compress differently (not measured).
 - **IP scrubbing.** The default scrub policy replaces each IP address with `[Filtered: ip]`, and nginx and OpenSSH lines are full of them, so their default ratios include that. Both also run with IP scrubbing off (`IP kept` in the table).
 - **Disk.** `du` of the log directory after the server committed, ran its own merges and stopped (Disk / raw), then after a forced merge of each day into one segment (One segment / raw). Raw is the bytes of the lines as read, each with its newline. The share of a field (`values`) comes from Tantivy's space usage and counts against the index, docstore included.
-- **Peaks.** Disk is sampled every 0.2 s while the server ingests and while the forced merge runs. Peak extra disk is the highest sample above the final size, so it is at least that, from four runs. A small corpus finishes before the sampler sees a peak, so only corpora of 500k lines or more count for it, and for a forced merge only one that ran 2 s or more.
+- **Peaks.** Disk is sampled every 0.2 s while the server ingests and while the forced merge runs. The ingest peak is the highest sample above the size after the server stopped, the merge peak the highest sample above the size before the merge, so each is at least that. A small corpus finishes before the sampler sees a peak, so the table shows the ingest peak only for corpora of 500k lines or more, and the merge headroom counts only those whose forced merge ran 2 s or more.
 - **CPU and memory.** `/usr/bin/time -l` around the server gives CPU seconds, peak RSS and peak memory footprint, for ingest and, in a second server start, for searches. CPU µs per row is the server's CPU over the stored rows. RSS counts the pages of the index files the server mapped and read, and on a machine with 32 GB and a warm page cache those stay resident. The footprint, macOS's measure of the memory a process owns, leaves out such clean file pages, so it is closer to what the server needs. After the ingest of a 90-day corpus the script restarts the server and, through MCP, runs two light queries per window, a search with no hit and a search for the newest 100 rows, over the last 7, 30 and 90 days, reading RSS and footprint after each window.
 - **Retention.** The 90-day corpora then lose all but 30 days in one retention pass of the log writer (`LogWriter::start` with 30 days), timed with what it frees. The pass must leave exactly the 30 days it should, or the run fails.
 - **Errors.** A captured Node.js event (`e2e/fixtures/sentry-node-10/4.body`, 2747 bytes of JSON) is sent as 100k envelopes over 7 days: 5,000 issues of 20 events, and 10 issues of 10,000 events. Payload sampling is on, as always. `dbstat` gives the bytes of each table with its indexes, and a `VACUUM INTO` copy gives the same rows compacted.
 
 ### Logs
 
-| Corpus | Lines | Raw B/line | Disk / raw | Disk B/line | One segment / raw | Segments | `values` | Peak extra disk | CPU µs/row | Peak RSS | Peak footprint | Disk / raw, previous run |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| apache | 56,482 | 91 | 0.80× | 73 | 0.74× | 4 | 2% | | 22.5 | 91 MB | 76 MB | 0.69× |
-| linux | 25,567 | 92 | 1.00× | 92 | 0.90× | 2 | 1% | | 27.0 | 68 MB | 49 MB | 0.88× |
-| openssh | 655,147 | 112 | 0.74× | 83 | 0.67× | 7 | 1% | 47 MB | 42.0 | 158 MB | 128 MB | 0.65× |
-| openssh, IP kept | 655,147 | 112 | 0.72× | 81 | 0.70× | 17 | 1% | 37 MB | 37.3 | 131 MB | 125 MB | |
-| spark-1m | 1,000,000 | 105 | 0.82× | 86 | 0.74× | 17 | 1% | 55 MB | 34.4 | 146 MB | 131 MB | 0.71× |
-| hdfs-2m | 2,000,000 | 139 | 0.67× | 93 | 0.58× | 20 | 1% | 125 MB | 56.5 | 172 MB | 142 MB | 0.59× |
-| nginx | 51,462 | 136 | 0.56× | 77 | 0.54× | 3 | 1% | | 30.3 | 91 MB | 76 MB | 0.52× |
-| nginx, IP kept | 51,462 | 136 | 0.62× | 84 | 0.60× | 3 | 1% | | 30.1 | 88 MB | 71 MB | |
-| nginx-parsed | 51,462 | 136 | 0.76× | 103 | 0.81× | 6 | 24% | | 51.3 | 102 MB | 86 MB | 0.65× |
-| synthetic-2m | 2,000,000 | 260 | 0.76× | 198 | 0.71× | 24 | 21% | 366 MB | 165.7 | 248 MB | 226 MB | 0.69× |
-| the five 2k samples | 2,000 each | 86 to 144 | 0.82× to 1.10× | 76 to 158 | 0.82× to 1.04× | 1 or 2 | 1% | | 40 to 90 | 37 to 39 MB | 23 to 24 MB | 0.91× to 1.10× |
+| Corpus | Lines | Raw B/line | Disk / raw | Disk B/line | One segment / raw | Segments | `values` | Ingest peak extra disk | CPU µs/row | Peak RSS | Peak footprint |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| apache | 56,482 | 91 | 0.80× | 73 | 0.74× | 4 | 2% |  | 22.5 | 91 MB | 76 MB |
+| hdfs-2m | 2,000,000 | 139 | 0.67× | 93 | 0.58× | 20 | 1% | 22 MB | 56.5 | 172 MB | 142 MB |
+| linux | 25,567 | 92 | 1.00× | 92 | 0.90× | 2 | 1% |  | 27.0 | 68 MB | 49 MB |
+| nginx | 51,462 | 136 | 0.56× | 77 | 0.54× | 3 | 1% |  | 30.3 | 91 MB | 76 MB |
+| nginx, IP kept | 51,462 | 136 | 0.62× | 84 | 0.60× | 3 | 1% |  | 30.1 | 88 MB | 71 MB |
+| nginx-parsed | 51,462 | 136 | 0.76× | 103 | 0.81× | 6 | 24% |  | 51.3 | 102 MB | 86 MB |
+| openssh | 655,147 | 112 | 0.74× | 83 | 0.67× | 7 | 1% | 22 MB | 42.0 | 158 MB | 128 MB |
+| openssh, IP kept | 655,147 | 112 | 0.72× | 81 | 0.70× | 17 | 1% | 7 MB | 37.3 | 131 MB | 125 MB |
+| spark-1m | 1,000,000 | 105 | 0.82× | 86 | 0.74× | 17 | 1% | 14 MB | 34.4 | 146 MB | 131 MB |
+| synthetic-2m | 2,000,000 | 260 | 0.76× | 198 | 0.71× | 24 | 21% | 41 MB | 165.7 | 248 MB | 226 MB |
+| the 5 small samples | 2,000 each | 86 to 144 | 0.82× to 1.10× | 76 to 158 | 0.82× to 1.04× | 1 to 2 | 1% |  | 40.0 to 90.0 | 37 to 39 MB | 23 to 24 MB |
+
+Disk / raw in the previous run: apache 0.69×, hdfs-2m 0.59×, linux 0.88×, nginx 0.52×, nginx-parsed 0.65×, openssh 0.65×, spark-1m 0.71×, synthetic-2m 0.69×, the 2k samples 0.91× to 1.10×. It had no `IP kept` runs.
 
 Over 90 days:
 
@@ -184,8 +186,8 @@ Over 90 days:
 
 | Issues × events | SQLite B/event | Row B/event | Compacted row B/event | Payloads/issue | B/payload | B/hourly row | B/tag row | B/issue | CPU µs/event |
 |---|---|---|---|---|---|---|---|---|---|
+| 10 × 10,000 | 2108 | 2082 | 205 | 150 | 1570 | 46 |  |  | 1152 |
 | 5,000 × 20 | 2218 | 563 | 553 | 20 | 1572 | 38 | 67 | 599 | 1248 |
-| 10 × 10,000 | 2108 | 2082 | 205 | 150 | 1570 | 46 | | | 1152 |
 
 Row is the bytes of an event in the `events` table and its indexes, without its payload. A payload is the zstd event JSON, 0.57× of the 2747 bytes the SDK sent. Each event of the first run fell in an hour of its own, so each made an hourly row. The issue and tag bytes come from the 5,000-issue run only, since 10 issues fit in a few 4 KB pages. Every figure here is for this one event shape; a larger event has a larger payload and scales the payload bytes with it.
 
@@ -206,4 +208,5 @@ bench/footprint.sh                       # footprint coefficients, macOS only, a
                                          # `quick` for the 2k samples only, written to the work directory
                                          # a full run refuses background priority unless FOOTPRINT_LOW_PRIORITY=1
                                          # FOOTPRINT_WORK, FOOTPRINT_OUT, FOOTPRINT_SHARED, FOOTPRINT_LOW_PRIORITY: see the script's header
+python3 -I bench/footprint-report.py --tables bench/footprint.json   # the footprint tables above, from the committed report
 ```
