@@ -564,7 +564,8 @@ fn store_recovers_when_a_day_index_breaks() {
     };
     let root = dir.clone();
     // A dead indexing worker blocks add_document forever, so the steps run
-    // on a thread and the test waits for it with a deadline.
+    // on a thread and the test waits for it with a deadline. The steps take
+    // about 3 s alone and over 30 s in the full suite on a loaded machine.
     let (done, finished) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut state = State::new(root, 30);
@@ -580,7 +581,7 @@ fn store_recovers_when_a_day_index_breaks() {
         done.send(broken.is_err()).unwrap();
     });
     assert_eq!(
-        finished.recv_timeout(std::time::Duration::from_secs(30)),
+        finished.recv_timeout(std::time::Duration::from_secs(120)),
         Ok(true),
         "the write into the deleted index failed and the next writes reopened it"
     );
