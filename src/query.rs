@@ -29,7 +29,7 @@ const NOTES: &str = "Notes:
 - Times in projects, issues, events and releases are unix milliseconds. issue_hourly.hour is the start of its hour in unix milliseconds.
 - events.payload is the compressed Sentry event, kept for the newest event of an issue and a sample of the rest. payload_json(payload) returns it as JSON text, so json_extract(payload_json(payload), '$.exception.values[0].type') works.
 - issues.status is unresolved, resolved or ignored. A resolved issue reopens when an event arrives without a release, in the release it was resolved in, or in a release first seen after resolved_at.
-- projects.log_retention_days and projects.error_retention_days are the days of logs and errors a project keeps, NULL for the server default; project_status shows the days in effect. Events and user feedback received before that are deleted. issues.event_count, first_seen and issue_hourly count only the events kept, last_seen stays, and an issue with no event left is deleted. A new issue never takes a deleted issue's id: id_floor holds the highest id deleted.
+- projects.log_retention_days and projects.error_retention_days are the days of logs and errors a project keeps, NULL for the server default; project_status shows the days in effect. Events and user feedback received before that are deleted. issues.event_count, first_seen, last_seen and issue_hourly follow the events kept. An issue with no event left is deleted once no user feedback points at it, and has event_count 0 until then. A new issue never takes a deleted issue's id: id_floor holds the highest id deleted.
 - issue_tags holds each environment and release that an issue's kept events named, and in last_at when the newest of them was received. issues_text is a trigram full-text index of issues.title and issues.culprit: SELECT rowid FROM issues_text WHERE issues_text MATCH '\"timed out\"' finds issues whose title or culprit contains the phrase, ignoring case, for phrases of three characters or more.
 - monitors.state is pending, up, failing or down. Times in monitors, checks and incidents are unix milliseconds. An incident with no resolved_at is open. monitors.heartbeat_token, monitors.url, channels.url and channels.secret read as NULL.
 - channels.dropped counts issue, feedback and operator notices that a full outbox dropped, so above 0 a real alert was lost. channels.sdk_dropped counts dropped notices of monitors made by check-ins, which anyone with a project's DSN can raise.
@@ -37,7 +37,7 @@ const NOTES: &str = "Notes:
 - users.password, sessions.hash and invites.hash read as NULL.
 - client_reports counts what the SDKs dropped before sending, per UTC day (unix milliseconds at midnight), project, reason and category, such as before_send and error, or sample_rate and transaction. reason davy_daily_cap counts user feedback Davy refused past 1000 per project and day, and with category session the sessions refused past 1000000 per project and day. reason davy_out_of_window counts sessions that started more than 5 days ago or over an hour ahead. Rows are kept 90 days. When an app reports no errors, check here that its SDK did not drop them.
 - release_sessions counts the sessions SDKs report, per project, hour the session started (unix milliseconds), release and environment. started is every session, errored the ones with an error (crashed ones too), crashed and abnormal the ones that ended so. Crash-free sessions are 100 * (started - crashed) / started. release_users holds one row per UTC day, project, release, environment and user, where user is a hash of the SDK's user id and flags has bit 2 for errored and bit 4 for crashed. Both are kept 90 days. The release_health tool reads them. session_seen is how Davy counts each session once.
-- user_feedback holds what users wrote through the SDK's feedback widget or captureFeedback. received_at is unix milliseconds. issue_id is the issue of the event it names, NULL when it names none or arrived before that event.
+- user_feedback holds what users wrote through the SDK's feedback widget or captureFeedback. received_at is unix milliseconds. issue_id is the issue of the event it names, NULL when it names none, arrived before that event, or that issue was deleted.
 - Results stop at 500 rows, text at 4000 characters, payload_json at 16 MiB, and a query at 5 seconds.";
 
 #[derive(Debug, Serialize)]
@@ -446,5 +446,26 @@ mod tests {
         assert!(s.contains("CREATE VIRTUAL TABLE issues_text USING fts5("));
         assert!(!s.contains("issues_text_data"));
         assert!(s.contains("payload_json(payload)"));
+        assert!(s.contains(
+            "issues.event_count, first_seen, last_seen and issue_hourly follow the events kept."
+        ));
+        assert!(!s.contains("last_seen stays"));
+    }
+
+    #[test]
+    fn payload_json_reads_a_payload_kept_only_for_being_the_newest() {
+        let (data, c) = store_with_one_event();
+        // The empty zstd skippable frame that marks such a payload.
+        let mut marked = vec![0x5D, 0x2A, 0x4D, 0x18, 0, 0, 0, 0];
+        marked.extend(zstd::encode_all(&br#"{"message":"newest"}"#[..], 3).unwrap());
+        let w = store::open(&data).unwrap();
+        w.execute("UPDATE events SET payload=?1", [&marked])
+            .unwrap();
+        let r = run(
+            &c,
+            "SELECT json_extract(payload_json(payload), '$.message') FROM events",
+        )
+        .unwrap();
+        assert_eq!(r.rows, [vec![json!("newest")]]);
     }
 }
