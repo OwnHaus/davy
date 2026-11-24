@@ -489,6 +489,33 @@ fn an_issue_with_no_events_but_new_ones_keeps_its_feedback() {
 }
 
 #[test]
+fn an_error_back_before_its_feedback_is_unlinked_starts_its_issue_again() {
+    let s = Server::new("errors-unlink-revive", &["api"]);
+    channel(&s);
+    let thrown = error("timeout", day(1), "prod", "v1");
+    let event_id = thrown.event_id.0.clone();
+    s.ingest(1, vec![thrown]);
+    s.c.execute("UPDATE issues SET status='ignored'", [])
+        .unwrap();
+    feedback_on(&s, &event_id, 60, day(15));
+    sweep(&s.c, day(20), Days::new(10).unwrap(), Duration::ZERO).unwrap();
+    let mut back = error("timeout", day(20), "prod", "v2");
+    back.timestamp = day(19);
+    s.ingest(1, vec![back]);
+    // It keeps its id and the feedback still linked, and is otherwise as
+    // new as an issue deleted already would be.
+    let issue: (i64, String, i64, i64, i64) =
+        s.c.query_row(
+            "SELECT id, status, first_seen, last_seen, event_count FROM issues",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(issue, (1, "unresolved".into(), day(19), day(19), 1));
+    assert_eq!(notices(&s), ["issue.new 1", "issue.new 1"]);
+}
+
+#[test]
 fn finding_the_feedback_of_issues_with_no_events_reads_only_those() {
     let s = Server::new("errors-unlink-plan", &["api"]);
     let mut q =

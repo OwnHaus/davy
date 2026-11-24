@@ -9,13 +9,15 @@
 //! left. An issue whose last event goes is deleted with its counts and
 //! tags, and its user feedback stays, unlinked, until it expires too. An
 //! issue with much feedback is unlinked from it over several batches, and
-//! keeps an `event_count` of 0 until the last is unlinked. When
-//! the error comes back it is a new issue with a new id, as ids are never
-//! used twice, so a link in an old alert cannot lead to another issue. The
-//! resolved or ignored state goes with the old issue, and a new-issue alert
-//! is sent. `releases` stays, because it says when a release was first
-//! seen, which decides whether a resolved issue reopens. Release health
-//! counts sessions, not events, and has a retention of its own.
+//! keeps an `event_count` of 0 until the last is unlinked. An error that
+//! comes back by then starts that issue again, unresolved and with a
+//! new-issue alert, under its old id. Later it is a new issue with a new
+//! id, as ids are never used twice, so a link in an old alert cannot lead
+//! to another issue. The resolved or ignored state goes with the old
+//! issue, and a new-issue alert is sent. `releases` stays, because it says
+//! when a release was first seen, which decides whether a resolved issue
+//! reopens. Release health counts sessions, not events, and has a
+//! retention of its own.
 
 use super::{Days, turns};
 use anyhow::Result;

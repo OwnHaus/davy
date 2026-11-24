@@ -181,6 +181,9 @@ fn add<'a>(c: &Connection, project: i64, e: &'a ErrorEvent, latest: &mut Latest<
     // An id is never used twice, so a link sent for an issue that expired
     // does not lead to another, see src/retention/errors.rs.
     let created = c.execute("INSERT INTO issues(id,project_id,grouping_version,fingerprint,title,culprit,level,status,first_seen,last_seen,event_count) VALUES (max(coalesce((SELECT max(id) FROM issues),0),coalesce((SELECT id FROM id_floor WHERE name='issues'),0))+1,?1,?2,?3,?4,?5,?6,'unresolved',?7,?7,0) ON CONFLICT(project_id,grouping_version,fingerprint) DO NOTHING", params![project,g.version,g.fingerprint,g.title,g.culprit,e.level.as_str(),e.timestamp])? == 1;
+    // An issue with no event left waits only for its feedback to be
+    // unlinked, so the error starts it again as a new issue would start.
+    let revived = !created && c.execute("UPDATE issues SET title=?4,culprit=?5,level=?6,status='unresolved',resolved_in_release=NULL,resolved_at=NULL,regressed_at=NULL,first_seen=?7,last_seen=?7 WHERE project_id=?1 AND grouping_version=?2 AND fingerprint=?3 AND event_count=0", params![project,g.version,g.fingerprint,g.title,g.culprit,e.level.as_str(),e.timestamp])? == 1;
     let (id,count,status,release,at,title,culprit): (i64,i64,String,Option<String>,Option<i64>,String,Option<String>) = c.query_row("SELECT id,event_count,status,resolved_in_release,resolved_at,title,culprit FROM issues WHERE project_id=?1 AND grouping_version=?2 AND fingerprint=?3", params![project,g.version,g.fingerprint], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)))?;
     let mut status = IssueStatus::load(&status, release, at);
     let seen = match &e.release {
@@ -206,7 +209,7 @@ fn add<'a>(c: &Connection, project: i64, e: &'a ErrorEvent, latest: &mut Latest<
     latest.after(id, c.last_insert_rowid(), e, kept);
     c.execute("UPDATE issues SET event_count=event_count+1,first_seen=min(first_seen,?2),last_seen=max(last_seen,?2),status=?3,regressed_at=coalesce(?4,regressed_at),resolved_at=CASE WHEN ?4 IS NOT NULL THEN NULL ELSE resolved_at END,resolved_in_release=CASE WHEN ?4 IS NOT NULL THEN NULL ELSE resolved_in_release END WHERE id=?1",params![id,e.timestamp,status,regressed])?;
     c.execute("INSERT INTO issue_hourly(issue_id,hour,count) VALUES (?1,?2,1) ON CONFLICT(issue_id,hour) DO UPDATE SET count=count+1", params![id,e.timestamp.div_euclid(3_600_000)*3_600_000])?;
-    if created || regressed.is_some() {
+    if created || revived || regressed.is_some() {
         let issue = alert::Issue {
             id,
             title,
@@ -214,7 +217,7 @@ fn add<'a>(c: &Connection, project: i64, e: &'a ErrorEvent, latest: &mut Latest<
             level: e.level.as_str().to_owned(),
             release: e.release.clone(),
         };
-        let notice = if created {
+        let notice = if created || revived {
             alert::Notice::IssueNew(issue)
         } else {
             alert::Notice::IssueRegressed(issue)
