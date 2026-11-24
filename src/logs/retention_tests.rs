@@ -571,3 +571,30 @@ fn a_pass_after_a_crash_between_delete_and_merge_finishes_both() {
     assert_eq!(messages(&dir), ["api old"]);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_failed_counter_cut_is_retried_by_the_writer_that_failed_it() {
+    let dir = scratch("logs-retention-tally-retry");
+    let now = now_ns();
+    let day = two_projects(&dir, now);
+    let counters = std::fs::read(day.join(name(2))).unwrap();
+    let blocker = day.join(format!("{}.blocker", name(2)));
+    std::fs::create_dir(&blocker).unwrap();
+    std::fs::write(blocker.join("x"), "x").unwrap();
+    let read = || Ok(HashMap::from([(2, 3)]));
+    let mut state = State::new(dir.clone(), 30, Overrides::new(read, Lock::default()));
+    let budget = std::time::Duration::from_secs(3600);
+    state.retention(now, budget).unwrap();
+    assert_eq!(messages(&dir), ["api old"]);
+    std::fs::remove_dir_all(&blocker).unwrap();
+    // As if the counters were left by a pass that stopped before the cut.
+    std::fs::write(day.join(name(2)), counters).unwrap();
+    state.retention(now, budget).unwrap();
+    assert!(
+        !day.join(name(2)).exists(),
+        "the next pass of the writer cut them"
+    );
+    assert!(day.join(name(1)).exists());
+    state.close_all().unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+}

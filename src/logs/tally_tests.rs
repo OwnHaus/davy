@@ -1,3 +1,4 @@
+use super::Cut;
 use super::{
     ADMIT_AFTER, DayTally, EXAMPLE_BYTES, FLUSH_EVERY, FREE_PATTERNS, MAX_CELLS, MAX_PATTERNS,
     OTHER_SERVICES, SERVICE_BYTES,
@@ -560,5 +561,31 @@ fn opening_a_day_removes_the_temporary_files_a_crash_left() {
     let tally = open(day_of(now_ns()), &dir);
     assert_eq!(names_in(&dir), ["other.tmp".to_owned(), name(1)]);
     assert_eq!(tally.projects.len(), 1);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_cut_removes_the_temporary_and_set_aside_copies_of_its_projects() {
+    let dir = scratch("tally-cut-copies");
+    two_lines(&dir);
+    let copies = [
+        name(2),
+        format!("{}.{}.tmp", name(2), uuid::Uuid::new_v4()),
+        format!("{}.unread-123", name(2)),
+    ];
+    for copy in &copies {
+        std::fs::write(dir.join(copy), "{").unwrap();
+    }
+    file::remove(&dir, &Cut::Only([2].into())).unwrap();
+    assert_eq!(names_in(&dir), [name(1)]);
+    for copy in &copies {
+        std::fs::write(dir.join(copy), "{").unwrap();
+    }
+    file::remove(&dir, &Cut::AllBut([2].into())).unwrap();
+    assert_eq!(
+        names_in(&dir),
+        copies,
+        "project 1 went, project 2 stayed whole"
+    );
     std::fs::remove_dir_all(&dir).unwrap();
 }
