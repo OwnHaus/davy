@@ -6,7 +6,11 @@
 //! Davy adds both up per project, hour, release and environment, so an agent
 //! can tell whether a new release crashes more than the one before.
 
-use crate::{event::Timestamp, items::client_report::Discarded, text};
+use crate::{
+    event::{MAX_ENVIRONMENT, MAX_RELEASE, Timestamp},
+    items::client_report::Discarded,
+    text,
+};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
@@ -18,8 +22,6 @@ const DAY_MS: i64 = 86_400_000;
 const MAX_AGE_MS: i64 = 5 * DAY_MS;
 /// Clocks on phones run ahead.
 const MAX_AHEAD_MS: i64 = HOUR_MS;
-const MAX_RELEASE: usize = 200;
-const MAX_ENVIRONMENT: usize = 64;
 /// Counts read from one `sessions` item. Server SDKs flush every minute
 /// with one count per minute.
 const MAX_AGGREGATES: usize = 100;

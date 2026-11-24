@@ -122,6 +122,18 @@ pub(crate) fn values(v: &Value) -> &[Value] {
 fn string(v: &Value) -> Option<String> {
     v.as_str().map(str::to_owned)
 }
+/// The longest release an event keeps, in characters, as Sentry takes it.
+pub const MAX_RELEASE: usize = 200;
+/// The longest environment an event keeps, in characters, as Sentry takes it.
+pub const MAX_ENVIRONMENT: usize = 64;
+/// `v` as a string of at most `max` characters. A longer one is dropped and
+/// the event kept without it, because each is stored in a column, a tag and
+/// the releases table, and the DSN that sends it may be public.
+fn capped(v: &Value, max: usize) -> Option<String> {
+    v.as_str()
+        .filter(|s| s.chars().count() <= max)
+        .map(str::to_owned)
+}
 impl ErrorEvent {
     pub fn parse(mut raw: Value) -> Result<Self> {
         if !raw.is_object() {
@@ -149,8 +161,8 @@ impl ErrorEvent {
             received_at,
             platform: string(&raw["platform"]).unwrap_or_else(|| "other".into()),
             level: raw["level"].as_str().map(Level::parse).unwrap_or_default(),
-            release: string(&raw["release"]),
-            environment: string(&raw["environment"]),
+            release: capped(&raw["release"], MAX_RELEASE),
+            environment: capped(&raw["environment"], MAX_ENVIRONMENT),
             message,
             message_template: entry.and_then(|v| string(&v["message"])),
             exceptions,

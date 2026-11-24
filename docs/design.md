@@ -1175,6 +1175,7 @@ Sentry's own limits (develop.sentry.dev, Envelopes, Size Limits) are 200 MiB for
 | Log item in an envelope | 1 MiB | the item is dropped |
 | Items per envelope | 1,000 | `400` |
 | Event items per envelope | 1 (develop.sentry.dev, Envelope Items) | later event items are dropped |
+| Release and environment of an event | 200 and 64 characters, as Sentry takes them | the event is kept without it, so it has no release or environment tag |
 | Client report, feedback and session items per envelope | 10 that parse | the rest are dropped |
 | Client report entries | 100 per report, 1,000,000 per entry, 100 reason and category pairs per project and day | later entries are dropped, a larger quantity counts as 1,000,000, a new pair is not counted |
 | Sessions | 1,000,000 started per project and UTC day, 100 release and environment pairs per project and hour, 100 counts per `sessions` item, 1,000,000 per count, started within the last 5 days and at most 1 h ahead | counted in `client_reports` as `davy_daily_cap` or `davy_out_of_window`, a larger count counts as 1,000,000 |

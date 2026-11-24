@@ -462,3 +462,23 @@ fn finding_the_feedback_of_issues_with_no_events_reads_only_those() {
         "{plan:?}"
     );
 }
+
+#[test]
+fn a_release_or_environment_over_its_limit_is_dropped_and_the_event_kept() {
+    let s = Server::new("errors-caps", &["api"]);
+    let (release, environment) = ("r".repeat(200), "e".repeat(64));
+    s.ingest(1, vec![error("timeout", day(1), &environment, &release)]);
+    let (long_release, long_environment) = ("r".repeat(201), "e".repeat(65));
+    let over = error("timeout", day(2), &long_environment, &long_release);
+    assert_eq!(
+        (over.release.as_deref(), over.environment.as_deref()),
+        (None, None)
+    );
+    s.ingest(1, vec![over]);
+    assert_eq!(s.number("SELECT count(*) FROM events"), 2);
+    assert_eq!(
+        s.rows("SELECT key || '=' || length(value) FROM issue_tags ORDER BY key"),
+        ["environment=64", "release=200"]
+    );
+    assert_eq!(s.number("SELECT length(version) FROM releases"), 200);
+}

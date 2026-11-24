@@ -29,6 +29,7 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 
 ### Changed
 
+- An event's release longer than 200 characters, or environment longer than 64, is dropped and the event kept without it. Each was stored whole in a column, a tag and the releases list, from a DSN that may be public.
 - **Breaking:** issue notices to one channel now wait up to 30 s, and several go out as one digest such as `[shop] 12 new issues` with the first 5 titles and their links. A test run that made 13 issues sent 15 messages in a second. A webhook receiver that acts on `issue.new` or `issue.regressed` must also handle `issue.digest`, whose `issues` array holds each issue with its type, project and link. A single issue notice and monitor notices go out as before. The upgrade adds a column to the `notifications` table.
 - Log search keeps the day indexes it opened open between searches. Over 90 days of logs, a search for one request ID took 88 ms and now takes 2.3 ms. The first search after a start still opens each day once.
 - Each 10 s sweep deletes expired checks, incidents, notifications and check-in starts 1,000 at a time until none are left or it has spent 100 ms, instead of at most 1,000 of each. On an M2 Max a sweep deleted about 60,000 rows where it deleted 3,000, so check-ins flooded in from many projects' public DSNs no longer pile up faster than they expire.
