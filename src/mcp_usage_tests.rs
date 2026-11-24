@@ -56,11 +56,13 @@ async fn usage_shows_the_counts_and_the_forecast_with_human_sizes() {
             "full_on",
             "headroom",
             "headroom_reason",
+            "partial",
             "steady_state",
             "total",
             "used"
         ]
     );
+    assert_eq!(v["disk"]["partial"], Value::Null);
     assert_eq!(v["growth_per_day"], "1.0 MB");
     assert!(v["disk"]["total"].as_str().unwrap().ends_with('B'), "{v}");
     let api = &v["projects"][0];
@@ -80,15 +82,15 @@ async fn usage_shows_the_counts_and_the_forecast_with_human_sizes() {
         keys(&api["signals"]["errors"]),
         ["bytes", "bytes_per_day", "records", "records_per_day"]
     );
-    let unknown = tool(&s.app, "usage", json!({"project": "web"})).await;
-    assert_eq!(unknown, ("unknown project \"web\"".to_owned(), true));
-    let long = tool(&s.app, "usage", json!({"since": "91d"})).await;
-    assert_eq!(long, ("since reaches back at most 90d".to_owned(), true));
 }
 
 #[tokio::test]
 async fn usage_refuses_a_what_if_or_since_it_cannot_answer() {
     let s = server();
+    let unknown = tool(&s.app, "usage", json!({"project": "web"})).await;
+    assert_eq!(unknown, ("unknown project \"web\"".to_owned(), true));
+    let long = tool(&s.app, "usage", json!({"since": "91d"})).await;
+    assert_eq!(long, ("since reaches back at most 90d".to_owned(), true));
     let one = tool(
         &s.app,
         "usage",

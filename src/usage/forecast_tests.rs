@@ -138,10 +138,10 @@ fn too_few_closed_days_no_retention_has_cut_give_no_forecast() {
         };
         assert_eq!(
             forecast(&input, &WhatIf::default()),
-            Err(format!(
+            Err(NoForecast::History(format!(
                 "closed log days since {first}, the first day no retention has cut: the disk has {}, a forecast needs {need}",
                 sizes.len()
-            ))
+            )))
         );
     }
 }
@@ -221,7 +221,7 @@ fn a_what_if_must_name_a_project_that_exists_keep_logs_and_not_split_bytes() {
     };
     assert_eq!(
         forecast(&filling(), &unknown),
-        Err(crate::retention::unknown("nope"))
+        Err(NoForecast::Other(crate::retention::unknown("nope")))
     );
     let zero = WhatIf {
         logs_days: Some(0),
@@ -229,7 +229,7 @@ fn a_what_if_must_name_a_project_that_exists_keep_logs_and_not_split_bytes() {
     };
     assert_eq!(
         forecast(&filling(), &zero),
-        Err("logs_days must be 1 to 36500".into())
+        Err(NoForecast::Other("logs_days must be 1 to 36500".into()))
     );
     let one = WhatIf {
         project: Some("shop".into()),
@@ -238,7 +238,7 @@ fn a_what_if_must_name_a_project_that_exists_keep_logs_and_not_split_bytes() {
     };
     assert_eq!(
         forecast(&filling(), &one),
-        Err("logs_bytes_per_day is for all projects together: logs of every project share one index per day, so Davy cannot tell one project's bytes on disk".into())
+        Err(NoForecast::Other("logs_bytes_per_day is for all projects together: logs of every project share one index per day, so Davy cannot tell one project's bytes on disk".into()))
     );
 }
 

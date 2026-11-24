@@ -7,7 +7,10 @@ use crate::{
     retention,
     secret::{self, MIN_TOKEN_CHARS},
     text,
-    usage::{self, forecast::Forecast},
+    usage::{
+        self,
+        forecast::{Forecast, NoForecast},
+    },
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -422,7 +425,7 @@ async fn initialized(mut r: reqwest::Response) -> bool {
 
 /// The disk forecast, `None` while the data directory has no database to
 /// read. Projects without a retention of their own keep `defaults`.
-fn forecast(data: &Path, defaults: retention::Defaults) -> Option<Result<Forecast, String>> {
+fn forecast(data: &Path, defaults: retention::Defaults) -> Option<Result<Forecast, NoForecast>> {
     if !data.join(crate::store::DB_FILE).exists() {
         return None;
     }
@@ -436,14 +439,14 @@ fn forecast(data: &Path, defaults: retention::Defaults) -> Option<Result<Forecas
         .and_then(|c| usage::report(&c, data, &request, crate::time::now_ns()));
     Some(
         report
-            .map_err(|e| format!("{e:#}"))
+            .map_err(|e| NoForecast::Other(format!("{e:#}")))
             .and_then(|r| r.forecast),
     )
 }
 
 /// Free space, and when the forecast puts the disk full: a warning under
 /// 14 days, a failure under 2.
-fn disk(data: &Path, free: Option<u64>, forecast: Option<Result<Forecast, String>>) -> Check {
+fn disk(data: &Path, free: Option<u64>, forecast: Option<Result<Forecast, NoForecast>>) -> Check {
     let d = sh(&data.to_string_lossy());
     let fix = format!(
         "shorten retention with davy project retention SLUG --data {d} --logs N, or add disk"
@@ -456,7 +459,10 @@ fn disk(data: &Path, free: Option<u64>, forecast: Option<Result<Forecast, String
     };
     let (by_forecast, said) = match forecast {
         None => (Status::Ok, String::new()),
-        Some(Err(reason)) => (Status::Ok, format!(", no forecast: {reason}")),
+        // Too little history is a new server. Anything else hides a
+        // forecast that may say the disk fills.
+        Some(Err(NoForecast::History(reason))) => (Status::Ok, format!(", no forecast: {reason}")),
+        Some(Err(NoForecast::Other(reason))) => (Status::Warn, format!(", no forecast: {reason}")),
         // Days left alone decide, so a day past the calendar still warns.
         Some(Ok(Forecast {
             days_left: Some(n),

@@ -469,7 +469,7 @@ fn a_disk_that_fills_on_a_day_past_the_calendar_still_says_it_fills() {
     let r = Report {
         since: day("2026-11-24"),
         days: 1.0,
-        disk: disk::Disk::default(),
+        disk: Ok(disk::Disk::default()),
         forecast: Ok(forecast::Forecast {
             growth: 1_000_000_000,
             longest_days: 30,
@@ -482,4 +482,29 @@ fn a_disk_that_fills_on_a_day_past_the_calendar_still_says_it_fills() {
         projects: Vec::new(),
     };
     assert_eq!(r.summary(), "full in 5 days, at 1.0 GB of logs a day");
+}
+
+#[test]
+fn a_disk_that_cannot_be_measured_still_gives_the_counts() {
+    let c = memory();
+    write(&c, &[row("2026-11-24", 1, Signal::Errors, 3, 3_000)]).unwrap();
+    let gone = std::path::Path::new("/nonexistent/davy");
+    let r = report(
+        &c,
+        gone,
+        &request("1d", forecast::WhatIf::default()),
+        at("2026-11-24T12:00:00Z"),
+    )
+    .unwrap();
+    let v = r.json(false);
+    let why = "free space of /nonexistent/davy: No such file or directory (os error 2)";
+    assert_eq!(
+        (&v["disk_error"], &v["disk"], &v["davy"]),
+        (&json!(why), &json!(null), &json!(null))
+    );
+    assert_eq!(
+        v["no_forecast"],
+        format!("the disk was not measured: {why}")
+    );
+    assert_eq!(v["projects"][0]["signals"]["errors"]["records"], 3);
 }

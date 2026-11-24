@@ -1497,11 +1497,13 @@ Measured when asked, by walking the data directory, which holds a few thousand f
 The walk reads only what Davy owns, and only so much of it:
 
 - It never follows a symbolic link. Each directory is opened relative to its parent with `O_NOFOLLOW`, so a directory swapped for a link during the walk is not entered, and a link at `logs` is not walked. The data directory itself may be a link.
-- It stays on the filesystem of the data directory, which is the filesystem the forecast is about. A directory on another filesystem, such as a mount at `logs`, is not walked: logs there do not fill this disk.
-- It reads at most 1,000,000 entries and 32 levels of directories, and fails past that with an error that says which.
+- It stays on the filesystem of the data directory, which is the filesystem the forecast is about. A directory on another filesystem, such as a mount at `logs`, is not walked, and the measurement names it as left out.
+- It reads at most 1,000,000 entries for at most 20 s, and enters at most 32 levels of directories.
+- What it may not read, such as `lost+found` on an ext4 mount, what lies past a limit and what is not walked for the reasons above it leaves out, and the measurement is partial: `disk.partial` names the first 10 paths left out with why, such as `lost+found: permission denied`, counts them all in `skipped_count`, and says in `stopped` why the walk ended early. The sizes do not hold what was left out. A path left out beside `logs` leaves the forecast alone: it takes what is not logs as constant, and `used` comes from the filesystem. A path left out under `logs`, `logs` itself, or a walk that stopped early gives no forecast, because the growth of logs is then unknown, and `no_forecast` says so.
+- Any other failure, such as a data directory it cannot open, answers `disk_error` in place of `disk` and `davy`, and the counts come back all the same.
 - One measurement runs at a time per process. Others wait their turn rather than compete for the disk.
 - A log day is a directory with a day's name. A file or link with that name counts as `other`, not as a closed day.
-- Systems without `openat` walk by path. They keep the limits but can follow a directory swapped for a link during the walk.
+- Systems without `openat` walk by path. They keep the limits and the partial measurement, but can follow a directory swapped for a link during the walk, size files by length rather than allocated blocks, and cannot tell another filesystem.
 
 - `logs`: each day directory under `logs`, closed days and today apart. A day after today counts with today.
 - `sqlite`: `davy.sqlite` with its `-wal` and `-shm` files.

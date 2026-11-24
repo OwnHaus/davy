@@ -4,7 +4,7 @@
 use super::{
     Count, Signal,
     disk::{self, Disk},
-    forecast::{self, Forecast, HEADROOM_REASON, WhatIf},
+    forecast::{self, Forecast, HEADROOM_REASON, NoForecast, WhatIf},
 };
 use crate::{retention, time};
 use anyhow::{Result, anyhow, bail};
@@ -32,8 +32,10 @@ pub struct Report {
     pub since: Date,
     /// The window's length in days, at least 1 second's worth.
     pub days: f64,
-    pub disk: Disk,
-    pub forecast: Result<Forecast, String>,
+    /// What is on disk, or why the walk failed. Counts come back either
+    /// way.
+    pub disk: Result<Disk, String>,
+    pub forecast: Result<Forecast, NoForecast>,
     pub what_if: WhatIf,
     pub projects: Vec<Project>,
 }
@@ -72,8 +74,14 @@ pub fn report(c: &Connection, data: &Path, req: &Request, now_ns: i64) -> Result
         None => None,
     };
     let counted = super::between(c, from, today, filter)?;
-    let disk = disk::measure(data, today)?;
-    let forecast = forecast::forecast(&input(&disk, &kept, req, today), &req.what_if);
+    let disk = disk::measure(data, today).map_err(|e| format!("{e:#}"));
+    let forecast = match &disk {
+        Err(e) => Err(NoForecast::Other(format!("the disk was not measured: {e}"))),
+        Ok(d) => match d.logs_unmeasured() {
+            Some(why) => Err(NoForecast::Other(why)),
+            None => forecast::forecast(&input(d, &kept, req, today), &req.what_if),
+        },
+    };
     let projects = kept
         .iter()
         .filter(|(id, _)| filter.is_none_or(|f| f == *id))
@@ -168,38 +176,53 @@ impl Report {
             }
         };
         let f = self.forecast.as_ref().ok();
-        let d = &self.disk;
         let mut out = json!({
             "window": {"since": self.since.to_string(), "days": (self.days * 10.0).round() / 10.0},
-            "disk": {
-                "used": size(d.used()),
-                "free": size(d.free),
-                "total": size(d.total),
-                "headroom": size(d.total / 100 * forecast::HEADROOM_PERCENT),
-                "headroom_reason": HEADROOM_REASON,
-                "steady_state": f.map(|f| size(f.steady_state)),
-                "days_left": f.and_then(|f| f.days_left),
-                "full_on": f.and_then(|f| f.full_on).map(|d| d.to_string()),
-            },
-            "davy": {
-                "logs": size(d.logs()),
-                "logs_today": size(d.today),
-                "sqlite": size(d.sqlite),
-                "uploads": size(d.uploads),
-                "other": size(d.other),
-            },
             "growth_per_day": f.map(|f| size(f.growth)),
             "longest_log_days": f.map(|f| f.longest_days),
             "forecast": self.summary(),
             "projects": self.projects.iter().map(|p| self.project(p, &size)).collect::<Vec<_>>(),
         });
+        match &self.disk {
+            Ok(d) => {
+                out["disk"] = self.disk_json(d, &size);
+                out["davy"] = json!({
+                    "logs": size(d.logs()),
+                    "logs_today": size(d.today),
+                    "sqlite": size(d.sqlite),
+                    "uploads": size(d.uploads),
+                    "other": size(d.other),
+                });
+            }
+            Err(e) => out["disk_error"] = json!(e),
+        }
         if let Err(reason) = &self.forecast {
-            out["no_forecast"] = json!(reason);
+            out["no_forecast"] = json!(reason.to_string());
         }
         if !self.what_if.is_empty() {
             out["what_if"] = json!(self.what_if);
         }
         out
+    }
+
+    fn disk_json(&self, d: &Disk, size: &impl Fn(u64) -> Value) -> Value {
+        let f = self.forecast.as_ref().ok();
+        let g = &d.gaps;
+        json!({
+            "used": size(d.used()),
+            "free": size(d.free),
+            "total": size(d.total),
+            "headroom": size(d.total / 100 * forecast::HEADROOM_PERCENT),
+            "headroom_reason": HEADROOM_REASON,
+            "steady_state": f.map(|f| size(f.steady_state)),
+            "days_left": f.and_then(|f| f.days_left),
+            "full_on": f.and_then(|f| f.full_on).map(|d| d.to_string()),
+            "partial": (!g.is_empty()).then(|| json!({
+                "skipped": g.skipped,
+                "skipped_count": g.skipped_count,
+                "stopped": g.stopped,
+            })),
+        })
     }
 
     fn project(&self, p: &Project, size: &impl Fn(u64) -> Value) -> Value {
@@ -245,9 +268,26 @@ impl Report {
 
     /// The report for a terminal.
     pub fn text(&self, out: &mut impl std::io::Write) -> std::io::Result<()> {
-        let d = &self.disk;
         let window = format!("since {} ({:.1} days)", self.since, self.days);
         writeln!(out, "{:<9} {window}", "window")?;
+        match &self.disk {
+            Ok(d) => Self::disk_text(d, out)?,
+            Err(e) => writeln!(out, "{:<9} not measured: {e}", "disk")?,
+        }
+        if let Ok(f) = &self.forecast {
+            writeln!(
+                out,
+                "{:<9} {} of logs a day, steady state {}",
+                "growth",
+                human(f.growth),
+                human(f.steady_state)
+            )?;
+        }
+        writeln!(out, "{:<9} {}", "forecast", self.summary())?;
+        self.table(out)
+    }
+
+    fn disk_text(d: &Disk, out: &mut impl std::io::Write) -> std::io::Result<()> {
         writeln!(
             out,
             "{:<9} {} used of {}, {} free",
@@ -266,17 +306,26 @@ impl Report {
             human(d.uploads),
             human(d.other)
         )?;
-        if let Ok(f) = &self.forecast {
+        let g = &d.gaps;
+        if !g.skipped.is_empty() {
+            let named = u64::try_from(g.skipped.len()).unwrap_or(u64::MAX);
+            let more = g.skipped_count.saturating_sub(named);
+            let more = if more > 0 {
+                format!(" and {more} more")
+            } else {
+                String::new()
+            };
             writeln!(
                 out,
-                "{:<9} {} of logs a day, steady state {}",
-                "growth",
-                human(f.growth),
-                human(f.steady_state)
+                "{:<9} left out {}{more}",
+                "partial",
+                g.skipped.join(", ")
             )?;
         }
-        writeln!(out, "{:<9} {}", "forecast", self.summary())?;
-        self.table(out)
+        if let Some(why) = &g.stopped {
+            writeln!(out, "{:<9} the walk stopped early, {why}", "partial")?;
+        }
+        Ok(())
     }
 
     fn table(&self, out: &mut impl std::io::Write) -> std::io::Result<()> {

@@ -11,13 +11,62 @@ use crate::{logs, store};
 use anyhow::{Context as _, Result};
 use jiff::civil::Date;
 use std::{
+    ffi::OsStr,
     path::Path,
     sync::{Mutex, PoisonError},
+    time::Duration,
 };
 use walk::{Opened, Walk};
 
 /// The directories `sourcemaps::Store` keeps uploads in.
 const UPLOADS: [&str; 2] = ["sourcemaps", "chunks"];
+/// Entries one measurement reads at most.
+pub const MAX_ENTRIES: u64 = 1_000_000;
+/// How long one measurement walks at most.
+pub const MAX_TIME: Duration = Duration::from_secs(20);
+/// Paths left out that a measurement names. It counts the rest.
+const MAX_NAMED: usize = 10;
+
+/// How much one walk reads.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub entries: u64,
+    pub time: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            entries: MAX_ENTRIES,
+            time: MAX_TIME,
+        }
+    }
+}
+
+/// What a measurement left out. The sizes do not hold it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Gaps {
+    /// The first [`MAX_NAMED`] paths left out, under the data directory,
+    /// each with why, such as `lost+found: permission denied`.
+    pub skipped: Vec<String>,
+    /// Paths left out in all.
+    pub skipped_count: u64,
+    /// Why the walk ended before it read everything.
+    pub stopped: Option<String>,
+}
+
+impl Gaps {
+    pub fn is_empty(&self) -> bool {
+        self.skipped_count == 0 && self.stopped.is_none()
+    }
+
+    fn skip(&mut self, path: &Path, why: &str) {
+        self.skipped_count = self.skipped_count.saturating_add(1);
+        if self.skipped.len() < MAX_NAMED {
+            self.skipped.push(format!("{}: {why}", path.display()));
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Disk {
@@ -33,23 +82,43 @@ pub struct Disk {
     pub other: u64,
     pub free: u64,
     pub total: u64,
+    pub gaps: Gaps,
+    /// Whether a gap lies under `logs`, or is `logs` itself.
+    pub logs_gap: bool,
 }
 
 impl Disk {
     pub fn logs(&self) -> u64 {
-        self.closed.iter().map(|(_, b)| b).sum::<u64>() + self.today
+        self.closed
+            .iter()
+            .fold(self.today, |sum, (_, b)| sum.saturating_add(*b))
     }
     /// What Davy's files take.
     pub fn davy(&self) -> u64 {
-        self.logs() + self.fixed()
+        self.logs().saturating_add(self.fixed())
     }
     /// What is not logs.
     pub fn fixed(&self) -> u64 {
-        self.sqlite + self.uploads + self.other
+        self.sqlite
+            .saturating_add(self.uploads)
+            .saturating_add(self.other)
     }
     /// What the filesystem uses, Davy's files and any others.
     pub fn used(&self) -> u64 {
         self.total.saturating_sub(self.free)
+    }
+    /// Why the log days are not all measured, if they are not. A gap
+    /// outside `logs` leaves the forecast alone: it takes what is not logs
+    /// as constant, and `used` comes from the filesystem.
+    pub fn logs_unmeasured(&self) -> Option<String> {
+        if let Some(why) = &self.gaps.stopped {
+            return Some(format!(
+                "the disk walk stopped early, {why}, so not every log day is measured"
+            ));
+        }
+        self.logs_gap.then(|| {
+            "part of logs is left out of the disk walk (disk.partial says what), so the growth of logs is unknown".to_owned()
+        })
     }
 }
 
@@ -60,11 +129,11 @@ static MEASURING: Mutex<()> = Mutex::new(());
 
 /// Measures `data`, with `today` the UTC day that is still open.
 pub fn measure(data: &Path, today: Date) -> Result<Disk> {
-    measure_at_most(data, today, walk::MAX_ENTRIES)
+    measure_within(data, today, Limits::default())
 }
 
-/// [`measure`], reading at most `limit` entries.
-pub(crate) fn measure_at_most(data: &Path, today: Date, limit: u64) -> Result<Disk> {
+/// [`measure`], reading at most what `limits` allow.
+pub(crate) fn measure_within(data: &Path, today: Date, limits: Limits) -> Result<Disk> {
     let _one = MEASURING.lock().unwrap_or_else(PoisonError::into_inner);
     let mut disk = Disk {
         free: fs4::available_space(data)
@@ -74,43 +143,61 @@ pub(crate) fn measure_at_most(data: &Path, today: Date, limit: u64) -> Result<Di
     };
     let db = store::DB_FILE;
     let sqlite = [db.to_owned(), format!("{db}-wal"), format!("{db}-shm")];
-    let (mut walk, root) = Walk::new(data, limit)?;
-    for name in walk.names(&root)? {
+    let (mut walk, root) = Walk::new(data, limits)?;
+    walk.each(&root, |walk, name| {
         if name == logs::DIR {
-            if let Some(dir) = walk.open(&root, &name)? {
-                measure_logs(&mut walk, &dir, today, &mut disk)?;
-            }
-            continue;
+            return measure_logs(walk, &root, today, &mut disk);
         }
-        let bytes = walk.size(&root, &name)?;
-        if sqlite.contains(&name) {
-            disk.sqlite += bytes;
-        } else if UPLOADS.contains(&name.as_str()) {
-            disk.uploads += bytes;
+        let bytes = walk.size(&root, name)?;
+        let total = if sqlite.iter().any(|s| name == s.as_str()) {
+            &mut disk.sqlite
+        } else if UPLOADS.iter().any(|u| name == *u) {
+            &mut disk.uploads
         } else {
-            disk.other += bytes;
-        }
-    }
+            &mut disk.other
+        };
+        *total = total.saturating_add(bytes);
+        Ok(())
+    })?;
     disk.closed.sort_unstable();
+    disk.gaps = walk.gaps;
     Ok(disk)
 }
 
-/// Sorts the log directory's entries: a directory named for a day before
-/// `today` is a closed day, one for today or later is today's.
-fn measure_logs(walk: &mut Walk, dir: &Opened, today: Date, disk: &mut Disk) -> Result<()> {
-    for name in walk.names(dir)? {
-        let bytes = walk.size(dir, &name)?;
-        // A day is a directory: a file or link named like one is not.
-        let day = match logs::store::parse_day(&name) {
-            Some(day) if walk.open(dir, &name)?.is_some() => Some(day),
-            _ => None,
-        };
-        match day {
-            Some(day) if day < today => disk.closed.push((day, bytes)),
-            Some(_) => disk.today += bytes,
-            None => disk.other += bytes,
+/// Sorts the entries of `logs` in `root`: a directory named for a day
+/// before `today` is a closed day, one for today or later is today's.
+fn measure_logs(walk: &mut Walk, root: &Opened, today: Date, disk: &mut Disk) -> Result<()> {
+    let name = OsStr::new(logs::DIR);
+    let before = walk.gaps.skipped_count;
+    let Some(dir) = walk.open(root, name)? else {
+        // Left out by `open`, such as for permission, it is already named.
+        if walk.gaps.skipped_count == before {
+            disk.other = disk.other.saturating_add(walk.size(root, name)?);
+            walk.gaps
+                .skip(Path::new(logs::DIR), "a link or not a directory");
         }
-    }
+        disk.logs_gap = true;
+        return Ok(());
+    };
+    walk.each(&dir, |walk, name| {
+        let bytes = walk.size(&dir, name)?;
+        // A day is a directory: a file or link named like one is not.
+        let day = name
+            .to_str()
+            .and_then(logs::store::parse_day)
+            .filter(|_| Walk::is_dir(&dir, name));
+        let total = match day {
+            Some(day) if day < today => {
+                disk.closed.push((day, bytes));
+                return Ok(());
+            }
+            Some(_) => &mut disk.today,
+            None => &mut disk.other,
+        };
+        *total = total.saturating_add(bytes);
+        Ok(())
+    })?;
+    disk.logs_gap |= walk.gaps.skipped_count != before;
     Ok(())
 }
 

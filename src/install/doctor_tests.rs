@@ -500,8 +500,28 @@ fn the_disk_forecast_warns_under_14_days_and_fails_under_2() {
         ok("disk", "40 GiB free, never fills at the current rate")
     );
     assert_eq!(
-        disk(data, free, Some(Err("too little".into()))),
+        disk(
+            data,
+            free,
+            Some(Err(NoForecast::History("too little".into())))
+        ),
         ok("disk", "40 GiB free, no forecast: too little")
+    );
+}
+
+#[test]
+fn a_forecast_missing_for_a_reason_other_than_history_warns() {
+    let data = Path::new("/var/lib/davy");
+    let fix = "shorten retention with davy project retention SLUG --data /var/lib/davy --logs N, or add disk";
+    let walk = NoForecast::Other("the disk walk stopped early, it read 1000000 entries, its limit, so not every log day is measured".into());
+    assert_eq!(
+        disk(data, Some(40 * GIB), Some(Err(walk))),
+        not_ok(
+            "disk",
+            Status::Warn,
+            "40 GiB free, no forecast: the disk walk stopped early, it read 1000000 entries, its limit, so not every log day is measured",
+            fix
+        )
     );
 }
 
@@ -523,9 +543,9 @@ fn the_forecast_takes_the_log_retention_doctor_is_given() {
     let first = today.checked_sub(jiff::Span::new().days(30)).unwrap();
     assert_eq!(
         forecast(&data, keep(30)).unwrap().map(|f| f.longest_days),
-        Err(format!(
+        Err(NoForecast::History(format!(
             "closed log days since {first}, the first day no retention has cut: the disk has 1, a forecast needs 2"
-        ))
+        )))
     );
     assert_eq!(
         forecast(&data, keep(1)).unwrap().map(|f| f.longest_days),

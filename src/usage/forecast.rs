@@ -79,6 +79,23 @@ impl WhatIf {
 
 const ONE_PROJECTS_BYTES: &str = "logs_bytes_per_day is for all projects together: logs of every project share one index per day, so Davy cannot tell one project's bytes on disk";
 
+/// Why there is no forecast.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NoForecast {
+    /// Too few closed log days, as on a new server: nothing is wrong.
+    History(String),
+    /// Anything else, such as a disk Davy could not measure in full.
+    Other(String),
+}
+
+impl std::fmt::Display for NoForecast {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::History(why) | Self::Other(why) => f.write_str(why),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Forecast {
     /// Bytes of logs on disk per day, all projects together.
@@ -97,8 +114,10 @@ pub struct Forecast {
 }
 
 /// The forecast, or why there is none.
-pub fn forecast(input: &Input, what_if: &WhatIf) -> Result<Forecast, String> {
-    what_if.check(input.projects.iter().map(|(s, _)| s.as_str()))?;
+pub fn forecast(input: &Input, what_if: &WhatIf) -> Result<Forecast, NoForecast> {
+    what_if
+        .check(input.projects.iter().map(|(s, _)| s.as_str()))
+        .map_err(NoForecast::Other)?;
     // What is on disk follows the settings, the cap follows the what-if.
     let shortest = input.projects.iter().map(|(_, n)| *n).min();
     let longest = input
@@ -139,7 +158,7 @@ pub fn forecast(input: &Input, what_if: &WhatIf) -> Result<Forecast, String> {
 /// retention has cut yet: those within the `shortest` retention of any
 /// project. An older day lost the logs of the projects that keep fewer
 /// days, and would make the growth look smaller than it is.
-fn measured(input: &Input, shortest: u32) -> Result<u64, String> {
+fn measured(input: &Input, shortest: u32) -> Result<u64, NoForecast> {
     let first = input
         .today
         .checked_sub(i64::from(shortest).days())
@@ -156,10 +175,10 @@ fn measured(input: &Input, shortest: u32) -> Result<u64, String> {
     let need = if shortest >= 2 { 2 } else { 1 };
     match median(&sizes) {
         Some(m) if sizes.len() >= need => Ok(m),
-        _ => Err(format!(
+        _ => Err(NoForecast::History(format!(
             "closed log days since {first}, the first day no retention has cut: the disk has {}, a forecast needs {need}",
             sizes.len()
-        )),
+        ))),
     }
 }
 
