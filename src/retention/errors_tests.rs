@@ -482,3 +482,43 @@ fn a_release_or_environment_over_its_limit_is_dropped_and_the_event_kept() {
     );
     assert_eq!(s.number("SELECT length(version) FROM releases"), 200);
 }
+
+/// What `EXPLAIN QUERY PLAN` says for `sql`, one line per step.
+fn plan(c: &Connection, sql: &str, params: impl rusqlite::Params) -> Vec<String> {
+    let mut q = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+    q.query_map(params, |r| r.get(3))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+#[test]
+fn picking_expired_events_and_untagging_read_the_index_by_project_and_time() {
+    let s = Server::new("errors-pick-plan", &["api"]);
+    let pick = plan(
+        &s.c,
+        "SELECT e.id, e.issue_id, coalesce(length(e.payload), 0) FROM projects p CROSS JOIN events e
+         ON e.project_id=p.id AND e.received_at<?1-coalesce(p.error_retention_days,?2)*?3
+         ORDER BY p.id, e.received_at, e.id LIMIT ?4",
+        params![day(20), 10, DAY_MS, BATCH],
+    );
+    let untag = plan(
+        &s.c,
+        "DELETE FROM issue_tags WHERE key=?1 AND value=?2 AND issue_id=?3 AND last_at<=?4
+         AND NOT EXISTS(SELECT 1 FROM events WHERE project_id=?5 AND received_at=issue_tags.last_at
+         AND issue_id=?3 AND CASE ?1 WHEN 'environment' THEN environment ELSE release END=?2)",
+        params!["release", "v1", 1, day(1), 1],
+    );
+    let has = |plan: &[String], step: &str| plan.iter().any(|d| d.contains(step));
+    // No sort of the whole range, and no scan of events or issue_tags.
+    assert_eq!(
+        (
+            has(&pick, "events_project_received"),
+            has(&pick, "TEMP B-TREE"),
+            has(&untag, "events_project_received"),
+            has(&untag, "SCAN"),
+        ),
+        (true, false, true, false),
+        "{pick:?} {untag:?}"
+    );
+}
