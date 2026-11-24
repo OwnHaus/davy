@@ -123,7 +123,7 @@ The last column is the same case before day indexes stayed open between searches
 
 ## Footprint for the forecast
 
-Measured on 2026-11-24 with `bench/footprint.sh` at commit `b54aaa7` (`v0.1.0-50-gb54aaa7`), under `taskpolicy -b`. The coefficients are in `bench/footprint.json` (schema `davy.footprint`, version 1), which `davy forecast` is meant to read. Raw numbers per run are kept there too. The last column of the logs table and the comparisons marked "previous run" come from an earlier run at normal priority, at commit `f34f3cd`, before the timestamps were fixed to whole days.
+Measured on 2026-11-24 with `bench/footprint.sh` at commit `b54aaa7` (`v0.1.0-50-gb54aaa7`), under `taskpolicy -b`, which `bench/footprint.json` records as `machine.priority`. The coefficients are in `bench/footprint.json` (schema `davy.footprint`, version 1), which `davy forecast` is meant to read. Raw numbers per run are kept there too. The last column of the logs table and the comparisons marked "previous run" come from an earlier run at normal priority, at commit `f34f3cd`, before the timestamps were fixed to whole days.
 
 **Machine.** A shared dev Mac: Mac14,5, Apple M2 Max, 12 cores, 32 GB RAM, macOS 26.5.1, APFS on the internal SSD. Other agents ran builds throughout, and the load average was 13 to 23 at the start of the runs. `bench/footprint.json` records it per run, and lists the noisy fields under `noisy`. Runs on reference VPS sizes (vCPU, RAM, disk) are still to come.
 
@@ -204,5 +204,6 @@ bash bench/load-logs.sh 1000000 1000 4   # logs ingest through the server, about
 bash bench/agent-search.sh               # agent search over 90 days, about 5 minutes and 4 GB of scratch
 bench/footprint.sh                       # footprint coefficients, macOS only, at normal priority; 1.3 GB of downloads and corpora
                                          # `quick` for the 2k samples only, written to the work directory
-                                         # FOOTPRINT_WORK, FOOTPRINT_OUT and FOOTPRINT_SHARED: see the script's header
+                                         # a full run refuses background priority unless FOOTPRINT_LOW_PRIORITY=1
+                                         # FOOTPRINT_WORK, FOOTPRINT_OUT, FOOTPRINT_SHARED, FOOTPRINT_LOW_PRIORITY: see the script's header
 ```

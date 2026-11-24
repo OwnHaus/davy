@@ -17,6 +17,9 @@
 #   FOOTPRINT_OUT     the report, an absolute path; default as described above.
 #   FOOTPRINT_SHARED  1 if other work ran on the machine at the same time,
 #                     0 if not. Recorded in the report.
+#   FOOTPRINT_LOW_PRIORITY
+#                     1 lets a full run start at background or lowered
+#                     priority. The report records the priority either way.
 #
 # Every log corpus goes through `davy serve` over the Logtail route, so the
 # default scrubbing, parsing and the writer's commits and merges all apply.
@@ -25,10 +28,11 @@
 # paths it names. A download or a corpus is kept only after its SHA-256
 # matched, so a broken or partial one is never reused.
 #
-# Run it at normal priority. Under `taskpolicy -b` times are 3 to 6x slower,
-# and as the writer commits every second, a slower ingest leaves more
-# segments: Disk / raw came out 8 to 24% higher in the one such run, see
-# docs/storage-benchmark.md.
+# Run it at normal priority. The one full run under `taskpolicy -b` took 3
+# to 6x the CPU per row of the run before it, and as the log writer commits
+# every second, how many segments a run leaves depends on how fast it
+# ingests. So a full run refuses to start at a lower priority unless
+# FOOTPRINT_LOW_PRIORITY=1, see docs/storage-benchmark.md.
 set -euo pipefail
 fail() { echo "footprint: $*" >&2; exit 1; }
 [ "$(uname)" = Darwin ] || fail "macOS only, see the header"
@@ -53,6 +57,21 @@ else
   OUT="${FOOTPRINT_OUT:-$ROOT/bench/footprint.json}"
 fi
 case "$OUT" in /?*) ;; *) fail "FOOTPRINT_OUT must be an absolute path" ;; esac
+# `background` under `taskpolicy -b` (PRIO_DARWIN_BG, which children
+# inherit), `lowered` under nice or throttled disk I/O, else `normal`. A QoS
+# clamp (`taskpolicy -c`) is not detected.
+PRIORITY=$(python3 -I -c '
+import ctypes, os
+background = os.getpriority(4, 0)  # PRIO_DARWIN_PROCESS
+disk = ctypes.CDLL(None).getiopolicy_np(0, 0)  # IOPOL_TYPE_DISK, IOPOL_SCOPE_PROCESS
+lowered = os.getpriority(os.PRIO_PROCESS, 0) > 0 or disk in (3, 4)  # THROTTLE, UTILITY
+print("background" if background else "lowered" if lowered else "normal")')
+if [ "$PRIORITY" != normal ]; then
+  if [ -z "$QUICK" ] && [ "${FOOTPRINT_LOW_PRIORITY:-}" != 1 ]; then
+    fail "this shell runs at $PRIORITY priority and a full run is meant for normal priority; set FOOTPRINT_LOW_PRIORITY=1 to record a run at $PRIORITY priority"
+  fi
+  echo "footprint: WARNING: running at $PRIORITY priority, the report records it" >&2
+fi
 LOGHUB=https://raw.githubusercontent.com/logpai/loghub/dd61d0952749ee7963bde24220d1be5ede023033
 ZENODO=https://zenodo.org/records/8196385/files
 NGINX='https://raw.githubusercontent.com/elastic/examples/79848a10658bd8a272ea24dab36f75cfd92ed0cf/Common%20Data%20Formats/nginx_logs/nginx_logs'
@@ -476,4 +495,4 @@ else
   run_errors 10 10000
 fi
 echo "load at end: $(sysctl -n vm.loadavg)"
-python3 -I "$ROOT/bench/footprint-report.py" "$RUNS" "$OUT" "$COMMIT" "${FOOTPRINT_SHARED:-}"
+python3 -I "$ROOT/bench/footprint-report.py" "$RUNS" "$OUT" "$COMMIT" "${FOOTPRINT_SHARED:-}" "$PRIORITY"

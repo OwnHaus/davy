@@ -1,10 +1,11 @@
 """Turns the runs of bench/footprint.sh into bench/footprint.json and prints
 the tables for docs/storage-benchmark.md.
 
-python3 -I bench/footprint-report.py RUNS OUT COMMIT SHARED
+python3 -I bench/footprint-report.py RUNS OUT COMMIT SHARED PRIORITY
 
 OUT is written only when every run is complete. SHARED is 1 if other work
-ran on the machine at the same time, 0 if not, empty if unknown.
+ran on the machine at the same time, 0 if not, empty if unknown. PRIORITY is
+how footprint.sh found itself scheduled: normal, background or lowered.
 """
 
 import json
@@ -146,7 +147,7 @@ def errors_row(r):
     }
 
 
-def machine(shared):
+def machine(shared, priority):
     sysctl = lambda k: subprocess.run(["sysctl", "-n", k], capture_output=True, text=True).stdout.strip()
     return {
         "model": sysctl("hw.model"), "cpu": sysctl("machdep.cpu.brand_string"),
@@ -154,6 +155,7 @@ def machine(shared):
         "os": f"macOS {platform.mac_ver()[0]}" if platform.mac_ver()[0] else f"{platform.system()} {platform.release()}",
         "load_average_at_report": sysctl("vm.loadavg"),
         "shared": {"1": True, "0": False}.get(shared),
+        "priority": priority,
     }
 
 
@@ -264,22 +266,29 @@ def tables(logs, errors):
 
 
 def main():
-    root, out, commit, shared = sys.argv[1:5]
+    root, out, commit, shared, priority = sys.argv[1:6]
     runs = read_runs(root)
     logs = [logs_row(r) for r in runs if r.get("kind") == "logs"]
     errors = [errors_row(r) for r in runs if r.get("kind") == "errors"]
     report = {
         "schema": SCHEMA, "version": VERSION,
         "measured": time.strftime("%Y-%m-%d"), "davy_commit": commit,
-        "machine": machine(shared),
+        "machine": machine(shared, priority),
+        # Segment counts and the disk fields moved between the first two full
+        # runs, which differed in priority, timestamps and code at once.
         "noisy": ["ingest_cpu_us_per_row", "ingest_cpu_us_per_event", "ingest_accept_rows_per_s",
                   "ingest_accept_events_per_s", "ingest_peak_rss_bytes", "ingest_peak_footprint_bytes",
-                  "search", "merge_secs", "retention.secs"],
+                  "search", "merge_secs", "retention.secs", "segments", "disk_per_raw",
+                  "disk_bytes_per_line", "one_segment_per_raw", "ingest_peak_extra_disk_bytes",
+                  "merge_peak_extra_disk_bytes"],
         "coefficients": coefficients(logs, errors),
         "logs": logs,
         "errors": errors,
     }
     tables(logs, errors)
+    if priority != "normal":
+        print(f"WARNING: this run had {priority} priority, so its times, segments and disk "
+              "ratios are not comparable with a run at normal priority", file=sys.stderr)
     bad = [r["corpus"] for r in logs if not r["complete"]]
     bad += [f"errors {e['issues']}" for e in errors if not (e["complete"] and e["payloads_follow_sampling"])]
     if bad:

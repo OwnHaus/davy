@@ -10,7 +10,8 @@
     "ram_bytes": 34359738368,
     "os": "macOS 26.5.1",
     "load_average_at_report": "{ 15.08 14.89 17.59 }",
-    "shared": true
+    "shared": true,
+    "priority": "background"
   },
   "noisy": [
     "ingest_cpu_us_per_row",
@@ -21,7 +22,13 @@
     "ingest_peak_footprint_bytes",
     "search",
     "merge_secs",
-    "retention.secs"
+    "retention.secs",
+    "segments",
+    "disk_per_raw",
+    "disk_bytes_per_line",
+    "one_segment_per_raw",
+    "ingest_peak_extra_disk_bytes",
+    "merge_peak_extra_disk_bytes"
   ],
   "coefficients": {
     "logs": {
