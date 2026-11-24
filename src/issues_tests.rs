@@ -327,12 +327,73 @@ fn an_events_page_reads_when_the_newest_event_is_in_the_sample() {
     // Event 99 is in the sample, so no newest payload is kept apart, and
     // events 50 to 98 have none.
     for n in 0..100 {
-        add(&c, 1, "boom", NOW - H + n, json!({}));
+        let id = format!("{:032x}", n + 1);
+        add(&c, 1, "boom", NOW - H + n, json!({ "event_id": id }));
     }
+    assert_eq!(
+        c.query_row("SELECT count(*) FROM latest_payloads", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
     let page = events(&c, 1, None).unwrap();
     let stored: Vec<bool> = page.events[..3].iter().map(|e| e.stored).collect();
     assert_eq!(stored, [true, false, false]);
     assert!(!page.events[49].stored);
     let (newest, _) = stored_payload(&c, 1, None).unwrap().unwrap();
-    assert_eq!(newest, page.events[0].event_id);
+    assert_eq!(newest, format!("{:032x}", 100));
+}
+
+/// Issue 1 of 52 events in shop, `extra.n` 0 to 51, so the newest keeps
+/// its payload in latest_payloads, and issue 2 of one event in blog.
+fn newest_apart() -> Connection {
+    let c = memory();
+    for n in 0..52 {
+        add(&c, 1, "boom", NOW - H + n, json!({"extra":{"n":n}}));
+    }
+    add(&c, 2, "other", NOW - 2 * H, json!({}));
+    c
+}
+
+fn decoded(blob: &[u8]) -> Value {
+    serde_json::from_slice(&zstd::decode_all(blob).unwrap()).unwrap()
+}
+
+#[test]
+fn the_moment_of_an_issue_is_its_newest_event_when_its_payload_is_apart() {
+    let c = newest_apart();
+    assert_eq!(
+        c.query_row("SELECT issue_id, event FROM latest_payloads", [], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })
+        .unwrap(),
+        (1, 52)
+    );
+    let moment = moment(&c, 1, None).unwrap().unwrap();
+    assert_eq!(moment.project, 1);
+    assert_eq!(moment.at, NOW - H + 51);
+    let (_, blob) = stored_payload(&c, 1, None).unwrap().unwrap();
+    assert_eq!(decoded(&blob)["extra"]["n"], 51);
+    assert!(events(&c, 1, None).unwrap().events[0].stored);
+}
+
+#[test]
+fn a_row_naming_another_issues_event_is_never_read() {
+    let c = newest_apart();
+    // The row moves to issue 2 but names event 52 of issue 1.
+    c.execute("UPDATE latest_payloads SET issue_id=2", [])
+        .unwrap();
+    let (_, blob) = stored_payload(&c, 1, None).unwrap().unwrap();
+    assert_eq!(decoded(&blob)["extra"]["n"], 49);
+    assert_eq!(moment(&c, 1, None).unwrap().unwrap().at, NOW - H + 49);
+    let page = events(&c, 1, None).unwrap();
+    let stored: Vec<bool> = page.events[..3].iter().map(|e| e.stored).collect();
+    assert_eq!(stored, [false, false, true]);
+    let (_, blob) = stored_payload(&c, 2, None).unwrap().unwrap();
+    assert_eq!(decoded(&blob)["message"], "other");
+    let other = moment(&c, 2, None).unwrap().unwrap();
+    assert_eq!((other.project, other.at), (2, NOW - 2 * H));
+    let page = events(&c, 2, None).unwrap();
+    assert_eq!(page.events.len(), 1);
+    assert!(page.events[0].stored);
 }

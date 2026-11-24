@@ -105,3 +105,109 @@ fn the_migration_moves_a_marked_newest_payload_out_of_events() {
     assert_eq!(store::payload(&c, 1).unwrap().unwrap()["extra"]["n"], 50);
     assert_eq!(store::payload(&c, 2).unwrap().unwrap()["message"], "other");
 }
+
+#[test]
+fn a_sampled_newest_event_takes_the_row_away() {
+    let c = memory();
+    for n in 0..99 {
+        store::insert(&c, 1, &event("boom", n)).unwrap();
+    }
+    assert_eq!(number(&c, "SELECT event FROM latest_payloads"), 99);
+    // The 100th event is in the sample, so it keeps its own payload.
+    store::insert(&c, 1, &event("boom", 99)).unwrap();
+    assert_eq!(number(&c, "SELECT count(*) FROM latest_payloads"), 0);
+    assert_eq!(number(&c, "SELECT count(payload) FROM events"), 51);
+    assert_eq!(store::payload(&c, 1).unwrap().unwrap()["extra"]["n"], 99);
+}
+
+#[test]
+fn a_transaction_that_ends_on_a_sampled_event_leaves_no_row() {
+    let mut c = memory();
+    for n in 0..98 {
+        store::insert(&c, 1, &event("boom", n)).unwrap();
+    }
+    assert_eq!(number(&c, "SELECT event FROM latest_payloads"), 98);
+    // Events 99 and 100 in one transaction: 99 is outside the sample, 100
+    // in it, and the newest decides.
+    let job = store::Job::Ingest {
+        project: 1,
+        events: vec![event("boom", 98), event("boom", 99)],
+        held: crate::http::body::Budget::new(0).hold(),
+    };
+    let done = tokio::sync::oneshot::channel().0;
+    let outcomes = store::write_batch(&mut c, &[store::Write { job, done }]);
+    assert!(matches!(outcomes[..], [Ok(())]));
+    assert_eq!(number(&c, "SELECT count(*) FROM latest_payloads"), 0);
+    assert_eq!(store::payload(&c, 1).unwrap().unwrap()["extra"]["n"], 99);
+}
+
+/// Puts the empty zstd skippable frame of version 18 in front of the payload
+/// of event `id`.
+fn mark(c: &Connection, id: i64, payload: &[u8]) {
+    let marked = [&[0x5D, 0x2A, 0x4D, 0x18, 0, 0, 0, 0], payload].concat();
+    c.execute(
+        "UPDATE events SET payload=?2 WHERE id=?1",
+        rusqlite::params![id, marked],
+    )
+    .unwrap();
+}
+
+/// A store as version 18 left it: issue 1 of 51 events, the newest one's
+/// payload in its events row behind the mark.
+fn version_18() -> Connection {
+    let c = memory();
+    for n in 0..51 {
+        store::insert(&c, 1, &event("boom", n)).unwrap();
+    }
+    let payload: Vec<u8> = c
+        .query_row("SELECT payload FROM latest_payloads", [], |r| r.get(0))
+        .unwrap();
+    mark(&c, 51, &payload);
+    c.execute_batch("DROP TABLE latest_payloads; PRAGMA user_version=18;")
+        .unwrap();
+    c
+}
+
+#[test]
+fn a_migration_that_fails_moves_nothing_and_runs_again() {
+    let mut c = version_18();
+    c.execute_batch(
+        "CREATE TRIGGER refuse BEFORE UPDATE OF payload ON events
+         BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+    )
+    .unwrap();
+    // The last statement fails, after the table and its row were written.
+    let e = store::init(&mut c).unwrap_err();
+    assert_eq!(e.to_string(), "refused");
+    assert_eq!(number(&c, "PRAGMA user_version"), 18);
+    let tables = "SELECT count(*) FROM sqlite_schema WHERE name='latest_payloads'";
+    assert_eq!(number(&c, tables), 0);
+    let marked = "SELECT count(*) FROM events WHERE substr(payload, 1, 8)=x'5D2A4D1800000000'";
+    assert_eq!(number(&c, marked), 1);
+    c.execute_batch("DROP TRIGGER refuse").unwrap();
+    store::init(&mut c).unwrap();
+    assert_eq!(number(&c, "PRAGMA user_version"), 19);
+    assert_eq!(number(&c, marked), 0);
+    assert_eq!(number(&c, "SELECT event FROM latest_payloads"), 51);
+    assert_eq!(store::payload(&c, 1).unwrap().unwrap()["extra"]["n"], 50);
+}
+
+#[test]
+fn the_migration_leaves_a_marked_payload_of_an_older_event() {
+    let mut c = version_18();
+    let payload: Vec<u8> = c
+        .query_row("SELECT payload FROM events WHERE id=1", [], |r| r.get(0))
+        .unwrap();
+    mark(&c, 1, &payload);
+    store::init(&mut c).unwrap();
+    assert_eq!(number(&c, "SELECT count(*) FROM latest_payloads"), 1);
+    assert_eq!(number(&c, "SELECT event FROM latest_payloads"), 51);
+    assert_eq!(number(&c, "SELECT count(payload) FROM events"), 50);
+    // zstd skips the empty frame of the mark, so the payload still reads.
+    let blob: Vec<u8> = c
+        .query_row("SELECT payload FROM events WHERE id=1", [], |r| r.get(0))
+        .unwrap();
+    let raw: serde_json::Value =
+        serde_json::from_slice(&zstd::decode_all(blob.as_slice()).unwrap()).unwrap();
+    assert_eq!(raw["extra"]["n"], 0);
+}
