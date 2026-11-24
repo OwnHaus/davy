@@ -85,7 +85,8 @@ pub struct Forecast {
     pub growth: u64,
     /// The longest log retention of any project, which caps the growth.
     pub longest_days: u32,
-    /// The most Davy takes once retention deletes as much as arrives.
+    /// The most Davy takes once retention deletes as much as arrives: the
+    /// longest retention's closed days and today, each a day's growth.
     pub steady_state: u64,
     pub headroom: u64,
     /// `None` when the disk never fills at this rate.
@@ -113,8 +114,10 @@ pub fn forecast(input: &Input, what_if: &WhatIf) -> Result<Forecast, String> {
         Some(bytes) => bytes,
         None => measured(input, shortest.unwrap_or(input.default_days))?,
     };
+    // Retention of N days deletes a day once it is more than N days old,
+    // so the disk holds N closed days and today.
     let steady_state = growth
-        .saturating_mul(u64::from(longest))
+        .saturating_mul(u64::from(longest) + 1)
         .saturating_add(input.fixed);
     let headroom = input.total / 100 * HEADROOM_PERCENT;
     let days_left = days_left(input, growth, steady_state, headroom);

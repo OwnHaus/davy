@@ -44,8 +44,9 @@ fn a_disk_that_fills_says_when() {
         Forecast {
             growth: 8 * GB,
             longest_days: 30,
-            // 8 GB for 30 days, and 10 GB of SQLite and uploads.
-            steady_state: 250 * GB,
+            // 8 GB for 30 closed days and today, and 10 GB of SQLite and
+            // uploads.
+            steady_state: 258 * GB,
             headroom: 50 * GB,
             // 150 GB to the limit at 8 GB a day.
             days_left: Some(19),
@@ -63,7 +64,28 @@ fn retention_that_caps_growth_first_means_the_disk_never_fills() {
     let f = forecast(&input, &WhatIf::default()).unwrap();
     assert_eq!(
         (f.steady_state, f.days_left, f.full_on),
-        (66 * GB, None, None)
+        (74 * GB, None, None)
+    );
+}
+
+#[test]
+fn a_retention_of_n_days_holds_n_closed_days_and_today() {
+    // Every project keeps logs 1 day and adds 45 GB a day. This morning
+    // the disk holds yesterday and 5 GB of SQLite; by tonight today's 45 GB
+    // sit next to yesterday's and pass the 90 GB limit.
+    let input = Input {
+        closed: closed(&[45 * GB]),
+        davy: 50 * GB,
+        fixed: 5 * GB,
+        used: 50 * GB,
+        total: 100 * GB,
+        projects: projects(&[("api", 1), ("shop", 1)]),
+        ..filling()
+    };
+    let f = forecast(&input, &WhatIf::default()).unwrap();
+    assert_eq!(
+        (f.steady_state, f.days_left, f.full_on),
+        (95 * GB, Some(1), Some(day("2026-11-25")))
     );
 }
 
@@ -77,7 +99,7 @@ fn a_short_retention_with_most_of_the_logs_cannot_hide_a_filling_disk() {
         ..filling()
     };
     let f = forecast(&input, &WhatIf::default()).unwrap();
-    // 10 GB for 30 days is past the limit: 150 GB at 10 GB a day.
+    // 10 GB for 31 days is past the limit: 150 GB at 10 GB a day.
     assert_eq!(
         (
             f.growth,
@@ -86,7 +108,7 @@ fn a_short_retention_with_most_of_the_logs_cannot_hide_a_filling_disk() {
             f.days_left,
             f.full_on
         ),
-        (10 * GB, 30, 310 * GB, Some(15), Some(day("2026-12-09")))
+        (10 * GB, 30, 320 * GB, Some(15), Some(day("2026-12-09")))
     );
 }
 
@@ -133,7 +155,7 @@ fn a_shorter_retention_lowers_the_forecast_only_when_it_lowers_the_longest() {
     let f = forecast(&filling(), &all).unwrap();
     assert_eq!(
         (f.longest_days, f.steady_state, f.days_left),
-        (7, 66 * GB, None)
+        (7, 74 * GB, None)
     );
     let shop = WhatIf {
         project: Some("shop".into()),
@@ -143,7 +165,7 @@ fn a_shorter_retention_lowers_the_forecast_only_when_it_lowers_the_longest() {
     let f = forecast(&filling(), &shop).unwrap();
     assert_eq!(
         (f.longest_days, f.steady_state, f.days_left),
-        (30, 250 * GB, Some(19))
+        (30, 258 * GB, Some(19))
     );
 }
 
@@ -163,7 +185,7 @@ fn a_total_daily_volume_forecasts_without_history() {
     let f = forecast(&input, &what_if).unwrap();
     assert_eq!(
         (f.growth, f.steady_state, f.days_left, f.full_on),
-        (2 * GB, 70 * GB, Some(5), Some(day("2026-11-29")))
+        (2 * GB, 72 * GB, Some(5), Some(day("2026-11-29")))
     );
 }
 
