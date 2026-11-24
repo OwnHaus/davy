@@ -4,7 +4,7 @@ use crate::logs::{
     patterns::{self as masks, OTHER},
     store::{
         LogQuery, LogWriter, Overrides, State, histogram, no_overrides, schema, search,
-        tally::{FILE, MAX_PATTERNS},
+        tally::{MAX_PATTERNS, file::name},
     },
 };
 use crate::test_support::scratch;
@@ -143,7 +143,7 @@ fn counters_survive_a_restart() {
     let dir = scratch("patterns-restart");
     let now = now_ns();
     run(&dir, &[], batch(now));
-    assert!(dir.join(day_of(now).to_string()).join(FILE).exists());
+    assert!(dir.join(day_of(now).to_string()).join(name(1)).exists());
     run(&dir, &[], vec![info(1, now, "GET /users/5 took 2ms")]);
     assert_eq!(rows(&report(&dir, &query(Some(1), now)))[0].1, 4);
     std::fs::remove_dir_all(&dir).unwrap();
@@ -217,7 +217,7 @@ fn a_report_sees_counts_the_writer_has_not_saved_yet() {
     state.add(batch(now)).unwrap();
     assert_eq!(report(&dir, &query(Some(1), now)).records, 0);
     state.commit().unwrap();
-    assert!(!dir.join(day_of(now).to_string()).join(FILE).exists());
+    assert!(!dir.join(day_of(now).to_string()).join(name(1)).exists());
     assert_eq!(report(&dir, &query(Some(1), now)).records, 4);
     state.close_all().unwrap();
     drop(state);

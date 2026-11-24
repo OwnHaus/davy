@@ -96,7 +96,9 @@ pub fn top_patterns(root: &Path, q: &PatternQuery) -> Result<PatternReport> {
                 continue;
             }
         }
-        add(&mut sums, &DayTally::load(&root.join(day.to_string()))?, q);
+        let dir = root.join(day.to_string());
+        let project = q.project.map(i64::cast_unsigned);
+        add(&mut sums, &DayTally::load(&dir, project)?, q);
     }
     Ok(report(sums, first, last, q.limit))
 }

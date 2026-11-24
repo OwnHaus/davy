@@ -1,13 +1,20 @@
 use super::{
-    DayTally, EXAMPLE_BYTES, FILE, MAX_CELLS, MAX_PATTERNS, OTHER_SERVICES, SERVICE_BYTES,
-    raw_bytes,
+    DayTally, EXAMPLE_BYTES, FLUSH_EVERY, MAX_CELLS, MAX_PATTERNS, OTHER_SERVICES, SERVICE_BYTES,
+    file::{self, name},
+    pace, raw_bytes,
 };
 use crate::logs::{
     LogLevel, LogRecord, LogSource,
     patterns::{self, OTHER},
+    store::{State, no_overrides},
 };
 use crate::test_support::scratch;
+use crate::time::{day_of, now_ns};
 use serde_json::json;
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 
 fn record(project_id: i64, service: Option<&str>, message: &str) -> LogRecord {
     LogRecord {
@@ -140,8 +147,8 @@ fn counters_are_saved_and_loaded_with_their_bounds() {
         count(&mut tally, &record(1, None, &distinct(n)));
     }
     tally.save(&dir).unwrap();
-    assert!(dir.join(FILE).exists());
-    let mut loaded = DayTally::load(&dir).unwrap();
+    assert!(dir.join(name(1)).exists());
+    let mut loaded = DayTally::load(&dir, None).unwrap();
     assert_eq!(count(&mut loaded, &record(1, None, &distinct(5000))), OTHER);
     assert_eq!(loaded.projects[&1].cells, MAX_PATTERNS + 1);
     std::fs::remove_dir_all(&dir).unwrap();
@@ -151,25 +158,67 @@ fn counters_are_saved_and_loaded_with_their_bounds() {
 fn a_day_without_counters_loads_empty() {
     let dir = scratch("tally-none");
     std::fs::create_dir_all(&dir).unwrap();
-    assert!(DayTally::load(&dir).unwrap().projects.is_empty());
+    assert!(DayTally::load(&dir, None).unwrap().projects.is_empty());
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
 fn a_save_writes_past_anything_at_a_fixed_temporary_name() {
     let dir = scratch("tally-temp");
-    std::fs::create_dir_all(dir.join(format!("{FILE}.tmp"))).unwrap();
+    std::fs::create_dir_all(dir.join(format!("{}.tmp", name(1)))).unwrap();
     let mut tally = DayTally::default();
     count(&mut tally, &record(1, None, "user 1 logged in"));
     tally.save(&dir).unwrap();
-    let loaded = DayTally::load(&dir).unwrap();
+    let loaded = DayTally::load(&dir, None).unwrap();
     let entry = &loaded.projects[&1].patterns[&patterns::of("user 2 logged in").id];
     assert_eq!(entry.services[""][2][0], 1);
     let names: Vec<String> = std::fs::read_dir(&dir)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|n| n != &format!("{FILE}.tmp"))
+        .filter(|n| n != &format!("{}.tmp", name(1)))
         .collect();
-    assert_eq!(names, [FILE], "no temporary file is left");
+    assert_eq!(names, [name(1)], "no temporary file is left");
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The records the file of `project` in `dir` counts.
+fn saved(dir: &Path, project: u64) -> u64 {
+    let counters = file::load(dir, project).unwrap().unwrap();
+    let levels = counters.patterns.values().flat_map(|e| e.services.values());
+    levels.flatten().map(|[records, _]| records).sum()
+}
+
+#[test]
+fn a_flush_writes_only_the_projects_that_changed_when_they_are_due() {
+    let dir = scratch("tally-flush");
+    let now = now_ns();
+    let day = dir.join(day_of(now).to_string());
+    let line = |project| LogRecord {
+        timestamp: now,
+        observed_at: now,
+        ..record(project, None, "job done")
+    };
+    let mut state = State::new(dir.clone(), 30, no_overrides());
+    state.add(vec![line(1), line(2)]).unwrap();
+    state.commit().unwrap();
+    let start = Instant::now();
+    state.flush_tallies(start);
+    assert_eq!((saved(&day, 1), saved(&day, 2)), (1, 1));
+    std::fs::remove_file(day.join(name(2))).unwrap();
+    state.add(vec![line(1)]).unwrap();
+    state.commit().unwrap();
+    state.flush_tallies(start + FLUSH_EVERY / 2);
+    assert_eq!(saved(&day, 1), 1, "not due yet");
+    state.flush_tallies(start + FLUSH_EVERY);
+    assert_eq!(saved(&day, 1), 2);
+    state.close_all().unwrap();
+    assert!(!day.join(name(2)).exists(), "project 2 did not change");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_big_file_is_written_less_often() {
+    assert_eq!(pace(0), FLUSH_EVERY);
+    assert_eq!(pace(150_000), Duration::from_secs(15));
+    assert_eq!(pace(3_500_000), Duration::from_secs(350));
 }

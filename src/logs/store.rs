@@ -418,7 +418,7 @@ impl LogWriter {
                     next_commit = now + COMMIT_EVERY;
                 }
                 if now >= next_flush {
-                    state.flush_tallies();
+                    state.flush_tallies(now);
                     next_flush = now + tally::FLUSH_EVERY;
                 }
             }

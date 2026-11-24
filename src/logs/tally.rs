@@ -3,11 +3,15 @@
 //!
 //! The log writer counts each record as it indexes it and stamps the record
 //! with the pattern it was counted under, so the counters and a search by
-//! pattern agree. A count is pending until the commit of its day holds. A day's counters live in memory while the writer has the
-//! day open, and in `patterns.json` in the day's directory, written every
-//! [`FLUSH_EVERY`] and when the day closes. Retention removes them with the
-//! logs they count. Readers in the server process see the memory, so they
-//! are as fresh as the index; readers in another process see the file.
+//! pattern agree. A count is pending until the commit of its day holds.
+//!
+//! A day's counters live in memory while the writer has the day open, and
+//! in a file per project in the day's directory, see [`file`]. A project's
+//! file is written when it changed, at most every [`FLUSH_EVERY`] and less
+//! often the bigger it is, see [`pace`], and when the day closes. Retention
+//! removes the counters with the logs they count. Readers in the server
+//! process see the memory, so they are as fresh as the index; readers in
+//! another process see the files.
 //!
 //! Log text can come from a public DSN, so everything here is bounded per
 //! project and day: [`MAX_PATTERNS`] patterns, then [`OTHER`]; [`MAX_CELLS`]
@@ -19,17 +23,19 @@ use crate::logs::{
     LogLevel, LogRecord,
     patterns::{self, OTHER},
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    fs::File,
     io::{self, Write},
     path::{Path, PathBuf},
     sync::{Arc, LazyLock, Mutex, PoisonError, Weak},
-    time::Duration,
+    time::{Duration, Instant},
 };
+
+#[path = "tally_file.rs"]
+pub(super) mod file;
 
 /// Patterns a project counts in one day. The rest count under [`OTHER`].
 pub const MAX_PATTERNS: usize = 1000;
@@ -42,8 +48,8 @@ pub const SERVICE_BYTES: usize = 128;
 /// Bytes of the example message a pattern keeps.
 pub const EXAMPLE_BYTES: usize = 256;
 pub(super) const FLUSH_EVERY: Duration = Duration::from_secs(10);
-pub(super) const FILE: &str = "patterns.json";
-const VERSION: u32 = 1;
+/// Bytes per second that rewriting one project's file may cost.
+const SAVE_RATE: usize = 10_000;
 const LEVELS: usize = 6;
 
 /// Records and bytes of one service of a pattern, per level from trace to
@@ -58,31 +64,28 @@ pub(super) struct Entry {
     pub(super) services: HashMap<Box<str>, Levels>,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default)]
 pub(super) struct ProjectDay {
     pub(super) patterns: HashMap<u64, Entry>,
-    #[serde(skip)]
     cells: usize,
+    /// Whether `patterns` changed since the file was written.
+    dirty: bool,
+    /// When the file may be written again, see [`pace`].
+    next_save: Option<Instant>,
     /// What was counted since the day's last commit. It joins `patterns`
     /// when the commit holds and goes with the logs when it fails, so no
     /// reader and no file sees a count of a log that search cannot find.
-    #[serde(skip)]
     pending: HashMap<u64, Entry>,
     /// Patterns in `pending` that `patterns` lacks, [`OTHER`] aside.
-    #[serde(skip)]
     added: usize,
     /// Pairs of pattern and service in `pending` that `patterns` lacks.
-    #[serde(skip)]
     added_cells: usize,
 }
 
 /// The counters of one day.
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default)]
 pub(super) struct DayTally {
-    version: u32,
     pub(super) projects: HashMap<u64, ProjectDay>,
-    #[serde(skip)]
-    dirty: bool,
 }
 
 pub(super) type Days = HashMap<Date, DayTally>;
@@ -122,6 +125,7 @@ impl ProjectDay {
             pending,
             added,
             added_cells,
+            ..
         } = self;
         let known = patterns.contains_key(&pattern.id) || pending.contains_key(&pattern.id);
         let real = patterns.len() - usize::from(patterns.contains_key(&OTHER)) + *added;
@@ -163,15 +167,15 @@ impl ProjectDay {
         id
     }
 
-    /// Moves the pending counts into the counters. Returns whether there
-    /// were any.
-    fn settle(&mut self) -> bool {
+    /// Moves the pending counts into the counters.
+    fn settle(&mut self) {
         let Self {
             patterns,
             cells,
             pending,
             added,
             added_cells,
+            ..
         } = self;
         let any = !pending.is_empty();
         for (id, entry) in pending.drain() {
@@ -197,7 +201,7 @@ impl ProjectDay {
             }
         }
         (*added, *added_cells) = (0, 0);
-        any
+        self.dirty |= any;
     }
 
     fn discard(&mut self) {
@@ -217,9 +221,11 @@ impl DayTally {
     /// Moves what was counted since the day's last commit into the
     /// counters, once that commit holds.
     pub(super) fn settle(&mut self) {
-        for day in self.projects.values_mut() {
-            self.dirty |= day.settle();
-        }
+        self.projects.values_mut().for_each(ProjectDay::settle);
+    }
+
+    fn dirty(&self) -> bool {
+        self.projects.values().any(|p| p.dirty)
     }
 
     /// Forgets what was counted since the day's last commit, which failed.
@@ -229,63 +235,47 @@ impl DayTally {
 
     /// Drops the counters of the projects `cut` deletes the logs of.
     fn cut(&mut self, cut: &Cut) {
-        let before = self.projects.len();
         self.projects.retain(|p, _| match cut {
             Cut::Only(gone) => !gone.contains(p),
             Cut::AllBut(kept) => kept.contains(p),
         });
-        self.dirty |= self.projects.len() != before;
     }
 
-    /// The counters of the day in `dir`, empty when it has none yet.
-    pub(super) fn load(dir: &Path) -> Result<Self> {
-        let text = match std::fs::read(dir.join(FILE)) {
-            Ok(text) => text,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
-            Err(e) => return Err(e.into()),
+    /// The counters of the day in `dir`, of `project` alone when it is
+    /// named, empty when there are none yet.
+    pub(super) fn load(dir: &Path, project: Option<u64>) -> Result<Self> {
+        let projects = match project {
+            Some(project) => vec![project],
+            None => file::projects(dir)?,
         };
-        let mut day: Self = serde_json::from_slice(&text)
-            .with_context(|| format!("reading {}", dir.join(FILE).display()))?;
-        anyhow::ensure!(day.version == VERSION, "unknown version {}", day.version);
-        for project in day.projects.values_mut() {
-            project.cells = project.patterns.values().map(|e| e.services.len()).sum();
+        let mut day = Self::default();
+        for project in projects {
+            if let Some(counters) = file::load(dir, project)? {
+                day.projects.insert(project, counters);
+            }
         }
         Ok(day)
     }
 
-    /// Writes the counters to `dir`, whole or not at all.
+    /// Writes the projects that changed, whatever their pace.
     fn save(&mut self, dir: &Path) -> Result<()> {
-        self.version = VERSION;
-        write_durably(dir, FILE, &serde_json::to_vec(self)?)?;
-        self.dirty = false;
-        Ok(())
+        let mut first = None;
+        for (project, counters) in self.projects.iter_mut().filter(|(_, p)| p.dirty) {
+            match file::encode(counters).and_then(|bytes| file::save(dir, *project, &bytes)) {
+                Ok(()) => counters.dirty = false,
+                Err(e) => drop(first.get_or_insert(e)),
+            }
+        }
+        first.map_or(Ok(()), Err)
     }
 }
 
-/// Replaces `name` in `dir` with `bytes` so that a crash or a power loss
-/// leaves the old file or the new one, never a part. The temporary file
-/// has a name of its own, so a file left at that name by a crash or put
-/// there by anyone is neither followed nor in the way.
-fn write_durably(dir: &Path, name: &str, bytes: &[u8]) -> Result<()> {
-    let tmp = dir.join(format!("{name}.{}.tmp", uuid::Uuid::new_v4()));
-    let written = (|| -> io::Result<()> {
-        let mut file = File::options().write(true).create_new(true).open(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        std::fs::rename(&tmp, dir.join(name))
-    })();
-    if let Err(e) = written {
-        let e = anyhow::Error::from(e).context(format!("writing {}", dir.join(name).display()));
-        return Err(match std::fs::remove_file(&tmp) {
-            Err(left) if left.kind() != io::ErrorKind::NotFound => {
-                e.context(format!("{} is left: {left}", tmp.display()))
-            }
-            _ => e,
-        });
-    }
-    // The rename is durable only once the directory that holds it is.
-    File::open(dir)?.sync_all()?;
-    Ok(())
+/// How long a project's file of `len` bytes waits before it is written
+/// again: [`FLUSH_EVERY`], or longer so that rewriting it costs at most
+/// [`SAVE_RATE`] bytes a second.
+pub(super) fn pace(len: usize) -> Duration {
+    let secs = u64::try_from(len / SAVE_RATE).unwrap_or(u64::MAX);
+    FLUSH_EVERY.max(Duration::from_secs(secs))
 }
 
 pub(super) fn level_index(level: LogLevel) -> usize {
@@ -325,7 +315,7 @@ impl State {
         let dir = self.root.join(day.to_string());
         let mut tallies = self.tallies();
         let tally = tallies.entry(day).or_insert_with(|| {
-            DayTally::load(&dir).unwrap_or_else(|e| {
+            DayTally::load(&dir, None).unwrap_or_else(|e| {
                 report(day, "reading", &e);
                 DayTally::default()
             })
@@ -333,18 +323,42 @@ impl State {
         tally.count(r, pattern, bytes)
     }
 
-    /// Writes the counters that changed, and lets go of the days the writer
-    /// no longer has open.
-    pub(super) fn flush_tallies(&mut self) {
-        let root = self.root.clone();
-        let open: Vec<Date> = self.open.keys().copied().collect();
-        let mut tallies = self.tallies();
-        for (day, tally) in tallies.iter_mut().filter(|(_, t)| t.dirty) {
-            if let Err(e) = tally.save(&root.join(day.to_string())) {
-                report(*day, "writing", &e);
+    /// Writes the files of the projects that changed and are due at `now`,
+    /// and lets go of the days the writer no longer has open. The files are
+    /// written outside the lock, so readers do not wait for the disk.
+    pub(super) fn flush_tallies(&mut self, now: Instant) {
+        let mut due = Vec::new();
+        for (day, tally) in self.tallies().iter_mut() {
+            let ready = |p: &&mut ProjectDay| p.dirty && p.next_save.is_none_or(|at| at <= now);
+            for (project, counters) in tally.projects.iter_mut().filter(|(_, p)| ready(p)) {
+                match file::encode(counters) {
+                    Ok(bytes) => {
+                        counters.dirty = false;
+                        counters.next_save = Some(now + pace(bytes.len()));
+                        due.push((*day, *project, bytes));
+                    }
+                    Err(e) => report(*day, "writing", &e),
+                }
             }
         }
-        tallies.retain(|day, t| t.dirty || open.contains(day));
+        let mut failed = Vec::new();
+        for (day, project, bytes) in due {
+            if let Err(e) = file::save(&self.root.join(day.to_string()), project, &bytes) {
+                report(day, "writing", &e);
+                failed.push((day, project));
+            }
+        }
+        let open: Vec<Date> = self.open.keys().copied().collect();
+        let mut tallies = self.tallies();
+        for (day, project) in failed {
+            if let Some(counters) = tallies
+                .get_mut(&day)
+                .and_then(|t| t.projects.get_mut(&project))
+            {
+                counters.dirty = true;
+            }
+        }
+        tallies.retain(|day, t| t.dirty() || open.contains(day));
     }
 
     /// Moves the pending counts of `day` into its counters.
@@ -366,7 +380,6 @@ impl State {
         let dir = self.root.join(day.to_string());
         let mut tallies = self.tallies();
         if let Some(mut tally) = tallies.remove(&day)
-            && tally.dirty
             && let Err(e) = tally.save(&dir)
         {
             report(day, "writing", &e);
@@ -378,20 +391,13 @@ impl State {
         self.tallies().remove(&day);
     }
 
-    /// Drops what `cut` deleted from `day` from its counters.
+    /// Drops what `cut` deleted from `day` from its counters, in memory
+    /// and on disk.
     pub(super) fn cut_tally(&mut self, day: Date, cut: &Cut) -> Result<()> {
-        let dir = self.root.join(day.to_string());
-        let mut tallies = self.tallies();
-        if let Some(tally) = tallies.get_mut(&day) {
+        if let Some(tally) = self.tallies().get_mut(&day) {
             tally.cut(cut);
-            return Ok(());
         }
-        let mut tally = DayTally::load(&dir)?;
-        tally.cut(cut);
-        if tally.dirty {
-            tally.save(&dir)?;
-        }
-        Ok(())
+        file::remove(&self.root.join(day.to_string()), cut)
     }
 }
 
