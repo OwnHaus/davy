@@ -96,13 +96,7 @@ pub fn open(data: &Path) -> Result<Connection> {
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
     dir.create(data)?;
-    let path = data.join(DB_FILE);
-    let mut c = migrate::connect(&path)?;
-    if migrate::pending(&c)? {
-        drop(c);
-        migrate::alone(&path)?;
-        c = migrate::connect(&path)?;
-    }
+    let mut c = migrate::open(&data.join(DB_FILE), migrate::WAIT)?;
     init(&mut c)?;
     Ok(c)
 }
