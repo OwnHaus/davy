@@ -41,10 +41,14 @@ impl<'a> Latest<'a> {
 
     /// Keeps the payload of each issue's newest event, or drops the one
     /// kept before when the newest is in the sample. Runs once, before the
-    /// transaction commits.
+    /// transaction commits. A sweep in the same transaction may have
+    /// deleted the event, and its issue too, when the clock moved on by the
+    /// whole retention between taking the event in and queueing the sweep,
+    /// so the row is written only while its event is there.
     pub fn keep(self, c: &Connection) -> Result<()> {
         let mut upsert = c.prepare_cached(
-            "INSERT INTO latest_payloads(issue_id, event, payload) VALUES (?1, ?2, ?3)
+            "INSERT INTO latest_payloads(issue_id, event, payload) SELECT ?1, ?2, ?3
+             WHERE EXISTS(SELECT 1 FROM events WHERE id=?2 AND issue_id=?1)
              ON CONFLICT(issue_id) DO UPDATE SET event=excluded.event, payload=excluded.payload",
         )?;
         let mut delete = c.prepare_cached("DELETE FROM latest_payloads WHERE issue_id=?1")?;

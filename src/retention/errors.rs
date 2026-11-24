@@ -224,10 +224,11 @@ fn recount(c: &Connection, issue: i64, taken: &Taken) -> Result<()> {
         .execute([issue])?;
     // The newest event's payload goes with it. Events expire by
     // received_at, so after the server clock stepped back the newest can go
-    // while older ones stay.
+    // while older ones stay. The event is looked for in its issue, because
+    // the id of a deleted event is given to the next one written.
     c.prepare_cached(
         "DELETE FROM latest_payloads WHERE issue_id=?1
-         AND NOT EXISTS(SELECT 1 FROM events WHERE id=latest_payloads.event)",
+         AND NOT EXISTS(SELECT 1 FROM events WHERE id=latest_payloads.event AND issue_id=?1)",
     )?
     .execute([issue])?;
     let seen: Option<(i64, i64)> = c

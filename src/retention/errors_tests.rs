@@ -640,3 +640,6 @@ fn picking_expired_events_and_untagging_read_the_index_by_project_and_time() {
         "{pick:?} {untag:?}"
     );
 }
+
+#[path = "errors_latest_tests.rs"]
+mod latest;
