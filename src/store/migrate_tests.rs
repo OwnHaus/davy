@@ -1,3 +1,4 @@
+use super::super::{MIGRATIONS, SCHEMA};
 use crate::store;
 use rusqlite::Connection;
 use std::{
@@ -5,16 +6,21 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// A data directory whose database lacks migrations 14 and 15, like one an
-/// older Davy wrote.
+/// The version of a database that lacks only the newest migration.
+const BEHIND: usize = MIGRATIONS.len() - 1;
+
+/// A data directory whose database lacks the newest migration, like one the
+/// previous Davy wrote. It is built from the first schema and the migrations
+/// before the newest, so it stays one behind when later releases add some.
 fn behind() -> PathBuf {
     let data = crate::test_support::scratch("migrate");
-    store::open(&data)
-        .unwrap()
-        .execute_batch(&format!(
-            "{} ALTER TABLE projects DROP COLUMN scrub; PRAGMA user_version=13;",
-            crate::retention::UNDO
-        ))
+    std::fs::create_dir_all(&data).unwrap();
+    let c = Connection::open(data.join(store::DB_FILE)).unwrap();
+    c.execute_batch(SCHEMA).unwrap();
+    for sql in &MIGRATIONS[..BEHIND] {
+        c.execute_batch(sql).unwrap();
+    }
+    c.execute_batch(&format!("PRAGMA user_version={BEHIND}"))
         .unwrap();
     data
 }
@@ -29,20 +35,26 @@ fn holder(data: &Path) -> Connection {
     c
 }
 
-fn version(c: &Connection) -> i64 {
-    c.query_row("PRAGMA user_version", [], |r| r.get(0))
-        .unwrap()
+fn version(c: &Connection) -> usize {
+    let done: u32 = c
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    usize::try_from(done).unwrap()
 }
 
-/// Whether migration 14's `id_floor` table and migration 15's `scrub` column
-/// exist.
-fn migrated_parts(c: &Connection) -> (i64, i64) {
+/// Every table, index and trigger with its SQL, in name order.
+fn schema(c: &Connection) -> String {
     c.query_row(
-        "SELECT (SELECT count(*) FROM sqlite_schema WHERE name='id_floor'), (SELECT count(*) FROM pragma_table_info('projects') WHERE name='scrub')",
+        "SELECT group_concat(name || ' ' || coalesce(sql, ''), char(10)) FROM (SELECT name, sql FROM sqlite_schema ORDER BY name)",
         [],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| r.get(0),
     )
     .unwrap()
+}
+
+/// The schema of a store that ran every migration from the start.
+fn current_schema() -> String {
+    schema(&store::open(&crate::test_support::scratch("migrate")).unwrap())
 }
 
 #[test]
@@ -54,15 +66,16 @@ fn a_pending_migration_is_refused_while_another_connection_has_the_database_open
         err.ends_with("is open in another process, and this Davy must migrate it with no other process using it. Stop the running Davy server and any other davy command, then run this again"),
         "{err}"
     );
-    assert_eq!(version(&old), 13);
+    assert_eq!(version(&old), BEHIND);
 }
 
 #[test]
 fn a_refused_migration_leaves_no_partial_schema() {
     let data = behind();
     let old = holder(&data);
+    let before = schema(&old);
     store::open(&data).unwrap_err();
-    assert_eq!(migrated_parts(&old), (0, 0));
+    assert_eq!((version(&old), schema(&old)), (BEHIND, before));
 }
 
 #[test]
@@ -81,7 +94,10 @@ fn a_pending_migration_runs_once_the_other_connection_closes() {
     store::open(&data).unwrap_err();
     drop(old);
     let c = store::open(&data).unwrap();
-    assert_eq!((version(&c), migrated_parts(&c)), (15, (1, 1)));
+    assert_eq!(
+        (version(&c), schema(&c)),
+        (MIGRATIONS.len(), current_schema())
+    );
 }
 
 #[test]
