@@ -369,3 +369,96 @@ fn a_row_that_still_points_at_an_issue_keeps_it_with_no_events() {
     s.ingest(1, vec![error("timeout", day(20), "prod", "v1")]);
     assert_eq!(s.number("SELECT event_count FROM issues WHERE id=1"), 1);
 }
+
+/// Links `n` user feedback, received at `at`, to the issue of `event`.
+fn feedback_on(s: &Server, event: &str, n: usize, at: i64) {
+    let items = (0..n)
+        .map(|_| {
+            SdkItem::UserFeedback(UserFeedback {
+                event_id: Some(EventId(event.into())),
+                message: "it hung".into(),
+                name: None,
+                email: None,
+                url: None,
+            })
+        })
+        .collect();
+    s.run(Job::Items {
+        project: 1,
+        at,
+        items,
+    })
+    .unwrap();
+}
+
+#[test]
+fn an_issue_with_much_feedback_is_unlinked_a_batch_at_a_time_then_goes() {
+    let s = Server::new("errors-unlink", &["api"]);
+    let thrown = error("timeout", day(1), "prod", "v1");
+    let event_id = thrown.event_id.0.clone();
+    s.ingest(1, vec![thrown]);
+    feedback_on(&s, &event_id, 120, day(15));
+    let linked = || s.number("SELECT count(*) FROM user_feedback WHERE issue_id IS NOT NULL");
+    let issue = || {
+        s.c.query_row("SELECT count(*), sum(event_count) FROM issues", [], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?))
+        })
+        .unwrap()
+    };
+    let days = Days::new(10).unwrap();
+    // Each sweep with no budget does one batch of each class, so one batch
+    // unlinks at most UNLINK, and the issue stays with no events till the
+    // last goes.
+    sweep(&s.c, day(20), days, Duration::ZERO).unwrap();
+    assert_eq!((linked(), issue()), (70, (1, Some(0))));
+    sweep(&s.c, day(20), days, Duration::ZERO).unwrap();
+    assert_eq!((linked(), issue()), (20, (1, Some(0))));
+    sweep(&s.c, day(20), days, Duration::ZERO).unwrap();
+    assert_eq!((linked(), issue()), (0, (0, None)));
+    assert_eq!(s.number("SELECT count(*) FROM user_feedback"), 120);
+    assert_eq!(s.number("SELECT id FROM id_floor WHERE name='issues'"), 1);
+}
+
+#[test]
+fn an_issue_with_no_events_but_new_ones_keeps_its_feedback() {
+    let s = Server::new("errors-unlink-back", &["api"]);
+    let thrown = error("timeout", day(1), "prod", "v1");
+    let event_id = thrown.event_id.0.clone();
+    s.ingest(1, vec![thrown]);
+    feedback_on(&s, &event_id, 60, day(15));
+    let days = Days::new(10).unwrap();
+    sweep(&s.c, day(20), days, Duration::ZERO).unwrap();
+    // The error comes back before the last feedback is unlinked, so the
+    // issue is no longer empty and keeps what is still linked.
+    s.ingest(1, vec![error("timeout", day(20), "prod", "v1")]);
+    sweep(&s.c, day(20), days, Duration::from_secs(60)).unwrap();
+    let left = s.number("SELECT count(*) FROM user_feedback WHERE issue_id=1");
+    assert_eq!(
+        (left, s.number("SELECT event_count FROM issues WHERE id=1")),
+        (10, 1)
+    );
+}
+
+#[test]
+fn finding_the_feedback_of_issues_with_no_events_reads_only_those() {
+    let s = Server::new("errors-unlink-plan", &["api"]);
+    let mut q =
+        s.c.prepare(
+            "EXPLAIN QUERY PLAN SELECT f.id, f.issue_id FROM issues i
+             CROSS JOIN user_feedback f ON f.issue_id=i.id
+             WHERE i.event_count=0 AND NOT EXISTS(SELECT 1 FROM events WHERE issue_id=i.id)
+             LIMIT ?1",
+        )
+        .unwrap();
+    let plan: Vec<String> = q
+        .query_map([1], |r| r.get(3))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let uses = |index: &str| plan.iter().any(|d| d.contains(index));
+    assert_eq!(
+        (uses("issues_emptied"), uses("user_feedback_issue")),
+        (true, true),
+        "{plan:?}"
+    );
+}

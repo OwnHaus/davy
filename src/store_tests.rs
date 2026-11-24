@@ -111,6 +111,6 @@ fn an_upgrade_builds_the_issue_timestamp_index_in_its_migration() {
     let version: i64 = c
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!((built, version), (1, 16));
+    assert_eq!((built, version), (1, 17));
     std::fs::remove_dir_all(&root).unwrap();
 }

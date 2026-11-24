@@ -7,7 +7,9 @@
 //! `last_seen` to the oldest and newest timestamp of the events left, and
 //! drops an environment or release tag once no event that carries it is
 //! left. An issue whose last event goes is deleted with its counts and
-//! tags, and its user feedback stays, unlinked, until it expires too. When
+//! tags, and its user feedback stays, unlinked, until it expires too. An
+//! issue with much feedback is unlinked from it over several batches, and
+//! keeps an `event_count` of 0 until the last is unlinked. When
 //! the error comes back it is a new issue with a new id, as ids are never
 //! used twice, so a link in an old alert cannot lead to another issue. The
 //! resolved or ignored state goes with the old issue, and a new-issue alert
@@ -19,7 +21,7 @@ use super::{Days, turns};
 use anyhow::Result;
 use rusqlite::{Connection, ErrorCode, params};
 use std::{
-    collections::{BTreeMap, HashSet, btree_map::Entry},
+    collections::{BTreeMap, BTreeSet, HashSet, btree_map::Entry},
     time::Duration,
 };
 
@@ -31,13 +33,20 @@ pub const BUDGET: Duration = Duration::from_millis(100);
 /// Events one batch deletes at most, and user feedback one statement
 /// deletes at most.
 const BATCH: i64 = 200;
+/// User feedback one batch unlinks at most from issues whose last event
+/// expired. SQLite rewrites a row whole when its `issue_id` changes, and a
+/// row with every field at its limit is about 26 KB, so 50 rows are about
+/// 320 pages, which stays within the work of one batch of events.
+const UNLINK: i64 = 50;
 /// The work one batch of events may do, in units of about one event
 /// deleted, about 6 µs. An event costs 1, and 1 more per 4 KiB of payload,
 /// which SQLite frees page by page. The first event of an issue in a batch
 /// costs [`ISSUE_WORK`] more, for the statements that keep the issue's
 /// counts and tags. So a batch stops after about 10 ms of work, and a sweep
 /// ends at most that much past its budget, however its events spread over
-/// issues. The costs come from the measurements in `docs/design.md`.
+/// issues. The feedback of a deleted issue is unlinked in batches of its
+/// own, see [`UNLINK`]. The costs come from the measurements in
+/// `docs/design.md`.
 const WORK: i64 = 1_600;
 /// About 0.3 ms of page reads, what an issue a batch touches costs when its
 /// pages are not cached.
@@ -46,11 +55,13 @@ const ISSUE_WORK: i64 = 50;
 const PAGE: i64 = 4_096;
 
 /// The events of a project's own or the server's `default` retention
-/// deleted first, then user feedback, as classes that take turns.
+/// deleted first, then user feedback, then the feedback links of issues
+/// with no event left, as classes that take turns.
 pub fn sweep(c: &Connection, at: i64, default: Days, budget: Duration) -> Result<()> {
-    turns(2, budget, |class| match class {
+    turns(3, budget, |class| match class {
         0 => events(c, at, default),
-        _ => feedback(c, at, default),
+        1 => feedback(c, at, default),
+        _ => unlink(c),
     })
 }
 
@@ -211,35 +222,69 @@ fn recount(c: &Connection, issue: i64, taken: &Taken) -> Result<()> {
     Ok(())
 }
 
-/// Deletes an issue that has no event left. A row in a table that still
-/// points at the issue keeps it, with no events, rather than fail the
-/// writer's batch, ingest included.
+/// Deletes an issue that has no event left. While user feedback points at
+/// the issue it stays, with an `event_count` of 0, until [`unlink`] has
+/// unlinked the last. A row of another table that points at it keeps it
+/// the same way rather than fail the writer's batch, ingest included.
 fn forget(c: &Connection, issue: i64) -> Result<()> {
-    c.prepare_cached("UPDATE user_feedback SET issue_id=NULL WHERE issue_id=?1")?
-        .execute([issue])?;
     c.prepare_cached("DELETE FROM issue_hourly WHERE issue_id=?1")?
         .execute([issue])?;
     c.prepare_cached("DELETE FROM issue_tags WHERE issue_id=?1")?
         .execute([issue])?;
-    match c
-        .prepare_cached("DELETE FROM issues WHERE id=?1")?
-        .execute([issue])
-    {
-        Ok(_) => {
-            c.prepare_cached(
-                "INSERT INTO id_floor(name, id) VALUES ('issues', ?1)
-                 ON CONFLICT DO UPDATE SET id=max(id, excluded.id)",
-            )?
-            .execute([issue])?;
-            Ok(())
-        }
-        Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == ErrorCode::ConstraintViolation => {
-            c.prepare_cached("UPDATE issues SET event_count=0 WHERE id=?1")?
+    let linked: bool = c
+        .prepare_cached("SELECT EXISTS(SELECT 1 FROM user_feedback WHERE issue_id=?1)")?
+        .query_row([issue], |r| r.get(0))?;
+    let kept = linked
+        || match c
+            .prepare_cached("DELETE FROM issues WHERE id=?1")?
+            .execute([issue])
+        {
+            Ok(_) => {
+                c.prepare_cached(
+                    "INSERT INTO id_floor(name, id) VALUES ('issues', ?1)
+                     ON CONFLICT DO UPDATE SET id=max(id, excluded.id)",
+                )?
                 .execute([issue])?;
-            Ok(())
-        }
-        Err(e) => Err(e.into()),
+                false
+            }
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == ErrorCode::ConstraintViolation =>
+            {
+                true
+            }
+            Err(e) => return Err(e.into()),
+        };
+    if kept {
+        c.prepare_cached("UPDATE issues SET event_count=0 WHERE id=?1")?
+            .execute([issue])?;
     }
+    Ok(())
+}
+
+/// Unlinks up to [`UNLINK`] user feedback from issues with no event left,
+/// and deletes each such issue once none points at it. Returns whether the
+/// batch was full.
+fn unlink(c: &Connection) -> Result<bool> {
+    // issues_emptied holds only the issues with an event_count of 0, so
+    // finding them reads no other issue.
+    let linked: Vec<(i64, i64)> = c
+        .prepare_cached(
+            "SELECT f.id, f.issue_id FROM issues i CROSS JOIN user_feedback f ON f.issue_id=i.id
+             WHERE i.event_count=0 AND NOT EXISTS(SELECT 1 FROM events WHERE issue_id=i.id)
+             LIMIT ?1",
+        )?
+        .query_map([UNLINK], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut clear = c.prepare_cached("UPDATE user_feedback SET issue_id=NULL WHERE id=?1")?;
+    let mut issues = BTreeSet::new();
+    for (feedback, issue) in &linked {
+        clear.execute([feedback])?;
+        issues.insert(*issue);
+    }
+    for issue in issues {
+        forget(c, issue)?;
+    }
+    Ok(i64::try_from(linked.len()).is_ok_and(|n| n >= UNLINK))
 }
 
 /// Deletes up to [`BATCH`] expired user feedback. Returns whether the
