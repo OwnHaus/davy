@@ -390,3 +390,69 @@ fn only_the_first_of_a_run_of_failed_writes_is_reported() {
     let reported = [true, true, false, true, true].map(|failed| tally.note(failed));
     assert_eq!(reported, [true, false, false, true, false]);
 }
+
+#[test]
+fn a_sender_that_sends_to_one_day_after_another_does_not_make_files_be_written() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = scratch("tally-cycle");
+    let now = now_ns();
+    let days: Vec<i64> = (0..4).map(|n| now - n * DAY).collect();
+    let first = dir.join(day_of(days[0]).to_string());
+    let mut state = State::new(dir.clone(), 30, no_overrides());
+    let full: Vec<LogRecord> = (0..FREE_PATTERNS)
+        .map(|n| LogRecord {
+            timestamp: days[0],
+            observed_at: now,
+            ..record(1, None, &distinct(n))
+        })
+        .collect();
+    state.add(full).unwrap();
+    state.commit().unwrap();
+    let start = Instant::now();
+    state.flush_tallies(start);
+    let len = std::fs::metadata(first.join(name(1))).unwrap().len();
+    let inode = |dir: &Path| std::fs::metadata(dir.join(name(1))).unwrap().ino();
+    let mut inodes = vec![inode(&first)];
+    // Each line opens a day the writer does not have open, which closes
+    // the one written longest ago.
+    for _ in 0..5 {
+        for at in &days {
+            state.add(vec![line_at(*at, now)]).unwrap();
+            state.commit().unwrap();
+            inodes.push(inode(&first));
+        }
+    }
+    inodes.dedup();
+    assert_eq!(inodes.len(), 1, "written once in 20 lines");
+    assert_eq!(saved(&first, 1), 500);
+    state.flush_tallies(start + FLUSH_EVERY);
+    let paced = pace(usize::try_from(len).unwrap());
+    state.flush_tallies(start + paced);
+    assert_eq!(saved(&first, 1), 505, "written again at its pace");
+    state.close_all().unwrap();
+    for day in &days[1..] {
+        assert_eq!(saved(&dir.join(day_of(*day).to_string()), 1), 5);
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn past_3_closed_days_the_one_closed_first_is_written_and_let_go() {
+    let dir = scratch("tally-held");
+    let now = now_ns();
+    let days: Vec<i64> = (0..7).map(|n| now - n * DAY).collect();
+    let mut state = State::new(dir.clone(), 30, no_overrides());
+    for at in &days {
+        state.add(vec![line_at(*at, now)]).unwrap();
+        state.commit().unwrap();
+    }
+    assert_eq!(state.tallies().len(), 6, "3 open and 3 closed");
+    let files: Vec<bool> = days
+        .iter()
+        .map(|at| dir.join(day_of(*at).to_string()).join(name(1)).exists())
+        .collect();
+    assert_eq!(files, [true, false, false, false, false, false, false]);
+    assert_eq!(saved(&dir.join(day_of(days[0]).to_string()), 1), 1);
+    state.close_all().unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+}

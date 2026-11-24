@@ -8,10 +8,14 @@
 //! A day's counters live in memory while the writer has the day open, and
 //! in a file per project in the day's directory, see [`file`]. A project's
 //! file is written when it changed, at most every [`FLUSH_EVERY`] and less
-//! often the bigger it is, see [`pace`], and when the day closes. Retention
-//! removes the counters with the logs they count. Readers in the server
-//! process see the memory, so they are as fresh as the index; readers in
-//! another process see the files.
+//! often the bigger it is, see [`pace`], also after the day closed: a
+//! closed day's counters stay in memory until they are written and their
+//! pace is over, so a day that opens again soon is not read again and its
+//! pace holds. At most [`HELD_DAYS`] closed days stay, and at shutdown
+//! every file that changed is written. Retention removes the counters with
+//! the logs they count. Readers in the server process see the memory, so
+//! they are as fresh as the index; readers in another process see the
+//! files.
 //!
 //! Log text can come from a public DSN, so everything here is bounded per
 //! project and day: [`MAX_PATTERNS`] patterns, then [`OTHER`], and past
@@ -64,6 +68,10 @@ pub const EXAMPLE_BYTES: usize = 256;
 pub(super) const FLUSH_EVERY: Duration = Duration::from_secs(10);
 /// Bytes per second that rewriting one project's file may cost.
 const SAVE_RATE: usize = 10_000;
+/// Days the writer closed whose counters it keeps in memory. Past them the
+/// one closed longest ago goes, a day already written first, and a day not
+/// written yet is written then whatever its pace.
+const HELD_DAYS: usize = 3;
 const LEVELS: usize = 6;
 
 /// Records and bytes of one service of a pattern, per level from trace to
@@ -107,6 +115,8 @@ pub(super) struct DayTally {
     pub(super) projects: HashMap<u64, ProjectDay>,
     /// Whether the last write of a file of the day failed.
     failing: bool,
+    /// When the writer closed the day, `None` while it has the day open.
+    closed: Option<Instant>,
 }
 
 pub(super) type Days = HashMap<Date, DayTally>;
@@ -302,6 +312,13 @@ impl DayTally {
         self.projects.values().any(ProjectDay::due)
     }
 
+    /// Whether a file of the day was written so recently that writing it
+    /// again at `now` would break its pace.
+    fn pacing(&self, now: Instant) -> bool {
+        let pacing = |p: &ProjectDay| p.next_save.is_some_and(|at| at > now);
+        self.projects.values().any(pacing)
+    }
+
     /// Forgets what was counted since the day's last commit, which failed.
     pub(super) fn discard(&mut self) {
         self.projects.values_mut().for_each(ProjectDay::discard);
@@ -401,14 +418,15 @@ impl State {
         let dir = self.root.join(day.to_string());
         let mut tallies = self.tallies();
         let tally = tallies.entry(day).or_insert_with(|| open(day, &dir));
+        tally.closed = None;
         tally.count(r, pattern, bytes)
     }
 
     /// Writes the files of the projects that changed and are due at `now`,
-    /// and lets go of the days the writer no longer has open and has
-    /// written. The files are written outside the lock, so readers do not
-    /// wait for the disk. A file that could not be written is tried again
-    /// at its next turn.
+    /// and lets go of the days the writer no longer has open once they are
+    /// written and their pace is over. The files are written outside the
+    /// lock, so readers do not wait for the disk. A file that could not be
+    /// written is tried again at its next turn.
     pub(super) fn flush_tallies(&mut self, now: Instant) {
         let (mut due, mut failed) = (Vec::new(), Vec::new());
         for (day, tally) in self.tallies().iter_mut() {
@@ -451,7 +469,7 @@ impl State {
                 report(day, "writing", &e);
             }
         }
-        tallies.retain(|day, t| t.dirty() || open.contains(day));
+        tallies.retain(|day, t| t.dirty() || t.pacing(now) || open.contains(day));
     }
 
     /// Moves the pending counts of `day` into its counters.
@@ -468,9 +486,31 @@ impl State {
         }
     }
 
-    /// Writes the counters of `day` and lets go of them. Counters it could
-    /// not write it keeps, and the flush tries again, as for a day open.
+    /// Keeps the counters of `day`, which the writer closed, for the flush
+    /// to write at their pace, see [`HELD_DAYS`]. A sender that sends to
+    /// one day after another so makes no file be written more often than
+    /// when it sends to one day.
     pub(super) fn close_tally(&mut self, day: Date) {
+        let mut tallies = self.tallies();
+        if let Some(tally) = tallies.get_mut(&day) {
+            tally.closed = Some(Instant::now());
+        }
+        let mut closed: Vec<(bool, Instant, Date)> = tallies
+            .iter()
+            .filter_map(|(d, t)| Some((t.dirty(), t.closed?, *d)))
+            .collect();
+        drop(tallies);
+        closed.sort_unstable();
+        let over = closed.len().saturating_sub(HELD_DAYS);
+        for (_, _, day) in closed.into_iter().take(over) {
+            self.write_tally(day);
+        }
+    }
+
+    /// Writes the counters of `day` whatever their pace and lets go of
+    /// them. Counters it could not write it keeps, and the flush tries
+    /// again, as for a day open.
+    pub(super) fn write_tally(&mut self, day: Date) {
         let dir = self.root.join(day.to_string());
         let mut tallies = self.tallies();
         let Some(tally) = tallies.get_mut(&day) else {

@@ -373,7 +373,7 @@ impl State {
             |held| held.keys().copied().collect(),
         );
         for day in held {
-            self.close_tally(day);
+            self.write_tally(day);
         }
         closed
     }
