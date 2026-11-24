@@ -4,6 +4,10 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 
 ## Unreleased
 
+### Security
+
+- Scrub credentials, sensitive keys, credit cards and standalone IP addresses by default. Scrubbing runs on the server before storing or indexing ingest. E-mail and personal identity filtering are opt-in. Keys with look-alike letters, such as a Cyrillic `о` in `password`, match as their Latin form. Configure each project with `davy project scrub`; the admin HTTP API can only tighten a policy, and every change is logged. MCP project status reports the policy. Existing records are unchanged.
+
 ### Added
 
 - Follow Android, Rust and ASP.NET Core connect guides with DSN storage and SDK-specific limits.

@@ -210,6 +210,10 @@ fn add<'a>(c: &Connection, project: i64, e: &'a ErrorEvent, latest: &mut Latest<
     Ok(())
 }
 pub enum Job {
+    Scrub {
+        project: i64,
+        policy: crate::scrub::Policy,
+    },
     Ingest {
         project: i64,
         events: Vec<ErrorEvent>,
@@ -333,6 +337,12 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
             crate::feedback::add(c, feedback, *at)?;
             Ok(Ok(()))
         }
+        Job::Scrub { project, policy } => {
+            let found = crate::scrub::settings::set(c, *project, policy)?;
+            Ok(found
+                .then_some(())
+                .ok_or_else(|| format!("no project {project}")))
+        }
         Job::Account(change) => crate::accounts::store::apply(c, change),
         Job::SetRetention(change, by) => Ok(crate::retention::set(c, change, *by)?.map(drop)),
         Job::First { what, at } => {
@@ -344,6 +354,22 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
             Ok(Ok(()))
         }
     }
+}
+/// Runs `batch` in one transaction. A database failure fails every job in
+/// it, a problem with one job only that job.
+pub(crate) fn write_batch(c: &mut Connection, batch: &[Write]) -> Vec<Outcome> {
+    (|| -> Result<Vec<Outcome>> {
+        let tx = c.transaction()?;
+        let mut latest = Latest::default();
+        let outcomes = batch
+            .iter()
+            .map(|w| apply(&tx, &w.job, &mut latest))
+            .collect::<Result<_>>()?;
+        latest.keep(&tx)?;
+        tx.commit()?;
+        Ok(outcomes)
+    })()
+    .unwrap_or_else(|e| vec![Err(e.to_string()); batch.len()])
 }
 pub struct Writer {
     /// Ingest, checks, deliveries and sweeps.
@@ -359,18 +385,7 @@ impl Writer {
         let thread = thread::spawn(move || {
             let mut queues = Queues::new(people, ingest);
             while let Some(batch) = queues.next_batch() {
-                let outcomes = (|| -> Result<Vec<Outcome>> {
-                    let tx = c.transaction()?;
-                    let mut latest = Latest::default();
-                    let outcomes = batch
-                        .iter()
-                        .map(|w| apply(&tx, &w.job, &mut latest))
-                        .collect::<Result<_>>()?;
-                    latest.keep(&tx)?;
-                    tx.commit()?;
-                    Ok(outcomes)
-                })()
-                .unwrap_or_else(|e| vec![Err(e.to_string()); batch.len()]);
+                let outcomes = write_batch(&mut c, &batch);
                 for (write, outcome) in batch.into_iter().zip(outcomes) {
                     #[expect(
                         clippy::let_underscore_must_use,

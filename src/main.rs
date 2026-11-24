@@ -150,6 +150,8 @@ fn level(s: &str) -> Result<LogLevel, String> {
 }
 #[derive(Subcommand)]
 enum Project {
+    /// Read or replace server-side scrubbing settings.
+    Scrub(davy::scrub::settings::Args),
     /// Prints project IDs and slugs as JSON.
     List {
         #[arg(long)]
@@ -318,6 +320,7 @@ async fn main() -> anyhow::Result<()> {
 }
 fn run_project(out: &mut impl Write, command: Project) -> anyhow::Result<()> {
     match command {
+        Project::Scrub(args) => davy::scrub::settings::run(out, &args)?,
         Project::List { data } => davy::connect::list(out, &data)?,
         Project::Create {
             slug,

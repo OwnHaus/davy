@@ -1247,4 +1247,137 @@ the issues index, which holds `event_count` and `last_seen`, and count the
 events the project still keeps. Logs become visible after the log writer
 commits. The two tools brought the MCP tool count to ten, and
 `set_retention` to eleven. `retention` in `project_status` shows the days
-of logs and errors in effect and the instant before which they are deleted.
+of logs and errors in effect and the instant before which they are deleted. `scrub` shows the
+project's scrubbing settings.
+
+## Server-side data scrubbing
+
+Every project defaults to scrubbing sensitive keys, credential patterns,
+credit cards (13 to 19 digits starting with 2 to 6, validated with Luhn)
+and standalone IP addresses, excluding loopback and unspecified addresses.
+E-mail and personal identity scrubbing default to off: applications set
+user IDs, e-mail and feedback contacts deliberately for affected-user
+counts and replies. Migration 15
+adds `projects.scrub`, a JSON settings object; existing data is not rewritten.
+The fields are `keys`, `credentials`, `cards`, `email`, `ip`, `personal` (booleans,
+default true except `email` and `personal`) and `extra_keys` (at most 100 names of 100 bytes each).
+Sensitive keys retain their name and get `[Filtered: sensitive]`. Strings
+get fixed class markers, without a hash or a suffix from the removed value.
+
+Events are scrubbed after symbolication and before typed parsing, grouping,
+queueing, SQLite and issue search. Thus removed values cannot split issues.
+Logs from every adapter are scrubbed once before the log queue and Tantivy.
+SDK metadata, check-ins and feedback are scrubbed before conversion; MCP feedback uses
+the safe defaults. Attachments, replays and unknown envelope items are dropped
+without persistence. Uploaded source maps are trusted admin build artifacts,
+not ingest attachments, and are outside this policy.
+
+`davy project scrub SLUG --data DATA` prints settings; `--settings JSON`
+replaces them, and fields it leaves out take the defaults above. Admin
+bearer-authenticated GET and PUT `/api/projects/{project}/scrub` read and
+replace the same object. Both refuse unknown fields, more than 100 extra
+keys, keys over 100 bytes and keys with no ASCII letter or digit, which
+would normalize to nothing. A stored policy is read leniently, so one
+written by a newer version still applies. A PUT for a project that does not
+exist answers `404` before it reaches the writer, and the writer fails only
+that job, so other writes in its batch commit.
+
+The API only tightens. An agent holds the admin token, and an event can
+prompt-inject an agent, so a PUT must name every field and may not turn a
+class off or remove an extra key. A weakening PUT answers `403` with what it
+would weaken and the `davy project scrub` command that does it; the CLI
+needs the data directory and may set anything. Changes are serialized, so
+two tightening PUTs cannot together weaken. Every change is logged to
+stderr at warning level, with the old and new policy and whether the CLI,
+the API or an edit outside the API made it.
+
+Enable identity filtering with `--settings '{"email":true,"personal":true}'`
+or PUT the full policy with those fields to the admin API. `personal` covers
+identity fields in `user` and feedback names, never OS, browser, runtime or
+SDK names. `email` covers contact fields and e-mail patterns in text.
+Keys are compared in ASCII. Before that, look-alike letters fold to the
+Latin letter they look like: NFKD turns fullwidth and styled letters into
+ASCII and drops accents, a fixed table maps Cyrillic and Greek letters
+such as `о` and `ο`, and soft hyphens, zero-width and other invisible
+format characters drop. So `passwоrd` with a Cyrillic `о`, `ｐａｓｓｗｏｒｄ`
+and `pass\u200bword` are all `password`. Any other non-ASCII character
+separates words. Extra keys fold the same way when stored, and apply
+whether or not the `keys` class is on.
+Sensitive keys split on separators and camelCase. Distinctive roots
+(password, passphrase, secret, credential, accountkey, sharedaccesskey and
+similar) match normalized substrings; short roots (auth, token, session,
+pwd, ssn, cvv, cvc, signature) must end a word, and pin and otp must be a
+whole word, so `spinner` and `shipping` stay. In a name/value pair, as in
+HTTP headers, a sensitive `key`, `name`, `Name` or `Key` hides the sibling
+`value` or `Value`. Key matches replace strings recursively and preserve
+numbers, booleans and null; card detection also checks integer values. An
+object key that holds a credential, a card, an IP address or (when `email`
+is on) an e-mail address is renamed to its marker, and keys that collide get
+a counter: `[Filtered: email]`, `[Filtered: email] 2`.
+
+Structural fields skip the e-mail, IP address and card patterns, because
+they identify, group or route a record: a release `1.2.3.4` is not an
+address and a release `shop@1.2.3` is not an e-mail address. They are
+`release`, `dist`, `environment`, `platform`, `level`, `logger`, `event_id`,
+`trace_id`, `span_id`, `parent_span_id`, `monitor_slug`, `check_in_id`, and
+in sessions `did` and `sid`, which release health counts users by.
+Sensitive assignments and credential patterns still apply to them, so
+`"release":"password=x"` or a token in `logger` is removed. A name is
+structural only where the item keeps its own fields: at the top level of
+an item or a log record's attributes, in an event's `contexts.trace`, in a
+session's `attrs` and in each entry of session `aggregates`. Anywhere else,
+as in `extra`, `tags`, breadcrumb data or other contexts, the same name is
+free text and gets every pattern. A sensitive key under a structural name
+is still hidden. IP candidates must have no letter, digit, underscore, dot or colon on either side, so `Foo::bar` and
+`v1.2.3.4.5` stay. A dot that ends a sentence is allowed, and an IPv4
+address with a port (`10.0.0.5:5432`) is removed whole.
+`project_status` exposes the current policy over MCP. Ingest holds each
+project's policy for 2 seconds; a PUT replaces it at once, and a CLI edit
+applies within 2 seconds without a restart. Disabling a class permits that
+data to be stored in future records; it does not restore removed data.
+
+Patterns use Rust regex's finite automata with fixed patterns; no configured
+regular expressions are accepted. Each pass is linear in the string size,
+and extra keys are compared through one hash lookup per key. Word
+boundaries in the credential and card patterns are ASCII, so a card right
+after a non-ASCII letter (`č4242…`) is still found, and non-ASCII text
+keeps the fast automaton instead of the slower one Unicode boundaries need.
+Text that
+looks like JSON, form data or query parameters is inspected for sensitive
+assignments, including JSON escaped inside a string (`{\"password\":\"..\"}`);
+text without `=`, `:` or `%3` skips that pass. An assignment key may hold
+non-ASCII letters, which fold as object keys do. A form-encoded key decodes
+up to 3 times, so `p%2561ssword` (encoded twice) is `password`. A quoted
+value ends at its closing quote; an unquoted one runs to the next `&`, `;`, `,`, `}`, `]` or
+line break, so `password=a b c` hides all of `a b c`. A string with more than
+256 sensitive assignments becomes `[Filtered: too many assignments]`. Opaque
+request body strings and fields named as attachments are removed in full
+when sensitive-key filtering is enabled. Log ingest checks the 10,000 record
+limit before it scrubs.
+
+Markers can be longer than what they replace, by more than 4 times for a
+short credential such as `ghp_x`. Scrubbing pays for every allocation from
+the request's memory budget before it makes it, in whole KiB, as parsing
+does: twice for events and SDK items, whose tree is priced twice, once for
+log records. A payment the budget refuses stops the scrub, and the request
+answers `413` or `429` as an over-budget request does today; what was paid
+and not used goes back when scrubbing ends. `tests/heap.rs` checks that
+what a scrub pays bounds its peak heap. The regex automata and their
+per-thread caches are allocated once and are not charged.
+
+Measured on an Apple M2 Max, release build, with `cargo run --release
+--example scrub_cost`, best of 6 runs on a shared machine: the worst input
+found costs about 57 ms of CPU per MiB of JSON (1 MiB of `ﷺ:`, a key
+character that NFKD expands to 18 letters). 1 MiB of `a:` costs 47 ms with
+the default policy and 52 ms with 100 extra keys of 100 bytes, and renaming
+60,000 IP-address keys takes 44 ms for 0.97 MB. A typical 2.8 KB SDK event
+costs about 36 microseconds more with scrubbing than without. So a request
+costs at most about 60 ms per MiB the memory budget lets it decode.
+
+This is a conservative filter, not a detector of arbitrary encodings or
+natural-language personal information. Known gaps: a URL password that
+contains `/` (`https://u:a/b@host`), card numbers grouped with dots, an
+assignment whose key holds a space (`api key=...`), a key encoded more than
+3 times, an assignment with a non-ASCII separator (`password＝x`), and
+look-alike letters outside the fold table pass unchanged. Use the SDK's
+`beforeSend` for them.

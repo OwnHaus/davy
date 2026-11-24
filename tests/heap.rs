@@ -5,6 +5,7 @@ use davy::{
     heap,
     http::body,
     logs::{logtail, otlp, sentry},
+    scrub::{Item, Meter, Policy},
     sourcemaps::Build,
 };
 use opentelemetry_proto::tonic::{
@@ -468,5 +469,90 @@ fn a_builds_price_bounds_its_parse_and_what_it_keeps() {
             "{name}: kept {kept}, priced {}",
             price.kept
         );
+    }
+}
+
+/// Inputs a scrub makes larger, with the policy that does it.
+fn growing() -> Vec<(&'static str, Value, Policy)> {
+    let email = Policy {
+        email: true,
+        ..Policy::default()
+    };
+    let card = Value::from(4_242_424_242_424_242_u64);
+    let ips: serde_json::Map<String, Value> = (0..20_000)
+        .map(|i| (format!("10.0.{}.{}", i / 250, i % 250), Value::from(i)))
+        .collect();
+    let mut by_ip = serde_json::Map::new();
+    by_ip.insert("by_ip".to_owned(), Value::Object(ips.clone()));
+    let mut by_token = serde_json::Map::new();
+    by_token.insert("by_token".to_owned(), Value::Object(ips));
+    vec![
+        (
+            "credentials",
+            Value::from("ghp_x ".repeat(100_000)),
+            Policy::default(),
+        ),
+        ("addresses", Value::from("a@b.c ".repeat(100_000)), email),
+        (
+            "ips",
+            Value::from("1.1.1.1 ".repeat(100_000)),
+            Policy::default(),
+        ),
+        (
+            "assignments",
+            Value::from("pwd=x&".repeat(256)),
+            Policy::default(),
+        ),
+        (
+            "too many assignments",
+            Value::from("pwd=x&".repeat(1000)),
+            Policy::default(),
+        ),
+        (
+            "long secret",
+            Value::from(format!("pwd={}", "x".repeat(1 << 20))),
+            Policy::default(),
+        ),
+        (
+            "card numbers",
+            Value::from(vec![card.clone(); 100_000]),
+            Policy::default(),
+        ),
+        (
+            "hidden card numbers",
+            serde_json::json!({"token": vec![card; 100_000]}),
+            Policy::default(),
+        ),
+        ("ip keys", Value::Object(by_ip), Policy::default()),
+        (
+            "ip keys under a secret",
+            Value::Object(by_token),
+            Policy::default(),
+        ),
+    ]
+}
+
+/// The patterns are compiled once and their caches kept by each thread, so
+/// a scrub is measured after the same scrub ran once.
+#[test]
+fn what_a_scrub_pays_bounds_its_peak_heap() {
+    let _alone = alone();
+    for (name, value, policy) in growing() {
+        for item in [Item::Event, Item::Session] {
+            policy.item(&mut value.clone(), item, &mut Meter::unmetered());
+            let mut value = value.clone();
+            let mut paid = 0;
+            let mut pay = |bytes: usize| {
+                paid += bytes;
+                true
+            };
+            let used = peak(|| {
+                let mut meter = Meter::new(&mut pay);
+                policy.item(&mut value, item, &mut meter);
+                assert!(!meter.refused());
+            });
+            assert!(paid > 0, "{name} grows");
+            assert!(used <= paid, "{name} {item:?}: used {used}, paid {paid}");
+        }
     }
 }

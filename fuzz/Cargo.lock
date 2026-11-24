@@ -704,6 +704,7 @@ dependencies = [
  "sourcemap",
  "tantivy",
  "tokio",
+ "unicode-normalization",
  "url",
  "uuid",
  "zip",

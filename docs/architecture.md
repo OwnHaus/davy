@@ -56,7 +56,7 @@ Five kinds of caller reach the server. Each route belongs to exactly one.
 |---|---|---|---|
 | SDK or log shipper | Project ingest key, public | `/api/{project}/envelope/`, `/api/{project}/store/`, `/`, `/v1/logs` | Write events and logs into the one project the key names |
 | Heartbeat sender, such as a cron job | Heartbeat token, secret, in the path | `/api/heartbeat/{token}`, `/api/heartbeat/{token}/fail` | Record a ping or a failure for the one monitor the token names |
-| Coding agent | Admin token, secret | `/mcp` | Read everything, mark issues fixed, set how long a project keeps its logs and errors |
+| Coding agent | Admin token, secret | `/mcp`, `/api/projects/{project}/scrub` | Read everything, mark issues fixed, set how long a project keeps its logs and errors, tighten project scrubbing |
 | `sentry-cli` | Admin token, secret | `/api/0/organizations/{org}/chunk-upload/`, `.../artifactbundle/assemble/` | Write source map builds |
 | Person in a browser | Session cookie `__Host-davy_session`, secret, from a login or a welcome link | `/ui/api/*` but login, logout and welcome | Read everything, change the status of issues, set how long a project keeps its logs and errors, change their own password, end their own sessions |
 

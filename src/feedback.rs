@@ -56,12 +56,22 @@ impl Feedback {
                     .collect::<String>()
             })
             .filter(|c| !c.trim().is_empty());
-        Ok(Self {
+        let mut feedback = Self {
             client,
             tried,
             happened,
             fix,
-        })
+        };
+        let policy = crate::scrub::Policy::default();
+        policy.text(&mut feedback.tried);
+        policy.text(&mut feedback.happened);
+        for text in [&mut feedback.client, &mut feedback.fix]
+            .into_iter()
+            .flatten()
+        {
+            policy.text(text);
+        }
+        Ok(feedback)
     }
 }
 

@@ -689,3 +689,6 @@ async fn a_heartbeat_ping_to_a_full_queue_is_429() {
 mod items;
 #[path = "http_surface.rs"]
 mod surface;
+
+#[path = "scrub_http.rs"]
+mod scrub_http;

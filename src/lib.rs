@@ -22,6 +22,7 @@ mod net_tests;
 pub mod query;
 pub mod ready;
 pub mod retention;
+pub mod scrub;
 pub mod secret;
 pub mod serve;
 pub mod sourcemaps;

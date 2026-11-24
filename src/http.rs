@@ -35,6 +35,11 @@ use std::{
 };
 
 pub mod body;
+mod heartbeat;
+mod sdk;
+use crate::scrub::{Item, Policy};
+use heartbeat::{fail, ping};
+use sdk::{check_in, scrubbed, scrubbed_logs, sdk_item};
 
 /// Sentry's limit for one event or log item, so a client that works with Sentry fits.
 const MAX_ITEM: usize = 1024 * 1024;
@@ -55,12 +60,14 @@ pub const RATE: &str = "86400:transaction;span;replay;profile;profile_chunk:orga
 pub struct Keys {
     db: Mutex<rusqlite::Connection>,
     known: RwLock<HashMap<String, i64>>,
+    policies: Arc<crate::scrub::settings::Cache>,
 }
 impl Keys {
     pub fn new(db: rusqlite::Connection) -> Self {
         Self {
             db: Mutex::new(db),
             known: RwLock::default(),
+            policies: Arc::default(),
         }
     }
     fn project_for(&self, key: &str) -> Result<Option<i64>, Failure> {
@@ -81,6 +88,14 @@ impl Keys {
     fn monitor_for(&self, token: &HeartbeatToken) -> Result<Option<i64>, Failure> {
         let db = self.db.lock().map_err(internal)?;
         monitor::store::by_token(&db, token).map_err(internal)
+    }
+    fn policy(&self, project: i64) -> Result<Arc<Policy>, Failure> {
+        self.policies.get(&self.db, project).map_err(internal)
+    }
+    /// The policies ingest uses, which the scrub API updates when it
+    /// stores one.
+    pub fn policies(&self) -> Arc<crate::scrub::settings::Cache> {
+        Arc::clone(&self.policies)
     }
     fn authenticate(&self, key: Option<&str>) -> Result<i64, Failure> {
         let key = key
@@ -291,7 +306,12 @@ fn too_many_records() -> Failure {
         format!("more than {MAX_RECORDS} log records in one request"),
     )
 }
-fn event(json: &[u8], maps: &sourcemaps::Store, held: &mut Held) -> Result<ErrorEvent, Failure> {
+fn event(
+    json: &[u8],
+    maps: &sourcemaps::Store,
+    held: &mut Held,
+    policy: &Policy,
+) -> Result<ErrorEvent, Failure> {
     // The tree, and the event built from it.
     held.take(2 * heap::json(json, 0).map_err(bad)?)?;
     let mut value = serde_json::from_slice(json).map_err(bad)?;
@@ -303,46 +323,11 @@ fn event(json: &[u8], maps: &sourcemaps::Store, held: &mut Held) -> Result<Error
         |id| maps.build(id, deadline).ok().flatten(),
         |added| held.take(2 * added),
     )?;
+    scrubbed(held, |meter| policy.item(&mut value, Item::Event, meter))?;
     Ok(ErrorEvent {
         symbolicated: moved > 0,
         ..ErrorEvent::parse(value).map_err(bad)?
     })
-}
-/// A client report or user feedback item. One that does not parse is
-/// dropped, as Sentry drops it.
-fn sdk_item(item: &envelope::Item<'_>, held: &mut Held) -> Result<Option<SdkItem>, Failure> {
-    let Ok(cost) = heap::json(item.payload, 0) else {
-        return Ok(None);
-    };
-    held.take(cost)?;
-    let parsed = match item.kind {
-        ItemKind::ClientReport => client_report::parse(item.payload).map(SdkItem::ClientReport),
-        ItemKind::Feedback => {
-            user_feedback::parse_feedback(item.payload).map(SdkItem::UserFeedback)
-        }
-        ItemKind::UserReport => {
-            user_feedback::parse_user_report(item.payload).map(SdkItem::UserFeedback)
-        }
-        ItemKind::Session => session::parse_session(item.payload).map(SdkItem::Session),
-        ItemKind::Sessions => session::parse_aggregates(item.payload).map(SdkItem::Sessions),
-        _ => None,
-    };
-    held.release(cost);
-    Ok(parsed)
-}
-/// A check-in's config is a JSON tree while it is read, so it is paid for.
-fn check_in(payload: &[u8], held: &mut Held) -> Result<monitor::checkin::Item, Failure> {
-    use monitor::checkin::{Dropped, MAX_ITEM, parse};
-    if payload.len() > MAX_ITEM {
-        return Ok(Err(Dropped::TooLarge));
-    }
-    let Ok(cost) = heap::json(payload, 0) else {
-        return Ok(Err(Dropped::Invalid));
-    };
-    held.take(cost)?;
-    let item = parse(payload);
-    held.release(cost);
-    Ok(item)
 }
 fn parse_sentry(
     bytes: &[u8],
@@ -350,6 +335,7 @@ fn parse_sentry(
     legacy: bool,
     maps: &sourcemaps::Store,
     held: &mut Held,
+    policy: &Policy,
 ) -> Result<Parsed, Failure> {
     if legacy {
         return Ok(Parsed {
@@ -357,7 +343,7 @@ fn parse_sentry(
             event: if bytes.len() > MAX_ITEM {
                 None
             } else {
-                Some(event(bytes, maps, held)?)
+                Some(event(bytes, maps, held, policy)?)
             },
             logs: Vec::new(),
             items: Vec::new(),
@@ -380,13 +366,13 @@ fn parse_sentry(
     {
         match disposition(&item.kind) {
             Disposition::StoreError if parsed.event.is_none() => {
-                parsed.event = Some(event(item.payload, maps, held)?);
+                parsed.event = Some(event(item.payload, maps, held, policy)?);
             }
             Disposition::SdkItem if parsed.items.len() < MAX_SDK_ITEMS => {
-                parsed.items.extend(sdk_item(&item, held)?);
+                parsed.items.extend(sdk_item(&item, held, policy)?);
             }
             Disposition::CheckIn if parsed.check_in.is_none() => {
-                parsed.check_in = Some(check_in(item.payload, held)?);
+                parsed.check_in = Some(check_in(item.payload, held, policy)?);
             }
             Disposition::StoreError
             | Disposition::Drop
@@ -432,10 +418,12 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
         authorize(&app.keys, project, presented.as_deref())?;
         body::read(raw, &mut held).await?
     };
+    let policy = app.keys.policy(project)?;
     let maps = Arc::clone(&app.sourcemaps);
     let (parsed, held) = blocking(move || {
         let body = body::decode(bytes, &encoding, &mut held)?;
-        let parsed = parse_sentry(&body, project, legacy, &maps, &mut held)?;
+        let mut parsed = parse_sentry(&body, project, legacy, &maps, &mut held, &policy)?;
+        scrubbed_logs(&mut held, |meter| policy.logs(&mut parsed.logs, meter))?;
         let capacity = body.capacity();
         drop(body);
         held.release(capacity);
@@ -473,41 +461,13 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
     }
     Ok(json_response(&json!({"id":id.0})))
 }
-async fn ping(State(app): State<App>, Path(token): Path<String>) -> Result<&'static str, Failure> {
-    heartbeat(&app, &token, false).await
-}
-async fn fail(State(app): State<App>, Path(token): Path<String>) -> Result<&'static str, Failure> {
-    heartbeat(&app, &token, true).await
-}
-/// The token is the credential, so a malformed and an unknown one get the
-/// same `404`.
-async fn heartbeat(app: &App, token: &str, failed: bool) -> Result<&'static str, Failure> {
-    let unknown = || {
-        (
-            StatusCode::NOT_FOUND,
-            "no heartbeat with this token".to_owned(),
-        )
-    };
-    let token = HeartbeatToken::parse(token).ok_or_else(unknown)?;
-    let monitor = app.keys.monitor_for(&token)?.ok_or_else(unknown)?;
-    let at = time::now_ms();
-    store::submit(
-        &app.sender,
-        Job::Ping {
-            monitor,
-            at,
-            failed,
-        },
-    )
-    .await?;
-    Ok("ok")
-}
 /// Reads, decompresses and parses a log body, which `parse` pays for, and
 /// queues its records.
 async fn ingest_logs(
     app: &App,
     headers: &HeaderMap,
     raw: Body,
+    policy: Arc<Policy>,
     parse: impl FnOnce(&[u8], &mut Held) -> Result<Vec<LogRecord>, Failure> + Send + 'static,
 ) -> Result<(), Failure> {
     let mut held = app.budget.hold();
@@ -515,13 +475,14 @@ async fn ingest_logs(
     let encoding = encoding(headers);
     let (records, _held) = blocking(move || {
         let body = body::decode(bytes, &encoding, &mut held)?;
-        let records = parse(&body, &mut held)?;
+        let mut records = parse(&body, &mut held)?;
+        if records.len() > MAX_RECORDS {
+            return Err(too_many_records());
+        }
+        scrubbed_logs(&mut held, |meter| policy.logs(&mut records, meter))?;
         Ok((records, held))
     })
     .await?;
-    if records.len() > MAX_RECORDS {
-        return Err(too_many_records());
-    }
     if !records.is_empty() {
         app.logs.push(records)?;
     }
@@ -532,11 +493,17 @@ async fn logtail_ingest(State(app): State<App>, req: Request) -> Response {
         let (parts, raw) = req.into_parts();
         let project = app.keys.authenticate(bearer(&parts.headers))?;
         let content_type = header_str(&parts.headers, header::CONTENT_TYPE).to_owned();
-        ingest_logs(&app, &parts.headers, raw, move |body, held| {
-            let refused = |e| (StatusCode::NOT_ACCEPTABLE, e);
-            held.take(logtail::cost(body, &content_type).map_err(refused)?)?;
-            logtail::parse(body, &content_type, project, time::now_ns()).map_err(refused)
-        })
+        ingest_logs(
+            &app,
+            &parts.headers,
+            raw,
+            app.keys.policy(project)?,
+            move |body, held| {
+                let refused = |e| (StatusCode::NOT_ACCEPTABLE, e);
+                held.take(logtail::cost(body, &content_type).map_err(refused)?)?;
+                logtail::parse(body, &content_type, project, time::now_ns()).map_err(refused)
+            },
+        )
         .await?;
         Ok::<_, Failure>(StatusCode::ACCEPTED.into_response())
     };
@@ -554,11 +521,17 @@ async fn otlp_ingest(State(app): State<App>, req: Request) -> Response {
                 "expected application/x-protobuf or application/json".to_owned(),
             )
         })?;
-        ingest_logs(&app, &parts.headers, raw, move |body, held| {
-            held.take(otlp::cost(body, encoding).map_err(bad)?)?;
-            let request = otlp::decode(body, encoding).map_err(bad)?;
-            otlp::convert(request, project, time::now_ns(), |bytes| held.take(bytes))
-        })
+        ingest_logs(
+            &app,
+            &parts.headers,
+            raw,
+            app.keys.policy(project)?,
+            move |body, held| {
+                held.take(otlp::cost(body, encoding).map_err(bad)?)?;
+                let request = otlp::decode(body, encoding).map_err(bad)?;
+                otlp::convert(request, project, time::now_ns(), |bytes| held.take(bytes))
+            },
+        )
         .await?;
         Ok::<_, Failure>(encoding)
     };
@@ -604,6 +577,35 @@ fn join<const N: usize>(threads: [(&str, std::thread::JoinHandle<()>); N]) -> an
     Ok(())
 }
 
+fn admin_routes(
+    data: &std::path::Path,
+    sender: &store::Sender,
+    token: Option<Token>,
+    public_url: &url::Url,
+    maps: Arc<sourcemaps::Store>,
+    policies: Arc<crate::scrub::settings::Cache>,
+    retention: crate::retention::Defaults,
+) -> anyhow::Result<Router> {
+    let admin = match token {
+        Some(token) => mcp::router(
+            data.to_owned(),
+            sender.clone(),
+            token.clone(),
+            public_url,
+            retention,
+        )
+        .merge(crate::scrub::settings::router(
+            store::open(data)?,
+            sender.clone(),
+            token.clone(),
+            policies,
+        ))
+        .merge(upload::router(maps, token, public_url)),
+        None => Router::new(),
+    };
+    Ok(admin)
+}
+
 /// Serves ingest, and with a token `/mcp` and the source map upload.
 /// `public_url` is where clients reach this server.
 pub async fn serve(
@@ -631,17 +633,16 @@ pub async fn serve(
         public_url,
         retention,
     )?;
-    let admin = match token {
-        Some(token) => mcp::router(
-            data.to_owned(),
-            writer.sender.clone(),
-            token.clone(),
-            public_url,
-            retention,
-        )
-        .merge(upload::router(maps, token, public_url)),
-        None => Router::new(),
-    };
+    let policies = app.keys.policies();
+    let admin = admin_routes(
+        data,
+        &writer.sender,
+        token,
+        public_url,
+        maps,
+        policies,
+        retention,
+    )?;
     let routes = router(app, admin.merge(ui));
     let listener = tokio::net::TcpListener::bind(listen).await?;
     crate::ready::notify()?;

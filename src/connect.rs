@@ -135,6 +135,7 @@ pub fn list(out: &mut impl Write, data: &Path) -> anyhow::Result<()> {
 
 #[derive(Serialize)]
 pub struct Status {
+    pub scrub: crate::scrub::Policy,
     /// Events the project keeps.
     pub event_count: i64,
     /// RFC 3339, null before the first event.
@@ -173,6 +174,7 @@ pub fn status(data: &Path, slug: &str, defaults: retention::Defaults) -> anyhow:
         .first()
         .map(|h| time::rfc3339(h.timestamp_ns));
     Ok(Status {
+        scrub: crate::scrub::settings::read(&c, id)?,
         event_count,
         last_event_time: last_seen.map(time::rfc3339_ms),
         issue_count,

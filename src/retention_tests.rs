@@ -243,8 +243,10 @@ fn the_migration_backfills_when_each_tag_was_last_seen() {
     ] {
         store::insert(&c, 1, &e).unwrap();
     }
-    c.execute_batch(&format!("{UNDO} PRAGMA user_version=13;"))
-        .unwrap();
+    c.execute_batch(&format!(
+        "{UNDO} ALTER TABLE projects DROP COLUMN scrub; PRAGMA user_version=13;"
+    ))
+    .unwrap();
     store::init(&mut c).unwrap();
     let tags = || -> Vec<(String, String, i64)> {
         let mut q = c
