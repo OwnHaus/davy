@@ -508,8 +508,9 @@ fn the_migration_gives_old_heartbeats_their_due_time() {
     let id = store::add(&c, 1, &m, 0).unwrap().id;
     store::ping(&c, id, ms("2026-11-23T16:00:00Z"), false).unwrap();
     c.execute_batch(&format!(
-        "ALTER TABLE channels DROP COLUMN sdk_dropped; {} PRAGMA user_version=11;",
-        super::checkin_store::UNDO
+        "ALTER TABLE channels DROP COLUMN sdk_dropped; {} {} PRAGMA user_version=11;",
+        super::checkin_store::UNDO,
+        crate::retention::UNDO
     ))
     .unwrap();
     crate::store::init(&mut c).unwrap();

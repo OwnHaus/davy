@@ -275,9 +275,10 @@ fn migration_backfills_releases_from_old_events() {
     store::create_project(&c, "old").unwrap();
     let e = event(json!({"message":"boom","release":"v1"}));
     store::insert(&c, 1, &e).unwrap();
-    c.execute_batch(
-        "DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE releases; DROP TABLE checkin_starts; DROP TABLE checks; DROP TABLE incidents; DROP TABLE monitors; DROP TABLE notifications; DROP TABLE channels; DROP TABLE feedback; DROP TABLE sessions; DROP TABLE invites; DROP TABLE users; DROP TABLE firsts; DROP TABLE client_reports; DROP TABLE user_feedback; DROP TABLE release_sessions; DROP TABLE release_users; DROP TABLE session_seen; PRAGMA user_version=0;",
-    )
+    c.execute_batch(&format!(
+        "{} DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE releases; DROP TABLE checkin_starts; DROP TABLE checks; DROP TABLE incidents; DROP TABLE monitors; DROP TABLE notifications; DROP TABLE channels; DROP TABLE feedback; DROP TABLE sessions; DROP TABLE invites; DROP TABLE users; DROP TABLE firsts; DROP TABLE client_reports; DROP TABLE user_feedback; DROP TABLE release_sessions; DROP TABLE release_users; DROP TABLE session_seen; PRAGMA user_version=0;",
+        crate::retention::UNDO
+    ))
     .unwrap();
     store::init(&mut c).unwrap();
     store::init(&mut c).unwrap();
@@ -302,7 +303,7 @@ fn migration_backfills_releases_from_old_events() {
     let version: i64 = c
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 13);
+    assert_eq!(version, 14);
 }
 #[test]
 fn migration_indexes_the_text_and_tags_of_old_issues() {
@@ -315,7 +316,8 @@ fn migration_indexes_the_text_and_tags_of_old_issues() {
     )
     .unwrap();
     c.execute_batch(&format!(
-        "DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE firsts; DROP TABLE client_reports; DROP TABLE user_feedback; DROP TABLE release_sessions; DROP TABLE release_users; DROP TABLE session_seen; ALTER TABLE notifications DROP COLUMN issue; ALTER TABLE channels DROP COLUMN sdk_dropped; {} PRAGMA user_version=6;",
+        "{} DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE firsts; DROP TABLE client_reports; DROP TABLE user_feedback; DROP TABLE release_sessions; DROP TABLE release_users; DROP TABLE session_seen; ALTER TABLE notifications DROP COLUMN issue; ALTER TABLE channels DROP COLUMN sdk_dropped; {} PRAGMA user_version=6;",
+        crate::retention::UNDO,
         crate::monitor::checkin_store::UNDO
     ))
     .unwrap();
@@ -454,6 +456,7 @@ async fn the_sweep_task_queues_a_sweep_every_period_until_the_writer_stops() {
     let task = tokio::spawn(store::sweep_every(
         sender,
         std::time::Duration::from_secs(10),
+        crate::retention::Defaults::default().errors,
     ));
     tokio::time::sleep(std::time::Duration::from_secs(25)).await;
     let sweeps = inbox

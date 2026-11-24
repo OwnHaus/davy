@@ -12,6 +12,7 @@ use crate::{
         store::{LogCounts, LogQuery, histogram, search},
     },
     query,
+    retention::{self, By, Change, Defaults, Setting},
     store::{self, IssueStatus, Job},
     time,
     token::{self, Token},
@@ -49,6 +50,7 @@ To connect an existing app, call `connect_project`, then send its test_event com
 To triage, list open issues with `sql` (SELECT id,title,event_count,last_seen FROM issues WHERE status='unresolved' ORDER BY last_seen DESC LIMIT 20), \
 then call `issue_context` on one issue. It returns the stack with source lines, breadcrumbs, releases, the logs around the error and what users wrote about it. \
 Call `schema` before writing other SQL. To see how often a log line happens and since when, call `count_logs` before `search_logs`. To see whether a release crashes more than the one before, call `release_health`. After a fix ships, call `mark_fixed`. \
+`project_status` shows how long a project keeps its logs and errors, and `set_retention` changes it. \
 When a tool was missing, returned the wrong thing or needed a workaround, call `submit_feedback`.";
 
 const LOG_NOTES: &str = "
@@ -62,7 +64,14 @@ count_logs takes the same filters and returns counts per time bucket instead of 
 /// `/mcp`, behind the token. Requests must name loopback or the host of
 /// `public_url` in their `Host` header, and a browser page that sends one
 /// must come from loopback or `public_url`, which stops DNS rebinding.
-pub fn router(data: PathBuf, writes: store::Sender, token: Token, public_url: &url::Url) -> Router {
+/// Projects without a retention of their own keep what `retention` says.
+pub fn router(
+    data: PathBuf,
+    writes: store::Sender,
+    token: Token,
+    public_url: &url::Url,
+    retention: Defaults,
+) -> Router {
     let public_host = public_url.host_str().unwrap_or("localhost");
     let public_origin = format!(
         "{}://{public_host}:{}",
@@ -73,6 +82,7 @@ pub fn router(data: PathBuf, writes: store::Sender, token: Token, public_url: &u
         data: Arc::from(data),
         public_url: public_url.clone(),
         writes,
+        retention,
         tool_router: Tools::tool_router(),
     };
     let config = StreamableHttpServerConfig::default()
@@ -126,6 +136,7 @@ struct Tools {
     public_url: url::Url,
     data: Arc<Path>,
     writes: store::Sender,
+    retention: Defaults,
     tool_router: ToolRouter<Self>,
 }
 
@@ -237,6 +248,17 @@ struct ProjectStatus {
     slug: String,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct SetRetention {
+    /// Project slug.
+    project: String,
+    /// Days of logs to keep, 1 to 36500, or "default" for the server's. Leave out to keep it as it is.
+    logs_days: Option<Setting>,
+    /// Days of errors to keep, by when Davy received them: events, their issues and user feedback. 1 to 36500, or "default". Leave out to keep it as it is.
+    errors_days: Option<Setting>,
+}
+
 type Reply = Result<String, String>;
 
 #[tool_router]
@@ -251,11 +273,43 @@ impl Tools {
     }
 
     #[tool(
-        description = "Confirm ingest for a project slug: events counted, time of the last event, issue count and time of the last log line, RFC 3339. Times are null before the first record; poll after sending a test event."
+        description = "Confirm ingest for a project slug: events kept, time of the last event, issue count and time of the last log line, RFC 3339, and how long the project keeps logs and errors. Times are null before the first record; poll after sending a test event."
     )]
     async fn project_status(&self, Parameters(req): Parameters<ProjectStatus>) -> Reply {
-        self.blocking(move |data| json(&connect::status(data, &req.slug)?))
+        let defaults = self.retention;
+        self.blocking(move |data| json(&connect::status(data, &req.slug, defaults)?))
             .await
+    }
+
+    #[tool(
+        description = "Keep a project's logs or errors longer: each 1 to 36500 days, or \"default\" for the server's. A shorter retention is refused, because it deletes data for good; a person shortens it with the CLI or the web UI. Returns, for logs and errors, the days kept, whether they are the server default, and deletes_before: what is older goes within a minute and cannot be restored. Errors expire by when Davy received them; an issue whose events have all expired is deleted, and a later event of the same error opens a new issue."
+    )]
+    async fn set_retention(&self, Parameters(req): Parameters<SetRetention>) -> Reply {
+        if req.logs_days.is_none() && req.errors_days.is_none() {
+            return Err(
+                "give logs_days, errors_days or both; project_status shows the current settings"
+                    .to_owned(),
+            );
+        }
+        let change = Change {
+            project: req.project,
+            logs_days: req.logs_days,
+            errors_days: req.errors_days,
+        };
+        change.check()?;
+        let slug = change.project.clone();
+        store::submit(
+            &self.writes,
+            Job::SetRetention(change, By::Agent(self.retention)),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        let defaults = self.retention;
+        self.blocking(move |data| {
+            let kept = retention::one(&query::open(data)?, &slug, defaults, time::now_ms())?;
+            json(&kept.ok_or_else(|| anyhow::anyhow!(retention::unknown(&slug)))?)
+        })
+        .await
     }
 
     #[tool(

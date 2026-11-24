@@ -72,7 +72,12 @@ fn ui() -> Ui {
         writer.ui.clone(),
     );
     let reads = Arc::new(reads);
-    let routes = super::router(Arc::clone(&local), Arc::clone(&reads), &public_url);
+    let routes = super::router(
+        Arc::clone(&local),
+        Arc::clone(&reads),
+        &public_url,
+        crate::retention::Defaults::default(),
+    );
     Ui {
         app: crate::http::router(app, routes),
         local,
@@ -508,6 +513,7 @@ fn without_writer(data: &std::path::Path, public_url: &str) -> Router {
         local,
         Arc::new(reads),
         &url::Url::parse(public_url).unwrap(),
+        crate::retention::Defaults::default(),
     )
 }
 

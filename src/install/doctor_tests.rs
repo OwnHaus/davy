@@ -25,7 +25,13 @@ async fn server(token: Option<&str>) -> Url {
         crate::store::open(&data).unwrap();
         let (writes, _) = crossbeam_channel::bounded(1);
         let public = Url::parse("http://127.0.0.1/").unwrap();
-        app = app.merge(crate::mcp::router(data, writes, Token::new(t), &public));
+        app = app.merge(crate::mcp::router(
+            data,
+            writes,
+            Token::new(t),
+            &public,
+            crate::retention::Defaults::default(),
+        ));
     }
     listen(app).await
 }

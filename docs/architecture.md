@@ -44,7 +44,8 @@ CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::se
 - `src/tasks.rs` holds `poll`, the loop behind each background task in `davy serve` that reads due work from SQLite: one task per key, a limit on how many run, and the result stored through the writer before the key is free.
 - `src/logs/mod.rs` defines `LogRecord`, `LogLevel` and the timestamp and level rules shared by every log source.
 - `src/logs/{logtail,otlp,sentry}.rs` are the log adapters. Each is a pure function from a request body to `Vec<LogRecord>`.
-- `src/logs/store.rs` owns the Tantivy schema, the log writer thread, retention and search.
+- `src/logs/store.rs` owns the Tantivy schema, the log writer thread and search. `src/logs/retention.rs` deletes from it the logs each project keeps no longer.
+- `src/retention.rs` holds how long each project keeps its logs and errors: the server defaults, a project's own settings, their limits and the change the writer applies. `src/retention/errors.rs` deletes expired events and user feedback on the writer thread and keeps issue counts, first seen and tags true.
 - `src/tests.rs` and `src/logs/tests.rs` hold the unit and contract tests. `e2e/` runs real SDKs against the built binary. `bench/` and `examples/load_logs.rs` are benchmarks, not tests.
 
 ## Trust boundaries
@@ -55,9 +56,9 @@ Five kinds of caller reach the server. Each route belongs to exactly one.
 |---|---|---|---|
 | SDK or log shipper | Project ingest key, public | `/api/{project}/envelope/`, `/api/{project}/store/`, `/`, `/v1/logs` | Write events and logs into the one project the key names |
 | Heartbeat sender, such as a cron job | Heartbeat token, secret, in the path | `/api/heartbeat/{token}`, `/api/heartbeat/{token}/fail` | Record a ping or a failure for the one monitor the token names |
-| Coding agent | Admin token, secret | `/mcp` | Read everything, mark issues fixed |
+| Coding agent | Admin token, secret | `/mcp` | Read everything, mark issues fixed, set how long a project keeps its logs and errors |
 | `sentry-cli` | Admin token, secret | `/api/0/organizations/{org}/chunk-upload/`, `.../artifactbundle/assemble/` | Write source map builds |
-| Person in a browser | Session cookie `__Host-davy_session`, secret, from a login or a welcome link | `/ui/api/*` but login, logout and welcome | Read everything, change the status of issues, change their own password, end their own sessions |
+| Person in a browser | Session cookie `__Host-davy_session`, secret, from a login or a welcome link | `/ui/api/*` but login, logout and welcome | Read everything, change the status of issues, set how long a project keeps its logs and errors, change their own password, end their own sessions |
 
 The pages under `/ui/` and the login, logout and welcome routes need no credential. The admin token opens nothing under `/ui/`, and the session cookie opens nothing outside it. A UI write also needs `Content-Type: application/json` and the exact `Origin` of the public URL.
 
@@ -67,7 +68,7 @@ The CLI is a sixth caller. `davy user add` prints the welcome link a person sets
 
 - **Parsers are pure.** Everything that turns wire bytes into domain types takes bytes and returns a value or an error. No I/O, no clock reads except a passed-in `observed_at`, no global state. Each is tested on fixtures captured from real clients.
 - **Validation happens once, at the boundary.** `http.rs` and the parsers check input. Code behind them trusts the types and does not re-check.
-- **One writer thread per store.** Inside the server, only `store::Writer` writes SQLite and only `LogWriter` writes Tantivy. HTTP handlers and MCP tools queue work and never write directly. A full queue is a `429` or a tool error, never an unbounded buffer. The SQLite writer has a second queue for jobs from people in the UI and takes from it first, so a login commits while ingest fills the first queue. CLI commands that write (`project create`, `resolve`) use their own connection, and SQLite's lock orders them with the writer.
+- **One writer thread per store.** Inside the server, only `store::Writer` writes SQLite and only `LogWriter` writes Tantivy, retention included. HTTP handlers and MCP tools queue work and never write directly. A full queue is a `429` or a tool error, never an unbounded buffer. The SQLite writer has a second queue for jobs from people in the UI and takes from it first, so a login commits while ingest fills the first queue. CLI commands that write (`project create`, `project retention`, `resolve`) use their own connection, and SQLite's lock orders them with the writer.
 - **Source maps are files, not rows.** `upload.rs` writes chunks and builds under `data/chunks/` and `data/sourcemaps/` by writing a temporary file and renaming it. A build is named by its debug ID, a content hash, so a second upload of the same build writes the same bytes and nothing needs a lock.
 - **Readers live in other processes.** The CLI opens the data directory while the server writes. SQLite WAL and Tantivy's segment files make that safe. Search retries once on a missing segment file.
 - **Lenient on fields, strict on framing.** A malformed envelope or body is an error status. A wrong field inside a valid record falls back to a default, and one bad record never fails a batch.

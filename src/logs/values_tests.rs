@@ -23,7 +23,8 @@ fn record(timestamp: i64, message: &str, attributes: serde_json::Value) -> LogRe
 }
 
 fn write(dir: &std::path::Path, batch: Vec<LogRecord>) {
-    let writer = LogWriter::start(dir.to_path_buf(), 30).unwrap();
+    let writer =
+        LogWriter::start(dir.to_path_buf(), 30, crate::logs::store::no_overrides()).unwrap();
     assert!(writer.queue.push(batch).is_ok());
     drop(writer.queue);
     writer.thread.join().unwrap();

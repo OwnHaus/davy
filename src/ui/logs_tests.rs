@@ -37,7 +37,12 @@ fn log(timestamp: i64, level: LogLevel, message: &str) -> LogRecord {
 /// Writes `batch` to the log store of `s` and waits until it is searchable.
 fn write(s: &Ui, batch: Vec<LogRecord>) {
     let dir = crate::logs::dir(s.reads.data());
-    let writer = LogWriter::start(dir, crate::logs::store::MAX_RETENTION_DAYS).unwrap();
+    let writer = LogWriter::start(
+        dir,
+        crate::logs::store::MAX_RETENTION_DAYS,
+        crate::logs::store::no_overrides(),
+    )
+    .unwrap();
     assert!(writer.queue.push(batch).is_ok());
     drop(writer.queue);
     writer.thread.join().unwrap();

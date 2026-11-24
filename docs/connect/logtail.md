@@ -44,4 +44,4 @@ curl -fsS -X POST https://davy.example.com/ -H "Authorization: Bearer $DAVY_LOG_
 sudo runuser -u davy -- davy logs --data /var/lib/davy --project my-app --since 1h --level warn 'timeout'
 ```
 
-Logs are kept 30 days unless `davy serve` gets `--log-retention-days`.
+Logs are kept 30 days unless `davy serve` gets `--log-retention-days` or the project has its own, set with `davy project retention`.

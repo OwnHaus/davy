@@ -9,6 +9,7 @@ mod connect;
 pub mod issues;
 mod logs;
 mod monitors;
+mod retention;
 pub mod session;
 #[cfg(test)]
 mod tests;
@@ -42,18 +43,30 @@ pub fn serve(
     writes: store::Sender,
     budget: Budget,
     public_url: &url::Url,
+    retention: crate::retention::Defaults,
 ) -> anyhow::Result<Router> {
     let local = Local::new(store::open(data)?, writes.clone());
     let reads = Reads::new(store::open(data)?, data.to_owned(), budget, writes);
-    Ok(router(Arc::new(local), Arc::new(reads), public_url))
+    Ok(router(
+        Arc::new(local),
+        Arc::new(reads),
+        public_url,
+        retention,
+    ))
 }
 
 /// The routes under `/ui`, for the people of `local`, reading issues from
-/// `reads`, reached at `public_url`.
-pub fn router(local: Arc<Local>, reads: Arc<Reads>, public_url: &url::Url) -> Router {
+/// `reads`, reached at `public_url`. Projects without a retention of their
+/// own keep what `retention` says.
+pub fn router(
+    local: Arc<Local>,
+    reads: Arc<Reads>,
+    public_url: &url::Url,
+    retention: crate::retention::Defaults,
+) -> Router {
     let accounts: Arc<dyn Accounts> = Arc::clone(&local) as Arc<dyn Accounts>;
     let guard = Arc::new(Guard::new(public_url));
-    protected(Arc::clone(&local), reads, public_url)
+    protected(Arc::clone(&local), reads, public_url, retention)
         .route_layer(middleware::from_fn_with_state(accounts, require))
         .merge(account::open(local))
         .route("/ui", get(|| async { Redirect::permanent("/ui/") }))
@@ -65,9 +78,15 @@ pub fn router(local: Arc<Local>, reads: Arc<Reads>, public_url: &url::Url) -> Ro
 
 /// The `/ui/api/` routes that need a person, each with the one method it
 /// answers. A test sends each of them without a session.
-fn protected(local: Arc<Local>, reads: Arc<Reads>, public_url: &url::Url) -> Router {
+fn protected(
+    local: Arc<Local>,
+    reads: Arc<Reads>,
+    public_url: &url::Url,
+    retention: crate::retention::Defaults,
+) -> Router {
     Router::new()
         .route("/ui/api/me", get(me))
+        .merge(retention::routes(Arc::clone(&reads), retention))
         .merge(monitors::routes(Arc::clone(&reads)))
         .merge(alerts::routes(Arc::clone(&reads)))
         .merge(connect::routes(Arc::clone(&reads), public_url))
@@ -99,6 +118,8 @@ pub(crate) const PROTECTED: &[(&str, &str)] = &[
     ("GET", "/ui/api/notifications"),
     ("GET", "/ui/api/connect"),
     ("GET", "/ui/api/setup"),
+    ("GET", "/ui/api/retention"),
+    ("POST", "/ui/api/retention"),
     ("GET", "/ui/api/nowhere"),
 ];
 

@@ -180,7 +180,7 @@ fn logs_count_prints_the_buckets_that_have_logs() {
         span_id: None,
         attributes: serde_json::Map::new(),
     };
-    let writer = LogWriter::start(logs::dir(&data), 30).unwrap();
+    let writer = LogWriter::start(logs::dir(&data), 30, logs::store::no_overrides()).unwrap();
     let batch = vec![
         log(base + 10 * MIN, "database timeout"),
         log(base + 10 * MIN + 1, "database timeout"),
@@ -231,4 +231,52 @@ fn slug_help_names_the_public_dsn_authority() {
     assert!(help.contains("Anyone with the"));
     assert!(help.contains("public project DSN can ping a guessable slug"));
     assert!(help.contains("token-only access"));
+}
+
+#[test]
+fn project_retention_prints_and_changes_a_projects_own_settings() {
+    let data = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("test-cli-retention-{}", uuid::Uuid::new_v4()));
+    store::create_project(&store::open(&data).unwrap(), "api").unwrap();
+    let d = data.to_str().unwrap().to_owned();
+    let run = |extra: &[&str]| {
+        let args = ["davy", "project", "retention", "api", "--data", &d];
+        let parsed = Cli::try_parse_from(args.iter().chain(extra))?;
+        let Command::Project { command } = parsed.command else {
+            panic!("not the project command");
+        };
+        let mut out = vec![];
+        run_project(&mut out, command)
+            .map_err(|e| clap::Error::raw(clap::error::ErrorKind::InvalidValue, e))?;
+        Ok::<_, clap::Error>(String::from_utf8(out).unwrap())
+    };
+    let shown = |logs: &str, errors: &str| {
+        format!("{{\"errors_days\":{errors},\"logs_days\":{logs},\"project\":\"api\"}}\n")
+    };
+    assert_eq!(run(&[]).unwrap(), shown("null", "null"));
+    assert_eq!(run(&["--errors", "90"]).unwrap(), shown("null", "90"));
+    assert_eq!(run(&["--logs", "7"]).unwrap(), shown("7", "90"));
+    assert_eq!(run(&["--errors", "default"]).unwrap(), shown("7", "null"));
+    assert_eq!(run(&[]).unwrap(), shown("7", "null"));
+    for bad in ["0", "36501", "forever"] {
+        assert!(run(&["--logs", bad]).is_err(), "{bad}");
+    }
+    assert_eq!(run(&[]).unwrap(), shown("7", "null"));
+    let args = [
+        "davy",
+        "project",
+        "retention",
+        "web",
+        "--data",
+        &d,
+        "--logs",
+        "3",
+    ];
+    let Command::Project { command } = Cli::try_parse_from(args).unwrap().command else {
+        panic!("not the project command");
+    };
+    let refused = run_project(&mut vec![], command).unwrap_err();
+    assert_eq!(refused.to_string(), "unknown project \"web\"");
+    std::fs::remove_dir_all(&data).unwrap();
 }

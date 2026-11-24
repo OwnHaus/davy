@@ -6,7 +6,7 @@ use davy::{
         store::{LogCounts, LogHit, LogQuery, histogram, search},
     },
     monitor::{self, CheckUrl},
-    query, store, text,
+    query, retention, store, text,
     time::{self, now_ns},
 };
 use std::{
@@ -166,6 +166,24 @@ enum Project {
         #[arg(long)]
         public_url: Option<url::Url>,
     },
+    /// Sets how many days a project keeps its logs and errors, and prints
+    /// its own settings as JSON, null where it follows the server's
+    /// --log-retention-days or --error-retention-days. With no flag it only
+    /// prints them. A running server deletes what is older within a minute,
+    /// and an issue goes with its last event.
+    Retention {
+        /// The project's slug.
+        slug: String,
+        #[arg(long)]
+        data: PathBuf,
+        /// Days of logs to keep, 1 to 36500, or `default` for the server's.
+        #[arg(long, value_parser = retention::Setting::parse)]
+        logs: Option<retention::Setting>,
+        /// Days of errors to keep, by when Davy received them: events,
+        /// their issues and user feedback. 1 to 36500, or `default`.
+        #[arg(long, value_parser = retention::Setting::parse)]
+        errors: Option<retention::Setting>,
+    },
 }
 #[derive(Subcommand)]
 enum Channel {
@@ -242,29 +260,13 @@ async fn main() -> anyhow::Result<()> {
     let parsed = Cli::from_arg_matches(&cli().get_matches()).unwrap_or_else(|e| e.exit());
     match parsed.command {
         Command::Connect(args) => davy::connect::run(&mut out.lock(), &args)?,
-        Command::Project {
-            command: Project::List { data },
-        } => davy::connect::list(&mut out.lock(), &data)?,
+        Command::Project { command } => run_project(&mut out.lock(), command)?,
         Command::Serve(args) => davy::serve::run(args).await?,
         Command::SystemdUnit(args) => install::unit::run(&mut out.lock(), &args)?,
         Command::Setup(args) => install::setup::run(&mut out.lock(), &args)?,
         Command::Doctor(args) => install::doctor::run(&mut out.lock(), &args).await?,
         Command::McpConfig(args) => install::client::run(&mut out.lock(), &args)?,
         Command::Feedback(args) => feedback::run(&mut out.lock(), &args)?,
-        Command::Project {
-            command:
-                Project::Create {
-                    slug,
-                    data,
-                    public_url,
-                },
-        } => {
-            let public_url = match public_url {
-                Some(url) => url,
-                None => install::Settings::load(&data)?.public_url()?,
-            };
-            writeln!(out, "{}", create_project(&data, &slug, &public_url)?)?;
-        }
         Command::Monitor { command } => monitor::cli::run(&mut out.lock(), command)?,
         Command::Channel { command } => run_channel(&mut out.lock(), command)?,
         Command::User { command } => davy::accounts::cli::run(&mut out.lock(), command)?,
@@ -310,6 +312,49 @@ async fn main() -> anyhow::Result<()> {
                 &status,
             )?
             .map_err(anyhow::Error::msg)?;
+        }
+    }
+    Ok(())
+}
+fn run_project(out: &mut impl Write, command: Project) -> anyhow::Result<()> {
+    match command {
+        Project::List { data } => davy::connect::list(out, &data)?,
+        Project::Create {
+            slug,
+            data,
+            public_url,
+        } => {
+            let public_url = match public_url {
+                Some(url) => url,
+                None => install::Settings::load(&data)?.public_url()?,
+            };
+            writeln!(out, "{}", create_project(&data, &slug, &public_url)?)?;
+        }
+        Project::Retention {
+            slug,
+            data,
+            logs,
+            errors,
+        } => {
+            let c = store::open(&data)?;
+            let change = retention::Change {
+                project: slug,
+                logs_days: logs,
+                errors_days: errors,
+            };
+            let stored = if logs.is_none() && errors.is_none() {
+                retention::stored(&c, &change.project)?
+                    .ok_or_else(|| retention::unknown(&change.project))
+            } else {
+                retention::set(&c, &change, retention::By::Person)?
+            };
+            let stored = stored.map_err(anyhow::Error::msg)?;
+            let shown = serde_json::json!({
+                "project": change.project,
+                "logs_days": stored.logs_days,
+                "errors_days": stored.errors_days,
+            });
+            writeln!(out, "{shown}")?;
         }
     }
     Ok(())

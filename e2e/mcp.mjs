@@ -10,7 +10,7 @@ const client = new Client({ name: 'davy-e2e', version: '1.0.0' })
 await client.connect(transport)
 
 const { tools } = await client.listTools()
-assert.deepEqual(tools.map(t => t.name).sort(), ['connect_project', 'count_logs', 'issue_context', 'mark_fixed', 'project_status', 'release_health', 'schema', 'search_logs', 'sql', 'submit_feedback'])
+assert.deepEqual(tools.map(t => t.name).sort(), ['connect_project', 'count_logs', 'issue_context', 'mark_fixed', 'project_status', 'release_health', 'schema', 'search_logs', 'set_retention', 'sql', 'submit_feedback'])
 
 async function call(name, args) {
   const result = await client.callTool({ name, arguments: args })
@@ -33,6 +33,18 @@ assert.equal(arrived.issue_count, 1)
 assert.match(arrived.last_event_time, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/)
 assert.equal(arrived.last_log_time, null)
 console.log('PASS connect: CLI test event confirmed by MCP project_status (1 event, 1 issue)')
+
+assert.equal(arrived.retention.errors.days, 36500)
+assert.equal(arrived.retention.errors.server_default, true)
+const kept = JSON.parse((await call('set_retention', { project: 'e2e-connect', logs_days: 90, errors_days: 'default' })).text)
+assert.deepEqual([kept.logs.days, kept.logs.server_default, kept.errors.days, kept.errors.server_default], [90, false, 36500, true])
+const outOfRange = await call('set_retention', { project: 'e2e-connect', errors_days: 0 })
+assert.deepEqual(outOfRange, { text: 'retention is 1 to 36500 days, not 0', isError: true })
+const shorter = await call('set_retention', { project: 'e2e-connect', logs_days: 'default' })
+assert.equal(shorter.isError, true)
+assert.match(shorter.text, /^an agent may only keep data longer: logs are kept 90 days and 30 would delete/)
+const stillThere = JSON.parse((await call('project_status', { slug: 'e2e-connect' })).text)
+assert.equal(stillThere.event_count, 1)
 
 const schema = await call('schema', {})
 assert.match(schema.text, /CREATE TABLE issues/)
@@ -77,4 +89,4 @@ assert.deepEqual(feedback.rows[0].slice(1), ['e2e tried', 'e2e happened', null])
 assert.ok(feedback.rows[0][0], 'the client name comes from _meta or User-Agent')
 
 await client.close()
-console.log(`mcp: verified 10 tools, sql, issue_context, search_logs, count_logs, release_health, mark_fixed on issue ${issue} and submit_feedback from client ${feedback.rows[0][0]}`)
+console.log(`mcp: verified 11 tools, set_retention, sql, issue_context, search_logs, count_logs, release_health, mark_fixed on issue ${issue} and submit_feedback from client ${feedback.rows[0][0]}`)

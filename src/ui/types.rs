@@ -17,6 +17,7 @@ use crate::{
     issues::{EventItem, EventPage, IssuePage, IssueRow, Project, Sort, Status},
     logs::{LogLevel, LogSource},
     monitor::State,
+    retention::{Change, Kept, Retention, ServerDefault, Setting},
     store::{IssueDetail, ReleaseCount},
 };
 use ts_rs::{Config, TS};
@@ -83,6 +84,11 @@ fn file() -> String {
         decl::<First>(&c),
         decl::<Step>(&c),
         decl::<Setup>(&c),
+        decl::<ServerDefault>(&c),
+        decl::<Setting>(&c),
+        decl::<Change>(&c),
+        decl::<Kept>(&c),
+        decl::<Retention>(&c),
     ];
     format!("{HEADER}{}", decls.concat())
 }

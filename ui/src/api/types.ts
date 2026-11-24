@@ -280,3 +280,22 @@ export type Step = { what: First, required: boolean,
 at: string | null, };
 
 export type Setup = { steps: Array<Step>, };
+
+export type ServerDefault = "default";
+
+export type Setting = number | ServerDefault;
+
+export type RetentionChange = { project: string, logs_days?: Setting, errors_days?: Setting, };
+
+export type Kept = { days: number, 
+/**
+ * Whether the days come from the server, not the project.
+ */
+server_default: boolean, 
+/**
+ * RFC 3339. What is older is deleted: logs by their timestamp, errors
+ * by when Davy received them.
+ */
+deletes_before: string, };
+
+export type Retention = { project: string, logs: Kept, errors: Kept, };

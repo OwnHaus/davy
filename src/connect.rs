@@ -1,5 +1,5 @@
 //! Connection instructions shared by the local CLI and the admin MCP reader.
-use crate::{install, logs, query, store, time};
+use crate::{install, logs, query, retention, store, time};
 use rusqlite::OptionalExtension as _;
 use serde::Serialize;
 use std::{
@@ -135,18 +135,24 @@ pub fn list(out: &mut impl Write, data: &Path) -> anyhow::Result<()> {
 
 #[derive(Serialize)]
 pub struct Status {
-    /// Events the project's issues counted, kept or since deleted.
+    /// Events the project keeps.
     pub event_count: i64,
     /// RFC 3339, null before the first event.
     pub last_event_time: Option<String>,
     pub issue_count: i64,
     /// RFC 3339, null before the first log line.
     pub last_log_time: Option<String>,
+    /// How long the project keeps its logs and errors.
+    pub retention: retention::Retention,
 }
 
-pub fn status(data: &Path, slug: &str) -> anyhow::Result<Status> {
+/// Whether the project `slug` has sent anything yet, and how long it keeps
+/// it, where projects without a setting keep what `defaults` says.
+pub fn status(data: &Path, slug: &str, defaults: retention::Defaults) -> anyhow::Result<Status> {
     let c = query::open(data)?;
     let id = store::project_by_slug(&c, slug)?;
+    let retention = retention::one(&c, slug, defaults, time::now_ms())?
+        .ok_or_else(|| anyhow::anyhow!(retention::unknown(slug)))?;
     // events has no index by project, so the counts come from the issues
     // index, which holds event_count and last_seen.
     let (issue_count, event_count, last_seen) = c.query_row(
@@ -171,6 +177,7 @@ pub fn status(data: &Path, slug: &str) -> anyhow::Result<Status> {
         last_event_time: last_seen.map(time::rfc3339_ms),
         issue_count,
         last_log_time,
+        retention,
     })
 }
 

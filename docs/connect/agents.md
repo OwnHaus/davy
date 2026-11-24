@@ -1,6 +1,6 @@
 # Connect a coding agent
 
-Davy serves MCP at `/mcp` of the public URL. Claude Code, Codex and Cursor connect with the admin token and get ten tools: `schema`, `sql`, `search_logs`, `count_logs`, `release_health`, `issue_context`, `mark_fixed`, `submit_feedback`, `connect_project` and `project_status`.
+Davy serves MCP at `/mcp` of the public URL. Claude Code, Codex and Cursor connect with the admin token and get eleven tools: `schema`, `sql`, `search_logs`, `count_logs`, `release_health`, `issue_context`, `mark_fixed`, `submit_feedback`, `connect_project`, `project_status` and `set_retention`.
 
 The token gives full read access to errors and logs. It goes into a file only the person can read and reaches the client through the `DAVY_TOKEN` environment variable, never into a config file or a command line.
 
@@ -45,6 +45,7 @@ To check, ask the agent: "List the unresolved issues in Davy." It calls `sql` an
 - `sql` runs one read-only query, and `schema` describes the tables. The `client_reports` table says how many errors and logs each SDK dropped before sending, and why, so the agent can tell a quiet app from one whose `beforeSend` drops everything.
 - `release_health` returns crash-free sessions and users per release and environment, newest release first, so the agent can tell whether a deploy made things worse. Browser and mobile SDKs send one session per user visit. Server SDKs count requests as sessions and name no users.
 - `mark_fixed` resolves an issue in a release. It reopens when the error comes back in that release or a newer one.
+- `set_retention` makes a project keep its logs or its errors longer, from 1 to 36,500 days, or `"default"` for the server's: 30 days of logs and 100 years of errors unless `davy serve` says otherwise. A shorter retention deletes data for good, so the tool refuses it, and a person shortens it with `davy project retention` or in the web UI. An agent's prompt can carry text from someone else's error or log line, and that text must not be able to delete data. An issue whose last event expired is deleted, and the error is a new issue if it returns. `project_status` shows what a project keeps.
 - `submit_feedback` reports a tool that was missing, returned the wrong thing or needed a workaround. `davy feedback --data /var/lib/davy` lists the reports. Davy sends them nowhere unless a channel was added with `--feedback`.
 
 ## Connect a new app
@@ -84,8 +85,8 @@ HTTP without going through the TLS proxy. If `serve` overrides the saved
 listener, save that address with `setup` first. A phone's loopback is the
 phone, so Android needs Davy's reachable public URL, VPN or Tailscale.
 
-`project_status` returns `event_count`, `issue_count`, `last_event_time`
-and `last_log_time`. Times are RFC 3339 and null before the first record. Log visibility waits
+`project_status` returns `event_count`, `issue_count`, `last_event_time`,
+`last_log_time` and `retention`. Times are RFC 3339 and null before the first record. Log visibility waits
 for the log writer's commit.
 
 Platform guides: [Node](node.md), [browser](browser.md), [Python](python.md),

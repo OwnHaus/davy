@@ -164,7 +164,9 @@ fn add<'a>(c: &Connection, project: i64, e: &'a ErrorEvent, latest: &mut Latest<
         return Ok(());
     }
     let g = group(e);
-    let created = c.execute("INSERT INTO issues(project_id,grouping_version,fingerprint,title,culprit,level,status,first_seen,last_seen,event_count) VALUES (?1,?2,?3,?4,?5,?6,'unresolved',?7,?7,0) ON CONFLICT(project_id,grouping_version,fingerprint) DO NOTHING", params![project,g.version,g.fingerprint,g.title,g.culprit,e.level.as_str(),e.timestamp])? == 1;
+    // An id is never used twice, so a link sent for an issue that expired
+    // does not lead to another, see src/retention/errors.rs.
+    let created = c.execute("INSERT INTO issues(id,project_id,grouping_version,fingerprint,title,culprit,level,status,first_seen,last_seen,event_count) VALUES (max(coalesce((SELECT max(id) FROM issues),0),coalesce((SELECT id FROM id_floor WHERE name='issues'),0))+1,?1,?2,?3,?4,?5,?6,'unresolved',?7,?7,0) ON CONFLICT(project_id,grouping_version,fingerprint) DO NOTHING", params![project,g.version,g.fingerprint,g.title,g.culprit,e.level.as_str(),e.timestamp])? == 1;
     let (id,count,status,release,at,title,culprit): (i64,i64,String,Option<String>,Option<i64>,String,Option<String>) = c.query_row("SELECT id,event_count,status,resolved_in_release,resolved_at,title,culprit FROM issues WHERE project_id=?1 AND grouping_version=?2 AND fingerprint=?3", params![project,g.version,g.fingerprint], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)))?;
     let mut status = IssueStatus::load(&status, release, at);
     let seen = match &e.release {
@@ -225,9 +227,15 @@ pub enum Job {
         at: Timestamp,
         failed: bool,
     },
+    /// Alerts for late monitors, and deleting what expired by `at`. A
+    /// project without a retention of its own keeps errors `error_days`.
     Sweep {
         at: Timestamp,
+        error_days: crate::retention::Days,
     },
+    /// New retention settings for one project, asked by a person or an
+    /// agent.
+    SetRetention(crate::retention::Change, crate::retention::By),
     /// The result of one HTTP check that started at `at`.
     Check {
         monitor: i64,
@@ -297,8 +305,9 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
                 .then_some(())
                 .ok_or_else(|| format!("no monitor {monitor}")))
         }
-        Job::Sweep { at } => {
+        Job::Sweep { at, error_days } => {
             crate::monitor::store::sweep(c, *at)?;
+            crate::retention::errors::sweep(c, *at, *error_days, crate::retention::errors::BUDGET)?;
             crate::accounts::store::sweep(c, *at)?;
             crate::items::client_report::prune(c, *at)?;
             crate::items::session::prune(c, *at)?;
@@ -325,6 +334,7 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
             Ok(Ok(()))
         }
         Job::Account(change) => crate::accounts::store::apply(c, change),
+        Job::SetRetention(change, by) => Ok(crate::retention::set(c, change, *by)?.map(drop)),
         Job::First { what, at } => {
             crate::firsts::record(c, *what, *at)?;
             Ok(Ok(()))
@@ -467,13 +477,20 @@ pub async fn queue_and_wait(sender: &Sender, mut job: Job) {
 
 /// Queues a [`Job::Sweep`] every `period`, the first one at once. A full
 /// queue skips a tick. The task ends when the writer stops.
-pub async fn sweep_every(sender: Sender, period: std::time::Duration) {
+pub async fn sweep_every(
+    sender: Sender,
+    period: std::time::Duration,
+    error_days: crate::retention::Days,
+) {
     let mut ticks = tokio::time::interval(period);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         ticks.tick().await;
         let (done, _) = oneshot::channel();
-        let job = Job::Sweep { at: time::now_ms() };
+        let job = Job::Sweep {
+            at: time::now_ms(),
+            error_days,
+        };
         if let Err(TrySendError::Disconnected(_)) = sender.try_send(Write { job, done }) {
             return;
         }
@@ -611,7 +628,10 @@ mod tests {
 
     fn job(n: i64) -> (Write, oneshot::Receiver<Outcome>) {
         let (done, outcome) = oneshot::channel();
-        let job = Job::Sweep { at: n };
+        let job = Job::Sweep {
+            at: n,
+            error_days: crate::retention::Defaults::default().errors,
+        };
         (Write { job, done }, outcome)
     }
 
@@ -628,7 +648,7 @@ mod tests {
         let order: Vec<_> = batch
             .iter()
             .map(|w| match w.job {
-                Job::Sweep { at } => at,
+                Job::Sweep { at, .. } => at,
                 _ => 0,
             })
             .collect();
@@ -646,7 +666,7 @@ mod tests {
         let batch = Queues::new(ui, ingest).next_batch().unwrap();
         let people = batch
             .iter()
-            .filter(|w| matches!(w.job, Job::Sweep { at } if at >= 1000))
+            .filter(|w| matches!(w.job, Job::Sweep { at, .. } if at >= 1000))
             .count();
         assert_eq!((batch.len(), people), (64, 32));
     }

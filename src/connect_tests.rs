@@ -66,10 +66,18 @@ fn connect_reuses_a_project_and_prints_local_instructions() {
         )
         .is_err()
     );
+    let mut shown =
+        serde_json::to_value(status(&data, "api", retention::Defaults::default()).unwrap())
+            .unwrap();
+    let kept = shown.as_object_mut().unwrap().remove("retention").unwrap();
     assert_eq!(
-        serde_json::to_value(status(&data, "api").unwrap()).unwrap(),
+        shown,
         serde_json::json!({"event_count":0,"last_event_time":null,"issue_count":0,"last_log_time":null})
     );
+    assert_eq!(kept["project"], "api");
+    assert_eq!(kept["logs"]["days"], 30);
+    assert_eq!(kept["logs"]["server_default"], true);
+    assert_eq!(kept["errors"]["days"], 36_500);
 }
 
 #[test]
@@ -105,7 +113,7 @@ fn project_status_returns_only_the_requested_projects_latest_log() {
         span_id: None,
         attributes: serde_json::Map::new(),
     };
-    let writer = LogWriter::start(logs::dir(&data), 30).unwrap();
+    let writer = LogWriter::start(logs::dir(&data), 30, logs::store::no_overrides()).unwrap();
     let at = time::now_ns() - 1_000_000_000;
     assert!(
         writer
@@ -115,7 +123,7 @@ fn project_status_returns_only_the_requested_projects_latest_log() {
     );
     drop(writer.queue);
     writer.thread.join().unwrap();
-    let result = status(&data, "api").unwrap();
+    let result = status(&data, "api", retention::Defaults::default()).unwrap();
     assert_eq!(result.last_log_time, Some(time::rfc3339(at)));
     assert_eq!(result.event_count, 0);
     assert_eq!(result.issue_count, 0);

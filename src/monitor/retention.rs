@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use rusqlite::{Connection, params};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// How long one sweep may spend deleting, across every class. The sweep
 /// runs in the one writer thread every 10 s, and ingest waits while it
@@ -47,22 +47,14 @@ const CLASSES: [(&str, i64); 5] = [
 ];
 
 /// Deletes the rows that expired by `at` in rounds of one batch per class,
-/// until no class has a full batch left or `budget` is spent. The first
-/// round always runs, so no class gets less than one batch per sweep, and
-/// the rounds take turns, so a class with a backlog cannot use up the
-/// budget of the others.
+/// until no class has a full batch left or `budget` is spent, see
+/// [`crate::retention::turns`].
 pub fn prune(c: &Connection, at: i64, budget: Duration) -> Result<()> {
-    let deadline = Instant::now().checked_add(budget);
-    let mut more = [true; CLASSES.len()];
-    loop {
-        for ((sql, keep), more) in CLASSES.iter().zip(&mut more) {
-            if *more {
-                let deleted = c.execute(sql, params![at.saturating_sub(*keep), BATCH])?;
-                *more = i64::try_from(deleted).is_ok_and(|n| n >= BATCH);
-            }
-        }
-        if !more.contains(&true) || deadline.is_some_and(|d| Instant::now() >= d) {
-            return Ok(());
-        }
-    }
+    crate::retention::turns(CLASSES.len(), budget, |class| {
+        let Some((sql, keep)) = CLASSES.get(class) else {
+            return Ok(false);
+        };
+        let deleted = c.execute(sql, params![at.saturating_sub(*keep), BATCH])?;
+        Ok(i64::try_from(deleted).is_ok_and(|n| n >= BATCH))
+    })
 }

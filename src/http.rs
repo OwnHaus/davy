@@ -577,18 +577,45 @@ async fn otlp_ingest(State(app): State<App>, req: Request) -> Response {
         (Err(failure), None) => failure.into_response(),
     }
 }
+
+/// Starts the log writer, which reads each project's own log retention
+/// from the database before every retention pass.
+fn log_writer(
+    data: &std::path::Path,
+    retention: crate::retention::Defaults,
+) -> anyhow::Result<LogWriter> {
+    let projects = store::open(data)?;
+    let overrides = move || crate::retention::log_days(&projects);
+    LogWriter::start(logs::dir(data), retention.logs.get(), Box::new(overrides))
+}
+
+/// Waits for each thread to end, and names the first that panicked.
+fn join<const N: usize>(threads: [(&str, std::thread::JoinHandle<()>); N]) -> anyhow::Result<()> {
+    for (name, thread) in threads {
+        thread.join().map_err(|panic| {
+            let why = panic
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("no message");
+            anyhow::anyhow!("{name} panicked: {why}")
+        })?;
+    }
+    Ok(())
+}
+
 /// Serves ingest, and with a token `/mcp` and the source map upload.
 /// `public_url` is where clients reach this server.
 pub async fn serve(
     data: &std::path::Path,
     listen: &str,
     public_url: &url::Url,
-    log_retention_days: u32,
+    retention: crate::retention::Defaults,
     token: Option<Token>,
     smtp: Option<alert::mail::Smtp>,
 ) -> anyhow::Result<()> {
     let writer = store::Writer::start(store::open(data)?, 1024);
-    let log_writer = LogWriter::start(logs::dir(data), log_retention_days)?;
+    let log_writer = log_writer(data, retention)?;
     let app = App {
         keys: Arc::new(Keys::new(store::open(data)?)),
         sender: writer.sender.clone(),
@@ -597,13 +624,20 @@ pub async fn serve(
         budget: body::Budget::new(body::MEMORY),
     };
     let maps = Arc::clone(&app.sourcemaps);
-    let ui = crate::ui::serve(data, writer.ui.clone(), app.budget.clone(), public_url)?;
+    let ui = crate::ui::serve(
+        data,
+        writer.ui.clone(),
+        app.budget.clone(),
+        public_url,
+        retention,
+    )?;
     let admin = match token {
         Some(token) => mcp::router(
             data.to_owned(),
             writer.sender.clone(),
             token.clone(),
             public_url,
+            retention,
         )
         .merge(upload::router(maps, token, public_url)),
         None => Router::new(),
@@ -611,7 +645,8 @@ pub async fn serve(
     let routes = router(app, admin.merge(ui));
     let listener = tokio::net::TcpListener::bind(listen).await?;
     crate::ready::notify()?;
-    let sweeper = tokio::spawn(store::sweep_every(writer.sender.clone(), SWEEP_EVERY));
+    let sweeper = store::sweep_every(writer.sender.clone(), SWEEP_EVERY, retention.errors);
+    let sweeper = tokio::spawn(sweeper);
     let checker = tokio::spawn(monitor::check::run(
         store::open(data)?,
         monitor::check::client(net::Reach::Any)?,
@@ -654,16 +689,7 @@ pub async fn serve(
     drop(writer.sender);
     drop(writer.ui);
     drop(log_writer.queue);
-    for (name, thread) in [("writer", writer.thread), ("log writer", log_writer.thread)] {
-        thread.join().map_err(|panic| {
-            let why = panic
-                .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
-                .unwrap_or("no message");
-            anyhow::anyhow!("{name} panicked: {why}")
-        })?;
-    }
+    join([("writer", writer.thread), ("log writer", log_writer.thread)])?;
     result?;
     Ok(())
 }

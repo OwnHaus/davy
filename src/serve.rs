@@ -5,7 +5,7 @@
 use crate::{
     alert, http,
     install::{self, SMTP_FILE, Settings, TOKEN_FILE},
-    secret,
+    retention, secret,
     token::Token,
 };
 use std::path::{Path, PathBuf};
@@ -21,9 +21,14 @@ pub struct Args {
     /// Defaults to the public URL in DATA/setup.json.
     #[arg(long)]
     pub public_url: Option<Url>,
-    /// Days of logs to keep, 1 to 36,500. Older days are deleted hourly.
-    #[arg(long, default_value_t = 30)]
+    /// Days of logs a project keeps unless it has a setting of its own, 1 to
+    /// 36,500. Change one project with `davy project retention`.
+    #[arg(long, default_value_t = retention::DEFAULT_LOG_DAYS)]
     pub log_retention_days: u32,
+    /// Days of errors a project keeps unless it has a setting of its own, 1
+    /// to 36,500, by when Davy received them. The default keeps them all.
+    #[arg(long, default_value_t = retention::DEFAULT_ERROR_DAYS)]
+    pub error_retention_days: u32,
     /// The sender of alert e-mail, required when there is an SMTP URL.
     /// Defaults to the sender in DATA/setup.json.
     #[arg(long)]
@@ -88,6 +93,12 @@ pub fn env(data: &Path, var: impl Fn(&str) -> Option<String>) -> impl Fn(&str) -
 
 pub async fn run(args: Args) -> anyhow::Result<()> {
     let settings = resolve(&args)?;
+    let days =
+        |flag: &str, n| retention::Days::new(n).map_err(|e| anyhow::anyhow!("--{flag}: {e}"));
+    let retention = retention::Defaults {
+        logs: days("log-retention-days", args.log_retention_days)?,
+        errors: days("error-retention-days", args.error_retention_days)?,
+    };
     let env = env(&args.data, |key| std::env::var(key).ok());
     let token = secret::admin_token(&env)?;
     let smtp = match (secret::read("DAVY_SMTP_URL", &env)?, &settings.mail_from) {
@@ -100,7 +111,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         &args.data,
         &settings.listen,
         &settings.public_url,
-        args.log_retention_days,
+        retention,
         token.as_deref().map(Token::new),
         smtp,
     )

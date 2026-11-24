@@ -13,6 +13,7 @@ fn args(data: &Path, listen: Option<&str>, public_url: Option<&str>) -> Args {
         listen: listen.map(str::to_owned),
         public_url: public_url.map(|u| Url::parse(u).unwrap()),
         log_retention_days: 30,
+        error_retention_days: 36_500,
         mail_from: None,
     }
 }

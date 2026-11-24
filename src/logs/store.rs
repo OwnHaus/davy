@@ -33,12 +33,16 @@ const MAX_OPEN_DAYS: usize = 3;
 const COMMIT_EVERY: Duration = Duration::from_secs(1);
 const COMMIT_AT_DOCS: usize = 100_000;
 const IDLE_CLOSE: Duration = Duration::from_secs(600);
-const RETENTION_EVERY: Duration = Duration::from_secs(3600);
+/// How often the log writer reads the retention settings and deletes what
+/// expired, so a new setting holds within a minute.
+const RETENTION_EVERY: Duration = Duration::from_secs(60);
+/// How long one retention pass may spend deleting before it lets writes in.
+const RETENTION_BUDGET: Duration = Duration::from_secs(1);
 const WRITER_HEAP: usize = 64_000_000;
 pub const QUEUE_ROWS: usize = 50_000;
 pub const QUEUE_BYTES: usize = 128 * 1024 * 1024;
 /// 100 years. A longer window would overflow the nanosecond cutoff.
-pub const MAX_RETENTION_DAYS: u32 = 36_500;
+pub const MAX_RETENTION_DAYS: u32 = crate::retention::MAX_DAYS;
 
 #[derive(Clone, Copy)]
 struct Fields {
@@ -155,7 +159,9 @@ struct OpenDay {
 pub(super) struct State {
     root: PathBuf,
     fields: Fields,
-    retention_days: u32,
+    policy: retention::Policy,
+    /// What retention last deleted from each day.
+    swept: HashMap<Date, retention::Cut>,
     open: HashMap<Date, OpenDay>,
     uncommitted: usize,
 }
@@ -165,14 +171,16 @@ impl State {
         Self {
             root,
             fields: schema().1,
-            retention_days,
+            policy: retention::Policy::new(retention_days, HashMap::new()),
+            swept: HashMap::new(),
             open: HashMap::new(),
             uncommitted: 0,
         }
     }
 
     fn settle(&self, r: &mut LogRecord) {
-        let oldest = r.observed_at - DAY_NS * i64::from(self.retention_days);
+        let days = self.policy.days(r.project_id.cast_unsigned());
+        let oldest = r.observed_at - DAY_NS * i64::from(days);
         if r.timestamp < oldest || r.timestamp > r.observed_at + DAY_NS {
             r.attributes
                 .insert(ORIGINAL_TIMESTAMP.into(), r.timestamp.into());
@@ -267,28 +275,6 @@ impl State {
             .collect();
         for day in idle {
             self.close(day)?;
-        }
-        Ok(())
-    }
-
-    fn retention(&mut self) -> Result<()> {
-        let cutoff = day_of(now_ns() - DAY_NS * i64::from(self.retention_days));
-        let trash = self.root.join(".trash");
-        for entry in std::fs::read_dir(&self.root)? {
-            let entry = entry?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let Some(day) = parse_day(&name) else {
-                continue;
-            };
-            if day >= cutoff {
-                continue;
-            }
-            self.close(day)?;
-            days::forget(&self.root, day);
-            std::fs::create_dir_all(&trash)?;
-            let target = trash.join(format!("{name}-{}", now_ns()));
-            std::fs::rename(entry.path(), &target)?;
-            std::fs::remove_dir_all(&target)?;
         }
         Ok(())
     }
@@ -407,7 +393,9 @@ pub struct LogWriter {
 }
 
 impl LogWriter {
-    pub fn start(root: PathBuf, retention_days: u32) -> Result<Self> {
+    /// Starts the writer of the day indexes in `root`. A project keeps
+    /// `retention_days` of logs unless `overrides` names it.
+    pub fn start(root: PathBuf, retention_days: u32, mut overrides: Overrides) -> Result<Self> {
         anyhow::ensure!(
             (1..=MAX_RETENTION_DAYS).contains(&retention_days),
             "log retention must be 1 to {MAX_RETENTION_DAYS} days"
@@ -428,6 +416,16 @@ impl LogWriter {
             let mut next_commit = Instant::now() + COMMIT_EVERY;
             let mut next_retention = Instant::now();
             loop {
+                // Retention goes first, so the first batch is settled with
+                // each project's own retention.
+                if Instant::now() >= next_retention {
+                    match overrides() {
+                        Ok(projects) => state.policy = state.policy.with_projects(projects),
+                        Err(e) => report("retention settings", Err(e)),
+                    }
+                    report("retention", state.retention(now_ns(), RETENTION_BUDGET));
+                    next_retention = Instant::now() + RETENTION_EVERY;
+                }
                 let wait = next_commit.saturating_duration_since(Instant::now());
                 match inbox.recv_timeout(wait) {
                     Ok((batch, _held)) => report("write", state.add(batch)),
@@ -439,10 +437,6 @@ impl LogWriter {
                     report("commit", state.commit());
                     report("close idle", state.close_idle());
                     next_commit = now + COMMIT_EVERY;
-                }
-                if now >= next_retention {
-                    report("retention", state.retention());
-                    next_retention = now + RETENTION_EVERY;
                 }
             }
             report("shutdown", state.close_all());
@@ -616,7 +610,11 @@ fn hit(schema: &Schema, f: &Fields, doc: &TantivyDocument) -> Result<LogHit> {
 
 #[path = "days.rs"]
 mod days;
+
+#[path = "retention.rs"]
+mod retention;
 use days::{Day, days};
+pub use retention::{Overrides, no_overrides};
 
 #[path = "histogram.rs"]
 mod histogram;

@@ -357,7 +357,8 @@ fn record(
 }
 
 fn write(dir: &std::path::Path, retention_days: u32, batch: Vec<LogRecord>) {
-    let writer = LogWriter::start(dir.to_path_buf(), retention_days).unwrap();
+    let writer =
+        LogWriter::start(dir.to_path_buf(), retention_days, store::no_overrides()).unwrap();
     assert!(writer.queue.push(batch).is_ok());
     drop(writer.queue);
     writer.thread.join().unwrap();
@@ -631,17 +632,6 @@ fn a_message_is_priced_by_what_it_holds() {
         assert!(crate::heap::of_record(&records[0]) >= message.capacity());
         assert_eq!(message.capacity(), message.len());
     }
-}
-
-#[test]
-fn log_retention_is_1_to_36500_days() {
-    let dir = scratch("logs");
-    for days in [0, 36_501, u32::MAX] {
-        assert!(LogWriter::start(dir.clone(), days).is_err(), "{days}");
-    }
-    let writer = LogWriter::start(dir, 36_500).unwrap();
-    drop(writer.queue);
-    writer.thread.join().unwrap();
 }
 
 #[test]

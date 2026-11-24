@@ -113,7 +113,11 @@ fn main() -> Result<()> {
     let projects: u64 = next()?.parse().context(usage)?;
     let span = hours * 3_600_000_000_000;
     let end = davy::time::now_ns();
-    let writer = LogWriter::start(davy::logs::dir(&data), 30)?;
+    let writer = LogWriter::start(
+        davy::logs::dir(&data),
+        30,
+        davy::logs::store::no_overrides(),
+    )?;
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
     let started = Instant::now();
     let batch = 5_000;

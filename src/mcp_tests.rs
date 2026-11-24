@@ -24,6 +24,7 @@ fn server() -> Server {
             tx,
             Token::new(SECRET),
             &url::Url::parse("https://davy.example/").unwrap(),
+            Defaults::default(),
         ),
         writes,
     }
@@ -315,7 +316,7 @@ async fn count_logs_counts_per_bucket_with_the_filters_of_search_logs() {
         span_id: None,
         attributes: serde_json::Map::new(),
     };
-    let writer = LogWriter::start(logs::dir(&s.data), 30).unwrap();
+    let writer = LogWriter::start(logs::dir(&s.data), 30, logs::store::no_overrides()).unwrap();
     let batch = vec![
         log(base + 10 * MIN, LogLevel::Error, "database timeout"),
         log(base + 10 * MIN + 1, LogLevel::Warn, "database timeout"),
@@ -457,8 +458,93 @@ async fn connect_reads_an_existing_key_but_never_creates_a_project() {
     assert_eq!(rows.rows, vec![vec![json!("api")]]);
     let (text, error) = tool(&s.app, "project_status", json!({"slug":"api"})).await;
     assert!(!error, "{text}");
+    let mut status = serde_json::from_str::<Value>(&text).unwrap();
+    let kept = status.as_object_mut().unwrap().remove("retention").unwrap();
     assert_eq!(
-        serde_json::from_str::<Value>(&text).unwrap(),
+        status,
         json!({"event_count":0,"last_event_time":null,"issue_count":0,"last_log_time":null})
     );
+    assert_eq!(kept["errors"]["days"], 36_500);
+}
+
+#[tokio::test]
+async fn set_retention_stores_the_change_and_shows_what_is_kept() {
+    let s = server();
+    let data = s.data.clone();
+    let writer = std::thread::spawn(move || {
+        let c = store::open(&data).unwrap();
+        for _ in 0..3 {
+            let w = next_job(&s.writes);
+            let Job::SetRetention(change, by) = w.job else {
+                panic!("expected a retention job");
+            };
+            assert_eq!(by, By::Agent(Defaults::default()));
+            let stored = retention::set(&c, &change, by).unwrap();
+            w.done.send(stored.map(drop)).unwrap();
+        }
+    });
+    let (text, error) = tool(
+        &s.app,
+        "set_retention",
+        json!({"project": "api", "logs_days": 90, "errors_days": "default"}),
+    )
+    .await;
+    assert!(!error, "{text}");
+    let kept: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(kept["project"], "api");
+    assert_eq!(
+        (&kept["logs"]["days"], &kept["logs"]["server_default"]),
+        (&json!(90), &json!(false))
+    );
+    assert_eq!(
+        (&kept["errors"]["days"], &kept["errors"]["server_default"]),
+        (&json!(36_500), &json!(true))
+    );
+    assert!(
+        kept["logs"]["deletes_before"]
+            .as_str()
+            .unwrap()
+            .ends_with('Z')
+    );
+    let unknown = tool(
+        &s.app,
+        "set_retention",
+        json!({"project": "web", "errors_days": 9}),
+    )
+    .await;
+    assert_eq!(unknown, ("unknown project \"web\"".to_owned(), true));
+    let (text, error) = tool(
+        &s.app,
+        "set_retention",
+        json!({"project": "api", "logs_days": 7}),
+    )
+    .await;
+    assert!(
+        error && text.starts_with("an agent may only keep data longer: logs are kept 90 days"),
+        "{text}"
+    );
+    writer.join().unwrap();
+    // Refused before the writer: nothing to change, or out of range.
+    let (text, error) = tool(&s.app, "set_retention", json!({"project": "api"})).await;
+    assert!(
+        error && text.starts_with("give logs_days, errors_days or both"),
+        "{text}"
+    );
+    let (text, error) = tool(
+        &s.app,
+        "set_retention",
+        json!({"project": "api", "logs_days": 36_501}),
+    )
+    .await;
+    assert_eq!(
+        (text.as_str(), error),
+        ("retention is 1 to 36500 days, not 36501", true)
+    );
+    let (_, error) = tool(
+        &s.app,
+        "set_retention",
+        json!({"project": "api", "logs_days": "forever"}),
+    )
+    .await;
+    assert!(error);
 }

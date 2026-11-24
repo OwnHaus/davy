@@ -203,7 +203,7 @@ One level table for every source (`LogLevel::parse`). Logs default to `Info`, un
 | OTLP `severity_number` 0 | parse `severity_text`, else Info |
 | anything else | Info |
 
-One timestamp function for every source. A number below 1e11 is seconds (fractions allowed), below 1e14 milliseconds, below 1e17 microseconds, else nanoseconds. Fractional numbers are rounded to the microsecond, because an f64 holds about 16 significant digits and the nanosecond digits of a seconds value are noise. A string is RFC 3339, with a naive `YYYY-MM-DDTHH:MM:SS[.f]` or a bare date read as UTC. A msgpack timestamp extension (type -1, 4, 8 or 12 bytes) is decoded per the msgpack spec, which allows at most 999,999,999 nanoseconds. `@logtail/pino` sends `dt` as an RFC 3339 string (captured fixture), but other msgpack shippers may encode a date natively. Anything else, or a time older than the retention window or more than 24 h in the future, becomes `observed_at`, and the original value is kept in the attribute `davy.original_timestamp`.
+One timestamp function for every source. A number below 1e11 is seconds (fractions allowed), below 1e14 milliseconds, below 1e17 microseconds, else nanoseconds. Fractional numbers are rounded to the microsecond, because an f64 holds about 16 significant digits and the nanosecond digits of a seconds value are noise. A string is RFC 3339, with a naive `YYYY-MM-DDTHH:MM:SS[.f]` or a bare date read as UTC. A msgpack timestamp extension (type -1, 4, 8 or 12 bytes) is decoded per the msgpack spec, which allows at most 999,999,999 nanoseconds. `@logtail/pino` sends `dt` as an RFC 3339 string (captured fixture), but other msgpack shippers may encode a date natively. Anything else, or a time older than its project's log retention or more than 24 h in the future, becomes `observed_at`, and the original value is kept in the attribute `davy.original_timestamp`.
 
 ### Adapters
 
@@ -227,7 +227,7 @@ One timestamp function for every source. A number below 1e11 is seconds (fractio
 - The writer commits every second when anything changed, and at once when 100k documents are uncommitted. It commits everything on shutdown.
 - A failed `add_document` or commit drops that day's `IndexWriter`, and the next write opens a fresh one. Tantivy does not restart its indexing worker after a failed commit, so the next 10k documents would block the writer thread forever and ingest would answer `429` from then on (reproduced in `store_recovers_when_a_day_index_breaks`). The cost is that the uncommitted documents of that day, at most about one second, are lost and logged.
 - The HTTP handler answers once the batch is queued, not once it is committed. Error events wait for their commit because they are few and each matters. Logs come in bulk and the shippers retry on failure only. The cost is that a crash loses at most about one second of accepted logs, and a log shows up in search within about one second.
-- Retention: `davy serve --log-retention-days <n>`, default 30, from 1 to 36,500 (100 years, past that the nanosecond cutoff overflows). Once an hour the writer renames day directories older than that into `data/logs/.trash/` and removes them. It touches only names that parse as `YYYY-MM-DD`.
+- Retention: `davy serve --log-retention-days <n>`, default 30, from 1 to 36,500 (100 years, past that the nanosecond cutoff overflows), and a project can keep its logs for a number of days of its own. At start and every minute the writer renames day directories older than every retention into `data/logs/.trash/` and removes them. It touches only names that parse as `YYYY-MM-DD`. "Retention per project" says how a project with a shorter or longer retention is cut out of a day.
 
 ### Search
 
@@ -286,7 +286,8 @@ A coding agent should get from "there is an error" to a fix without a human copy
 | `search_logs` | `query?`, `project?`, `since?`, `until?`, `level?`, `limit?` | Hits as `davy logs --json` prints them, oldest first. When more match than `limit`, the newest win. |
 | `count_logs` | `query?`, `project?`, `since?`, `until?`, `level?` | `{total, step, buckets}` as `davy logs --count --json` prints it. At most 200 buckets of a round width, and only those with logs, as `[start, count]`. |
 | `connect_project` | `slug`, `sdk?` | Existing project DSN, SDK instructions and test command. New projects require local CLI access. |
-| `project_status` | `slug` | Event count, last event time (ms), issue count and last log time (ns). |
+| `project_status` | `slug` | Event count, last event time (ms), issue count, last log time (ns) and `retention`: the days of logs and errors the project keeps. |
+| `set_retention` | `project`, `logs_days?`, `errors_days?` | What the project keeps now, as `retention` in `project_status`. A setting is 1 to 36,500 days or `"default"`, and may only keep data longer. |
 | `release_health` | `project?`, `since?` | Per release and environment, newest first, at most 50: `sessions`, `errored`, `crashed`, `abnormal`, `crash_free_sessions`, `users`, `crashed_users`, `crash_free_users`, `first_hour`, `last_hour`. `since` defaults to `7d`. |
 | `issue_context` | `issue_id` | The issue, its latest event made compact, its recent events and releases, and the logs around the latest event. |
 | `mark_fixed` | `issue_id`, `release?` | A sentence that says which release the fix is expected in. |
@@ -352,7 +353,7 @@ The same library functions back three commands, for agents that run shell comman
 - Unit tests with literal values: `on_event` for every row of the regression rule; `sql` returns exact rows, refuses a write, refuses two statements, cuts at 500 rows, decompresses with `payload_json`, and interrupts a runaway recursive query; compaction of the `sentry-node-10` error fixture gives the exact exception, frames and context lines.
 - A store test resolves an issue in a release and asserts that an event from an older release keeps it resolved and one from a newer release reopens it.
 - HTTP contract tests: `/mcp` is 401 without the token or with a wrong one and 403 for a `Host` or `Origin` it does not serve; with the right one `tools/list` and `tools/call` of `sql` and `mark_fixed` answer. Without a configured token `serve` does not merge the MCP router, so there is no route to test.
-- `e2e/run.sh` connects with the official MCP TypeScript client (`@modelcontextprotocol/sdk`) over Streamable HTTP with the bearer token, lists the ten tools, calls `issue_context` on an issue the Sentry SDKs created and asserts the exception type and an in-app frame, finds a log with `search_logs` and counts it with `count_logs`, calls `mark_fixed` and reads the status back with `sql`.
+- `e2e/run.sh` connects with the official MCP TypeScript client (`@modelcontextprotocol/sdk`) over Streamable HTTP with the bearer token, lists the eleven tools, calls `issue_context` on an issue the Sentry SDKs created and asserts the exception type and an in-app frame, finds a log with `search_logs` and counts it with `count_logs`, calls `mark_fixed` and reads the status back with `sql`, and lengthens a project's retention with `set_retention` and sees a shorter one refused.
 - `scripts/check` passes.
 
 ## Milestone 5: source maps
@@ -771,6 +772,7 @@ Inside the server only `store::Writer` writes SQLite. The writer queue gains the
 - `SetStatus { issues, status }` for resolve, resolve in a release, ignore and reopen, of one issue or up to 500 at once in one transaction, so a bulk change never half applies. `issues` is sorted, without duplicates and holds 1 to 500 ids by construction. The time of a resolve is part of `status`, `Resolved { in_release, at }`, since only a resolve has one. One missing issue refuses the whole change with `no issue {id}`. It replaced `Resolve`, and the MCP tool `mark_fixed` and `davy resolve` use it too.
 - `Login { user, hash, at }`, `Logout { hash }`, `LogoutAll { user, except }`, `Welcome { invite, password, session, at }` and `SetPassword { user, password, keep }`.
 - `Touch { hash, at }`, which writes a session's `used_at` at most once an hour.
+- `SetRetention(change, by)` for how long a project keeps its logs and errors, from `POST /ui/api/retention` (`By::Person`) and the MCP tool `set_retention` (`By::Agent`). An unknown project refuses the change with `unknown project "slug"`, and an agent's change that keeps either kind shorter than now with the reason. The writer decides, so two changes at once cannot slip a shorter one past the check.
 
 During an error storm the ingest queue is full, and that is when the team needs the UI most. The writer takes UI jobs from a second queue of 64, so a full ingest queue does not refuse a login or a resolve. UI jobs go first, but take at most half of a batch of 64 while ingest waits, so people who keep writing cannot stop ingest either.
 
@@ -1110,6 +1112,43 @@ A zone name from a sender goes through jiff's bundled copy of the IANA database 
 - `--cron` for `davy monitor add`. A `Cli` monitor expects a ping every `--every`.
 - Failure and recovery thresholds, monitor owners and per-environment monitors.
 
+## Retention per project
+
+An operator, or an agent over MCP, sets how long each project keeps its logs and its errors. A project without a setting of its own follows the server.
+
+### Settings
+
+- `davy serve --log-retention-days <n>` is the server default for logs, 30 as before. `--error-retention-days <n>` is the default for errors, 36,500 (100 years), so an agent can still ask about any error ever seen, and nothing stored before is deleted without a setting that says so. Both take 1 to 36,500.
+- Migration 14 adds `projects.log_retention_days` and `projects.error_retention_days`, NULL for the server default, each with `CHECK(... BETWEEN 1 AND 36500)`, so a hand-written `UPDATE` cannot store a value the sweep would misread either.
+- `davy project retention SLUG --data DATA [--logs N|default] [--errors N|default]` changes them and prints the project's own settings as JSON, `{"errors_days":null,"logs_days":7,"project":"api"}`, null where it follows the server. The CLI cannot know the defaults of a running server, so it prints only what is stored. With no flag it only prints.
+- `POST /ui/api/retention` takes `{"project":"api","logs_days":7,"errors_days":"default"}` and answers with what the project keeps now. `GET /ui/api/retention` lists every project. A setting left out stays as it was. A number outside 1 to 36,500 or a word other than `default` is `400` with the reason, an unknown project `404`.
+- The MCP tool `set_retention` takes the same fields but may only keep data longer. A setting shorter than what the project keeps now, `"default"` included when the default is shorter, refuses the whole change and names the CLI and the web UI. Shortening deletes data within a minute and for good, and an agent's prompt can carry text from someone else's error or log line, so only a person shortens. Every stored change prints one line to stderr, `retention: an agent set project "api" to logs 90 days, errors the default`, so the journal shows who changed what. `project_status` shows `retention`: `{project, logs, errors}`, each `{days, server_default, deletes_before}`, with `deletes_before` in RFC 3339.
+- A change goes through the writer queue as `Job::SetRetention`, like every other write of the server. The next sweep applies it: within 10 s for errors, within a minute for logs.
+
+### Errors
+
+The SQLite writer runs `Job::Sweep` every 10 s, and the errors take their turn in it next to the monitors, with a budget of their own of 100 ms (`retention::errors::BUDGET`). Each turn deletes at most 200 expired events, then 200 expired user feedback rows, until none is left or the budget is spent. A sweep therefore ends at most about one batch past its budget.
+
+- An event expires by `received_at`, the time Davy stored it, so a client clock cannot keep an event or expire it early. The new index `events(project_id, received_at)` makes each project's expired events one range. User feedback expires by its own `received_at`.
+- Deleting an event takes it out of its issue's `event_count` and `issue_hourly`, and moves `first_seen` to the timestamp of the first event left by arrival, as ingest sets it, found through `events_issue` without reading the issue's other events. `last_seen` stays, because the newest event is never older than one that is kept.
+- `issue_tags` gained `last_at`, when an event with that environment or release last arrived, and an index by issue. The migration backfills it from the events. A tag goes when its `last_at` is no later than the newest deleted event that carried it, so a filter by environment or release finds only issues that still have such an event.
+- **An issue whose last event expired is deleted**, with its hourly counts and tags. Its user feedback stays, unlinked, until it expires too. Keeping an empty issue would show a count of 0 and a first seen time with nothing behind it, and agents read counts as facts. When the error returns it is a new issue: unresolved, with a new-issue alert, because the resolved or ignored state went with the old one.
+- **An issue id is never used twice.** SQLite gives a new row the highest id plus one, so deleting the newest issue would hand its id to the next one, and a link in an old alert or an agent's notes would lead to an unrelated issue. The new table `id_floor(name, id)` keeps the highest issue id ever deleted, and a new issue takes one more than the larger of that and the highest id in `issues`. AUTOINCREMENT would do the same but needs the table rebuilt.
+- A row of another table that still points at an issue keeps it with an `event_count` of 0, rather than fail the writer's batch, which holds ingest too.
+- `releases` stays: it says when a release was first seen, which decides whether a resolved issue reopens. Release health counts sessions, not events, and keeps its own 90 days.
+- A lower `event_count` makes the payload sample keep the next event's payload again, at most once per sweep of an issue, which costs nothing worth bounding.
+- Measured on an M2 Max, release build, SQLite's default 2 MiB page cache, 300,000 events over 100 days and a retention of 10 days, so 270,000 expire: with every event in one issue a sweep deleted about 18,000 events in its 100 ms and all were gone after 15 sweeps. With the events spread round robin over 1,000 issues, the worst case, a sweep deleted about 870 events, the longest sweep took 142 ms and its commit 50 ms more, and the backlog took 311 sweeps. Each issue a batch touches costs about 0.3 ms of page reads. With a 128 MiB page cache the spread case ran three times as fast. The migration's backfill took 360 ms over the 300,000 events.
+
+### Logs
+
+All projects share one Tantivy index per UTC day, so a project's own retention cannot delete a directory.
+
+- A day older than every retention, default and projects, is renamed into the trash whole, as before. While no project has a setting of its own, that is all retention does.
+- A younger day loses the logs of each project whose retention it outlived: one `delete_query` for those projects, or for every project but those that keep it when the day outlived the default, then a commit, then a merge of exactly the segments that hold deletes, so the logs leave the disk and not only the results. A day left with no logs is deleted. The log writer closes that day's own writer first, because an index has one writer at a time.
+- The log writer reads the projects' settings from SQLite at start, before the first batch, and every minute after, then runs the pass. It remembers what it cut from each day, so a day is read again only when a setting changes or the day outlives another retention. A pass that has cut or removed days for longer than 1 s stops after that day, and the next goes on. A day that fails, an index that does not open for instance, is reported on stderr and skipped, so one broken day cannot stop the retention of every day after it. Each pass first empties `.trash` of what a crash left between renaming a day there and removing it.
+- Ingest waits while a day is cut, and the queue of 50,000 records absorbs that. Measured on an M2 Max: cutting half of a day of about 1,000,000 logs (176 MB) took 4.4 s, and a day of 120 MB 3.4 s. A shipper that sends more than the queue holds in that time gets `429` and retries. This happens once per day and project with a shorter retention, and after a change.
+- A log that arrives late is judged by its own project's retention: in a project that keeps 7 days, a log stamped 10 days ago takes the time it arrived and keeps the original in `davy.original_timestamp`, as every project did under the server default, so it is not deleted the moment it is written.
+
 ## Hardening
 
 A security review of `370e4cd` showed that a client without a key could make the server allocate 4.4 GB with one 194 KB request (measured with a release build on a developer laptop: a gzip body that inflates to 190 MiB of `[0,0,...]` sent to `/store/`). The rules below close that class. Each has a test that a request over the limit is refused.
@@ -1168,7 +1207,7 @@ Sentry's own limits (develop.sentry.dev, Envelopes, Size Limits) are 200 MiB for
 These are fine for one team on its own server and must change before tenants share one:
 
 - **Source maps per tenant.** Builds are stored by debug ID only. One tenant could upload a map under another tenant's public debug ID and rewrite its stack traces. The store key and the lookup gain the project.
-- **Retention for errors.** Events, issues and hourly counts are kept forever. A sender with a key can open a new issue per event. A retention sweep by age and a cap on new issues per project per hour come with the cloud quotas.
+- **Retention for errors.** Events, issues and hourly counts are kept 100 years unless a project or `--error-retention-days` says otherwise ("Retention per project"). A sender with a key can open a new issue per event. A cap on new issues per project per hour and a retention each tenant cannot raise come with the cloud quotas.
 - **Abandoned chunks.** Chunks of an upload that never assembles stay in `data/chunks/`. A sweep removes chunks older than an hour.
 - **Tenant scope in agent tools.** `sql` and `mark_fixed` see every project in the database.
 - **E-mail recipients.** An e-mail channel mails any address. The cloud verifies an address with a confirmation link before a channel sends to it.
@@ -1204,6 +1243,8 @@ existing project. A missing project names the local CLI command to create it.
 It cannot mint ingest keys. `project_status(slug)` returns `event_count`,
 `last_event_time`, `issue_count` and `last_log_time`, with RFC 3339 times
 that are null before the first record. The event count and time come from
-the issues index, since `events` has no index by project, so they count
-events retention has deleted too. Logs become visible after the log writer commits. The two tools bring the
-MCP tool count to ten. No schema migration is needed.
+the issues index, which holds `event_count` and `last_seen`, and count the
+events the project still keeps. Logs become visible after the log writer
+commits. The two tools brought the MCP tool count to ten, and
+`set_retention` to eleven. `retention` in `project_status` shows the days
+of logs and errors in effect and the instant before which they are deleted.

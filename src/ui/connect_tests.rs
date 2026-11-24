@@ -1,4 +1,4 @@
-//! The contract of the connect and setup routes.
+//! The contract of the connect, setup and retention routes.
 
 use super::{Ui, ui};
 use crate::{
@@ -103,4 +103,55 @@ async fn setup_marks_each_step_once_and_keeps_it_done() {
     s.db.execute_batch("DELETE FROM monitors").unwrap();
     let kept = steps(&s, &cookie).await;
     assert_eq!(kept, found, "a step stays done when its rows are gone");
+}
+
+#[tokio::test]
+async fn retention_shows_every_project_and_changes_one() {
+    let s = ui();
+    store::create_project(&s.db, "shop").unwrap();
+    store::create_project(&s.db, "admin").unwrap();
+    let cookie = s.person("ann@example.com", time::now_ms());
+    let r = s.get("/ui/api/retention", &[("cookie", &cookie)]).await;
+    assert_eq!(r.status, 200);
+    let slugs: Vec<&Value> = r
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| &p["project"])
+        .collect();
+    assert_eq!(slugs, [&json!("admin"), &json!("shop")]);
+    assert_eq!(r.body[1]["errors"]["days"], 36_500);
+    assert_eq!(r.body[1]["logs"]["server_default"], true);
+    let post = async |body: Value| {
+        let r = s
+            .post("/ui/api/retention", &[("cookie", &cookie)], &body)
+            .await;
+        (r.status, r.body)
+    };
+    let (status, kept) = post(json!({"project": "shop", "errors_days": 90, "logs_days": 7})).await;
+    assert_eq!(status, 200, "{kept}");
+    assert_eq!(kept["project"], "shop");
+    assert_eq!(
+        (&kept["errors"]["days"], &kept["errors"]["server_default"]),
+        (&json!(90), &json!(false))
+    );
+    assert_eq!(kept["logs"]["days"], 7);
+    let (_, kept) = post(json!({"project": "shop", "logs_days": "default"})).await;
+    assert_eq!(
+        (&kept["logs"]["days"], &kept["errors"]["days"]),
+        (&json!(30), &json!(90))
+    );
+    assert_eq!(
+        post(json!({"project": "gone", "errors_days": 9})).await,
+        (404, json!({"error": "unknown project \"gone\""}))
+    );
+    assert_eq!(
+        post(json!({"project": "shop", "errors_days": 0})).await,
+        (400, json!({"error": "retention is 1 to 36500 days, not 0"}))
+    );
+    let (status, _) = post(json!({"project": "shop", "errors_days": "forever"})).await;
+    assert_eq!(status, 400);
+    let r = s.get("/ui/api/retention?x=1", &[("cookie", &cookie)]).await;
+    assert_eq!(r.status, 400);
 }
