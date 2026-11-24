@@ -419,3 +419,18 @@ fn a_pattern_with_the_empty_template_keeps_the_example_of_its_newest_day() {
     assert_eq!(row, [("", "  ", 2)]);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_symlink_named_like_a_day_is_not_read() {
+    let dir = scratch("patterns-symlinked-day");
+    let elsewhere = scratch("patterns-symlinked-day-target");
+    let now = now_ns();
+    write_day(&dir, now - DAY, 10, 2, 1);
+    write_day(&elsewhere, now, 0, 3, 1);
+    let day = day_of(now).to_string();
+    std::os::unix::fs::symlink(elsewhere.join(&day), dir.join(&day)).unwrap();
+    let r = report(&dir, &query(Some(1), now));
+    assert_eq!((r.records, r.patterns), (2, 2));
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(&elsewhere).unwrap();
+}

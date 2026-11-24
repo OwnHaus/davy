@@ -1,7 +1,7 @@
 //! The top log patterns of a window, from the counters in [`super::tally`].
 
 use super::{
-    parse_day,
+    day_dirs::{self, Entry},
     tally::{self, DayTally, Levels, level_index},
 };
 use crate::{
@@ -96,9 +96,15 @@ struct Sum {
 /// The `q.limit` patterns with the most bytes from `q.since` to `q.until`.
 pub fn top_patterns(root: &Path, q: &PatternQuery) -> Result<PatternReport> {
     let (first, last) = (day_of(q.since), day_of(q.until));
+    // A symlink named like a day is not one, so a report reads no counters
+    // from outside the root.
+    let day = |e: &std::fs::DirEntry| match day_dirs::entry(e) {
+        Entry::Day(day) => Some(day),
+        Entry::Stray(_) | Entry::Other => None,
+    };
     let mut days: Vec<Date> = match std::fs::read_dir(root) {
         Ok(entries) => entries
-            .filter_map(|e| parse_day(&e.ok()?.file_name().to_string_lossy()))
+            .filter_map(|e| day(&e.ok()?))
             .filter(|d| (first..=last).contains(d))
             .collect(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
