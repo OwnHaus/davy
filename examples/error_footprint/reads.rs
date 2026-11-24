@@ -57,6 +57,7 @@ pub fn compare(args: &[String]) -> Result<()> {
     let [old, new, rounds] = args else {
         bail!("expected OLD NEW ROUNDS");
     };
+    let rounds = super::count("ROUNDS", rounds)?;
     let (old, new) = (Store::open(old)?, Store::open(new)?);
     let cases: [(&str, &Store, &str, bool); 4] = [
         ("old_stored", &old, OLD_STORED, false),
@@ -65,7 +66,7 @@ pub fn compare(args: &[String]) -> Result<()> {
         ("new_page", &new, EVENT_PAGE_SQL, true),
     ];
     let mut times = vec![Vec::new(); cases.len()];
-    for _ in 0..rounds.parse::<usize>()? {
+    for _ in 0..rounds {
         for (case, t) in cases.iter().zip(&mut times) {
             t.push(case.1.time(case.2, case.3)?);
         }

@@ -19,9 +19,11 @@
 //! `reads` times the payload reads of the store `OLD`, written before
 //! `latest_payloads`, against those of `NEW`, in turns in one process, so
 //! the load of a shared machine falls on both. It prints the median of
-//! `ROUNDS` rounds. `upgrade` opens the store `DATA` and times the
-//! migrations that run.
-use anyhow::{Result, bail, ensure};
+//! `ROUNDS` rounds. `upgrade` migrates the store `DATA` in place and times
+//! the migrations that run. No older Davy opens the store after that, so
+//! `upgrade` takes only a copy: a `DATA` under a `.scratch` directory. The
+//! counts must be above 0.
+use anyhow::{Context as _, Result, bail, ensure};
 use davy::{envelope::Envelope, event::ErrorEvent, http::body::Budget, retention::Days, store};
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
@@ -124,9 +126,9 @@ fn run(design: Option<Design>, args: &[String]) -> Result<()> {
     let body = include_bytes!("../e2e/fixtures/sentry-node-10/4.body");
     let envelope = Envelope::parse(body).map_err(anyhow::Error::msg)?;
     let r = Run {
-        issues: issues.parse()?,
-        per_issue: per_issue.parse()?,
-        per_tx: per_tx.parse()?,
+        issues: count("ISSUES", issues)?,
+        per_issue: count("PER_ISSUE", per_issue)?,
+        per_tx: count("PER_TX", per_tx)?,
         event: serde_json::from_slice(envelope.items[0].payload)?,
     };
     let mut target: Box<dyn Target> = match design {
@@ -161,6 +163,11 @@ fn run(design: Option<Design>, args: &[String]) -> Result<()> {
 
 fn upgrade(data: &Path) -> Result<()> {
     ensure!(data.exists(), "{} does not exist", data.display());
+    ensure!(
+        is_copy(&data.canonicalize()?),
+        "upgrade migrates {} in place, and no older Davy opens it after. Copy the data directory under a .scratch directory and pass the copy",
+        data.display()
+    );
     let started = Instant::now();
     let c = store::open(data)?;
     out(
@@ -169,6 +176,22 @@ fn upgrade(data: &Path) -> Result<()> {
     )?;
     let moved: i64 = c.query_row("SELECT count(*) FROM latest_payloads", [], |r| r.get(0))?;
     out("latest_payloads", moved)
+}
+
+/// Whether `path` lies under a `.scratch` directory, where only a copy of
+/// a store would be.
+fn is_copy(path: &Path) -> bool {
+    path.components().any(|c| c.as_os_str() == ".scratch")
+}
+
+/// The count `name` of the command line, which a run divides by or steps
+/// with, so 0 is refused.
+fn count(name: &str, value: &str) -> Result<usize> {
+    let n: usize = value
+        .parse()
+        .with_context(|| format!("{name} must be a whole number above 0, not {value}"))?;
+    ensure!(n > 0, "{name} must be above 0");
+    Ok(n)
 }
 
 /// Writes events `ids`, `per_tx` in a transaction, and returns the seconds
@@ -306,7 +329,13 @@ struct Sim {
 
 impl Sim {
     fn open(data: &Path, design: Design, issues: usize) -> Result<Self> {
-        std::fs::create_dir_all(data)?;
+        // Readable by its owner only, as `store::open` makes a data
+        // directory.
+        let mut dir = std::fs::DirBuilder::new();
+        dir.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
+        dir.create(data)?;
         let mut c = Connection::open(data.join(store::DB_FILE))?;
         if design == Design::AutoVacuum {
             c.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
@@ -487,3 +516,7 @@ fn out(key: &str, value: impl std::fmt::Display) -> Result<()> {
     writeln!(std::io::stdout(), "{key}={value}")?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "error_footprint/tests.rs"]
+mod tests;
