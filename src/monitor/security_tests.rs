@@ -130,7 +130,10 @@ fn sweep_prunes_only_expired_resolved_history() {
     .unwrap();
     c.execute("INSERT INTO incidents(monitor_id,started_at,resolved_at,reason) SELECT 1,0,1,'old' FROM json_each(?1)",
         [serde_json::to_string(&vec![0;1001]).unwrap()]).unwrap();
-    store::sweep(&c, ms("2026-12-01T00:00:00Z")).unwrap();
+    // 1,001 old incidents are two batches, and a sweep is sure of one.
+    for _ in 0..2 {
+        store::sweep(&c, ms("2026-12-01T00:00:00Z")).unwrap();
+    }
     let count: i64 = c
         .query_row("SELECT count(*) FROM incidents", [], |r| r.get(0))
         .unwrap();

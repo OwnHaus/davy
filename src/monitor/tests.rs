@@ -426,7 +426,10 @@ fn a_sweep_deletes_checks_older_than_30_days() {
         c.query_row("SELECT count(*) FROM checks", [], |r| r.get(0))
             .unwrap()
     };
-    // 1,500 rows are two batches, and both fit in one sweep's budget.
+    // 1,500 rows are two batches. Each sweep deletes at least one batch
+    // per class however busy the machine is, so two sweeps clear them;
+    // the budget has tests of its own in retention_tests.rs.
+    store::sweep(&c, now).unwrap();
     store::sweep(&c, now).unwrap();
     assert_eq!(left(&c), 2);
 }
