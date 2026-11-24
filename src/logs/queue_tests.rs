@@ -1,4 +1,7 @@
-use super::*;
+use super::{LogQueue, QueueError};
+use crate::logs::{LogLevel, LogRecord, LogSource};
+use serde_json::Map;
+use std::time::Duration;
 
 fn record(message: &str) -> LogRecord {
     LogRecord {
