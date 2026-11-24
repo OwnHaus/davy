@@ -40,9 +40,12 @@ const kept = JSON.parse((await call('set_retention', { project: 'e2e-connect', l
 assert.deepEqual([kept.logs.days, kept.logs.server_default, kept.errors.days, kept.errors.server_default], [90, false, 36500, true])
 const outOfRange = await call('set_retention', { project: 'e2e-connect', errors_days: 0 })
 assert.deepEqual(outOfRange, { text: 'retention is 1 to 36500 days, not 0', isError: true })
-const shorter = await call('set_retention', { project: 'e2e-connect', logs_days: 'default' })
+const shorter = await call('set_retention', { project: 'e2e-connect', logs_days: 30 })
 assert.equal(shorter.isError, true)
 assert.match(shorter.text, /^an agent may only keep data longer: logs are kept 90 days and 30 would delete/)
+const toDefault = await call('set_retention', { project: 'e2e-connect', logs_days: 'default' })
+assert.equal(toDefault.isError, true)
+assert.match(toDefault.text, /^an agent may not return logs to the server default: the project keeps them 90 days of its own/)
 const stillThere = JSON.parse((await call('project_status', { slug: 'e2e-connect' })).text)
 assert.equal(stillThere.event_count, 1)
 
