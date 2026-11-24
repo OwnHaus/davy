@@ -23,6 +23,9 @@ VERSION = 1
 MIN_LINES = 20_000
 # A run this long gives the disk sampler time to see the peaks.
 BIG_LINES = 500_000
+# A forced merge shorter than ten samples of the 0.2 s disk sampler can end
+# between two samples and read as no extra disk at all.
+SAMPLED_MERGE_SECS = 2.0
 # The tables an error event touches; footprint.sh counts each index with
 # its table, and the FTS5 shadow tables of issues_text with the issue.
 EVENT_TABLES = ("events",)
@@ -173,7 +176,7 @@ def coefficients(logs, errors):
     # Only a run long enough for the 0.2 s disk sampler, and a merge that
     # had more than one segment to merge, says anything about headroom.
     big = [r for r in one_day if r["lines"] >= BIG_LINES]
-    merged = [r for r in one_day if r["segments"] > 1 and "merge_peak_extra_disk_bytes" in r]
+    merged = [r for r in big if r["segments"] > 1 and r.get("merge_secs", 0) >= SAMPLED_MERGE_SECS]
     by = lambda rows, key: spread([r[key] for r in rows])
     done = [e for e in errors if e["complete"]]
     # Every event of a cold issue keeps its payload; nearly no event of a hot
@@ -305,4 +308,5 @@ def main():
             os.unlink(part)
 
 
-main()
+if __name__ == "__main__":
+    main()

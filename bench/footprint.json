@@ -75,10 +75,10 @@
         "n": 4
       },
       "merge_peak_extra_disk_per_disk": {
-        "min": 0.0,
-        "median": 0.6486,
+        "min": 0.6315,
+        "median": 0.773,
         "max": 0.9228,
-        "n": 9
+        "n": 4
       },
       "ingest_cpu_us_per_row": {
         "min": 22.49,
