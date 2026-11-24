@@ -20,14 +20,18 @@
 //! each template, example and service name.
 
 use super::{State, retention::Cut};
-use crate::logs::{
-    LogLevel, LogRecord,
-    patterns::{self, OTHER},
+use crate::{
+    logs::{
+        LogLevel, LogRecord,
+        patterns::{self, OTHER},
+    },
+    text::printable,
 };
 use anyhow::Result;
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     collections::HashMap,
     io::{self, Write},
     path::{Path, PathBuf},
@@ -133,6 +137,16 @@ fn cut(s: &str, bytes: usize) -> &str {
     &s[..s.floor_char_boundary(bytes)]
 }
 
+/// `s` without control characters and marks that reorder text, cut to
+/// `bytes`. Templates, examples and service names come from senders and
+/// reach agents and terminals, also as JSON, which escapes only C0.
+fn clean(s: &str, bytes: usize) -> Cow<'_, str> {
+    match printable(cut(s, bytes), char::REPLACEMENT_CHARACTER) {
+        Cow::Borrowed(s) => Cow::Borrowed(s),
+        Cow::Owned(s) => Cow::Owned(cut(&s, bytes).to_owned()),
+    }
+}
+
 /// Counts a sighting of `id`, a new pattern past [`FREE_PATTERNS`], and
 /// returns whether it now has its own count. A full table takes one
 /// sighting from each pattern it holds and drops those left with none, as
@@ -188,15 +202,18 @@ impl ProjectDay {
             *added += 1;
         }
         let entry = pending.entry(id).or_insert_with(|| Entry {
-            template,
-            example: cut(&r.message, EXAMPLE_BYTES).to_owned(),
+            // A template is at most 12 tokens of 64 bytes, so even three
+            // bytes for each of its bytes stay within what a file may hold.
+            template: printable(&template, char::REPLACEMENT_CHARACTER).into_owned(),
+            example: clean(&r.message, EXAMPLE_BYTES).into_owned(),
             services: HashMap::new(),
         });
         let has = |entry: &Entry, service: &str| {
             entry.services.contains_key(service)
                 || done.is_some_and(|d| d.services.contains_key(service))
         };
-        let mut service = cut(r.service.as_deref().unwrap_or(""), SERVICE_BYTES);
+        let named = clean(r.service.as_deref().unwrap_or(""), SERVICE_BYTES);
+        let mut service: &str = &named;
         if !has(entry, service) {
             if *cells + *added_cells >= MAX_CELLS {
                 service = OTHER_SERVICES;

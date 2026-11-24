@@ -1,4 +1,11 @@
-use super::size;
+use super::{printable, size};
+
+#[test]
+fn control_characters_and_marks_that_reorder_text_are_replaced() {
+    let s = "a\u{202E}b\u{1b}c\u{9b}d\u{2066}e\u{200F}f\u{061C}g";
+    assert_eq!(printable(s, '?'), "a?b?c?d?e?f?g");
+    assert_eq!(printable("plain é", '?'), "plain é");
+}
 
 #[test]
 fn sizes_read_in_three_digits_and_powers_of_1000() {

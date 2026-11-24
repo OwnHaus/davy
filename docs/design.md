@@ -1187,7 +1187,7 @@ An agent asks what fills a project's logs and what it could drop. Patterns answe
 
 ### Counters
 
-Per UTC day, project, pattern, service and level, Davy counts records and raw bytes. Per day, project and pattern it keeps the template and one example, the first message it counted, cut to 256 bytes. The message is scrubbed before it is counted, so an example holds nothing the logs do not.
+Per UTC day, project, pattern, service and level, Davy counts records and raw bytes. Per day, project and pattern it keeps the template and one example, the first message it counted, cut to 256 bytes. The message is scrubbed before it is counted, so an example holds nothing the logs do not. Control characters and the marks that reorder text (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069) in a template, an example or a service name are kept as U+FFFD, because they reach agents and terminals, also as JSON, which escapes only C0. `davy logs --patterns` replaces the same characters in what it prints, as the CLI does wherever it shows text from outside.
 
 - Raw bytes are the message, the service, trace and span ids, and the attributes as compact JSON: about what a shipper sends for the record, before Davy compresses it.
 - The log writer counts each record as it indexes it, and stamps the record with the id it counted it under, in the indexed field `pattern`. It decides overflow at that moment, so a record counted under `other` is found under `other`, and the report and `count_logs` with a pattern agree.

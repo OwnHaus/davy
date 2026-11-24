@@ -151,6 +151,26 @@ fn examples_and_service_names_are_cut() {
 }
 
 #[test]
+fn templates_examples_and_services_are_kept_without_controls_or_reordering_marks() {
+    let mut tally = DayTally::default();
+    let r = record(1, Some("api\u{202E}"), "login \u{202E}nimda\u{9b} done");
+    count(&mut tally, &r);
+    let entry = &tally.projects[&1].patterns[&patterns::of(&r.message).id];
+    assert_eq!(entry.template, "login \u{FFFD}nimda\u{FFFD} done");
+    assert_eq!(entry.example, "login \u{FFFD}nimda\u{FFFD} done");
+    let services: Vec<&str> = entry.services.keys().map(AsRef::as_ref).collect();
+    assert_eq!(services, ["api\u{FFFD}"]);
+    let long = "\u{1}".repeat(EXAMPLE_BYTES + 1);
+    count(&mut tally, &record(1, None, &long));
+    let entry = &tally.projects[&1].patterns[&patterns::of(&long).id];
+    assert_eq!(
+        entry.example,
+        "\u{FFFD}".repeat(85),
+        "still at most 256 bytes"
+    );
+}
+
+#[test]
 fn the_first_message_of_a_pattern_is_its_example() {
     let mut tally = DayTally::default();
     count(&mut tally, &record(1, None, "user 1 logged in"));

@@ -2,18 +2,30 @@
 
 use std::borrow::Cow;
 
-/// `s` with every control character replaced by `with`, so text from outside
-/// cannot move the cursor, retitle a terminal or split a line.
+/// `s` with every control character and every mark that reorders text
+/// replaced by `with`, so text from outside cannot move the cursor, retitle
+/// a terminal, split a line, or show its words in another order than they
+/// are read.
 pub fn printable(s: &str, with: char) -> Cow<'_, str> {
-    if s.chars().any(char::is_control) {
+    if s.chars().any(hidden) {
         Cow::Owned(
             s.chars()
-                .map(|c| if c.is_control() { with } else { c })
+                .map(|c| if hidden(c) { with } else { c })
                 .collect(),
         )
     } else {
         Cow::Borrowed(s)
     }
+}
+
+/// A control character, C0 and C1, or a bidirectional mark, embedding,
+/// override or isolate.
+fn hidden(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+        )
 }
 
 /// `bytes` for a person: `74 B`, `1.2 KB`, `56 MB`, in powers of 1000.
