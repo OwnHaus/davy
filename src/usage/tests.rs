@@ -301,6 +301,14 @@ fn data_with_counts(name: &str) -> std::path::PathBuf {
     data
 }
 
+/// Why [`data_with_counts`] has no forecast: shop keeps logs 7 days.
+fn no_closed_days() -> String {
+    let first = time::day_of(time::now_ns()).checked_sub(7.days()).unwrap();
+    format!(
+        "closed log days since {first}, the first day no retention has cut: the disk has 0, a forecast needs 2"
+    )
+}
+
 #[test]
 fn davy_usage_prints_the_counts_of_the_window_as_json() {
     let data = data_with_counts("usage-cli");
@@ -316,10 +324,7 @@ fn davy_usage_prints_the_counts_of_the_window_as_json() {
     };
     run(&mut out, &args).unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
-    assert_eq!(
-        v["no_forecast"],
-        "a forecast needs at least 2 closed log days, and the disk has 0"
-    );
+    assert_eq!(v["no_forecast"], no_closed_days());
     assert_eq!(
         v["what_if"],
         json!({"project":"shop","logs_days":3,"logs_bytes_per_day":null})
@@ -353,12 +358,8 @@ fn davy_usage_prints_text_by_default_and_refuses_a_long_window() {
     let mut out = Vec::new();
     run(&mut out, &args).unwrap();
     let text = String::from_utf8(out).unwrap();
-    assert!(
-        text.contains(
-            "forecast  no forecast: a forecast needs at least 2 closed log days, and the disk has 0\n"
-        ),
-        "{text}"
-    );
+    let line = format!("forecast  no forecast: {}\n", no_closed_days());
+    assert!(text.contains(&line), "{text}");
     let api_errors = format!("{:<20} {:<9} {:>10} {:>10}", "api", "errors", 3, "3.0 KB");
     assert!(text.contains(&api_errors), "{text}");
     assert!(
@@ -369,4 +370,149 @@ fn davy_usage_prints_text_by_default_and_refuses_a_long_window() {
     let err = run(&mut Vec::new(), &args).unwrap_err();
     assert_eq!(err.to_string(), "since reaches back at most 90d");
     std::fs::remove_dir_all(&data).unwrap();
+}
+
+#[test]
+fn the_sweep_deletes_at_most_10000_old_counts_at_a_time() {
+    let c = memory();
+    let last = day("2025-10-19");
+    let rows: Vec<Row> = (0..2001)
+        .flat_map(|i| {
+            let d = last.checked_sub(i.days()).unwrap();
+            Signal::ALL.map(|signal| Row {
+                day: d,
+                project: 1,
+                signal,
+                count: Count::new(1, 1),
+            })
+        })
+        .collect();
+    write(&c, &rows).unwrap();
+    let left = |c: &Connection| -> i64 {
+        c.query_row("SELECT COUNT(*) FROM usage_daily", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(left(&c), 10_005);
+    // 2026-11-23, 400 days after 2025-10-19.
+    let at = 1_795_392_000_000;
+    prune(&c, at).unwrap();
+    assert_eq!(left(&c), 5);
+    prune(&c, at).unwrap();
+    assert_eq!(left(&c), 0);
+}
+
+fn request(since: &str, what_if: forecast::WhatIf) -> Request {
+    Request {
+        project: None,
+        since: Some(since.into()),
+        what_if,
+        defaults: crate::retention::Defaults::default(),
+    }
+}
+
+fn at(s: &str) -> i64 {
+    time::nanos(s.parse().unwrap()).unwrap()
+}
+
+#[test]
+fn bytes_and_records_per_day_divide_by_the_same_time_since_midnight() {
+    let data = scratch("usage-rate");
+    let c = store::open(&data).unwrap();
+    store::create_project(&c, "api").unwrap();
+    write(
+        &c,
+        &[row("2026-11-24", 1, Signal::Logs, 100, 1_000_000_000)],
+    )
+    .unwrap();
+    let now = at("2026-11-24T00:30:00Z");
+    let r = report(&c, &data, &request("30m", forecast::WhatIf::default()), now).unwrap();
+    let logs = &r.json(true)["projects"][0]["signals"]["logs"];
+    assert_eq!(
+        (&logs["records_per_day"], &logs["bytes_per_day"]),
+        (&json!(4800.0), &json!("48.0 GB"))
+    );
+    let future = report(
+        &c,
+        &data,
+        &request("2026-11-25T00:00:00Z", forecast::WhatIf::default()),
+        now,
+    );
+    assert_eq!(
+        future.err().map(|e| e.to_string()),
+        Some("since is in the future".into())
+    );
+    std::fs::remove_dir_all(&data).unwrap();
+}
+
+#[test]
+fn a_what_if_that_cannot_run_is_refused_before_the_disk_is_walked() {
+    let c = memory();
+    let gone = std::path::Path::new("/nonexistent/davy");
+    let what_if = forecast::WhatIf {
+        project: Some("api".into()),
+        logs_days: None,
+        logs_bytes_per_day: Some(u64::MAX),
+    };
+    let err = report(
+        &c,
+        gone,
+        &request("1d", what_if),
+        at("2026-11-24T12:00:00Z"),
+    );
+    assert_eq!(
+        err.err().map(|e| e.to_string()).unwrap_or_default(),
+        "logs_bytes_per_day is for all projects together: logs of every project share one index per day, so Davy cannot tell one project's bytes on disk"
+    );
+}
+
+#[test]
+fn a_project_created_while_a_report_reads_is_in_none_of_it() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    let data = data_with_counts("usage-race");
+    let path = data.join(store::DB_FILE);
+    let mut c =
+        Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let writer = Connection::open(&path).unwrap();
+    let mut selects = 0;
+    // The project commits while the report prepares its second query.
+    c.authorizer(Some(move |ctx: AuthContext<'_>| {
+        if matches!(ctx.action, AuthAction::Select) {
+            selects += 1;
+            if selects == 2 {
+                store::create_project(&writer, "late").unwrap();
+            }
+        }
+        Authorization::Allow
+    }))
+    .unwrap();
+    let r = report(
+        &c,
+        &data,
+        &request("1d", forecast::WhatIf::default()),
+        time::now_ns(),
+    )
+    .unwrap();
+    let slugs: Vec<&str> = r.projects.iter().map(|p| p.slug.as_str()).collect();
+    assert_eq!(slugs, ["api", "shop"]);
+    std::fs::remove_dir_all(&data).unwrap();
+}
+
+#[test]
+fn a_disk_that_fills_on_a_day_past_the_calendar_still_says_it_fills() {
+    let r = Report {
+        since: day("2026-11-24"),
+        days: 1.0,
+        disk: disk::Disk::default(),
+        forecast: Ok(forecast::Forecast {
+            growth: 1_000_000_000,
+            longest_days: 30,
+            steady_state: 40_000_000_000,
+            headroom: 0,
+            days_left: Some(5),
+            full_on: None,
+        }),
+        what_if: forecast::WhatIf::default(),
+        projects: Vec::new(),
+    };
+    assert_eq!(r.summary(), "full in 5 days, at 1.0 GB of logs a day");
 }

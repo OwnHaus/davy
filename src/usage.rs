@@ -34,6 +34,8 @@ pub const UNDO: &str = "DROP TABLE usage_daily;";
 pub const FLUSH_EVERY: Duration = Duration::from_secs(5);
 /// Counts in one write, so one job holds the writer only briefly.
 pub const MAX_ROWS: usize = 500;
+/// Old counts one sweep deletes, for the same reason.
+pub const PRUNE_ROWS: i64 = 10_000;
 const QUEUE_FULL_WAIT: Duration = Duration::from_millis(50);
 /// Days of counts the sweep keeps, so a year compares with the one before.
 pub const KEEP_DAYS: i64 = 400;
@@ -186,13 +188,15 @@ pub fn write(c: &Connection, rows: &[Row]) -> rusqlite::Result<()> {
 }
 
 /// Deletes the counts of days other than the [`KEEP_DAYS`] that end on
-/// the day of `at`.
+/// the day of `at`, at most [`PRUNE_ROWS`] of them, so a sweep after a
+/// long outage holds the writer only briefly. The next sweep goes on.
 pub fn prune(c: &Connection, at_ms: i64) -> rusqlite::Result<()> {
     let today = time::day_of(at_ms.saturating_mul(1_000_000));
     if let Ok(cutoff) = today.checked_sub(KEEP_DAYS.days()) {
         c.execute(
-            "DELETE FROM usage_daily WHERE day<=?1",
-            [cutoff.to_string()],
+            "DELETE FROM usage_daily WHERE (day, project_id, signal) IN
+             (SELECT day, project_id, signal FROM usage_daily WHERE day<=?1 LIMIT ?2)",
+            (cutoff.to_string(), PRUNE_ROWS),
         )?;
     }
     Ok(())
@@ -249,18 +253,20 @@ async fn send(counter: &Counter, sender: &store::Sender) -> Result<(), Refused> 
     }
 }
 
-/// Counted records and bytes per project and signal since `from`, of one
-/// project or of all.
-pub fn since(
+/// Counted records and bytes per project and signal from the day `from`
+/// to the day `to`, both included, of one project or of all.
+pub fn between(
     c: &Connection,
     from: Date,
+    to: Date,
     project: Option<i64>,
 ) -> Result<HashMap<(i64, Signal), Count>> {
     let mut q = c.prepare(
         "SELECT project_id, signal, SUM(records), SUM(bytes) FROM usage_daily
-         WHERE day>=?1 AND (?2 IS NULL OR project_id=?2) GROUP BY project_id, signal",
+         WHERE day>=?1 AND day<=?2 AND (?3 IS NULL OR project_id=?3)
+         GROUP BY project_id, signal",
     )?;
-    let rows = q.query_map((from.to_string(), project), |r| {
+    let rows = q.query_map((from.to_string(), to.to_string(), project), |r| {
         Ok((
             r.get::<_, i64>(0)?,
             r.get::<_, String>(1)?,
@@ -286,22 +292,6 @@ pub fn since(
 }
 
 /// Log bytes per project counted on the days `from` to `to`, both included.
-pub fn log_bytes(c: &Connection, from: Date, to: Date) -> Result<HashMap<i64, u64>> {
-    let mut q = c.prepare(
-        "SELECT project_id, SUM(bytes) FROM usage_daily
-         WHERE signal='logs' AND day>=?1 AND day<=?2 GROUP BY project_id",
-    )?;
-    let rows = q.query_map((from.to_string(), to.to_string()), |r| {
-        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-    })?;
-    let mut out = HashMap::new();
-    for row in rows {
-        let (project, bytes) = row?;
-        out.insert(project, u64::try_from(bytes).unwrap_or(0));
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 #[path = "usage/tests.rs"]
 mod tests;

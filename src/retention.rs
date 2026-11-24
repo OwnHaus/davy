@@ -342,15 +342,27 @@ pub fn stored(c: &Connection, slug: &str) -> Result<Option<Stored>> {
 
 /// What every project keeps at `now_ms`, by slug.
 pub fn all(c: &Connection, defaults: Defaults, now_ms: i64) -> Result<Vec<Retention>> {
+    Ok(all_by_id(c, defaults, now_ms)?
+        .into_iter()
+        .map(|(_, k)| k)
+        .collect())
+}
+
+/// [`all`] with each project's id, in one statement, so a project created
+/// meanwhile is in the list with its id or not at all.
+pub fn all_by_id(c: &Connection, defaults: Defaults, now_ms: i64) -> Result<Vec<(i64, Retention)>> {
     let mut q = c.prepare(
-        "SELECT slug, log_retention_days, error_retention_days FROM projects ORDER BY slug",
+        "SELECT id, slug, log_retention_days, error_retention_days FROM projects ORDER BY slug",
     )?;
     let rows = q.query_map([], |r| {
         let stored = Stored {
-            logs_days: days(r.get(1)?),
-            errors_days: days(r.get(2)?),
+            logs_days: days(r.get(2)?),
+            errors_days: days(r.get(3)?),
         };
-        Ok(Retention::new(r.get(0)?, stored, defaults, now_ms))
+        Ok((
+            r.get(0)?,
+            Retention::new(r.get(1)?, stored, defaults, now_ms),
+        ))
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }

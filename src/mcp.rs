@@ -291,7 +291,7 @@ struct Usage {
     project: Option<String>,
     /// Start of the window the counts cover: 30m, 1h, 2d or an RFC 3339 timestamp, at most 90d back. Default 7d.
     since: Option<String>,
-    /// Recompute the forecast with one project's, or every project's, log retention or daily log bytes changed. Nothing is changed.
+    /// Recompute the forecast with one project's, or every project's, log retention changed, or with the daily log bytes of all projects together. Nothing is changed.
     what_if: Option<usage::forecast::WhatIf>,
 }
 
@@ -349,7 +349,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "What Davy stores and when the disk fills. Returns sizes as text such as \"4.1 GB\" (powers of 1000): disk (used, free, total, the 10% headroom kept free, steady_state: what Davy takes once retention deletes as much as arrives, days_left and full_on, both null when it never fills), what Davy's files take, growth_per_day (median of the last 7 closed log days), and per project the log and error retention in days, its share of log growth and, per signal (errors, logs, sessions, feedback, checkins), records and bytes received in the window and per day. Bytes are what clients sent, decompressed. With fewer than 2 closed log days there is no forecast and no_forecast says why. Read-only."
+        description = "What Davy stores and when the disk fills. Returns sizes as text such as \"4.1 GB\" (powers of 1000): disk (used, free, total, the 10% headroom kept free, steady_state: what Davy takes once retention deletes as much as arrives, days_left and full_on, both null when it never fills), what Davy's files take, growth_per_day (all logs together: median of the newest 7 closed log days no retention has cut), longest_log_days (the longest log retention of any project, which caps steady_state), and per project the log and error retention in days and, per signal (errors, logs, sessions, feedback, checkins), records and bytes received in the window and per day. Bytes are what clients sent, decompressed. Counts are kept per UTC day, so the window starts at midnight UTC of the day since names. Without enough closed log days there is no forecast and no_forecast says why. Read-only."
     )]
     async fn usage(&self, Parameters(req): Parameters<Usage>) -> Reply {
         let request = usage::Request {

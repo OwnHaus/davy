@@ -7,11 +7,11 @@ use super::{
     forecast::{self, Forecast, HEADROOM_REASON, WhatIf},
 };
 use crate::{retention, time};
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use jiff::civil::Date;
 use rusqlite::Connection;
 use serde_json::{Map, Value, json};
-use std::{collections::HashMap, path::Path};
+use std::path::Path;
 
 /// How far back `since` may reach.
 pub const MAX_SINCE_DAYS: i64 = 90;
@@ -26,7 +26,9 @@ pub struct Request {
 }
 
 pub struct Report {
-    /// The first day of the window, which ends now.
+    /// The first day of the window, which ends now. Counts are kept per
+    /// UTC day, so the window starts at midnight UTC of the day `since`
+    /// names.
     pub since: Date,
     /// The window's length in days, at least 1 second's worth.
     pub days: f64,
@@ -46,38 +48,44 @@ pub struct Project {
 pub fn report(c: &Connection, data: &Path, req: &Request, now_ns: i64) -> Result<Report> {
     let since =
         time::instant(req.since.as_deref().unwrap_or("7d"), now_ns).map_err(anyhow::Error::msg)?;
+    if since > now_ns {
+        bail!("since is in the future");
+    }
     if since < now_ns.saturating_sub(MAX_SINCE_DAYS * DAY_NS) {
         bail!("since reaches back at most {MAX_SINCE_DAYS}d");
     }
-    let from = time::day_of(since.min(now_ns));
-    // Midnight UTC of the first day.
-    let start = since.min(now_ns).div_euclid(DAY_NS) * DAY_NS;
+    let from = time::day_of(since);
     let today = time::day_of(now_ns);
-    let disk = disk::measure(data, today)?;
-    let ids = ids(c)?;
-    let kept = retention::all(c, req.defaults, now_ns / 1_000_000)?;
+    // One statement reads every project with its id and retention, so a
+    // project created meanwhile is either in all of the report or in none.
+    let kept = retention::all_by_id(c, req.defaults, now_ns / 1_000_000)?;
+    req.what_if
+        .check(kept.iter().map(|(_, k)| k.project.as_str()))
+        .map_err(anyhow::Error::msg)?;
     let filter = match &req.project {
-        Some(slug) if !ids.contains_key(slug) => bail!(retention::unknown(slug)),
-        Some(slug) => Some(ids[slug]),
+        Some(slug) => Some(
+            kept.iter()
+                .find(|(_, k)| k.project == *slug)
+                .map(|(id, _)| *id)
+                .ok_or_else(|| anyhow!(retention::unknown(slug)))?,
+        ),
         None => None,
     };
-    let counted = super::since(c, from, filter)?;
-    let forecast = forecast::forecast(&input(c, &disk, &ids, &kept, req, today)?, &req.what_if);
+    let counted = super::between(c, from, today, filter)?;
+    let disk = disk::measure(data, today)?;
+    let forecast = forecast::forecast(&input(&disk, &kept, req, today), &req.what_if);
     let projects = kept
         .iter()
-        .filter(|k| req.project.as_ref().is_none_or(|s| *s == k.project))
-        .map(|k| Project {
+        .filter(|(id, _)| filter.is_none_or(|f| f == *id))
+        .map(|(id, k)| Project {
             slug: k.project.clone(),
             logs_days: k.logs.days.get(),
             errors_days: k.errors.days.get(),
-            counts: Signal::ALL.map(|s| {
-                counted
-                    .get(&(ids[&k.project], s))
-                    .copied()
-                    .unwrap_or_default()
-            }),
+            counts: Signal::ALL.map(|s| counted.get(&(*id, s)).copied().unwrap_or_default()),
         })
         .collect();
+    // Midnight UTC of the first day.
+    let start = since.div_euclid(DAY_NS) * DAY_NS;
     Ok(Report {
         since: from,
         days: days(now_ns.saturating_sub(start)),
@@ -88,44 +96,27 @@ pub fn report(c: &Connection, data: &Path, req: &Request, now_ns: i64) -> Result
     })
 }
 
-/// What the forecast reads: the newest closed log days, and each project's
-/// share of the log bytes counted on those days.
+/// What the forecast reads: the closed log days and each project's log
+/// retention.
 fn input(
-    c: &Connection,
     disk: &Disk,
-    ids: &HashMap<String, i64>,
-    kept: &[retention::Retention],
+    kept: &[(i64, retention::Retention)],
     req: &Request,
     today: Date,
-) -> Result<forecast::Input> {
-    let newest = &disk.closed[disk.closed.len().saturating_sub(forecast::DAYS)..];
-    let shares = match (newest.first(), newest.last()) {
-        (Some((from, _)), Some((to, _))) => super::log_bytes(c, *from, *to)?,
-        _ => HashMap::new(),
-    };
-    Ok(forecast::Input {
+) -> forecast::Input {
+    forecast::Input {
         today,
-        closed: newest.iter().map(|(_, b)| *b).collect(),
+        closed: disk.closed.clone(),
         davy: disk.davy(),
         fixed: disk.fixed(),
         used: disk.used(),
         total: disk.total,
         projects: kept
             .iter()
-            .map(|k| forecast::Project {
-                slug: k.project.clone(),
-                log_bytes: shares.get(&ids[&k.project]).copied().unwrap_or(0),
-                logs_days: k.logs.days.get(),
-            })
+            .map(|(_, k)| (k.project.clone(), k.logs.days.get()))
             .collect(),
         default_days: req.defaults.logs.get(),
-    })
-}
-
-fn ids(c: &Connection) -> Result<HashMap<String, i64>> {
-    let mut q = c.prepare("SELECT slug, id FROM projects")?;
-    let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
 }
 
 /// `ns` in days, at least one second's worth so a rate never divides by 0.
@@ -141,6 +132,13 @@ fn days(ns: i64) -> f64 {
 )]
 fn per_day(n: u64, days: f64) -> f64 {
     (n as f64 / days * 10.0).round() / 10.0
+}
+
+/// `bytes` over `days`, in whole bytes.
+fn bytes_per_day(bytes: u64, days: f64) -> u64 {
+    time::whole(per_day(bytes, days).round())
+        .and_then(|n| u64::try_from(n).ok())
+        .unwrap_or(u64::MAX)
 }
 
 /// `bytes` in powers of 1000 with one decimal, such as `4.1 GB`.
@@ -191,6 +189,7 @@ impl Report {
                 "other": size(d.other),
             },
             "growth_per_day": f.map(|f| size(f.growth)),
+            "longest_log_days": f.map(|f| f.longest_days),
             "forecast": self.summary(),
             "projects": self.projects.iter().map(|p| self.project(p, &size)).collect::<Vec<_>>(),
         });
@@ -212,46 +211,32 @@ impl Report {
                     "records": n.records,
                     "bytes": size(n.bytes),
                     "records_per_day": per_day(n.records, self.days),
-                    "bytes_per_day": size(n.bytes.saturating_mul(10) / self.tenths_of_days()),
+                    "bytes_per_day": size(bytes_per_day(n.bytes, self.days)),
                 });
                 (s.name().to_owned(), v)
             })
             .collect();
-        let growth = self.forecast.as_ref().ok().and_then(|f| {
-            f.per_project
-                .iter()
-                .find(|g| g.project.as_ref() == Some(&p.slug))
-                .map(|g| size(g.bytes_per_day))
-        });
         json!({
             "project": p.slug,
             "logs_days": p.logs_days,
             "errors_days": p.errors_days,
-            "log_growth_per_day": growth,
             "signals": signals,
         })
-    }
-
-    /// The window in tenths of a day, at least 1, to divide bytes by.
-    fn tenths_of_days(&self) -> u64 {
-        let tenths = (self.days * 10.0).round().max(1.0);
-        time::whole(tenths)
-            .and_then(|n| u64::try_from(n).ok())
-            .unwrap_or(1)
     }
 
     /// One sentence on when the disk fills.
     pub fn summary(&self) -> String {
         match &self.forecast {
             Err(reason) => format!("no forecast: {reason}"),
-            Ok(f) => match (f.days_left, f.full_on) {
-                (Some(0), _) => "the disk is past total minus headroom now".to_owned(),
-                (Some(n), Some(on)) => format!(
-                    "full on {on}, in {n} days, at {} of logs a day",
-                    human(f.growth)
-                ),
-                _ => format!(
-                    "never fills at the current rate: retention holds Davy at {}",
+            Ok(f) => match f.days_left {
+                Some(0) => "the disk is past total minus headroom now".to_owned(),
+                Some(n) => {
+                    let on = f.full_on.map(|on| format!("on {on}, ")).unwrap_or_default();
+                    format!("full {on}in {n} days, at {} of logs a day", human(f.growth))
+                }
+                None => format!(
+                    "never fills at the current rate: even the longest log retention, {} days, holds Davy at {}",
+                    f.longest_days,
                     human(f.steady_state)
                 ),
             },
@@ -310,7 +295,7 @@ impl Report {
                     n.records,
                     human(n.bytes),
                     per_day(n.records, self.days),
-                    human(n.bytes.saturating_mul(10) / self.tenths_of_days()),
+                    human(bytes_per_day(n.bytes, self.days)),
                 )?;
             }
             writeln!(

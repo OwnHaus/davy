@@ -435,7 +435,7 @@ fn full_in(days: Option<u64>) -> Forecast {
     });
     Forecast {
         growth: GIB,
-        per_project: Vec::new(),
+        longest_days: 30,
         steady_state: 100 * GIB,
         headroom: 10 * GIB,
         days_left: days,

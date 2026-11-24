@@ -1,5 +1,10 @@
 //! When the disk fills: a pure function of what Davy measured, so every
 //! case has a test with fixed numbers.
+//!
+//! Logs of all projects share one index per day, so Davy cannot measure
+//! one project's bytes on disk. The forecast takes the growth of all logs
+//! together and caps it with the longest log retention of any project, a
+//! bound no split of the growth can exceed.
 
 use jiff::{ToSpan as _, civil::Date};
 use rmcp::schemars::JsonSchema;
@@ -11,20 +16,11 @@ pub const DAYS: usize = 7;
 pub const HEADROOM_PERCENT: u64 = 10;
 pub const HEADROOM_REASON: &str = "10% of the filesystem stays free: filesystems reserve blocks, and index merges and SQLite checkpoints need room for a copy of what they rewrite";
 
-/// One project's share of the log growth and how long it keeps logs.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Project {
-    pub slug: String,
-    /// Log bytes counted over the closed days the growth comes from.
-    pub log_bytes: u64,
-    pub logs_days: u32,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Input {
     pub today: Date,
-    /// Sizes on disk of the newest closed log days, at most [`DAYS`].
-    pub closed: Vec<u64>,
+    /// Each closed log day on disk and its size, oldest first.
+    pub closed: Vec<(Date, u64)>,
     /// What Davy's files take now.
     pub davy: u64,
     /// What SQLite, uploads and other files take now. They are taken as
@@ -33,9 +29,9 @@ pub struct Input {
     /// Used and total bytes of the filesystem.
     pub used: u64,
     pub total: u64,
-    /// Every project, with its log retention.
-    pub projects: Vec<Project>,
-    /// The server's log retention, for growth no project was counted for.
+    /// Every project's slug and the days of logs it keeps.
+    pub projects: Vec<(String, u32)>,
+    /// The server's log retention, which a server without projects keeps.
     pub default_days: u32,
 }
 
@@ -44,12 +40,11 @@ pub struct Input {
 #[schemars(crate = "rmcp::schemars")]
 #[serde(deny_unknown_fields)]
 pub struct WhatIf {
-    /// The project the change applies to. Without it, every project.
+    /// The project `logs_days` applies to. Without it, every project.
     pub project: Option<String>,
     /// Days of logs the project, or every project, would keep.
     pub logs_days: Option<u32>,
-    /// Bytes of logs on disk the project, or all projects together, would
-    /// add per day.
+    /// Bytes of logs on disk all projects together would add per day.
     pub logs_bytes_per_day: Option<u64>,
 }
 
@@ -57,65 +52,70 @@ impl WhatIf {
     pub fn is_empty(&self) -> bool {
         self.logs_days.is_none() && self.logs_bytes_per_day.is_none()
     }
+
+    /// Why the what-if cannot run against the projects `slugs`, if it
+    /// cannot.
+    pub fn check<'a>(&self, mut slugs: impl Iterator<Item = &'a str>) -> Result<(), String> {
+        if let Some(slug) = &self.project {
+            if self.logs_bytes_per_day.is_some() {
+                return Err(ONE_PROJECTS_BYTES.to_owned());
+            }
+            if !slugs.any(|s| s == slug) {
+                return Err(crate::retention::unknown(slug));
+            }
+        }
+        if self
+            .logs_days
+            .is_some_and(|n| !(1..=crate::retention::MAX_DAYS).contains(&n))
+        {
+            return Err(format!(
+                "logs_days must be 1 to {}",
+                crate::retention::MAX_DAYS
+            ));
+        }
+        Ok(())
+    }
 }
 
-/// The log growth of one project, or with `project` `None` of logs no
-/// project was counted for.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Growth {
-    pub project: Option<String>,
-    pub bytes_per_day: u64,
-    pub logs_days: u32,
-}
+const ONE_PROJECTS_BYTES: &str = "logs_bytes_per_day is for all projects together: logs of every project share one index per day, so Davy cannot tell one project's bytes on disk";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Forecast {
     /// Bytes of logs on disk per day, all projects together.
     pub growth: u64,
-    pub per_project: Vec<Growth>,
-    /// What Davy takes once retention deletes as much as arrives.
+    /// The longest log retention of any project, which caps the growth.
+    pub longest_days: u32,
+    /// The most Davy takes once retention deletes as much as arrives.
     pub steady_state: u64,
     pub headroom: u64,
     /// `None` when the disk never fills at this rate.
     pub days_left: Option<u64>,
+    /// The UTC day of `days_left`, `None` when it never fills or the day
+    /// is past the last date there is.
     pub full_on: Option<Date>,
 }
 
 /// The forecast, or why there is none.
 pub fn forecast(input: &Input, what_if: &WhatIf) -> Result<Forecast, String> {
-    if let Some(slug) = &what_if.project
-        && !input.projects.iter().any(|p| &p.slug == slug)
-    {
-        return Err(crate::retention::unknown(slug));
-    }
-    if what_if
-        .logs_days
-        .is_some_and(|n| !(1..=crate::retention::MAX_DAYS).contains(&n))
-    {
-        return Err(format!(
-            "logs_days must be 1 to {}",
-            crate::retention::MAX_DAYS
-        ));
-    }
-    let total_override = what_if
-        .logs_bytes_per_day
-        .filter(|_| what_if.project.is_none());
-    let growth = match (median(&input.closed), total_override) {
-        (_, Some(bytes)) => bytes,
-        (Some(m), None) if input.closed.len() >= 2 => m,
-        _ => {
-            return Err(format!(
-                "a forecast needs at least 2 closed log days, and the disk has {}",
-                input.closed.len()
-            ));
-        }
-    };
-    let per_project = apply(split(input, growth), input, what_if);
-    let growth = per_project.iter().map(|g| g.bytes_per_day).sum::<u64>();
-    let steady_state = per_project
+    what_if.check(input.projects.iter().map(|(s, _)| s.as_str()))?;
+    // What is on disk follows the settings, the cap follows the what-if.
+    let shortest = input.projects.iter().map(|(_, n)| *n).min();
+    let longest = input
+        .projects
         .iter()
-        .map(|g| g.bytes_per_day.saturating_mul(u64::from(g.logs_days)))
-        .fold(input.fixed, u64::saturating_add);
+        .map(|(slug, n)| match what_if.logs_days {
+            Some(days) if what_if.project.as_ref().is_none_or(|p| p == slug) => days,
+            _ => *n,
+        })
+        .max()
+        .unwrap_or(what_if.logs_days.unwrap_or(input.default_days));
+    let growth = match what_if.logs_bytes_per_day {
+        Some(bytes) => bytes,
+        None => measured(input, shortest.unwrap_or(input.default_days))?,
+    };
+    let steady_state = growth
+        .saturating_mul(u64::from(longest))
+        .saturating_add(input.fixed);
     let headroom = input.total / 100 * HEADROOM_PERCENT;
     let days_left = days_left(input, growth, steady_state, headroom);
     let full_on = days_left.and_then(|n| {
@@ -124,12 +124,40 @@ pub fn forecast(input: &Input, what_if: &WhatIf) -> Result<Forecast, String> {
     });
     Ok(Forecast {
         growth,
-        per_project,
+        longest_days: longest,
         steady_state,
         headroom,
         days_left,
         full_on,
     })
+}
+
+/// The median size of the newest closed days, at most [`DAYS`], that no
+/// retention has cut yet: those within the `shortest` retention of any
+/// project. An older day lost the logs of the projects that keep fewer
+/// days, and would make the growth look smaller than it is.
+fn measured(input: &Input, shortest: u32) -> Result<u64, String> {
+    let first = input
+        .today
+        .checked_sub(i64::from(shortest).days())
+        .unwrap_or(Date::MIN);
+    let sizes: Vec<u64> = input
+        .closed
+        .iter()
+        .rev()
+        .filter(|(day, _)| *day >= first && *day < input.today)
+        .take(DAYS)
+        .map(|(_, bytes)| *bytes)
+        .collect();
+    // With 1 day of retention, yesterday is the only day not cut.
+    let need = if shortest >= 2 { 2 } else { 1 };
+    match median(&sizes) {
+        Some(m) if sizes.len() >= need => Ok(m),
+        _ => Err(format!(
+            "closed log days since {first}, the first day no retention has cut: the disk has {}, a forecast needs {need}",
+            sizes.len()
+        )),
+    }
 }
 
 /// Days until used space reaches total minus headroom, while Davy grows by
@@ -159,69 +187,6 @@ fn median(sizes: &[u64]) -> Option<u64> {
             u64::try_from(sum / 2).ok()
         }
     }
-}
-
-/// `growth` split by each project's share of counted log bytes. Without
-/// counts, all of it follows the server's default retention.
-fn split(input: &Input, growth: u64) -> Vec<Growth> {
-    let counted = input
-        .projects
-        .iter()
-        .map(|p| u128::from(p.log_bytes))
-        .sum::<u128>();
-    if counted == 0 {
-        return vec![Growth {
-            project: None,
-            bytes_per_day: growth,
-            logs_days: input.default_days,
-        }];
-    }
-    input
-        .projects
-        .iter()
-        .filter(|p| p.log_bytes > 0)
-        .map(|p| Growth {
-            project: Some(p.slug.clone()),
-            bytes_per_day: u64::try_from(u128::from(growth) * u128::from(p.log_bytes) / counted)
-                .unwrap_or(u64::MAX),
-            logs_days: p.logs_days,
-        })
-        .collect()
-}
-
-/// The growth with the what-if's project changes applied.
-fn apply(mut growth: Vec<Growth>, input: &Input, what_if: &WhatIf) -> Vec<Growth> {
-    let Some(slug) = &what_if.project else {
-        if let Some(days) = what_if.logs_days {
-            for g in &mut growth {
-                g.logs_days = days;
-            }
-        }
-        return growth;
-    };
-    let found = growth.iter().position(|g| g.project.as_ref() == Some(slug));
-    let index = if let Some(i) = found {
-        i
-    } else {
-        let days = input
-            .projects
-            .iter()
-            .find(|p| &p.slug == slug)
-            .map_or(input.default_days, |p| p.logs_days);
-        growth.push(Growth {
-            project: Some(slug.clone()),
-            bytes_per_day: 0,
-            logs_days: days,
-        });
-        growth.len() - 1
-    };
-    if let Some(days) = what_if.logs_days {
-        growth[index].logs_days = days;
-    }
-    if let Some(bytes) = what_if.logs_bytes_per_day {
-        growth[index].bytes_per_day = bytes;
-    }
-    growth
 }
 
 #[cfg(test)]

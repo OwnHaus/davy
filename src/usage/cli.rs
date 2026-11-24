@@ -11,8 +11,7 @@ pub struct Args {
     /// The data directory of the server.
     #[arg(long)]
     pub data: PathBuf,
-    /// Show one project's counts, and apply --logs-days or
-    /// --logs-bytes-per-day to it alone.
+    /// Show one project's counts, and apply --logs-days to it alone.
     #[arg(long)]
     pub project: Option<String>,
     /// The window of the counts: 30m, 1h, 2d or an RFC 3339 timestamp, at
@@ -22,8 +21,9 @@ pub struct Args {
     /// What if the project, or every project, kept this many days of logs.
     #[arg(long)]
     pub logs_days: Option<u32>,
-    /// What if the project, or all projects together, added this many
-    /// bytes of logs on disk a day.
+    /// What if all projects together added this many bytes of logs on
+    /// disk a day. Logs of every project share one index per day, so this
+    /// cannot be one project's.
     #[arg(long)]
     pub logs_bytes_per_day: Option<u64>,
     /// The server's default log retention, as given to `davy serve`, which
@@ -41,10 +41,7 @@ pub fn run(out: &mut impl Write, args: &Args) -> Result<()> {
         project: args.project.clone(),
         since: Some(args.since.clone()),
         what_if: WhatIf {
-            project: args
-                .project
-                .clone()
-                .filter(|_| args.logs_days.is_some() || args.logs_bytes_per_day.is_some()),
+            project: args.project.clone().filter(|_| args.logs_days.is_some()),
             logs_days: args.logs_days,
             logs_bytes_per_day: args.logs_bytes_per_day,
         },
