@@ -1,16 +1,16 @@
 //! The payload reads of a store before and after `latest_payloads`.
 use super::{out, ratio};
 use anyhow::{Result, bail};
-use davy::store;
+use davy::{
+    issues::{EVENT_PAGE_SQL, STORED_PAYLOAD_SQL},
+    store,
+};
 use rusqlite::{Connection, OpenFlags, params};
 use std::{path::Path, time::Instant};
 
 /// The reads of `src/issues.rs` before `latest_payloads`.
 const OLD_STORED: &str = "SELECT event_id,payload FROM events WHERE issue_id=?1 AND payload IS NOT NULL AND (?2 IS NULL OR event_id=?2) ORDER BY id DESC LIMIT 1";
 const OLD_PAGE: &str = "SELECT id,event_id,timestamp,release,environment,payload IS NOT NULL FROM events WHERE issue_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3";
-/// The reads of `src/issues.rs` now.
-const NEW_STORED: &str = "SELECT e.event_id,coalesce(e.payload,l.payload) FROM events e LEFT JOIN latest_payloads l ON l.issue_id=?1 AND l.event=e.id WHERE e.issue_id=?1 AND (e.payload IS NOT NULL OR l.event IS NOT NULL) AND (?2 IS NULL OR e.event_id=?2) ORDER BY e.id DESC LIMIT 1";
-const NEW_PAGE: &str = "SELECT id,event_id,timestamp,release,environment,payload IS NOT NULL OR id IS (SELECT event FROM latest_payloads WHERE issue_id=?1) FROM events WHERE issue_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3";
 /// Calls per issue in one round.
 const REPS: usize = 50;
 
@@ -60,9 +60,9 @@ pub fn compare(args: &[String]) -> Result<()> {
     let (old, new) = (Store::open(old)?, Store::open(new)?);
     let cases: [(&str, &Store, &str, bool); 4] = [
         ("old_stored", &old, OLD_STORED, false),
-        ("new_stored", &new, NEW_STORED, false),
+        ("new_stored", &new, STORED_PAYLOAD_SQL, false),
         ("old_page", &old, OLD_PAGE, true),
-        ("new_page", &new, NEW_PAGE, true),
+        ("new_page", &new, EVENT_PAGE_SQL, true),
     ];
     let mut times = vec![Vec::new(); cases.len()];
     for _ in 0..rounds.parse::<usize>()? {

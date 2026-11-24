@@ -352,12 +352,15 @@ pub struct EventPage {
     pub next: Option<String>,
 }
 
+/// The query of [`events`]: `?1` the issue, `?2` the cursor, `?3` the
+/// rows. Public, like [`STORED_PAYLOAD_SQL`], so that the benchmark in
+/// `examples/error_footprint` times the query Davy runs.
+pub const EVENT_PAGE_SQL: &str = "SELECT id,event_id,timestamp,release,environment,payload IS NOT NULL OR id IS (SELECT event FROM latest_payloads WHERE issue_id=?1) FROM events WHERE issue_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3";
+
 /// One page of the events of `issue`, newest first. `after` is the
 /// cursor of the page before.
 pub fn events(c: &Connection, issue: i64, after: Option<i64>) -> Result<EventPage> {
-    let mut q = c.prepare(
-        "SELECT id,event_id,timestamp,release,environment,payload IS NOT NULL OR id IS (SELECT event FROM latest_payloads WHERE issue_id=?1) FROM events WHERE issue_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
-    )?;
+    let mut q = c.prepare(EVENT_PAGE_SQL)?;
     let limit = i64::try_from(EVENT_PAGE + 1)?;
     let mut ids = Vec::new();
     let mut events = q
@@ -379,6 +382,10 @@ pub fn events(c: &Connection, issue: i64, after: Option<i64>) -> Result<EventPag
     Ok(EventPage { events, next })
 }
 
+/// The query of [`stored_payload`]: `?1` the issue, `?2` the event id or
+/// NULL.
+pub const STORED_PAYLOAD_SQL: &str = "SELECT e.event_id,coalesce(e.payload,l.payload) FROM events e LEFT JOIN latest_payloads l ON l.issue_id=?1 AND l.event=e.id WHERE e.issue_id=?1 AND (e.payload IS NOT NULL OR l.event IS NOT NULL) AND (?2 IS NULL OR e.event_id=?2) ORDER BY e.id DESC LIMIT 1";
+
 /// The compressed payload of the event `event_id` of `issue`, or of its
 /// newest stored event, with the id of the event it belongs to.
 pub fn stored_payload(
@@ -386,12 +393,12 @@ pub fn stored_payload(
     issue: i64,
     event_id: Option<&str>,
 ) -> Result<Option<(String, Vec<u8>)>> {
-    Ok(c.query_row(
-        "SELECT e.event_id,coalesce(e.payload,l.payload) FROM events e LEFT JOIN latest_payloads l ON l.issue_id=?1 AND l.event=e.id WHERE e.issue_id=?1 AND (e.payload IS NOT NULL OR l.event IS NOT NULL) AND (?2 IS NULL OR e.event_id=?2) ORDER BY e.id DESC LIMIT 1",
-        params![issue, event_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+    Ok(
+        c.query_row(STORED_PAYLOAD_SQL, params![issue, event_id], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .optional()?,
     )
-    .optional()?)
 }
 
 /// Releases a project lists for the release filter, the newest first.
