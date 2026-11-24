@@ -79,6 +79,34 @@ struct Gone {
     release: Option<String>,
 }
 
+/// The expired events of one batch, see [`pick`], with what each weighs.
+/// CROSS JOIN keeps projects as the outer loop, so each project's expired
+/// events are one range of events_project_received, read in its order
+/// without a sort. The order is what lets [`untag`] look for tied events
+/// only.
+const PICK: &str =
+    "SELECT e.id, e.issue_id, coalesce(length(e.payload), 0) + coalesce(octet_length(e.user_id), 0)
+         + coalesce(octet_length(e.release), 0) + coalesce(octet_length(e.environment), 0)
+         FROM projects p CROSS JOIN events e
+         ON e.project_id=p.id AND e.received_at<?1-coalesce(p.error_retention_days,?2)*?3
+         ORDER BY p.id, e.received_at, e.id LIMIT ?4";
+/// Drops a tag of an issue that no event left carries, see [`untag`].
+const UNTAG: &str =
+    "DELETE FROM issue_tags WHERE key=?1 AND value=?2 AND issue_id=?3 AND last_at<=?4
+         AND NOT EXISTS(SELECT 1 FROM events WHERE project_id=?5 AND received_at=issue_tags.last_at
+         AND issue_id=?3 AND CASE ?1 WHEN 'environment' THEN environment ELSE release END=?2)";
+/// The oldest and newest timestamp of an issue's events. Two subqueries,
+/// so each is one lookup in events_issue_timestamp.
+const SEEN: &str = "SELECT (SELECT min(timestamp) FROM events WHERE issue_id=?1),
+             (SELECT max(timestamp) FROM events WHERE issue_id=?1)";
+/// The user feedback of issues with no event left. issues_emptied holds
+/// only the issues with an event_count of 0, so finding them reads no
+/// other issue.
+const LINKED: &str =
+    "SELECT f.id, f.issue_id FROM issues i CROSS JOIN user_feedback f ON f.issue_id=i.id
+             WHERE i.event_count=0 AND NOT EXISTS(SELECT 1 FROM events WHERE issue_id=i.id)
+             LIMIT ?1";
+
 /// What one batch took from one issue.
 #[derive(Default)]
 struct Taken {
@@ -140,17 +168,7 @@ fn events(c: &Connection, at: i64, default: Days) -> Result<bool> {
 /// first, up to [`BATCH`] events and about [`WORK`] of work, and at least
 /// one. Returns their ids, and whether more may wait.
 fn pick(c: &Connection, at: i64, default: Days) -> Result<(Vec<i64>, bool)> {
-    // CROSS JOIN keeps projects as the outer loop, so each project's expired
-    // events are one range of events_project_received, read in its order
-    // without a sort. The order is what lets `untag` look for tied events
-    // only.
-    let mut q = c.prepare_cached(
-        "SELECT e.id, e.issue_id, coalesce(length(e.payload), 0) + coalesce(octet_length(e.user_id), 0)
-         + coalesce(octet_length(e.release), 0) + coalesce(octet_length(e.environment), 0)
-         FROM projects p CROSS JOIN events e
-         ON e.project_id=p.id AND e.received_at<?1-coalesce(p.error_retention_days,?2)*?3
-         ORDER BY p.id, e.received_at, e.id LIMIT ?4",
-    )?;
+    let mut q = c.prepare_cached(PICK)?;
     let rows = q.query_map(params![at, default.get(), super::DAY_MS, BATCH], |r| {
         Ok((
             r.get::<_, i64>(0)?,
@@ -190,12 +208,8 @@ fn untag(
     // in the order they arrived, so an event left that carries the tag
     // arrived after the newest one deleted, which makes last_at later, or
     // at the same millisecond, which the index by project and time finds.
-    c.prepare_cached(
-        "DELETE FROM issue_tags WHERE key=?1 AND value=?2 AND issue_id=?3 AND last_at<=?4
-         AND NOT EXISTS(SELECT 1 FROM events WHERE project_id=?5 AND received_at=issue_tags.last_at
-         AND issue_id=?3 AND CASE ?1 WHEN 'environment' THEN environment ELSE release END=?2)",
-    )?
-    .execute(params![key, value, issue, newest, project])?;
+    c.prepare_cached(UNTAG)?
+        .execute(params![key, value, issue, newest, project])?;
     Ok(())
 }
 
@@ -208,12 +222,8 @@ fn recount(c: &Connection, issue: i64, taken: &Taken) -> Result<()> {
     }
     c.prepare_cached("DELETE FROM issue_hourly WHERE issue_id=?1 AND count<=0")?
         .execute([issue])?;
-    // Two subqueries, so each is one lookup in events_issue_timestamp.
     let seen: Option<(i64, i64)> = c
-        .prepare_cached(
-            "SELECT (SELECT min(timestamp) FROM events WHERE issue_id=?1),
-             (SELECT max(timestamp) FROM events WHERE issue_id=?1)",
-        )?
+        .prepare_cached(SEEN)?
         .query_row([issue], |r| Ok(r.get::<_, Option<i64>>(0)?.zip(r.get(1)?)))?;
     match seen {
         Some((first_seen, last_seen)) => {
@@ -271,14 +281,8 @@ fn forget(c: &Connection, issue: i64) -> Result<()> {
 /// and deletes each such issue once none points at it. Returns whether the
 /// batch was full.
 fn unlink(c: &Connection) -> Result<bool> {
-    // issues_emptied holds only the issues with an event_count of 0, so
-    // finding them reads no other issue.
     let linked: Vec<(i64, i64)> = c
-        .prepare_cached(
-            "SELECT f.id, f.issue_id FROM issues i CROSS JOIN user_feedback f ON f.issue_id=i.id
-             WHERE i.event_count=0 AND NOT EXISTS(SELECT 1 FROM events WHERE issue_id=i.id)
-             LIMIT ?1",
-        )?
+        .prepare_cached(LINKED)?
         .query_map([UNLINK], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     let mut clear = c.prepare_cached("UPDATE user_feedback SET issue_id=NULL WHERE id=?1")?;

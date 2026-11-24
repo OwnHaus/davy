@@ -316,17 +316,7 @@ fn first_and_last_seen_follow_the_events_left_whatever_their_clocks_said() {
         .unwrap();
     assert_eq!(seen, (day(3), day(7)));
     // Each is one lookup in an index, not a read of the issue's events.
-    let mut q =
-        s.c.prepare(
-            "EXPLAIN QUERY PLAN SELECT (SELECT min(timestamp) FROM events WHERE issue_id=?1),
-             (SELECT max(timestamp) FROM events WHERE issue_id=?1)",
-        )
-        .unwrap();
-    let plan: Vec<String> = q
-        .query_map([1], |r| r.get(3))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap();
+    let plan = plan(&s.c, SEEN, [1]);
     let indexed = plan.iter().filter(|d| d.contains("events_issue_timestamp"));
     assert_eq!(indexed.count(), 2, "{plan:?}");
 }
@@ -518,19 +508,7 @@ fn an_error_back_before_its_feedback_is_unlinked_starts_its_issue_again() {
 #[test]
 fn finding_the_feedback_of_issues_with_no_events_reads_only_those() {
     let s = Server::new("errors-unlink-plan", &["api"]);
-    let mut q =
-        s.c.prepare(
-            "EXPLAIN QUERY PLAN SELECT f.id, f.issue_id FROM issues i
-             CROSS JOIN user_feedback f ON f.issue_id=i.id
-             WHERE i.event_count=0 AND NOT EXISTS(SELECT 1 FROM events WHERE issue_id=i.id)
-             LIMIT ?1",
-        )
-        .unwrap();
-    let plan: Vec<String> = q
-        .query_map([1], |r| r.get(3))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap();
+    let plan = plan(&s.c, LINKED, [1]);
     let uses = |index: &str| plan.iter().any(|d| d.contains(index));
     assert_eq!(
         (uses("issues_emptied"), uses("user_feedback_issue")),
@@ -622,20 +600,8 @@ fn plan(c: &Connection, sql: &str, params: impl rusqlite::Params) -> Vec<String>
 #[test]
 fn picking_expired_events_and_untagging_read_the_index_by_project_and_time() {
     let s = Server::new("errors-pick-plan", &["api"]);
-    let pick = plan(
-        &s.c,
-        "SELECT e.id, e.issue_id, coalesce(length(e.payload), 0) FROM projects p CROSS JOIN events e
-         ON e.project_id=p.id AND e.received_at<?1-coalesce(p.error_retention_days,?2)*?3
-         ORDER BY p.id, e.received_at, e.id LIMIT ?4",
-        params![day(20), 10, DAY_MS, BATCH],
-    );
-    let untag = plan(
-        &s.c,
-        "DELETE FROM issue_tags WHERE key=?1 AND value=?2 AND issue_id=?3 AND last_at<=?4
-         AND NOT EXISTS(SELECT 1 FROM events WHERE project_id=?5 AND received_at=issue_tags.last_at
-         AND issue_id=?3 AND CASE ?1 WHEN 'environment' THEN environment ELSE release END=?2)",
-        params!["release", "v1", 1, day(1), 1],
-    );
+    let pick = plan(&s.c, PICK, params![day(20), 10, DAY_MS, BATCH]);
+    let untag = plan(&s.c, UNTAG, params!["release", "v1", 1, day(1), 1]);
     let has = |plan: &[String], step: &str| plan.iter().any(|d| d.contains(step));
     // No sort of the whole range, and no scan of events or issue_tags.
     assert_eq!(
