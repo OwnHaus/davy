@@ -1,7 +1,7 @@
 //! Read-only SQL over the error store, for agents and `davy sql`.
 
 use crate::store;
-use anyhow::Result;
+use anyhow::{Result, bail};
 use rusqlite::{
     Connection, OpenFlags,
     functions::FunctionFlags,
@@ -48,15 +48,31 @@ pub struct Rows {
     pub truncated: bool,
 }
 
-/// Opens the store read-only. Creates the schema first, so a fresh directory
-/// answers queries instead of failing on missing tables.
+/// Opens the store read-only. It neither creates nor upgrades the database,
+/// so reading cannot change a directory: a directory without one, or with
+/// one an older Davy wrote, is an error that says what to run.
 pub fn open(data: &Path) -> Result<Connection> {
-    drop(store::open(data)?);
+    let path = data.join(store::DB_FILE);
+    if !path.exists() {
+        bail!(
+            "no database in {}: run davy serve --data {} first",
+            data.display(),
+            data.display()
+        );
+    }
     let mut c = Connection::open_with_flags(
-        data.join(store::DB_FILE),
+        path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     c.busy_timeout(store::BUSY_TIMEOUT)?;
+    let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version < store::SCHEMA_VERSION {
+        bail!(
+            "the database in {} is from an older Davy: run davy serve --data {} once to upgrade it",
+            data.display(),
+            data.display()
+        );
+    }
     // SQLite's default of 1 GB lets one `hex(zeroblob(..))` take that much
     // memory, and the timeout cannot stop a single allocation.
     c.set_limit(Limit::SQLITE_LIMIT_LENGTH, MAX_LENGTH)?;
@@ -467,5 +483,49 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r.rows, [vec![json!("newest")]]);
+    }
+
+    #[test]
+    fn reading_a_directory_without_a_database_says_so_and_creates_nothing() {
+        let data = crate::test_support::scratch("query-none");
+        let err = open(&data).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "no database in {}: run davy serve --data {} first",
+                data.display(),
+                data.display()
+            )
+        );
+        assert!(!data.exists(), "the directory stays missing");
+    }
+
+    #[test]
+    fn reading_a_database_of_an_older_davy_asks_for_an_upgrade_and_leaves_it() {
+        let data = crate::test_support::scratch("query-old");
+        let c = store::open(&data).unwrap();
+        c.execute_batch(crate::usage::UNDO).unwrap();
+        let older = store::SCHEMA_VERSION - 1;
+        c.pragma_update(None, "user_version", older).unwrap();
+        let err = open(&data).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "the database in {} is from an older Davy: run davy serve --data {} once to upgrade it",
+                data.display(),
+                data.display()
+            )
+        );
+        let version: u32 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        let tables: i64 = c
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name='usage_daily'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((version, tables), (older, 0));
     }
 }

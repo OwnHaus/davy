@@ -87,6 +87,12 @@ impl IssueStatus {
 }
 /// The database file in a data directory.
 pub const DB_FILE: &str = "davy.sqlite";
+/// The `user_version` of a database with every migration run.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "there are a few dozen migrations, not 2^32"
+)]
+pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 /// How long a connection waits for another one's write lock.
 pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
