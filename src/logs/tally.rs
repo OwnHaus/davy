@@ -3,7 +3,7 @@
 //!
 //! The log writer counts each record as it indexes it and stamps the record
 //! with the pattern it was counted under, so the counters and a search by
-//! pattern agree. A day's counters live in memory while the writer has the
+//! pattern agree. A count is pending until the commit of its day holds. A day's counters live in memory while the writer has the
 //! day open, and in `patterns.json` in the day's directory, written every
 //! [`FLUSH_EVERY`] and when the day closes. Retention removes them with the
 //! logs they count. Readers in the server process see the memory, so they
@@ -63,6 +63,17 @@ pub(super) struct ProjectDay {
     pub(super) patterns: HashMap<u64, Entry>,
     #[serde(skip)]
     cells: usize,
+    /// What was counted since the day's last commit. It joins `patterns`
+    /// when the commit holds and goes with the logs when it fails, so no
+    /// reader and no file sees a count of a log that search cannot find.
+    #[serde(skip)]
+    pending: HashMap<u64, Entry>,
+    /// Patterns in `pending` that `patterns` lacks, [`OTHER`] aside.
+    #[serde(skip)]
+    added: usize,
+    /// Pairs of pattern and service in `pending` that `patterns` lacks.
+    #[serde(skip)]
+    added_cells: usize,
 }
 
 /// The counters of one day.
@@ -99,43 +110,121 @@ fn cut(s: &str, bytes: usize) -> &str {
     &s[..s.floor_char_boundary(bytes)]
 }
 
-impl DayTally {
-    /// Counts one record and returns the pattern it counts under: its own,
-    /// or [`OTHER`] when the project has no room for one more pattern today.
-    pub(super) fn count(&mut self, r: &LogRecord, pattern: patterns::Pattern, bytes: u64) -> u64 {
-        self.dirty = true;
-        let day = self
-            .projects
-            .entry(r.project_id.cast_unsigned())
-            .or_default();
-        let known = day.patterns.contains_key(&pattern.id);
-        let real = day.patterns.len() - usize::from(day.patterns.contains_key(&OTHER));
+impl ProjectDay {
+    /// Counts one record as pending and returns the pattern it counts
+    /// under: its own, or [`OTHER`] when the project has no room for one
+    /// more pattern today. Pending patterns and pairs take room too, so the
+    /// bounds hold whatever the commits do.
+    fn count(&mut self, r: &LogRecord, pattern: patterns::Pattern, bytes: u64) -> u64 {
+        let Self {
+            patterns,
+            cells,
+            pending,
+            added,
+            added_cells,
+        } = self;
+        let known = patterns.contains_key(&pattern.id) || pending.contains_key(&pattern.id);
+        let real = patterns.len() - usize::from(patterns.contains_key(&OTHER)) + *added;
         let (id, template) = if known || real < MAX_PATTERNS {
             (pattern.id, pattern.template)
         } else {
             (OTHER, String::new())
         };
-        let entry = day.patterns.entry(id).or_insert_with(|| Entry {
+        let done = patterns.get(&id);
+        if done.is_none() && id != OTHER && !pending.contains_key(&id) {
+            *added += 1;
+        }
+        let entry = pending.entry(id).or_insert_with(|| Entry {
             template,
             example: cut(&r.message, EXAMPLE_BYTES).to_owned(),
             services: HashMap::new(),
         });
+        let has = |entry: &Entry, service: &str| {
+            entry.services.contains_key(service)
+                || done.is_some_and(|d| d.services.contains_key(service))
+        };
         let mut service = cut(r.service.as_deref().unwrap_or(""), SERVICE_BYTES);
-        if !entry.services.contains_key(service) {
-            if day.cells >= MAX_CELLS {
+        if !has(entry, service) {
+            if *cells + *added_cells >= MAX_CELLS {
                 service = OTHER_SERVICES;
             }
-            if !entry.services.contains_key(service) {
-                day.cells += 1;
-                entry.services.insert(service.into(), Levels::default());
+            if !has(entry, service) {
+                *added_cells += 1;
             }
+        }
+        if !entry.services.contains_key(service) {
+            entry.services.insert(service.into(), Levels::default());
         }
         if let Some(levels) = entry.services.get_mut(service) {
             let slot = &mut levels[level_index(r.level)];
-            slot[0] += 1;
-            slot[1] += bytes;
+            slot[0] = slot[0].saturating_add(1);
+            slot[1] = slot[1].saturating_add(bytes);
         }
         id
+    }
+
+    /// Moves the pending counts into the counters. Returns whether there
+    /// were any.
+    fn settle(&mut self) -> bool {
+        let Self {
+            patterns,
+            cells,
+            pending,
+            added,
+            added_cells,
+        } = self;
+        let any = !pending.is_empty();
+        for (id, entry) in pending.drain() {
+            let Entry {
+                template,
+                example,
+                services,
+            } = entry;
+            let into = patterns.entry(id).or_insert_with(|| Entry {
+                template,
+                example,
+                services: HashMap::new(),
+            });
+            for (service, levels) in services {
+                let slot = into.services.entry(service).or_insert_with(|| {
+                    *cells += 1;
+                    Levels::default()
+                });
+                for (sum, more) in slot.iter_mut().zip(levels) {
+                    sum[0] = sum[0].saturating_add(more[0]);
+                    sum[1] = sum[1].saturating_add(more[1]);
+                }
+            }
+        }
+        (*added, *added_cells) = (0, 0);
+        any
+    }
+
+    fn discard(&mut self) {
+        self.pending.clear();
+        (self.added, self.added_cells) = (0, 0);
+    }
+}
+
+impl DayTally {
+    /// Counts one record as pending, see [`ProjectDay::count`].
+    pub(super) fn count(&mut self, r: &LogRecord, pattern: patterns::Pattern, bytes: u64) -> u64 {
+        let project = r.project_id.cast_unsigned();
+        let day = self.projects.entry(project).or_default();
+        day.count(r, pattern, bytes)
+    }
+
+    /// Moves what was counted since the day's last commit into the
+    /// counters, once that commit holds.
+    pub(super) fn settle(&mut self) {
+        for day in self.projects.values_mut() {
+            self.dirty |= day.settle();
+        }
+    }
+
+    /// Forgets what was counted since the day's last commit, which failed.
+    pub(super) fn discard(&mut self) {
+        self.projects.values_mut().for_each(ProjectDay::discard);
     }
 
     /// Drops the counters of the projects `cut` deletes the logs of.
@@ -256,6 +345,20 @@ impl State {
             }
         }
         tallies.retain(|day, t| t.dirty || open.contains(day));
+    }
+
+    /// Moves the pending counts of `day` into its counters.
+    pub(super) fn settle_tally(&mut self, day: Date) {
+        if let Some(tally) = self.tallies().get_mut(&day) {
+            tally.settle();
+        }
+    }
+
+    /// Forgets the pending counts of `day`, whose logs were lost.
+    pub(super) fn discard_tally(&mut self, day: Date) {
+        if let Some(tally) = self.tallies().get_mut(&day) {
+            tally.discard();
+        }
     }
 
     /// Writes the counters of `day` and lets go of them.

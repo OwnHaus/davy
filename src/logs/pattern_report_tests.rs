@@ -215,11 +215,37 @@ fn a_report_sees_counts_the_writer_has_not_saved_yet() {
     let now = now_ns();
     let mut state = State::new(dir.clone(), 30, no_overrides());
     state.add(batch(now)).unwrap();
+    assert_eq!(report(&dir, &query(Some(1), now)).records, 0);
+    state.commit().unwrap();
     assert!(!dir.join(day_of(now).to_string()).join(FILE).exists());
     assert_eq!(report(&dir, &query(Some(1), now)).records, 4);
     state.close_all().unwrap();
     drop(state);
     assert_eq!(report(&dir, &query(Some(1), now)).records, 4);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn logs_lost_in_a_failed_commit_are_not_counted() {
+    let dir = scratch("patterns-lost");
+    let now = now_ns();
+    let day = dir.join(day_of(now).to_string());
+    let mut state = State::new(dir.clone(), 30, no_overrides());
+    state.add(batch(now)).unwrap();
+    // A rename takes the directory away at once, whatever the indexing
+    // threads still write into it.
+    std::fs::rename(&day, dir.join("gone")).unwrap();
+    assert!(state.commit().is_err());
+    std::fs::create_dir(&day).unwrap();
+    assert_eq!(report(&dir, &query(Some(1), now)).records, 0);
+    state
+        .add(vec![info(1, now, "GET /users/5 took 2ms")])
+        .unwrap();
+    state.commit().unwrap();
+    let r = report(&dir, &query(Some(1), now));
+    assert_eq!(rows(&r), [("GET /users/<NUM> took <NUM>ms".into(), 1)]);
+    assert_eq!(r.top[0].example, "GET /users/5 took 2ms");
+    state.close_all().unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

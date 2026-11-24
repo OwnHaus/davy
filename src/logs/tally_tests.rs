@@ -24,8 +24,16 @@ fn record(project_id: i64, service: Option<&str>, message: &str) -> LogRecord {
     }
 }
 
-fn count(tally: &mut DayTally, r: &LogRecord) -> u64 {
+/// Counts `r` as pending, as the writer does before the commit.
+fn pending(tally: &mut DayTally, r: &LogRecord) -> u64 {
     tally.count(r, patterns::of(&r.message), raw_bytes(r))
+}
+
+/// Counts `r` and settles it, as a commit that held does.
+fn count(tally: &mut DayTally, r: &LogRecord) -> u64 {
+    let id = pending(tally, r);
+    tally.settle();
+    id
 }
 
 /// A message with a pattern of its own for each `n`: digits would be masked.
@@ -91,6 +99,28 @@ fn the_first_message_of_a_pattern_is_its_example() {
     let entry = &tally.projects[&1].patterns[&patterns::of("user 9 logged in").id];
     assert_eq!(entry.example, "user 1 logged in");
     assert_eq!(entry.template, "user <NUM> logged in");
+}
+
+#[test]
+fn pending_counts_take_room_and_show_only_once_settled() {
+    let mut tally = DayTally::default();
+    let ids: Vec<u64> = (0..=MAX_PATTERNS)
+        .map(|n| pending(&mut tally, &record(1, None, &distinct(n))))
+        .collect();
+    assert_eq!(ids[MAX_PATTERNS], OTHER);
+    assert!(tally.projects[&1].patterns.is_empty());
+    tally.settle();
+    assert_eq!(tally.projects[&1].patterns.len(), MAX_PATTERNS + 1);
+    let done = pending(&mut tally, &record(1, Some("api"), &distinct(3)));
+    assert_eq!(done, ids[3]);
+    tally.discard();
+    let entry = &tally.projects[&1].patterns[&ids[3]];
+    assert_eq!(entry.services.len(), 1);
+    assert_eq!(entry.services[""][2][0], 1);
+    assert_eq!(
+        pending(&mut tally, &record(1, None, &distinct(5000))),
+        OTHER
+    );
 }
 
 #[test]

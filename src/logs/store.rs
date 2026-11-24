@@ -291,12 +291,18 @@ impl State {
     }
 
     pub(super) fn commit(&mut self) -> Result<()> {
-        let mut failed = Vec::new();
+        let (mut committed, mut failed) = (Vec::new(), Vec::new());
         for (day, open) in self.open.iter_mut().filter(|(_, o)| o.dirty) {
             match open.writer.commit() {
-                Ok(_) => open.dirty = false,
+                Ok(_) => {
+                    open.dirty = false;
+                    committed.push(*day);
+                }
                 Err(e) => failed.push((*day, e)),
             }
+        }
+        for day in committed {
+            self.settle_tally(day);
         }
         self.uncommitted = 0;
         let mut first = None;
@@ -311,14 +317,23 @@ impl State {
     // next add_document would block forever. Drop it and reopen on the next write.
     fn discard(&mut self, day: Date) {
         self.open.remove(&day);
+        self.discard_tally(day);
     }
 
     fn close(&mut self, day: Date) -> Result<()> {
-        if let Some(mut open) = self.open.remove(&day) {
-            open.writer.commit()?;
-            open.writer.wait_merging_threads()?;
+        let Some(mut open) = self.open.remove(&day) else {
+            self.close_tally(day);
+            return Ok(());
+        };
+        let committed = open.writer.commit();
+        if committed.is_ok() {
+            self.settle_tally(day);
+        } else {
+            self.discard_tally(day);
         }
         self.close_tally(day);
+        committed?;
+        open.writer.wait_merging_threads()?;
         Ok(())
     }
 
