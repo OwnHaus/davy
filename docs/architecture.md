@@ -29,7 +29,7 @@ CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::se
 - `src/event.rs` parses a Sentry event JSON into `ErrorEvent`, leniently. This is the one place that knows the Sentry event schema.
 - `src/time.rs` reads the clock, parses timestamp strings and `--since` style instants (`30m`, RFC 3339), formats RFC 3339, and maps instants to UTC days.
 - `src/grouping.rs` is a pure function from `ErrorEvent` to a fingerprint and title. Versioned, because changing it regroups issues.
-- `src/store.rs` owns the SQLite schema and its migrations (`store/migrations.rs`, counted in `PRAGMA user_version`, run by `store/migrate.rs` only while no other process has the database open), the issue status and regression rule, the single error writer thread and the read queries the CLI uses.
+- `src/store.rs` owns the SQLite schema and its migrations (`store/migrations.rs`, counted in `PRAGMA user_version`, run by `store/migrate.rs` only while no other process has the database open), the issue status and regression rule, the single error writer thread (`store/writer.rs`) and the read queries the CLI uses.
 - `src/query.rs` runs one read-only SQL statement for an agent, behind an authorizer, with row, text and time limits.
 - `src/context.rs` gathers one issue with its compacted latest event, recent events, releases and nearby logs.
 - `src/accounts/` holds the people of a self-hosted Davy: e-mail, password and secret rules and the `Accounts` trait the UI asks for the person (`mod.rs`), the user, invite and session rows and the changes the writer applies to them (`store.rs`), the per-e-mail login backoff (`backoff.rs`) and `davy user` (`cli.rs`).
