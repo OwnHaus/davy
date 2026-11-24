@@ -1,6 +1,6 @@
 use super::{
     DayTally, EXAMPLE_BYTES, FLUSH_EVERY, MAX_CELLS, MAX_PATTERNS, OTHER_SERVICES, SERVICE_BYTES,
-    file::{self, name},
+    file::{self, MAX_FILE_BYTES, name},
     pace, raw_bytes,
 };
 use crate::logs::{
@@ -148,7 +148,7 @@ fn counters_are_saved_and_loaded_with_their_bounds() {
     }
     tally.save(&dir).unwrap();
     assert!(dir.join(name(1)).exists());
-    let mut loaded = DayTally::load(&dir, None).unwrap();
+    let mut loaded = DayTally::load(&dir, None).unwrap().0;
     assert_eq!(count(&mut loaded, &record(1, None, &distinct(5000))), OTHER);
     assert_eq!(loaded.projects[&1].cells, MAX_PATTERNS + 1);
     std::fs::remove_dir_all(&dir).unwrap();
@@ -158,7 +158,7 @@ fn counters_are_saved_and_loaded_with_their_bounds() {
 fn a_day_without_counters_loads_empty() {
     let dir = scratch("tally-none");
     std::fs::create_dir_all(&dir).unwrap();
-    assert!(DayTally::load(&dir, None).unwrap().projects.is_empty());
+    assert!(DayTally::load(&dir, None).unwrap().0.projects.is_empty());
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -169,7 +169,7 @@ fn a_save_writes_past_anything_at_a_fixed_temporary_name() {
     let mut tally = DayTally::default();
     count(&mut tally, &record(1, None, "user 1 logged in"));
     tally.save(&dir).unwrap();
-    let loaded = DayTally::load(&dir, None).unwrap();
+    let loaded = DayTally::load(&dir, None).unwrap().0;
     let entry = &loaded.projects[&1].patterns[&patterns::of("user 2 logged in").id];
     assert_eq!(entry.services[""][2][0], 1);
     let names: Vec<String> = std::fs::read_dir(&dir)
@@ -221,4 +221,28 @@ fn a_big_file_is_written_less_often() {
     assert_eq!(pace(0), FLUSH_EVERY);
     assert_eq!(pace(150_000), Duration::from_secs(15));
     assert_eq!(pace(3_500_000), Duration::from_secs(350));
+}
+
+#[test]
+fn a_file_past_the_bounds_or_too_big_is_not_read() {
+    let dir = scratch("tally-bounds");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file_of = |example: &str| {
+        let levels = [[0, 0], [0, 0], [1, 9], [0, 0], [0, 0], [0, 0]];
+        let entry = json!({"template": "a", "example": example, "services": {"": levels}});
+        json!({"version": 1, "patterns": {"5": entry}}).to_string()
+    };
+    std::fs::write(dir.join(name(1)), file_of("a")).unwrap();
+    assert_eq!(
+        file::load(&dir, 1).unwrap().unwrap().patterns[&5].services[""][2],
+        [1, 9]
+    );
+    std::fs::write(dir.join(name(1)), file_of(&"a".repeat(EXAMPLE_BYTES + 1))).unwrap();
+    let e = format!("{:#}", file::load(&dir, 1).err().unwrap());
+    assert!(e.ends_with(": an example of more than 256 bytes"), "{e}");
+    let big = std::fs::File::create(dir.join(name(2))).unwrap();
+    big.set_len(MAX_FILE_BYTES + 1).unwrap();
+    let e = format!("{:#}", file::load(&dir, 2).err().unwrap());
+    assert!(e.ends_with(": over 67108864 bytes"), "{e}");
+    std::fs::remove_dir_all(&dir).unwrap();
 }

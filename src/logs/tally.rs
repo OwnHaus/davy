@@ -72,6 +72,9 @@ pub(super) struct ProjectDay {
     dirty: bool,
     /// When the file may be written again, see [`pace`].
     next_save: Option<Instant>,
+    /// The file could be neither read nor set aside, so it is never
+    /// written over.
+    blocked: bool,
     /// What was counted since the day's last commit. It joins `patterns`
     /// when the commit holds and goes with the logs when it fails, so no
     /// reader and no file sees a count of a log that search cannot find.
@@ -89,6 +92,9 @@ pub(super) struct DayTally {
 }
 
 pub(super) type Days = HashMap<Date, DayTally>;
+
+/// The projects of a day whose file could not be read, with the error.
+pub(super) type Unread = Vec<(u64, anyhow::Error)>;
 
 /// The counters each log writer of this process holds, by its root, so a
 /// reader sees counts that are not on the disk yet.
@@ -208,6 +214,11 @@ impl ProjectDay {
         self.pending.clear();
         (self.added, self.added_cells) = (0, 0);
     }
+
+    /// Whether the file is behind and may be written.
+    fn due(&self) -> bool {
+        self.dirty && !self.blocked
+    }
 }
 
 impl DayTally {
@@ -225,7 +236,7 @@ impl DayTally {
     }
 
     fn dirty(&self) -> bool {
-        self.projects.values().any(|p| p.dirty)
+        self.projects.values().any(ProjectDay::due)
     }
 
     /// Forgets what was counted since the day's last commit, which failed.
@@ -242,25 +253,28 @@ impl DayTally {
     }
 
     /// The counters of the day in `dir`, of `project` alone when it is
-    /// named, empty when there are none yet.
-    pub(super) fn load(dir: &Path, project: Option<u64>) -> Result<Self> {
+    /// named, empty when there are none yet. A file that cannot be read is
+    /// left out and returned with its error.
+    pub(super) fn load(dir: &Path, project: Option<u64>) -> Result<(Self, Unread)> {
         let projects = match project {
             Some(project) => vec![project],
             None => file::projects(dir)?,
         };
-        let mut day = Self::default();
+        let (mut day, mut unread) = (Self::default(), Vec::new());
         for project in projects {
-            if let Some(counters) = file::load(dir, project)? {
-                day.projects.insert(project, counters);
+            match file::load(dir, project) {
+                Ok(Some(counters)) => drop(day.projects.insert(project, counters)),
+                Ok(None) => {}
+                Err(e) => unread.push((project, e)),
             }
         }
-        Ok(day)
+        Ok((day, unread))
     }
 
     /// Writes the projects that changed, whatever their pace.
     fn save(&mut self, dir: &Path) -> Result<()> {
         let mut first = None;
-        for (project, counters) in self.projects.iter_mut().filter(|(_, p)| p.dirty) {
+        for (project, counters) in self.projects.iter_mut().filter(|(_, p)| p.due()) {
             match file::encode(counters).and_then(|bytes| file::save(dir, *project, &bytes)) {
                 Ok(()) => counters.dirty = false,
                 Err(e) => drop(first.get_or_insert(e)),
@@ -314,12 +328,7 @@ impl State {
         let bytes = raw_bytes(r);
         let dir = self.root.join(day.to_string());
         let mut tallies = self.tallies();
-        let tally = tallies.entry(day).or_insert_with(|| {
-            DayTally::load(&dir, None).unwrap_or_else(|e| {
-                report(day, "reading", &e);
-                DayTally::default()
-            })
-        });
+        let tally = tallies.entry(day).or_insert_with(|| open(day, &dir));
         tally.count(r, pattern, bytes)
     }
 
@@ -329,7 +338,7 @@ impl State {
     pub(super) fn flush_tallies(&mut self, now: Instant) {
         let mut due = Vec::new();
         for (day, tally) in self.tallies().iter_mut() {
-            let ready = |p: &&mut ProjectDay| p.dirty && p.next_save.is_none_or(|at| at <= now);
+            let ready = |p: &&mut ProjectDay| p.due() && p.next_save.is_none_or(|at| at <= now);
             for (project, counters) in tally.projects.iter_mut().filter(|(_, p)| ready(p)) {
                 match file::encode(counters) {
                     Ok(bytes) => {
@@ -399,6 +408,28 @@ impl State {
         }
         file::remove(&self.root.join(day.to_string()), cut)
     }
+}
+
+/// The counters of `day` in `dir`, for the writer. A file it cannot read
+/// is set aside and its project starts again from nothing; a file it can
+/// neither read nor set aside is never written over.
+fn open(day: Date, dir: &Path) -> DayTally {
+    let (mut tally, unread) = DayTally::load(dir, None).unwrap_or_else(|e| {
+        report(day, "reading", &e);
+        (DayTally::default(), Vec::new())
+    });
+    for (project, e) in unread {
+        let counters = tally.projects.entry(project).or_default();
+        let e = match file::set_aside(dir, project) {
+            Ok(to) => e.context(format!("set aside as {}", to.display())),
+            Err(moved) => {
+                counters.blocked = true;
+                e.context(format!("left alone and not written over: {moved:#}"))
+            }
+        };
+        report(day, "reading", &e);
+    }
+    tally
 }
 
 #[expect(

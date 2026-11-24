@@ -384,3 +384,22 @@ fn logs_patterns_prints_a_summary_and_a_line_per_pattern() {
     assert_eq!(json["top"][0]["levels"], serde_json::json!({"warn": 2}));
     std::fs::remove_dir_all(&data).unwrap();
 }
+
+#[test]
+fn logs_patterns_names_the_days_it_left_out() {
+    let r = PatternReport {
+        from: "2026-11-01".into(),
+        to: "2026-11-02".into(),
+        records: 0,
+        bytes: "0 B".into(),
+        patterns: 0,
+        top: vec![],
+        unread: vec!["2026-11-02".into(), "2026-11-01".into()],
+    };
+    let mut out = Vec::new();
+    print_patterns(&mut out, &r, false).unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "2026-11-01 to 2026-11-02: 0 logs, 0 B, 0 patterns\nleft out, counters unreadable: 2026-11-02, 2026-11-01\n"
+    );
+}

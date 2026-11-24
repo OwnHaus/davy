@@ -561,6 +561,10 @@ fn print_patterns(out: &mut impl Write, r: &PatternReport, json: bool) -> anyhow
         "{} to {}: {} logs, {}, {} patterns",
         r.from, r.to, r.records, r.bytes, r.patterns
     )?;
+    if !r.unread.is_empty() {
+        let days = r.unread.join(", ");
+        writeln!(out, "left out, counters unreadable: {days}")?;
+    }
     for p in &r.top {
         let template = safe(&p.template);
         writeln!(

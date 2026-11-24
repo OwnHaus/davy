@@ -47,6 +47,9 @@ pub struct PatternReport {
     pub patterns: usize,
     /// The patterns with the most bytes first.
     pub top: Vec<PatternRow>,
+    /// Days with counters that could not be read, left out of the report.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unread: Vec<String>,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -87,7 +90,7 @@ pub fn top_patterns(root: &Path, q: &PatternQuery) -> Result<PatternReport> {
     };
     days.sort_unstable_by(|a, b| b.cmp(a));
     let live = tally::live(root);
-    let mut sums: HashMap<u64, Sum> = HashMap::new();
+    let (mut sums, mut unread) = (HashMap::new(), Vec::new());
     for day in days {
         if let Some(live) = &live {
             let held = live.lock().unwrap_or_else(PoisonError::into_inner);
@@ -97,10 +100,19 @@ pub fn top_patterns(root: &Path, q: &PatternQuery) -> Result<PatternReport> {
             }
         }
         let dir = root.join(day.to_string());
-        let project = q.project.map(i64::cast_unsigned);
-        add(&mut sums, &DayTally::load(&dir, project)?, q);
+        match DayTally::load(&dir, q.project.map(i64::cast_unsigned)) {
+            Ok((tally, failed)) => {
+                add(&mut sums, &tally, q);
+                if !failed.is_empty() {
+                    unread.push(day.to_string());
+                }
+            }
+            Err(_) => unread.push(day.to_string()),
+        }
     }
-    Ok(report(sums, first, last, q.limit))
+    let mut report = report(sums, first, last, q.limit);
+    report.unread = unread;
+    Ok(report)
 }
 
 fn add(sums: &mut HashMap<u64, Sum>, tally: &DayTally, q: &PatternQuery) {
@@ -125,25 +137,29 @@ fn add(sums: &mut HashMap<u64, Sum>, tally: &DayTally, q: &PatternQuery) {
             s.example.clone_from(&entry.example);
         }
         for (service, levels, (records, bytes)) in services {
-            s.records += records;
-            s.bytes += bytes;
+            s.records = s.records.saturating_add(records);
+            s.bytes = s.bytes.saturating_add(bytes);
             for (i, [n, _]) in levels.iter().enumerate().skip(lowest) {
-                s.levels[i] += n;
+                s.levels[i] = s.levels[i].saturating_add(*n);
             }
-            *s.services.entry(service.clone()).or_default() += records;
+            let by_service = s.services.entry(service.clone()).or_default();
+            *by_service = by_service.saturating_add(records);
         }
     }
 }
 
 fn counted(levels: &Levels, lowest: usize) -> (u64, u64) {
-    levels[lowest..]
-        .iter()
-        .fold((0, 0), |(r, b), [n, bytes]| (r + n, b + bytes))
+    levels[lowest..].iter().fold((0, 0), |(r, b), [n, bytes]| {
+        (r.saturating_add(*n), b.saturating_add(*bytes))
+    })
 }
 
 fn report(sums: HashMap<u64, Sum>, first: Date, last: Date, limit: usize) -> PatternReport {
-    let records = sums.values().map(|s| s.records).sum();
-    let bytes: u64 = sums.values().map(|s| s.bytes).sum();
+    let records = sums
+        .values()
+        .map(|s| s.records)
+        .fold(0, u64::saturating_add);
+    let bytes = sums.values().map(|s| s.bytes).fold(0, u64::saturating_add);
     let patterns = sums.len();
     let mut rows: Vec<(u64, Sum)> = sums.into_iter().collect();
     rows.sort_unstable_by(|(a_id, a), (b_id, b)| {
@@ -157,6 +173,7 @@ fn report(sums: HashMap<u64, Sum>, first: Date, last: Date, limit: usize) -> Pat
         bytes: size(bytes),
         patterns,
         top: rows.into_iter().map(|(id, s)| row(id, s, bytes)).collect(),
+        unread: Vec::new(),
     }
 }
 
@@ -199,7 +216,11 @@ fn row(id: u64, s: Sum, total: u64) -> PatternRow {
 fn services(by_name: HashMap<Box<str>, u64>) -> Vec<(Option<String>, u64)> {
     let mut all: Vec<(Box<str>, u64)> = by_name.into_iter().collect();
     all.sort_unstable_by(|(a, an), (b, bn)| (bn, a).cmp(&(an, b)));
-    let rest: u64 = all.iter().skip(SERVICES).map(|(_, n)| n).sum();
+    let rest = all
+        .iter()
+        .skip(SERVICES)
+        .map(|(_, n)| *n)
+        .fold(0, u64::saturating_add);
     let more = all.len().saturating_sub(SERVICES);
     let mut shown: Vec<(Option<String>, u64)> = all
         .into_iter()

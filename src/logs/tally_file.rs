@@ -2,19 +2,27 @@
 //! directory, so a flush rewrites only the projects that changed, and a
 //! cut of projects removes their files without reading any.
 
-use super::{Cut, Entry, ProjectDay};
+use super::{Cut, EXAMPLE_BYTES, Entry, MAX_CELLS, MAX_PATTERNS, ProjectDay, SERVICE_BYTES};
+use crate::time::now_ns;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs::File,
-    io::{self, Write},
-    path::Path,
+    io::{self, Read, Write},
+    path::{Path, PathBuf},
 };
 
 const PREFIX: &str = "patterns-";
 const SUFFIX: &str = ".json";
 const VERSION: u32 = 1;
+/// Bytes a file may have. The bounds keep one project's day under about
+/// 20 MB even when every byte of its text is escaped, so a bigger file is
+/// not one Davy wrote.
+pub(super) const MAX_FILE_BYTES: u64 = 64 << 20;
+/// Bytes a template may have. The mask reads 4 KiB of a message and keeps
+/// 12 tokens of 64 bytes, so its templates are far shorter.
+const TEMPLATE_BYTES: usize = 4096;
 
 #[derive(Serialize)]
 struct Out<'a> {
@@ -63,28 +71,86 @@ pub(super) fn projects(dir: &Path) -> Result<Vec<u64>> {
         .collect())
 }
 
-/// The counters of `project` in `dir`, if it has any.
+/// The counters of `project` in `dir`, if it has any. A file past the
+/// bounds the writer keeps is an error, so a damaged or foreign file
+/// cannot make the writer or a report hold more than they would.
 pub(super) fn load(dir: &Path, project: u64) -> Result<Option<ProjectDay>> {
     let path = dir.join(name(project));
-    let text = match std::fs::read(&path) {
+    let text = match read_capped(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(anyhow::Error::from(e).context(format!("reading {}", path.display()))),
     };
-    let read: In =
-        serde_json::from_slice(&text).with_context(|| format!("reading {}", path.display()))?;
-    anyhow::ensure!(
-        read.version == VERSION,
-        "{}: unknown version {}",
-        path.display(),
-        read.version
-    );
-    let cells = read.patterns.values().map(|e| e.services.len()).sum();
+    let read = (|| {
+        let read: In = serde_json::from_slice(&text)?;
+        anyhow::ensure!(read.version == VERSION, "unknown version {}", read.version);
+        let cells = check(&read.patterns)?;
+        Ok((read.patterns, cells))
+    })();
+    let (patterns, cells) = read.with_context(|| format!("reading {}", path.display()))?;
     Ok(Some(ProjectDay {
-        patterns: read.patterns,
+        patterns,
         cells,
         ..ProjectDay::default()
     }))
+}
+
+fn read_capped(path: &Path) -> io::Result<Vec<u8>> {
+    let file = File::open(path)?;
+    let too_big = || io::Error::other(format!("over {MAX_FILE_BYTES} bytes"));
+    if file.metadata()?.len() > MAX_FILE_BYTES {
+        return Err(too_big());
+    }
+    let mut text = Vec::new();
+    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut text)?;
+    if u64::try_from(text.len()).unwrap_or(u64::MAX) > MAX_FILE_BYTES {
+        return Err(too_big());
+    }
+    Ok(text)
+}
+
+/// Checks `patterns` against the bounds and returns its pairs of pattern
+/// and service. A pattern can add [`super::OTHER_SERVICES`] past
+/// [`MAX_CELLS`], so the pairs can exceed it by one per pattern.
+fn check(patterns: &HashMap<u64, Entry>) -> Result<usize> {
+    anyhow::ensure!(
+        patterns.len() <= MAX_PATTERNS + 1,
+        "more than {} patterns",
+        MAX_PATTERNS + 1
+    );
+    let mut cells = 0;
+    for entry in patterns.values() {
+        anyhow::ensure!(
+            entry.template.len() <= TEMPLATE_BYTES,
+            "a template of more than {TEMPLATE_BYTES} bytes"
+        );
+        anyhow::ensure!(
+            entry.example.len() <= EXAMPLE_BYTES,
+            "an example of more than {EXAMPLE_BYTES} bytes"
+        );
+        anyhow::ensure!(
+            entry.services.keys().all(|s| s.len() <= SERVICE_BYTES),
+            "a service name of more than {SERVICE_BYTES} bytes"
+        );
+        cells += entry.services.len();
+    }
+    let most = MAX_CELLS + MAX_PATTERNS + 1;
+    anyhow::ensure!(
+        cells <= most,
+        "more than {most} pairs of pattern and service"
+    );
+    Ok(cells)
+}
+
+/// Renames the file of `project` in `dir`, which could not be read, to a
+/// name no reader takes for counters, so the writer neither reads it again
+/// nor writes over it. A retention cut of the project removes it with the
+/// rest of the project's files.
+pub(super) fn set_aside(dir: &Path, project: u64) -> Result<PathBuf> {
+    let from = dir.join(name(project));
+    let to = dir.join(format!("{}.unread-{}", name(project), now_ns()));
+    std::fs::rename(&from, &to).with_context(|| format!("renaming {}", from.display()))?;
+    Ok(to)
 }
 
 /// The counters of `day` as the bytes of its file.

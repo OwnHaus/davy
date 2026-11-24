@@ -273,3 +273,49 @@ fn a_day_written_before_patterns_counts_but_finds_nothing_by_pattern() {
     assert_eq!(report(&dir, &query(Some(1), now)).records, 4);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn an_unreadable_file_is_left_out_named_and_set_aside_by_the_writer() {
+    let dir = scratch("patterns-unread");
+    let now = now_ns();
+    run(&dir, &[], batch(now));
+    let day = dir.join(day_of(now).to_string());
+    std::fs::write(day.join(name(1)), "{").unwrap();
+    let r = report(&dir, &query(None, now));
+    assert_eq!(
+        (r.records, r.unread.clone()),
+        (1, vec![day_of(now).to_string()])
+    );
+    run(&dir, &[], vec![info(1, now, "GET /users/5 took 2ms")]);
+    let r = report(&dir, &query(Some(1), now));
+    assert_eq!((r.records, r.unread.len()), (1, 0));
+    let aside: Vec<String> = std::fs::read_dir(&day)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| n.starts_with(&format!("{}.unread-", name(1))))
+        .collect();
+    assert_eq!(aside.len(), 1);
+    assert_eq!(std::fs::read_to_string(day.join(&aside[0])).unwrap(), "{");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn counts_at_the_top_of_u64_add_up_to_the_top_and_no_further() {
+    let dir = scratch("patterns-saturate");
+    let now = now_ns();
+    let full = [0, 0, u64::MAX, 0, 0, 0].map(|n| [n, n]);
+    let entry = serde_json::json!({"template": "a", "example": "a", "services": {"": full}});
+    let text = serde_json::json!({"version": 1, "patterns": {"5": entry}}).to_string();
+    for day in [day_of(now), day_of(now - DAY)] {
+        let day = dir.join(day.to_string());
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(day.join(name(1)), &text).unwrap();
+    }
+    let r = report(&dir, &query(Some(1), now));
+    assert_eq!((r.records, r.top[0].records), (u64::MAX, u64::MAX));
+    assert_eq!(
+        r.top[0].levels.iter().collect::<Vec<_>>(),
+        [(&"info", &u64::MAX)]
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
