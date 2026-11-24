@@ -1,10 +1,10 @@
 //! How logins share the hash slots and wait after failed guesses.
 
-use super::{PASSWORD, Ui, request, ui};
+use super::{PASSWORD, Ui, request, ui, ui_with};
 use crate::{time, ui::session};
 use axum::body::Body;
 use serde_json::json;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -54,11 +54,13 @@ async fn a_login_in_its_wait_is_refused_before_it_takes_a_place_in_the_queue() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn login_is_429_when_no_hash_slot_frees_in_time() {
-    let s = ui();
+async fn login_is_429_when_no_hash_slot_frees_in_3_seconds() {
+    let s = ui_with(session::HASH_WAIT);
     let _held = busy_slots(&s);
+    let started = tokio::time::Instant::now();
     let r = s.login("ann@example.com", PASSWORD).await;
     assert_eq!((r.status, r.header("retry-after")), (429, "1"));
+    assert_eq!(started.elapsed().as_secs(), 3);
 }
 
 /// Takes every hash slot until the result drops.
@@ -98,13 +100,20 @@ async fn slow_login_bodies_do_not_refuse_a_login() {
 async fn failed_logins_for_one_email_wait_longer_each_time() {
     let s = ui();
     s.person("ann@example.com", time::now_ms());
-    assert_eq!(
-        s.login("ann@example.com", "not the password").await.status,
-        401
-    );
+    let wrong = "not the password";
+    assert_eq!(s.login("ann@example.com", wrong).await.status, 401);
     let r = s.login("ann@example.com", PASSWORD).await;
     assert_eq!((r.status, r.header("retry-after")), (429, "1"));
     assert_eq!(s.login("bob@example.com", PASSWORD).await.status, 401);
+    s.clock.advance(Duration::from_millis(999));
+    let r = s.login("ann@example.com", PASSWORD).await;
+    assert_eq!((r.status, r.header("retry-after")), (429, "1"));
+    s.clock.advance(Duration::from_millis(1));
+    assert_eq!(s.login("ann@example.com", wrong).await.status, 401);
+    let r = s.login("ann@example.com", PASSWORD).await;
+    assert_eq!((r.status, r.header("retry-after")), (429, "2"));
+    s.clock.advance(Duration::from_secs(2));
+    assert_eq!(s.login("ann@example.com", PASSWORD).await.status, 200);
 }
 
 #[tokio::test]

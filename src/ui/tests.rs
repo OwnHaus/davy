@@ -14,11 +14,17 @@ use axum::{
 };
 use rusqlite::Connection;
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 use tower::ServiceExt;
 
 const ORIGIN: &str = "https://davy.example";
 const PASSWORD: &str = "correct horse battery";
+/// A hash wait no Argon2 hash reaches on a loaded machine, so a test sees a
+/// busy answer only where it holds the slots itself.
+const NO_HASH_WAIT: Duration = Duration::from_hours(1);
 
 struct Ui {
     app: Router,
@@ -28,6 +34,19 @@ struct Ui {
     /// The memory budget of ingest bodies.
     ingest: Budget,
     writer: store::Writer,
+    /// The time the waits of guesses count from.
+    clock: Clock,
+}
+
+/// A clock that moves only when the test moves it, so the wait of a failed
+/// guess does not run out while a loaded machine stalls the test.
+#[derive(Clone)]
+struct Clock(Arc<Mutex<Instant>>);
+
+impl Clock {
+    fn advance(&self, by: Duration) {
+        *self.0.lock().unwrap() += by;
+    }
 }
 
 struct Reply {
@@ -50,11 +69,21 @@ impl Reply {
 
 /// The server router with the UI at `https://davy.example/` and no people.
 fn ui() -> Ui {
+    ui_with(NO_HASH_WAIT)
+}
+
+/// [`ui`] whose logins wait `hash_wait` for a hash slot.
+fn ui_with(hash_wait: Duration) -> Ui {
     let data = crate::test_support::scratch("ui");
     let db = store::open(&data).unwrap();
     let writer = store::Writer::start(store::open(&data).unwrap(), 1);
     let ingest = Budget::new(32 << 20);
-    let local = Arc::new(Local::new(store::open(&data).unwrap(), writer.ui.clone()));
+    let clock = Clock(Arc::new(Mutex::new(Instant::now())));
+    let mut local = Local::new(store::open(&data).unwrap(), writer.ui.clone());
+    let now = Arc::clone(&clock.0);
+    local.clock = Box::new(move || *now.lock().unwrap());
+    local.hash_wait = hash_wait;
+    let local = Arc::new(local);
     let app = App {
         budget: ingest.clone(),
         keys: Arc::new(Keys::new(store::open(&data).unwrap())),
@@ -85,6 +114,7 @@ fn ui() -> Ui {
         db,
         ingest,
         writer,
+        clock,
     }
 }
 
