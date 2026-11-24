@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, project_id INTEGER NOT
 CREATE TABLE IF NOT EXISTS issue_hourly(issue_id INTEGER NOT NULL REFERENCES issues(id), hour INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(issue_id, hour));
 CREATE INDEX IF NOT EXISTS events_issue ON events(issue_id, id DESC);";
 mod latest;
+mod migrate;
 mod migrations;
 use crate::{
     alert,
@@ -86,15 +87,22 @@ pub const DB_FILE: &str = "davy.sqlite";
 pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Opens the database in `data`, and creates a missing `data` readable by
-/// its owner only, because it holds events, logs and keys.
+/// its owner only, because it holds events, logs and keys. Pending migrations
+/// run only while no other process has the database open, see
+/// `docs/design.md`, "Migrations".
 pub fn open(data: &Path) -> Result<Connection> {
     let mut dir = std::fs::DirBuilder::new();
     dir.recursive(true);
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut dir, 0o700);
     dir.create(data)?;
-    let mut c = Connection::open(data.join(DB_FILE))?;
-    c.busy_timeout(BUSY_TIMEOUT)?;
+    let path = data.join(DB_FILE);
+    let mut c = migrate::connect(&path)?;
+    if migrate::pending(&c)? {
+        drop(c);
+        migrate::alone(&path)?;
+        c = migrate::connect(&path)?;
+    }
     init(&mut c)?;
     Ok(c)
 }

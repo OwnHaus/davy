@@ -206,3 +206,5 @@ Follow [connect/agents.md](connect/agents.md). The agent then reads errors and l
 ## Updating
 
 Repeat steps 1 and 2 with the new version, then `sudo systemctl restart davy` and step 8. On a Mac, restart with `launchctl kickstart -k "gui/$(id -u)/davy"`. The data directory and the token stay.
+
+A new version that changes the schema migrates the data the first time it opens it, and only while no other process has the database open. Restart the service before you run any other `davy` command with the new binary. Until then such a command stops with an error that says to stop the running Davy server and any other `davy` command, and changes nothing. Back up the data directory first, because an older Davy never opens migrated data.

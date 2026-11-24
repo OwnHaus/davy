@@ -142,6 +142,16 @@ issues_text USING fts5(title, culprit, content='issues', tokenize='trigram')
 - A duplicate `event_id` in the same project is ignored (SDKs retry).
 - The writer drains the queue in batches and commits each batch in one transaction. The transaction begins IMMEDIATE, taking the write lock before its first read: a CLI that writes from its own process, such as `davy resolve`, then makes the batch wait out the 5 s busy timeout. A deferred transaction that read first cannot wait for a lock it takes later, so SQLite failed the whole batch with `database is locked`.
 
+### Migrations
+
+Every command that opens the store runs the pending migrations first, `davy serve` and the CLI alike. They run only while no other process has the database open. An older server that kept running would write under the schema it knows: it would not fill a new column or table that newer code relies on.
+
+- A connection in WAL mode holds a shared lock on the database file from its first read until it closes. `store::open` runs pending migrations on a connection in exclusive locking mode. Its first transaction takes an exclusive lock on the file and fails while any other connection is open, read-only ones and idle ones included. Then the command stops with an error that says to stop the running Davy server and any other `davy` command and run it again. The migrations, and the schema statements before them, run only after the lock is held, so a refused attempt changes nothing.
+- The lock waits 100 ms, not the 5 s every other connection waits. SQLite asks the busy handler several times per lock attempt, so with 5 s a refusal took 16 s (measured with a scratch program on the bundled SQLite 3.54.1, an M2 Max, macOS, while a second process held the database open).
+- After the migrations the connection closes and the store opens again in normal locking mode, so the server and the CLI share the database as before.
+- When no migration is pending, `store::open` takes no exclusive lock.
+- A connection that was opened but has not read yet holds no lock, so it does not stop a migration. Its first read waits for the migration as long as the busy timeout allows, then fails. Every connection of Davy reads the schema when it opens, so a running server always holds a shared lock.
+
 ### CLI
 
 - `davy serve --data <dir> --listen <addr> --public-url <url>`
