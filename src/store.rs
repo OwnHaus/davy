@@ -1,3 +1,6 @@
+/// The schema of the first release. It runs on every open, before and outside
+/// the migration lock, so it never changes: new tables and indexes go into
+/// `MIGRATIONS`.
 const SCHEMA: &str = "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY, slug TEXT UNIQUE NOT NULL, public_key TEXT UNIQUE NOT NULL, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS issues(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), grouping_version INTEGER NOT NULL, fingerprint TEXT NOT NULL, title TEXT NOT NULL, culprit TEXT, level TEXT NOT NULL, status TEXT NOT NULL, resolved_in_release TEXT, resolved_at INTEGER, regressed_at INTEGER, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, event_count INTEGER NOT NULL, UNIQUE(project_id, grouping_version, fingerprint));

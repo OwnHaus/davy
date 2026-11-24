@@ -152,6 +152,8 @@ Every command that opens the store runs the pending migrations first, `davy serv
 - The first transaction is `BEGIN EXCLUSIVE`, not `BEGIN IMMEDIATE`. On a WAL file both take the exclusive lock when the WAL opens. On a fresh file, which is in rollback mode until the first migration switches it to WAL, `BEGIN EXCLUSIVE` takes the lock in one step. With two threads that each made one attempt on a fresh file at once, 100 rounds in a scratch `cargo test` on an M2 Max while other builds ran, at least one attempt failed in 6 rounds with `EXCLUSIVE` and in 43 with `IMMEDIATE`. The retries make both reach the same end.
 - After the migrations the connection closes and the store opens again in normal locking mode, so the server and the CLI share the database as before.
 - When no migration is pending, `store::open` takes no exclusive lock.
+- The locks are POSIX locks, which belong to the process and the file. Closing any descriptor of `davy.sqlite` drops every lock the process holds on it, so Davy never opens the database file outside SQLite: no `File::open`, `fs::copy` or hash of it. Copy it with SQLite's backup, or stop the server first.
+- `SCHEMA` in `store.rs` runs on every open, outside the lock, so it stays the schema of the first release. A new table or index is a migration.
 - A connection that was opened but has not read yet holds no lock, so it does not stop a migration. Its first read waits for the migration as long as the busy timeout allows, then fails. The server opens its writer with `store::open`, which reads `user_version`, so a running server always holds a shared lock.
 
 ### CLI
