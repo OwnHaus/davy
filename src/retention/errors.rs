@@ -3,18 +3,17 @@
 //!
 //! An event expires by `received_at`, the time Davy stored it, so a client
 //! clock cannot keep an event or expire it early. Deleting one takes it out
-//! of its issue's `event_count` and hourly counts, moves `first_seen` to the
-//! oldest event left, and drops an environment or release tag once no event
-//! that carries it is left. `last_seen` stays: it is the newest event, and
-//! that is never older than one it keeps. An issue whose last event goes is
-//! deleted with its counts and tags, and its user feedback stays, unlinked,
-//! until it expires too. When the error comes back it is a new issue with a
-//! new id, as ids are never used twice, so a link in an old alert cannot
-//! lead to another issue. The resolved or ignored state goes with the old
-//! issue, and a new-issue alert is sent. `releases` stays, because it says
-//! when a release was first seen, which decides whether a resolved issue
-//! reopens. Release health counts sessions, not events, and has a
-//! retention of its own.
+//! of its issue's `event_count` and hourly counts, sets `first_seen` and
+//! `last_seen` to the oldest and newest timestamp of the events left, and
+//! drops an environment or release tag once no event that carries it is
+//! left. An issue whose last event goes is deleted with its counts and
+//! tags, and its user feedback stays, unlinked, until it expires too. When
+//! the error comes back it is a new issue with a new id, as ids are never
+//! used twice, so a link in an old alert cannot lead to another issue. The
+//! resolved or ignored state goes with the old issue, and a new-issue alert
+//! is sent. `releases` stays, because it says when a release was first
+//! seen, which decides whether a resolved issue reopens. Release health
+//! counts sessions, not events, and has a retention of its own.
 
 use super::{Days, turns};
 use anyhow::Result;
@@ -46,6 +45,7 @@ pub fn sweep(c: &Connection, at: i64, default: Days, budget: Duration) -> Result
 
 /// One expired event, as the delete returns it.
 struct Gone {
+    project: i64,
     issue: i64,
     timestamp: i64,
     received_at: i64,
@@ -65,26 +65,30 @@ struct Taken {
 /// first, and fixes what counted them. Returns whether the batch was full.
 fn events(c: &Connection, at: i64, default: Days) -> Result<bool> {
     // CROSS JOIN keeps projects as the outer loop, so each project's expired
-    // events are one range of events_project_received.
+    // events are one range of events_project_received, read in its order
+    // without a sort. The order is what lets `untag` look for tied events
+    // only.
     let mut q = c.prepare_cached(
         "DELETE FROM events WHERE id IN (SELECT e.id FROM projects p CROSS JOIN events e
-         ON e.project_id=p.id AND e.received_at<?1-coalesce(p.error_retention_days,?2)*?3 LIMIT ?4)
-         RETURNING issue_id, timestamp, received_at, environment, release",
+         ON e.project_id=p.id AND e.received_at<?1-coalesce(p.error_retention_days,?2)*?3
+         ORDER BY p.id, e.received_at, e.id LIMIT ?4)
+         RETURNING project_id, issue_id, timestamp, received_at, environment, release",
     )?;
     let gone: Vec<Gone> = q
         .query_map(params![at, default.get(), super::DAY_MS, BATCH], |r| {
             Ok(Gone {
-                issue: r.get(0)?,
-                timestamp: r.get(1)?,
-                received_at: r.get(2)?,
-                environment: r.get(3)?,
-                release: r.get(4)?,
+                project: r.get(0)?,
+                issue: r.get(1)?,
+                timestamp: r.get(2)?,
+                received_at: r.get(3)?,
+                environment: r.get(4)?,
+                release: r.get(5)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
     let full = i64::try_from(gone.len()).is_ok_and(|n| n >= BATCH);
     let mut issues: BTreeMap<i64, Taken> = BTreeMap::new();
-    let mut tags: BTreeMap<(&str, &str, i64), i64> = BTreeMap::new();
+    let mut tags: BTreeMap<(&str, &str, i64), (i64, i64)> = BTreeMap::new();
     for g in &gone {
         let taken = issues.entry(g.issue).or_default();
         taken.events += 1;
@@ -96,24 +100,42 @@ fn events(c: &Connection, at: i64, default: Days) -> Result<bool> {
         for (key, value) in carried {
             if let Some(value) = value {
                 match tags.entry((key, value, g.issue)) {
-                    Entry::Vacant(v) => drop(v.insert(g.received_at)),
-                    Entry::Occupied(mut o) => *o.get_mut() = (*o.get()).max(g.received_at),
+                    Entry::Vacant(v) => drop(v.insert((g.project, g.received_at))),
+                    Entry::Occupied(mut o) => o.get_mut().1 = o.get().1.max(g.received_at),
                 }
             }
         }
     }
-    for ((key, value, issue), newest) in tags {
-        // last_at is when an event with this tag last arrived. When that is
-        // no later than the newest one just deleted, none is left.
-        c.prepare_cached(
-            "DELETE FROM issue_tags WHERE key=?1 AND value=?2 AND issue_id=?3 AND last_at<=?4",
-        )?
-        .execute(params![key, value, issue, newest])?;
+    for ((key, value, issue), (project, newest)) in tags {
+        untag(c, key, value, issue, project, newest)?;
     }
     for (issue, taken) in issues {
         recount(c, issue, &taken)?;
     }
     Ok(full)
+}
+
+/// Drops the tag `key=value` of `issue` when no event that carries it is
+/// left. `newest` is when the newest event just deleted with it arrived.
+fn untag(
+    c: &Connection,
+    key: &str,
+    value: &str,
+    issue: i64,
+    project: i64,
+    newest: i64,
+) -> Result<()> {
+    // last_at is when an event with this tag last arrived. Events expire
+    // in the order they arrived, so an event left that carries the tag
+    // arrived after the newest one deleted, which makes last_at later, or
+    // at the same millisecond, which the index by project and time finds.
+    c.prepare_cached(
+        "DELETE FROM issue_tags WHERE key=?1 AND value=?2 AND issue_id=?3 AND last_at<=?4
+         AND NOT EXISTS(SELECT 1 FROM events WHERE project_id=?5 AND received_at=issue_tags.last_at
+         AND issue_id=?3 AND CASE ?1 WHEN 'environment' THEN environment ELSE release END=?2)",
+    )?
+    .execute(params![key, value, issue, newest, project])?;
+    Ok(())
 }
 
 /// Takes what one batch deleted out of `issue`'s counts, or deletes the
@@ -125,20 +147,20 @@ fn recount(c: &Connection, issue: i64, taken: &Taken) -> Result<()> {
     }
     c.prepare_cached("DELETE FROM issue_hourly WHERE issue_id=?1 AND count<=0")?
         .execute([issue])?;
-    let oldest: Option<i64> = c
-        .prepare_cached("SELECT timestamp FROM events WHERE issue_id=?1 ORDER BY id LIMIT 1")?
-        .query_row([issue], |r| r.get(0))
-        .map(Some)
-        .or_else(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            e => Err(e),
-        })?;
-    match oldest {
-        Some(first_seen) => {
+    // Two subqueries, so each is one lookup in events_issue_timestamp.
+    let seen: Option<(i64, i64)> = c
+        .prepare_cached(
+            "SELECT (SELECT min(timestamp) FROM events WHERE issue_id=?1),
+             (SELECT max(timestamp) FROM events WHERE issue_id=?1)",
+        )?
+        .query_row([issue], |r| Ok(r.get::<_, Option<i64>>(0)?.zip(r.get(1)?)))?;
+    match seen {
+        Some((first_seen, last_seen)) => {
             c.prepare_cached(
-                "UPDATE issues SET event_count=max(event_count-?2,0), first_seen=?3 WHERE id=?1",
+                "UPDATE issues SET event_count=max(event_count-?2,0), first_seen=?3, last_seen=?4
+                 WHERE id=?1",
             )?
-            .execute(params![issue, taken.events, first_seen])?;
+            .execute(params![issue, taken.events, first_seen, last_seen])?;
         }
         None => forget(c, issue)?,
     }

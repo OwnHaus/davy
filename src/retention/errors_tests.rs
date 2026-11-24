@@ -277,6 +277,61 @@ fn a_sweep_deletes_one_batch_per_class_then_goes_on_within_its_budget() {
 }
 
 #[test]
+fn a_tag_stays_while_an_event_that_arrived_with_the_last_deleted_carries_it() {
+    let s = Server::new("errors-tied-tag", &["api"]);
+    // One request's events arrive in the same millisecond, more of them
+    // than one batch deletes.
+    s.ingest(
+        1,
+        (0..250)
+            .map(|_| error("timeout", day(1), "prod", "v1"))
+            .collect(),
+    );
+    let days = Days::new(10).unwrap();
+    sweep(&s.c, day(20), days, Duration::ZERO).unwrap();
+    assert_eq!(s.number("SELECT count(*) FROM events"), 250 - BATCH);
+    assert_eq!(
+        s.rows("SELECT key || '=' || value FROM issue_tags ORDER BY key"),
+        ["environment=prod", "release=v1"]
+    );
+    sweep(&s.c, day(20), days, Duration::from_secs(60)).unwrap();
+    assert_eq!(s.number("SELECT count(*) FROM issue_tags"), 0);
+}
+
+#[test]
+fn first_and_last_seen_follow_the_events_left_whatever_their_clocks_said() {
+    let s = Server::new("errors-seen", &["api"]);
+    // Received on day 1 from a clock 8 days ahead, on day 7, and on day 8
+    // from a clock 5 days behind.
+    for (received, thrown) in [(1, 9), (7, 7), (8, 3)] {
+        let mut e = error("timeout", day(received), "prod", "v1");
+        e.timestamp = day(thrown);
+        s.ingest(1, vec![e]);
+    }
+    s.sweep(day(16), 10);
+    let seen: (i64, i64) =
+        s.c.query_row("SELECT first_seen, last_seen FROM issues", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(seen, (day(3), day(7)));
+    // Each is one lookup in an index, not a read of the issue's events.
+    let mut q =
+        s.c.prepare(
+            "EXPLAIN QUERY PLAN SELECT (SELECT min(timestamp) FROM events WHERE issue_id=?1),
+             (SELECT max(timestamp) FROM events WHERE issue_id=?1)",
+        )
+        .unwrap();
+    let plan: Vec<String> = q
+        .query_map([1], |r| r.get(3))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let indexed = plan.iter().filter(|d| d.contains("events_issue_timestamp"));
+    assert_eq!(indexed.count(), 2, "{plan:?}");
+}
+
+#[test]
 fn a_row_that_still_points_at_an_issue_keeps_it_with_no_events() {
     let s = Server::new("errors-pinned", &["api"]);
     s.ingest(1, vec![error("timeout", day(1), "prod", "v1")]);
