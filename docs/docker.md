@@ -86,6 +86,8 @@ docker run -d --name davy --restart unless-stopped \
 
 A newer Davy migrates the data of an older one. An older one refuses data that a newer one migrated and says so, so a downgrade means restoring the backup taken before the upgrade, without what arrived since. The [changelog](../CHANGELOG.md) says when a release migrates data.
 
+An upgrade that migrates runs in one transaction before the server answers, so ingest waits until it is done. The release that adds retention per project builds two indexes over every stored event: a database with tens of millions of events waits about a minute or more. Each index takes about 20 bytes per stored event, and SQLite writes it to its write-ahead log first, so leave free disk of about 80 bytes per stored event, next to the backup.
+
 ## Verify the image
 
 ```sh

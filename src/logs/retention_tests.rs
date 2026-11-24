@@ -1,6 +1,6 @@
 use crate::logs::{
     LogLevel, LogRecord, LogSource, ORIGINAL_TIMESTAMP,
-    store::{LogQuery, LogWriter, Overrides, no_overrides, search},
+    store::{LogQuery, LogWriter, Overrides, State, no_overrides, search},
 };
 use crate::retention::Lock;
 use crate::test_support::scratch;
@@ -167,6 +167,29 @@ fn a_change_saved_during_a_pass_is_read_before_the_day_is_deleted_from() {
     run_with(&dir, 30, Overrides::new(read, lock), vec![]);
     assert_eq!(messages(&dir), ["api old", "web old"]);
     assert_eq!(*held.lock().unwrap(), [false, true]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_log_written_to_a_day_after_its_pass_is_deleted_by_the_next() {
+    let dir = scratch("logs-retention-late");
+    let now = now_ns();
+    let old = now - 5 * DAY;
+    let projects = HashMap::from([(1, 2)]);
+    let overrides = Overrides::new(move || Ok(projects.clone()), Lock::default());
+    let mut state = State::new(dir.clone(), 30, overrides);
+    state.add(vec![record(2, old, old, "web old")]).unwrap();
+    state.commit().unwrap();
+    // The day holds nothing of project 1, which keeps 2 days.
+    let budget = std::time::Duration::from_secs(60);
+    state.retention(now, budget).unwrap();
+    // A log observed when its time was within those 2 days reaches the
+    // writer after the pass.
+    let late = record(1, old + 1, old + 1 + DAY, "api late");
+    state.add(vec![late]).unwrap();
+    state.retention(now, budget).unwrap();
+    state.close_all().unwrap();
+    assert_eq!(messages(&dir), ["web old"]);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

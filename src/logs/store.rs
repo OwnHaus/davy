@@ -225,6 +225,10 @@ impl State {
         for mut r in batch {
             self.settle(&mut r);
             let day = day_of(r.timestamp);
+            // `settle` judges a log by when it was observed, so one that
+            // waited in the queue can land in a day retention has gone
+            // through already. The next pass checks the day again.
+            self.swept.remove(&day);
             let open = self.writer(day)?;
             if let Err(e) = open.writer.add_document(document(&fields, r, open.values)) {
                 self.discard(day);

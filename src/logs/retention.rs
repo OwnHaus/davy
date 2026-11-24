@@ -14,8 +14,8 @@
 //! deletes nothing.
 //!
 //! The pass remembers what it took from each day, so a day is read again
-//! only when a setting changed or the day outlived another project's
-//! retention. A pass that has deleted for longer than its budget stops, and
+//! only when a setting changed, the day outlived another project's
+//! retention, or a log was written to it. A pass that has deleted for longer than its budget stops, and
 //! the next one goes on, so writes wait at most about one day's merge.
 
 use super::{DAY_NS, Fields, State, WRITER_HEAP, days, parse_day};
