@@ -191,8 +191,11 @@ impl ProjectDay {
         } = self;
         let known = patterns.contains_key(&pattern.id) || pending.contains_key(&pattern.id);
         let real = patterns.len() - usize::from(patterns.contains_key(&OTHER)) + *added;
-        let room = real < FREE_PATTERNS || (real < MAX_PATTERNS && seen(candidates, pattern.id));
-        let (id, template) = if known || room {
+        // A known pattern takes no sighting, so the traffic of known lines
+        // cannot wear down the sightings of a new one.
+        let room =
+            known || real < FREE_PATTERNS || (real < MAX_PATTERNS && seen(candidates, pattern.id));
+        let (id, template) = if room {
             (pattern.id, pattern.template)
         } else {
             (OTHER, String::new())

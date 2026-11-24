@@ -120,6 +120,25 @@ fn a_line_that_recurs_among_more_junk_than_is_tracked_still_gets_in() {
 }
 
 #[test]
+fn lines_of_known_patterns_leave_the_sightings_of_a_new_line_alone() {
+    let mut tally = DayTally::default();
+    for n in 0..FREE_PATTERNS {
+        count(&mut tally, &record(1, None, &distinct(n)));
+    }
+    let real = record(1, None, "payment captured");
+    let mut ids = vec![count(&mut tally, &real)];
+    for n in FREE_PATTERNS..FREE_PATTERNS + 600 {
+        assert_eq!(count(&mut tally, &record(1, None, &distinct(n))), OTHER);
+    }
+    for n in 0..FREE_PATTERNS {
+        assert_ne!(count(&mut tally, &record(1, None, &distinct(n))), OTHER);
+    }
+    ids.extend((0..2).map(|_| count(&mut tally, &real)));
+    let id = patterns::of("payment captured").id;
+    assert_eq!(ids, [OTHER, OTHER, id]);
+}
+
+#[test]
 fn services_past_10000_cells_count_under_other_services() {
     let mut tally = DayTally::default();
     for n in 0..MAX_CELLS {
