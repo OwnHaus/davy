@@ -85,8 +85,11 @@ fn has_values(index: &Index) -> bool {
     index.schema().get_field("values").is_ok()
 }
 
+/// The day a directory name stands for: only the canonical `YYYY-MM-DD`
+/// form of a date, so each day has one name.
 fn parse_day(name: &str) -> Option<Date> {
-    (name.len() == 10).then(|| name.parse().ok()).flatten()
+    let day: Date = name.parse().ok()?;
+    (day.to_string() == name).then_some(day)
 }
 
 fn open_index(root: &Path, day: Date) -> Result<Index> {

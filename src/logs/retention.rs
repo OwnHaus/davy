@@ -163,7 +163,12 @@ impl State {
         self.empty_trash();
         let mut found = Vec::new();
         for entry in std::fs::read_dir(&self.root)? {
-            if let Some(day) = parse_day(&entry?.file_name().to_string_lossy()) {
+            let entry = entry?;
+            // A symlink is not a day, so a deletion never leaves the root.
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            if let Some(day) = parse_day(&entry.file_name().to_string_lossy()) {
                 found.push(day);
             }
         }
@@ -287,14 +292,29 @@ impl State {
     }
 
     /// Removes what a crash left in `.trash` between renaming a day there
-    /// and removing it.
+    /// and removing it: real directories with the names [`State::trash`]
+    /// gives them. Anything else stays and is reported, and so does a
+    /// `.trash` that is not a real directory.
     fn empty_trash(&self) {
-        let Ok(entries) = std::fs::read_dir(self.root.join(".trash")) else {
+        let trash = self.root.join(".trash");
+        match trash_dir(&trash) {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(e) => return report_trash(&e),
+        }
+        let Ok(entries) = std::fs::read_dir(&trash) else {
             return;
         };
         for entry in entries.flatten() {
-            if let Err(e) = std::fs::remove_dir_all(entry.path()) {
-                report_trash(&e);
+            let path = entry.path();
+            let dir = entry.file_type().is_ok_and(|t| t.is_dir());
+            if !dir || !trashed(&entry.file_name().to_string_lossy()) {
+                report_trash(&anyhow::anyhow!(
+                    "{} is not Davy's, left alone",
+                    path.display()
+                ));
+            } else if let Err(e) = std::fs::remove_dir_all(&path) {
+                report_trash(&e.into());
             }
         }
     }
@@ -307,6 +327,7 @@ impl State {
         days::forget(&self.root, day);
         let trash = self.root.join(".trash");
         std::fs::create_dir_all(&trash)?;
+        anyhow::ensure!(trash_dir(&trash)?, "{} is gone", trash.display());
         let target = trash.join(format!("{day}-{}", now_ns()));
         std::fs::rename(self.root.join(day.to_string()), &target)?;
         std::fs::remove_dir_all(&target)?;
@@ -326,8 +347,29 @@ fn report(day: Date, e: &anyhow::Error) {
     clippy::print_stderr,
     reason = "the server has no logger yet, stderr is its log"
 )]
-fn report_trash(e: &std::io::Error) {
-    eprintln!("log writer: emptying the trash: {e}");
+fn report_trash(e: &anyhow::Error) {
+    eprintln!("log writer: emptying the trash: {e:#}");
+}
+
+/// Whether `.trash` exists as a real directory. A symlink there, or
+/// anything else, is an error, so nothing is renamed into it or removed
+/// from where it points.
+fn trash_dir(trash: &std::path::Path) -> Result<bool> {
+    match std::fs::symlink_metadata(trash) {
+        Ok(m) if m.is_dir() => Ok(true),
+        Ok(_) => anyhow::bail!("{} is not a directory, left alone", trash.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Whether `name` is one [`State::trash`] gives a day: `YYYY-MM-DD-` and
+/// digits.
+fn trashed(name: &str) -> bool {
+    name.split_at_checked(10).is_some_and(|(day, rest)| {
+        let stamp = rest.strip_prefix('-').unwrap_or_default();
+        parse_day(day).is_some() && !stamp.is_empty() && stamp.bytes().all(|b| b.is_ascii_digit())
+    })
 }
 
 #[cfg(test)]

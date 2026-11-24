@@ -171,6 +171,61 @@ fn a_change_saved_during_a_pass_is_read_before_the_day_is_deleted_from() {
 }
 
 #[test]
+fn a_symlink_named_like_a_day_is_not_deleted_from() {
+    let dir = scratch("logs-retention-link");
+    let elsewhere = scratch("logs-retention-link-target");
+    let now = now_ns();
+    let old = now - 5 * DAY;
+    run(
+        &elsewhere,
+        30,
+        &[],
+        vec![record(1, old, old, "api elsewhere")],
+    );
+    let day = day_of(old).to_string();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::os::unix::fs::symlink(elsewhere.join(&day), dir.join(&day)).unwrap();
+    // Not the canonical name of a day either.
+    std::fs::create_dir(dir.join("+002026-01-05")).unwrap();
+    run(&dir, 30, &[(1, 2)], vec![]);
+    assert_eq!(messages(&elsewhere), ["api elsewhere"]);
+    assert!(!holds_deleted(&elsewhere, old));
+    assert!(dir.join(&day).is_symlink());
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(&elsewhere).unwrap();
+}
+
+#[test]
+fn the_trash_is_emptied_only_of_what_retention_put_there() {
+    let dir = scratch("logs-retention-trash");
+    let elsewhere = scratch("logs-retention-trash-target");
+    std::fs::create_dir_all(elsewhere.join("2020-01-01-1")).unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, dir.join(".trash")).unwrap();
+    run(&dir, 30, &[], vec![]);
+    assert!(elsewhere.join("2020-01-01-1").is_dir());
+    std::fs::remove_file(dir.join(".trash")).unwrap();
+    let trash = dir.join(".trash");
+    for name in ["2020-01-01-1", "notes", "2020-01-01-", "2020-01-01-1x"] {
+        std::fs::create_dir_all(trash.join(name)).unwrap();
+    }
+    std::os::unix::fs::symlink(&elsewhere, trash.join("2020-01-01-2")).unwrap();
+    run(&dir, 30, &[], vec![]);
+    let mut left: Vec<String> = std::fs::read_dir(&trash)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    left.sort();
+    assert_eq!(
+        left,
+        ["2020-01-01-", "2020-01-01-1x", "2020-01-01-2", "notes"]
+    );
+    assert!(elsewhere.join("2020-01-01-1").is_dir());
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(&elsewhere).unwrap();
+}
+
+#[test]
 fn a_longer_project_retention_keeps_a_day_the_default_would_delete() {
     let dir = scratch("logs-retention-long");
     let now = now_ns();
