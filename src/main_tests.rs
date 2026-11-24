@@ -234,6 +234,54 @@ fn slug_help_names_the_public_dsn_authority() {
 }
 
 #[test]
+fn project_retention_waits_for_a_log_deletion_under_way() {
+    let data = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("test-cli-retention-lock-{}", uuid::Uuid::new_v4()));
+    store::create_project(&store::open(&data).unwrap(), "api").unwrap();
+    // The log writer of a server on the same data holds the lock.
+    let lock = retention::Lock::default().with_file(&data);
+    let held = lock.hold_all().unwrap();
+    let d = data.to_str().unwrap().to_owned();
+    let (done, changed) = std::sync::mpsc::channel();
+    let cli = std::thread::spawn(move || {
+        let args = [
+            "davy",
+            "project",
+            "retention",
+            "api",
+            "--data",
+            &d,
+            "--logs",
+            "9",
+        ];
+        let Command::Project { command } = Cli::try_parse_from(args).unwrap().command else {
+            panic!("not the project command");
+        };
+        run_project(&mut vec![], command).unwrap();
+        done.send(()).unwrap();
+    });
+    let logs_days = || {
+        let c = store::open(&data).unwrap();
+        retention::stored(&c, "api")
+            .unwrap()
+            .unwrap()
+            .logs_days
+            .map(retention::Days::get)
+    };
+    let wait = std::time::Duration::from_millis(300);
+    assert!(changed.recv_timeout(wait).is_err());
+    assert_eq!(logs_days(), None);
+    drop(held);
+    changed
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap();
+    assert_eq!(logs_days(), Some(9));
+    cli.join().unwrap();
+    std::fs::remove_dir_all(&data).unwrap();
+}
+
+#[test]
 fn project_retention_prints_and_changes_a_projects_own_settings() {
     let data = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("target")

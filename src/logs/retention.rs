@@ -9,7 +9,7 @@
 //!
 //! The settings are read at the start of each pass and again right before
 //! each day is deleted from, under the lock a server takes while it saves a
-//! change. A change that was saved is therefore never followed by a deletion
+//! change and the lock file the CLI takes. A change that was saved is therefore never followed by a deletion
 //! under the setting it replaced, and a pass that cannot read the settings
 //! deletes nothing.
 //!
@@ -216,7 +216,7 @@ impl State {
             return Ok(Err(e));
         }
         let lock = self.overrides.lock.clone();
-        let held = lock.hold();
+        let held = lock.hold_all().context("taking the retention lock")?;
         self.refresh()?;
         let cut = self.policy.cut(day, now);
         if !self.needs(day, &cut) {

@@ -3,6 +3,32 @@ use crate::{event::ErrorEvent, store};
 use serde_json::json;
 use std::cell::RefCell;
 
+#[test]
+fn a_lock_on_the_file_waits_for_another_process_holding_it() {
+    let data = crate::test_support::scratch("retention-lock-file");
+    std::fs::create_dir_all(&data).unwrap();
+    // Two locks on one data directory, as the server and the CLI have.
+    let (server, cli) = (
+        Lock::default().with_file(&data),
+        Lock::default().with_file(&data),
+    );
+    let held = server.hold_all().unwrap();
+    let (took, taken) = std::sync::mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let _held = cli.hold_all().unwrap();
+        took.send(()).unwrap();
+    });
+    let wait = Duration::from_millis(300);
+    assert_eq!(
+        taken.recv_timeout(wait),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    );
+    drop(held);
+    assert_eq!(taken.recv_timeout(Duration::from_secs(10)), Ok(()));
+    waiter.join().unwrap();
+    std::fs::remove_dir_all(&data).unwrap();
+}
+
 fn memory() -> Connection {
     let mut c = Connection::open_in_memory().unwrap();
     store::init(&mut c).unwrap();

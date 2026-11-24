@@ -617,7 +617,7 @@ pub async fn serve(
     smtp: Option<alert::mail::Smtp>,
 ) -> anyhow::Result<()> {
     let writer = store::Writer::start(store::open(data)?, 1024);
-    let log_writer = log_writer(data, retention, writer.retention.clone())?;
+    let log_writer = log_writer(data, retention, writer.retention.clone().with_file(data))?;
     let app = App {
         keys: Arc::new(Keys::new(store::open(data)?)),
         sender: writer.sender.clone(),

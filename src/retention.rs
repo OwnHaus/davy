@@ -14,6 +14,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
+    fs::File,
+    path::Path,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant},
 };
@@ -27,25 +29,87 @@ pub const DEFAULT_LOG_DAYS: u32 = 30;
 pub const DEFAULT_ERROR_DAYS: u32 = MAX_DAYS;
 pub const DAY_MS: i64 = 86_400_000;
 
+/// The file in the data directory that the CLI and the log writer lock,
+/// so a change from the CLI waits for a log deletion under way.
+pub const LOCK_FILE: &str = "retention.lock";
+
 /// Keeps a change of the retention settings apart from a deletion that
-/// depends on them, within one server. The writer holds it while it saves
-/// a change, the log writer while it reads the settings and deletes. The
-/// CLI writes from a process of its own and does not take it.
+/// depends on them. The server's writer holds it while it saves a change,
+/// the log writer while it reads the settings and deletes. The CLI saves a
+/// change from a process of its own, so the log writer also locks
+/// [`LOCK_FILE`], which the CLI locks too.
 #[derive(Clone, Debug, Default)]
-pub struct Lock(Arc<Mutex<()>>);
+pub struct Lock {
+    held: Arc<Mutex<()>>,
+    file: Option<Arc<Path>>,
+}
+
+/// The lock of both the server and the file, until dropped.
+pub struct Held<'a> {
+    _server: MutexGuard<'a, ()>,
+    _file: Option<File>,
+}
 
 impl Lock {
-    /// Waits for the lock. A holder that panicked guarded no data, so its
-    /// poison is ignored.
-    pub fn hold(&self) -> MutexGuard<'_, ()> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    /// This lock, which [`Lock::hold_all`] also takes on [`LOCK_FILE`] in
+    /// the data directory `data`.
+    #[must_use]
+    pub fn with_file(mut self, data: &Path) -> Self {
+        self.file = Some(data.join(LOCK_FILE).into());
+        self
     }
 
-    /// Whether someone holds the lock now.
+    /// Waits for the lock within this server. A holder that panicked
+    /// guarded no data, so its poison is ignored.
+    pub fn hold(&self) -> MutexGuard<'_, ()> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Waits for the lock within this server, then for the lock on its
+    /// file, which other processes take. Always in this order, and the
+    /// server's writer and the CLI each take only one of them, so no two
+    /// wait for each other.
+    pub fn hold_all(&self) -> Result<Held<'_>> {
+        let server = self.hold();
+        let file = match &self.file {
+            None => None,
+            Some(path) => Some(lock_file(path)?),
+        };
+        Ok(Held {
+            _server: server,
+            _file: file,
+        })
+    }
+
+    /// Whether someone holds the lock within this server now.
     #[cfg(test)]
     pub fn is_held(&self) -> bool {
-        matches!(self.0.try_lock(), Err(std::sync::TryLockError::WouldBlock))
+        matches!(
+            self.held.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        )
     }
+}
+
+/// `path` opened and locked, waiting for another process that holds it.
+/// Read only, because a lock needs no more: a file another user created
+/// still locks. The lock goes when the file is closed, a crash included.
+fn lock_file(path: &Path) -> Result<File> {
+    use anyhow::Context as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let opened = match File::open(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o644)
+            .open(path),
+        other => other,
+    };
+    let file = opened.with_context(|| format!("opening {}", path.display()))?;
+    file.lock()
+        .with_context(|| format!("locking {}", path.display()))?;
+    Ok(file)
 }
 
 /// Each project's own settings, NULL for the server default. id_floor

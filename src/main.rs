@@ -349,6 +349,10 @@ fn run_project(out: &mut impl Write, command: Project) -> anyhow::Result<()> {
                 retention::stored(&c, &change.project)?
                     .ok_or_else(|| retention::unknown(&change.project))
             } else {
+                // A server's log writer may be deleting by the settings
+                // this replaces, so the change waits for it.
+                let lock = retention::Lock::default().with_file(&data);
+                let _held = lock.hold_all()?;
                 retention::set(&c, &change, retention::By::Person)?
             };
             let stored = stored.map_err(anyhow::Error::msg)?;

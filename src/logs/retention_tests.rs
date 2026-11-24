@@ -2,7 +2,7 @@ use crate::logs::{
     LogLevel, LogRecord, LogSource, ORIGINAL_TIMESTAMP,
     store::{LogQuery, LogWriter, Overrides, State, no_overrides, search, strays},
 };
-use crate::retention::Lock;
+use crate::retention::{LOCK_FILE, Lock};
 use crate::test_support::scratch;
 use crate::time::{day_of, now_ns};
 use std::{
@@ -154,18 +154,71 @@ fn a_change_saved_during_a_pass_is_read_before_the_day_is_deleted_from() {
     ];
     run(&dir, 30, &[], batch);
     // Project 1 keeps 2 days when the pass starts, and 30 once a change
-    // is saved. Each read says whether the lock was held during it.
-    let lock = Lock::default();
+    // is saved. Each read says whether the lock within the server and the
+    // lock file the CLI takes were held during it.
+    let data = scratch("logs-retention-changed-data");
+    std::fs::create_dir_all(&data).unwrap();
+    let lock = Lock::default().with_file(&data);
     let held = Arc::new(Mutex::new(Vec::new()));
-    let (seen, reads) = (lock.clone(), Arc::clone(&held));
+    let (seen, reads, file) = (lock.clone(), Arc::clone(&held), data.join(LOCK_FILE));
     let read = move || {
         let mut reads = reads.lock().unwrap();
-        reads.push(seen.is_held());
+        let locked = std::fs::File::open(&file).is_ok_and(|f| f.try_lock().is_err());
+        reads.push((seen.is_held(), locked));
         let days = if reads.len() == 1 { 2 } else { 30 };
         Ok(HashMap::from([(1, days)]))
     };
     run_with(&dir, 30, Overrides::new(read, lock), vec![]);
     assert_eq!(messages(&dir), ["api old", "web old"]);
+    assert_eq!(*held.lock().unwrap(), [(false, false), (true, true)]);
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(&data).unwrap();
+}
+
+#[test]
+fn a_failed_read_before_a_day_stops_the_pass_there() {
+    let dir = scratch("logs-retention-failed-read");
+    let now = now_ns();
+    let (first, second) = (now - 5 * DAY, now - 4 * DAY);
+    let batch = vec![
+        record(1, first, first, "api first"),
+        record(2, first + 1, first + 1, "web first"),
+        record(1, second, second, "api second"),
+        record(2, second + 1, second + 1, "web second"),
+    ];
+    run(&dir, 30, &[], batch);
+    // Project 1 keeps 2 days. The reads at the start of the pass and before
+    // the first day work, the one before the second day fails.
+    let count = Arc::new(Mutex::new(0));
+    let reads = Arc::clone(&count);
+    let read = move || {
+        let mut reads = reads.lock().unwrap();
+        *reads += 1;
+        if *reads == 3 {
+            anyhow::bail!("database is locked");
+        }
+        Ok(HashMap::from([(1, 2)]))
+    };
+    run_with(&dir, 30, Overrides::new(read, Lock::default()), vec![]);
+    assert_eq!(messages(&dir), ["web first", "api second", "web second"]);
+    assert_eq!(*count.lock().unwrap(), 3);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_whole_day_is_deleted_under_the_lock() {
+    let dir = scratch("logs-retention-whole-day");
+    let old = now_ns() - 5 * DAY;
+    run(&dir, 30, &[], vec![record(1, old, old, "api old")]);
+    let lock = Lock::default();
+    let held = Arc::new(Mutex::new(Vec::new()));
+    let (seen, reads) = (lock.clone(), Arc::clone(&held));
+    let read = move || {
+        reads.lock().unwrap().push(seen.is_held());
+        Ok(HashMap::new())
+    };
+    run_with(&dir, 2, Overrides::new(read, lock), vec![]);
+    assert_eq!(day_dirs(&dir), Vec::<String>::new());
     assert_eq!(*held.lock().unwrap(), [false, true]);
     std::fs::remove_dir_all(&dir).unwrap();
 }
