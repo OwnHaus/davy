@@ -87,8 +87,32 @@ async fn a_healthy_install_passes_every_check() {
                 "smtp",
                 "no SMTP server set, alerts go to webhooks and Slack only"
             ),
+            ok("logs", "every day of logs is a directory of its own"),
         ]
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_in_place_of_a_day_of_logs_warns() {
+    let data = scratch("doctor-logs");
+    let root = crate::logs::dir(&data);
+    std::fs::create_dir_all(root.join("2026-01-04")).unwrap();
+    std::os::unix::fs::symlink("/elsewhere", root.join("2026-01-05")).unwrap();
+    let fix = format!(
+        "move each out of {}, or put the day's own directory in its place",
+        root.display()
+    );
+    assert_eq!(
+        logs(&root),
+        not_ok(
+            "logs",
+            Status::Warn,
+            "not searched, written or deleted: 2026-01-05 is a symlink, not the day's directory",
+            fix
+        )
+    );
+    std::fs::remove_dir_all(&data).unwrap();
 }
 
 #[cfg(unix)]

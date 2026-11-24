@@ -18,7 +18,11 @@
 //! retention, or a log was written to it. A pass that has deleted for longer than its budget stops, and
 //! the next one goes on, so writes wait at most about one day's merge.
 
-use super::{DAY_NS, Fields, State, WRITER_HEAP, days, parse_day};
+use super::{
+    DAY_NS, Fields, State, WRITER_HEAP,
+    day_dirs::{self, Entry, Stray, real_dir},
+    days, parse_day,
+};
 use crate::{
     retention::Lock,
     time::{day_of, now_ns},
@@ -163,13 +167,16 @@ impl State {
         self.empty_trash();
         let mut found = Vec::new();
         for entry in std::fs::read_dir(&self.root)? {
-            let entry = entry?;
             // A symlink is not a day, so a deletion never leaves the root.
-            if !entry.file_type()?.is_dir() {
-                continue;
-            }
-            if let Some(day) = parse_day(&entry.file_name().to_string_lossy()) {
-                found.push(day);
+            match entry.map(|e| day_dirs::entry(&e)) {
+                Ok(Entry::Day(day)) => found.push(day),
+                Ok(Entry::Stray(stray)) => {
+                    if self.strays.insert(stray.name.clone()) {
+                        report_stray(&self.root, &stray);
+                    }
+                }
+                Ok(Entry::Other) => {}
+                Err(e) => report_entry(&e.into()),
             }
         }
         found.sort_unstable();
@@ -243,7 +250,10 @@ impl State {
             self.trash(day)?;
             return Ok(Deleted::Day);
         }
-        let index = Index::open_in_dir(self.root.join(day.to_string()))?;
+        let dir = self.root.join(day.to_string());
+        // The pass saw a real directory, but it may have been swapped since.
+        anyhow::ensure!(real_dir(&dir)?, "{} is gone", dir.display());
+        let index = Index::open_in_dir(&dir)?;
         let reader: IndexReader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
@@ -297,7 +307,7 @@ impl State {
     /// `.trash` that is not a real directory.
     fn empty_trash(&self) {
         let trash = self.root.join(".trash");
-        match trash_dir(&trash) {
+        match real_dir(&trash) {
             Ok(true) => {}
             Ok(false) => return,
             Err(e) => return report_trash(&e),
@@ -327,9 +337,11 @@ impl State {
         days::forget(&self.root, day);
         let trash = self.root.join(".trash");
         std::fs::create_dir_all(&trash)?;
-        anyhow::ensure!(trash_dir(&trash)?, "{} is gone", trash.display());
+        anyhow::ensure!(real_dir(&trash)?, "{} is gone", trash.display());
+        let dir = self.root.join(day.to_string());
+        anyhow::ensure!(real_dir(&dir)?, "{} is gone", dir.display());
         let target = trash.join(format!("{day}-{}", now_ns()));
-        std::fs::rename(self.root.join(day.to_string()), &target)?;
+        std::fs::rename(&dir, &target)?;
         std::fs::remove_dir_all(&target)?;
         Ok(())
     }
@@ -347,20 +359,28 @@ fn report(day: Date, e: &anyhow::Error) {
     clippy::print_stderr,
     reason = "the server has no logger yet, stderr is its log"
 )]
-fn report_trash(e: &anyhow::Error) {
-    eprintln!("log writer: emptying the trash: {e:#}");
+fn report_stray(root: &std::path::Path, stray: &Stray) {
+    eprintln!(
+        "log writer: {} {}, so it is not searched, written or deleted until it is moved away",
+        root.join(&stray.name).display(),
+        stray.why
+    );
 }
 
-/// Whether `.trash` exists as a real directory. A symlink there, or
-/// anything else, is an error, so nothing is renamed into it or removed
-/// from where it points.
-fn trash_dir(trash: &std::path::Path) -> Result<bool> {
-    match std::fs::symlink_metadata(trash) {
-        Ok(m) if m.is_dir() => Ok(true),
-        Ok(_) => anyhow::bail!("{} is not a directory, left alone", trash.display()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e.into()),
-    }
+#[expect(
+    clippy::print_stderr,
+    reason = "the server has no logger yet, stderr is its log"
+)]
+fn report_entry(e: &anyhow::Error) {
+    eprintln!("log writer: retention skipped an entry it cannot read: {e:#}");
+}
+
+#[expect(
+    clippy::print_stderr,
+    reason = "the server has no logger yet, stderr is its log"
+)]
+fn report_trash(e: &anyhow::Error) {
+    eprintln!("log writer: emptying the trash: {e:#}");
 }
 
 /// Whether `name` is one [`State::trash`] gives a day: `YYYY-MM-DD-` and

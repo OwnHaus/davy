@@ -36,6 +36,7 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 
 ### Fixed
 
+- A symlink or a file in the place of a day of logs, or a directory with another name for a date such as `+002026-01-05`, is no longer searched or written through. Log retention never deleted from one, but kept it without a word; it now reports each on stderr, and `davy doctor` warns about it. A directory named for a year of six digits was taken for a day and could be deleted whole.
 - A burst of new issues can no longer drop a monitor alert. Issue notices and monitor notices shared one channel's 100 unsent places, so anyone with a public DSN who sent 100 new errors within the 30 s digest window made Davy drop the next `monitor.down`. Issue notices now have 100 places of their own.
 - A bare word in a log search now finds attribute values at any depth. Searching `r-3fa9c2d1` found nothing when the request ID sat in `attributes.req.id`, and only `attributes.req.id:r-3fa9c2d1` found it. Logs written before this release keep the old behaviour: a bare word matches their message only.
 - An issue's latest event is now its newest one. After 50 events Davy kept the payload of only every 100th, so the UI, `davy event` and `issue_context` could show an event hours older than the issue's last seen time.

@@ -1,6 +1,6 @@
 use crate::logs::{
     LogLevel, LogRecord, LogSource, ORIGINAL_TIMESTAMP,
-    store::{LogQuery, LogWriter, Overrides, State, no_overrides, search},
+    store::{LogQuery, LogWriter, Overrides, State, no_overrides, search, strays},
 };
 use crate::retention::Lock;
 use crate::test_support::scratch;
@@ -194,7 +194,7 @@ fn a_log_written_to_a_day_after_its_pass_is_deleted_by_the_next() {
 }
 
 #[test]
-fn a_symlink_named_like_a_day_is_not_deleted_from() {
+fn a_symlink_named_like_a_day_is_not_searched_written_or_deleted_from() {
     let dir = scratch("logs-retention-link");
     let elsewhere = scratch("logs-retention-link-target");
     let now = now_ns();
@@ -214,8 +214,50 @@ fn a_symlink_named_like_a_day_is_not_deleted_from() {
     assert_eq!(messages(&elsewhere), ["api elsewhere"]);
     assert!(!holds_deleted(&elsewhere, old));
     assert!(dir.join(&day).is_symlink());
+    // A log of that day fails to write rather than land where the link
+    // points, and a search reads nothing through it.
+    run(&dir, 30, &[], vec![record(1, old + 1, old + 1, "api here")]);
+    assert_eq!(messages(&elsewhere), ["api elsewhere"]);
+    assert_eq!(messages(&dir), Vec::<String>::new());
+    let strays: Vec<(String, &str)> = strays(&dir)
+        .unwrap()
+        .into_iter()
+        .map(|s| (s.name, s.why))
+        .collect();
+    assert_eq!(
+        strays,
+        [
+            (
+                "+002026-01-05".to_owned(),
+                "names a date, but a day's directory is named YYYY-MM-DD"
+            ),
+            (day.clone(), "is a symlink, not the day's directory"),
+        ]
+    );
+    // Retention reports each stray once, not every pass.
+    let mut state = State::new(dir.clone(), 30, no_overrides());
+    for _ in 0..2 {
+        state.retention(now, std::time::Duration::MAX).unwrap();
+    }
+    let mut reported: Vec<&String> = state.strays.iter().collect();
+    reported.sort();
+    assert_eq!(reported, ["+002026-01-05", &day]);
     std::fs::remove_dir_all(&dir).unwrap();
     std::fs::remove_dir_all(&elsewhere).unwrap();
+}
+
+#[test]
+fn a_directory_of_a_year_with_six_digits_is_not_a_day() {
+    let dir = scratch("logs-retention-long-year");
+    // jiff reads and prints the year -1 so, and that day is long expired.
+    let year = dir.join("-000001-01-01");
+    std::fs::create_dir_all(&year).unwrap();
+    std::fs::write(year.join("notes"), "kept").unwrap();
+    run(&dir, 30, &[], vec![]);
+    assert_eq!(std::fs::read_to_string(year.join("notes")).unwrap(), "kept");
+    let names: Vec<String> = strays(&dir).unwrap().into_iter().map(|s| s.name).collect();
+    assert_eq!(names, ["-000001-01-01"]);
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]

@@ -8,7 +8,7 @@ use jiff::civil::Date;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ops::Bound,
     path::{Path, PathBuf},
     sync::{
@@ -87,14 +87,18 @@ fn has_values(index: &Index) -> bool {
 
 /// The day a directory name stands for: only the canonical `YYYY-MM-DD`
 /// form of a date, so each day has one name.
+/// The day `name` is the directory of: `YYYY-MM-DD`, the one name of each
+/// date. jiff also reads `+002026-01-05`, and prints a year past 9999 or
+/// before 0 with six digits, so a day has exactly 10 characters.
 fn parse_day(name: &str) -> Option<Date> {
     let day: Date = name.parse().ok()?;
-    (day.to_string() == name).then_some(day)
+    (name.len() == 10 && day.to_string() == name).then_some(day)
 }
 
 fn open_index(root: &Path, day: Date) -> Result<Index> {
     let dir = root.join(day.to_string());
-    if dir.join("meta.json").exists() {
+    // A stray in the day's place fails the write rather than take its logs.
+    if day_dirs::real_dir(&dir)? && dir.join("meta.json").exists() {
         return Ok(Index::open_in_dir(&dir)?);
     }
     std::fs::create_dir_all(&dir)?;
@@ -166,6 +170,8 @@ pub(super) struct State {
     overrides: Overrides,
     /// What retention last deleted from each day.
     swept: HashMap<Date, retention::Cut>,
+    /// The strays retention has reported, so each is reported once.
+    strays: HashSet<String>,
     open: HashMap<Date, OpenDay>,
     uncommitted: usize,
 }
@@ -178,6 +184,7 @@ impl State {
             policy: retention::Policy::new(retention_days, HashMap::new()),
             overrides,
             swept: HashMap::new(),
+            strays: HashSet::new(),
             open: HashMap::new(),
             uncommitted: 0,
         }
@@ -615,6 +622,10 @@ fn hit(schema: &Schema, f: &Fields, doc: &TantivyDocument) -> Result<LogHit> {
 
 #[path = "days.rs"]
 mod days;
+
+#[path = "day_dirs.rs"]
+mod day_dirs;
+pub use day_dirs::{Stray, strays};
 
 #[path = "retention.rs"]
 mod retention;

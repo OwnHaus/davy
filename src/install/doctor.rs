@@ -129,8 +129,39 @@ pub async fn checks(data: &Path) -> Vec<Check> {
             }
         },
     }
+    checks.push(logs(&crate::logs::dir(data)));
     checks.push(disk(data, fs4::available_space(data).ok()));
     checks
+}
+
+/// Entries of the log directory `root` named like a day that Davy does not
+/// search, write or delete, such as a day moved to another disk and linked
+/// back. Logs of such a day fail to write.
+fn logs(root: &Path) -> Check {
+    let r = sh(&root.to_string_lossy());
+    match crate::logs::store::strays(root) {
+        Err(e) => not_ok(
+            "logs",
+            Status::Warn,
+            format!("{e:#}"),
+            format!("make {r} readable by the user Davy runs as"),
+        ),
+        Ok(strays) if strays.is_empty() => {
+            ok("logs", "every day of logs is a directory of its own")
+        }
+        Ok(strays) => {
+            let each: Vec<String> = strays
+                .iter()
+                .map(|s| format!("{} {}", s.name, s.why))
+                .collect();
+            not_ok(
+                "logs",
+                Status::Warn,
+                format!("not searched, written or deleted: {}", each.join("; ")),
+                format!("move each out of {r}, or put the day's own directory in its place"),
+            )
+        }
+    }
 }
 
 /// `me` is the user doctor runs as. Another user who owns the directory

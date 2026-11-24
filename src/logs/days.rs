@@ -5,7 +5,7 @@
 //! anything. A day is opened again only when its `meta.json` changed, which
 //! tantivy replaces on every commit.
 
-use super::parse_day;
+use super::day_dirs::{self, Entry};
 use crate::time::day_of;
 use anyhow::{Context, Result};
 use jiff::civil::Date;
@@ -80,8 +80,12 @@ pub(super) fn days(
     until: i64,
 ) -> Result<impl Iterator<Item = Result<Day>>> {
     let mut all: Vec<Date> = match std::fs::read_dir(root) {
+        // A stray is not searched: see `day_dirs`.
         Ok(entries) => entries
-            .filter_map(|e| parse_day(&e.ok()?.file_name().to_string_lossy()))
+            .filter_map(|e| match day_dirs::entry(&e.ok()?) {
+                Entry::Day(day) => Some(day),
+                Entry::Stray(_) | Entry::Other => None,
+            })
             .collect(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(e.into()),
