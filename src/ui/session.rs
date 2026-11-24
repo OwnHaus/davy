@@ -31,6 +31,9 @@ pub const HASH_QUEUE: usize = 32;
 pub const HASH_WAIT: Duration = Duration::from_secs(3);
 const TOO_MANY: &str = "too many attempts for this e-mail, wait";
 
+/// Where [`Local`] reads the time that the waits of guesses count from.
+pub(super) type Clock = Box<dyn Fn() -> Instant + Send + Sync>;
+
 /// Which count an attempt to guess a password goes to. A login and a
 /// password change in an open session count apart, so failed logins for an
 /// e-mail do not keep its person from changing their password.
@@ -50,6 +53,12 @@ pub struct Local {
     /// than that many times [`crate::accounts::HASH_MEMORY`].
     pub(super) hashing: Arc<Semaphore>,
     pub(super) queue: Semaphore,
+    /// [`Instant::now`], or in a test a clock that moves only when the test
+    /// moves it.
+    pub(super) clock: Clock,
+    /// How long a request waits for a hash slot: [`HASH_WAIT`], or in a test
+    /// longer than any hash takes on a loaded machine.
+    pub(super) hash_wait: Duration,
 }
 
 /// The right to run one Argon2 hash.
@@ -68,6 +77,8 @@ impl Local {
             changes: Mutex::new(Backoff::new(backoff::CAPACITY)),
             hashing: Arc::new(Semaphore::new(HASHES_AT_ONCE)),
             queue: Semaphore::new(HASH_QUEUE),
+            clock: Box::new(Instant::now),
+            hash_wait: HASH_WAIT,
         }
     }
 
@@ -76,14 +87,15 @@ impl Local {
     }
 
     /// A hash slot, after the requests that waited before this one, or `429`
-    /// when [`HASH_QUEUE`] wait already or none frees in [`HASH_WAIT`].
+    /// when [`HASH_QUEUE`] wait already or none frees in `hash_wait`.
     pub(super) async fn slot(&self) -> Result<Slot, Refusal> {
         let busy = || Refusal::wait(Duration::from_secs(1), "too many logins at once, try again");
         let _waiting = self.queue.try_acquire().map_err(|_full| busy())?;
-        let permit = tokio::time::timeout(HASH_WAIT, Arc::clone(&self.hashing).acquire_owned())
-            .await
-            .map_err(|_late| busy())?
-            .map_err(internal)?;
+        let permit =
+            tokio::time::timeout(self.hash_wait, Arc::clone(&self.hashing).acquire_owned())
+                .await
+                .map_err(|_late| busy())?
+                .map_err(internal)?;
         Ok(Slot { _permit: permit })
     }
 
@@ -98,7 +110,7 @@ impl Local {
     /// counting it. [`Self::attempt`] counts it later, once it has a slot.
     pub(super) fn check(&self, guess: Guess, target: Target<'_>) -> Result<(), Refusal> {
         let backoff = self.backoff(guess).lock().map_err(internal)?;
-        match backoff.waiting(target, Instant::now()) {
+        match backoff.waiting(target, (self.clock)()) {
             Some(wait) => Err(Refusal::wait(wait, TOO_MANY)),
             None => Ok(()),
         }
@@ -109,7 +121,7 @@ impl Local {
     pub(super) fn attempt(&self, guess: Guess, target: Target<'_>) -> Result<(), Refusal> {
         let mut backoff = self.backoff(guess).lock().map_err(internal)?;
         backoff
-            .attempt(target, Instant::now())
+            .attempt(target, (self.clock)())
             .map_err(|wait| Refusal::wait(wait, TOO_MANY))
     }
 
