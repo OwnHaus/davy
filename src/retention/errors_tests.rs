@@ -83,6 +83,47 @@ fn error(message: &str, at: i64, environment: &str, release: &str) -> ErrorEvent
 }
 
 #[test]
+fn an_expired_event_leaves_the_payload_sample_alone() {
+    let s = Server::new("errors-sample", &["api"]);
+    // Events 0 to 99 of one issue, a millisecond apart. The one at 99 is in
+    // the sample and keeps its payload for good.
+    let at = |n| day(1) + n;
+    s.ingest(
+        1,
+        (0..100)
+            .map(|n| error("timeout", at(n), "prod", "v1"))
+            .collect(),
+    );
+    let kept = |n: i64| {
+        let sql = format!(
+            "SELECT payload IS NOT NULL FROM events WHERE received_at={}",
+            at(n)
+        );
+        s.number(&sql) == 1
+    };
+    assert_eq!(
+        (kept(49), kept(50), kept(98), kept(99)),
+        (true, false, false, true)
+    );
+    // Event 0 expires, so the issue counts 99 events, as many as before
+    // event 99 arrived.
+    s.sweep(at(1) + 10 * DAY_MS, 10);
+    assert_eq!(s.number("SELECT event_count FROM issues"), 99);
+    s.ingest(1, vec![error("timeout", at(100), "prod", "v1")]);
+    assert!(kept(99), "a payload in the sample was cleared");
+    // Event 101 is outside the sample, so it keeps its payload, marked,
+    // only while it is the newest. The decoders skip the mark.
+    s.ingest(1, vec![error("timeout", at(101), "prod", "v1")]);
+    let issue = s.number("SELECT id FROM issues");
+    let raw = store::payload(&s.c, issue).unwrap().unwrap();
+    assert_eq!(raw["message"], "timeout");
+    assert!(kept(101));
+    s.ingest(1, vec![error("timeout", at(102), "prod", "v1")]);
+    let left = (kept(99), kept(100), kept(101), kept(102));
+    assert_eq!(left, (true, true, false, true));
+}
+
+#[test]
 fn expired_events_leave_their_issues_counts_first_seen_and_tags_true() {
     let s = Server::new("errors-counts", &["api"]);
     s.ingest(
