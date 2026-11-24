@@ -548,3 +548,45 @@ async fn set_retention_stores_the_change_and_shows_what_is_kept() {
     .await;
     assert!(error);
 }
+
+#[tokio::test]
+async fn set_retention_refuses_an_agent_the_default_and_stores_none_of_the_change() {
+    let s = server();
+    let c = store::open(&s.data).unwrap();
+    let own = Change {
+        project: "api".into(),
+        logs_days: Some(Setting::Days(90)),
+        errors_days: Some(Setting::Days(400)),
+    };
+    retention::set(&c, &own, By::Person).unwrap().unwrap();
+    let data = s.data.clone();
+    let writer = std::thread::spawn(move || {
+        let c = store::open(&data).unwrap();
+        for _ in 0..2 {
+            let w = next_job(&s.writes);
+            let Job::SetRetention(change, by) = w.job else {
+                panic!("expected a retention job");
+            };
+            let stored = retention::set(&c, &change, by).unwrap();
+            w.done.send(stored.map(drop)).unwrap();
+        }
+    });
+    let refusal = "an agent may not return errors to the server default: the project keeps them 400 days of its own";
+    // Alone, and with a longer logs setting that must not slip through.
+    for change in [
+        json!({"project": "api", "errors_days": "default"}),
+        json!({"project": "api", "logs_days": 120, "errors_days": "default"}),
+    ] {
+        let (text, error) = tool(&s.app, "set_retention", change).await;
+        assert!(error && text.starts_with(refusal), "{text}");
+    }
+    writer.join().unwrap();
+    let kept = retention::stored(&c, "api").unwrap().unwrap();
+    assert_eq!(
+        (
+            kept.logs_days.map(retention::Days::get),
+            kept.errors_days.map(retention::Days::get)
+        ),
+        (Some(90), Some(400))
+    );
+}
