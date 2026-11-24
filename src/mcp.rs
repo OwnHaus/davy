@@ -8,8 +8,10 @@ use crate::{
     firsts::First,
     issues::IssueIds,
     logs::{
-        self, LogLevel,
-        store::{LogCounts, LogQuery, histogram, search},
+        self, LogLevel, patterns,
+        store::{
+            LogCounts, LogQuery, MAX_PATTERN_ROWS, PatternQuery, histogram, search, top_patterns,
+        },
     },
     query,
     retention::{self, By, Change, Defaults, Setting},
@@ -49,7 +51,7 @@ const INSTRUCTIONS: &str = "Davy stores the errors that Sentry SDKs report and t
 To connect an existing app, call `connect_project`, then send its test_event command and poll `project_status`. Create new projects locally with `davy connect SLUG --data DATA`; MCP cannot create ingest keys. \
 To triage, list open issues with `sql` (SELECT id,title,event_count,last_seen FROM issues WHERE status='unresolved' ORDER BY last_seen DESC LIMIT 20), \
 then call `issue_context` on one issue. It returns the stack with source lines, breadcrumbs, releases, the logs around the error and what users wrote about it. \
-Call `schema` before writing other SQL. To see how often a log line happens and since when, call `count_logs` before `search_logs`. To see whether a release crashes more than the one before, call `release_health`. After a fix ships, call `mark_fixed`. \
+Call `schema` before writing other SQL. To see how often a log line happens and since when, call `count_logs` before `search_logs`. To see what fills the logs, call `log_patterns`. To see whether a release crashes more than the one before, call `release_health`. After a fix ships, call `mark_fixed`. \
 `project_status` shows how long a project keeps its logs and errors, and `set_retention` changes it. \
 When a tool was missing, returned the wrong thing or needed a workaround, call `submit_feedback`.";
 
@@ -59,7 +61,8 @@ Logs are not in SQL. Use search_logs. Its query is Tantivy syntax over these fie
 - attributes.<key> (full text in one attribute, e.g. attributes.provider:acme or attributes.req.id:r-3fa9c2d1)
 - service, trace_id, span_id (exact match, e.g. trace_id:4bf92f3577b34da6a3ce929d0e0e4736)
 Combine with AND, OR, NOT and parentheses. Levels are trace, debug, info, warn, error, fatal.
-count_logs takes the same filters and returns counts per time bucket instead of the logs.";
+count_logs takes the same filters and returns counts per time bucket instead of the logs.
+log_patterns lists the shapes of the lines with the most bytes; pass a row's id as pattern to search_logs or count_logs.";
 
 /// `/mcp`, behind the token. Requests must name loopback or the host of
 /// `public_url` in their `Host` header, and a browser page that sends one
@@ -161,6 +164,8 @@ struct LogFilter {
     until: Option<String>,
     /// Minimum level: trace, debug, info, warn, error or fatal.
     level: Option<String>,
+    /// A pattern id from log_patterns: 12 hex digits, or other.
+    pattern: Option<String>,
 }
 
 impl LogFilter {
@@ -180,13 +185,15 @@ impl LogFilter {
             .map(LogLevel::named)
             .transpose()
             .map_err(anyhow::Error::msg)?;
+        let pattern = self.pattern.as_deref().map(patterns::parse);
+        let pattern = pattern.transpose().map_err(anyhow::Error::msg)?;
         Ok(LogQuery {
             project,
             since: instant(self.since.as_deref(), "24h")?,
             until: instant(self.until.as_deref(), "0s")?,
             min_level,
             text: self.query,
-            pattern: None,
+            pattern,
             limit,
             skip: 0,
         })
@@ -199,6 +206,21 @@ struct SearchLogs {
     #[serde(flatten)]
     filter: LogFilter,
     /// At most 500. Default 100. The newest logs win when there are more.
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct LogPatterns {
+    /// Project slug. Leave out for every project.
+    project: Option<String>,
+    /// RFC 3339 timestamp or a duration back from now: 30m, 1h, 2d. Default 24h. Counted in whole UTC days.
+    since: Option<String>,
+    /// RFC 3339 timestamp or a duration back from now. Default now.
+    until: Option<String>,
+    /// Minimum level: trace, debug, info, warn, error or fatal.
+    level: Option<String>,
+    /// At most 100. Default 20.
     limit: Option<usize>,
 }
 
@@ -347,6 +369,32 @@ impl Tools {
         self.blocking(move |data| {
             let q = filter.query(data, 0)?;
             json(&LogCounts::from(histogram(&logs::dir(data), &q)?))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "What fills the logs: the shapes of the lines with the most bytes in a window, with numbers, ids, IPs, e-mail addresses and quoted values masked. Each row has the pattern id, template, one example, records, bytes, share of the window's bytes, records per level and the top services. Counted per whole UTC day; past 1000 patterns a project's day counts the rest as one row with id other. Pass an id as pattern to search_logs or count_logs to read or count its lines."
+    )]
+    async fn log_patterns(&self, Parameters(req): Parameters<LogPatterns>) -> Reply {
+        self.blocking(move |data| {
+            let filter = LogFilter {
+                query: None,
+                project: req.project,
+                since: req.since,
+                until: req.until,
+                level: req.level,
+                pattern: None,
+            };
+            let q = filter.query(data, 0)?;
+            let report = PatternQuery {
+                project: q.project,
+                since: q.since,
+                until: q.until,
+                min_level: q.min_level,
+                limit: req.limit.unwrap_or(20).min(MAX_PATTERN_ROWS),
+            };
+            json(&top_patterns(&logs::dir(data), &report)?)
         })
         .await
     }

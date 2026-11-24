@@ -10,7 +10,7 @@ const client = new Client({ name: 'davy-e2e', version: '1.0.0' })
 await client.connect(transport)
 
 const { tools } = await client.listTools()
-assert.deepEqual(tools.map(t => t.name).sort(), ['connect_project', 'count_logs', 'issue_context', 'mark_fixed', 'project_status', 'release_health', 'schema', 'search_logs', 'set_retention', 'sql', 'submit_feedback'])
+assert.deepEqual(tools.map(t => t.name).sort(), ['connect_project', 'count_logs', 'issue_context', 'log_patterns', 'mark_fixed', 'project_status', 'release_health', 'schema', 'search_logs', 'set_retention', 'sql', 'submit_feedback'])
 
 async function call(name, args) {
   const result = await client.callTool({ name, arguments: args })
@@ -75,6 +75,11 @@ assert.deepEqual(logs.map(l => l.message).sort(), ['{"error":"otlp json db timeo
 const counts = JSON.parse((await call('count_logs', { query: 'timeout', project: 'logs', since: '10m', level: 'error' })).text)
 assert.equal(counts.total, 2)
 assert.equal(counts.buckets.reduce((sum, [, n]) => sum + n, 0), 2)
+const patterns = JSON.parse((await call('log_patterns', { project: 'logs', since: '10m', level: 'error' })).text)
+const otlpJson = patterns.top.find(p => p.example === '{"error":"otlp json db timeout","ms":5000}')
+assert.deepEqual([otlpJson.template, otlpJson.records, otlpJson.levels], ['{"error":"otlp json db timeout", "ms":<NUM>}', 1, { error: 1 }])
+const byPattern = JSON.parse((await call('search_logs', { project: 'logs', since: '10m', pattern: otlpJson.id })).text)
+assert.deepEqual(byPattern.map(l => [l.message, l.pattern]), [['{"error":"otlp json db timeout","ms":5000}', otlpJson.id]])
 
 const health = JSON.parse((await call('release_health', { project: 'health', since: '1d' })).text)
 assert.deepEqual(health.map(r => [r.release, r.sessions, r.crashed, r.crash_free_sessions, r.users, r.crash_free_users]), [['e2e@2', 6, 1, 83.33, 2, 50]])
@@ -92,4 +97,4 @@ assert.deepEqual(feedback.rows[0].slice(1), ['e2e tried', 'e2e happened', null])
 assert.ok(feedback.rows[0][0], 'the client name comes from _meta or User-Agent')
 
 await client.close()
-console.log(`mcp: verified 11 tools, set_retention, sql, issue_context, search_logs, count_logs, release_health, mark_fixed on issue ${issue} and submit_feedback from client ${feedback.rows[0][0]}`)
+console.log(`mcp: verified 12 tools, set_retention, sql, issue_context, search_logs, count_logs, log_patterns, release_health, mark_fixed on issue ${issue} and submit_feedback from client ${feedback.rows[0][0]}`)

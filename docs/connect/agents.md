@@ -1,6 +1,6 @@
 # Connect a coding agent
 
-Davy serves MCP at `/mcp` of the public URL. Claude Code, Codex and Cursor connect with the admin token and get eleven tools: `schema`, `sql`, `search_logs`, `count_logs`, `release_health`, `issue_context`, `mark_fixed`, `submit_feedback`, `connect_project`, `project_status` and `set_retention`.
+Davy serves MCP at `/mcp` of the public URL. Claude Code, Codex and Cursor connect with the admin token and get twelve tools: `schema`, `sql`, `search_logs`, `count_logs`, `log_patterns`, `release_health`, `issue_context`, `mark_fixed`, `submit_feedback`, `connect_project`, `project_status` and `set_retention`.
 
 The token gives full read access to errors and logs. It goes into a file only the person can read and reaches the client through the `DAVY_TOKEN` environment variable, never into a config file or a command line.
 
@@ -42,6 +42,7 @@ To check, ask the agent: "List the unresolved issues in Davy." It calls `sql` an
 - `issue_context` returns what fixing an issue needs: the stack with source lines, breadcrumbs, the releases it occurs in, the logs around it and what users wrote about it through the SDK's feedback widget.
 - `search_logs` searches logs over a time range. A bare word such as a request ID matches the message and every attribute value, and `attributes.<key>:<word>` matches one attribute.
 - `count_logs` takes the filters of `search_logs` and returns how many logs match per time bucket. The agent sees how often something happens and since when before it reads examples.
+- `log_patterns` lists what fills the logs of a window: each line shape with its values masked, an example, records, bytes, share of the bytes, levels and services, the most bytes first. Pass a row's `id` as `pattern` to `search_logs` or `count_logs` to read or count its lines.
 - `sql` runs one read-only query, and `schema` describes the tables. The `client_reports` table says how many errors and logs each SDK dropped before sending, and why, so the agent can tell a quiet app from one whose `beforeSend` drops everything.
 - `release_health` returns crash-free sessions and users per release and environment, newest release first, so the agent can tell whether a deploy made things worse. Browser and mobile SDKs send one session per user visit. Server SDKs count requests as sessions and name no users.
 - `mark_fixed` resolves an issue in a release. It reopens when the error comes back in that release or a newer one.

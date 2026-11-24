@@ -385,11 +385,17 @@ async fn both_log_tools_show_every_filter_in_their_schema() {
     };
     assert_eq!(
         fields("search_logs"),
-        ["level", "limit", "project", "query", "since", "until"]
+        [
+            "level", "limit", "pattern", "project", "query", "since", "until"
+        ]
     );
     assert_eq!(
         fields("count_logs"),
-        ["level", "project", "query", "since", "until"]
+        ["level", "pattern", "project", "query", "since", "until"]
+    );
+    assert_eq!(
+        fields("log_patterns"),
+        ["level", "limit", "project", "since", "until"]
     );
 }
 
@@ -589,4 +595,70 @@ async fn set_retention_refuses_an_agent_the_default_and_stores_none_of_the_chang
         ),
         (Some(90), Some(400))
     );
+}
+
+#[tokio::test]
+async fn log_patterns_shows_what_fills_the_logs_and_its_id_finds_the_lines() {
+    use crate::logs::{LogRecord, LogSource, patterns as masks, store::LogWriter};
+    let s = server();
+    let now = time::now_ns();
+    let log = |ago: i64, message: &str| LogRecord {
+        project_id: 1,
+        timestamp: now - ago,
+        observed_at: now,
+        source: LogSource::Logtail,
+        level: LogLevel::Info,
+        message: message.into(),
+        service: Some("api".into()),
+        trace_id: None,
+        span_id: None,
+        attributes: serde_json::Map::new(),
+    };
+    let writer = LogWriter::start(logs::dir(&s.data), 30, logs::store::no_overrides()).unwrap();
+    let batch = vec![
+        log(3, "GET /users/1 took 12ms"),
+        log(2, "GET /users/2 took 13ms"),
+        log(1, "cache cleared"),
+    ];
+    assert!(writer.queue.push(batch).is_ok());
+    drop(writer.queue);
+    writer.thread.join().unwrap();
+    let (text, is_error) = tool(
+        &s.app,
+        "log_patterns",
+        json!({"project": "api", "limit": 1}),
+    )
+    .await;
+    assert!(!is_error, "{text}");
+    let id = masks::show(masks::of("GET /users/9 took 1ms").id);
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).unwrap(),
+        json!({
+            "from": time::day_of(now - 86_400_000_000_000).to_string(),
+            "to": time::day_of(now).to_string(),
+            "records": 3, "bytes": "66 B", "patterns": 2,
+            "top": [{
+                "id": id, "template": "GET /users/<NUM> took <NUM>ms",
+                "example": "GET /users/1 took 12ms", "records": 2, "bytes": "50 B",
+                "share": "75.8%", "levels": {"info": 2}, "services": [["api", 2]],
+            }],
+        })
+    );
+    let (text, _) = tool(&s.app, "search_logs", json!({"pattern": id})).await;
+    let hits: Value = serde_json::from_str(&text).unwrap();
+    let messages: Vec<&str> = hits
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["message"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        messages,
+        ["GET /users/1 took 12ms", "GET /users/2 took 13ms"]
+    );
+    assert_eq!(hits[0]["pattern"], id);
+    let (text, _) = tool(&s.app, "count_logs", json!({"pattern": id})).await;
+    assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["total"], 2);
+    let (text, is_error) = tool(&s.app, "count_logs", json!({"pattern": "users"})).await;
+    assert!(is_error, "{text}");
 }
