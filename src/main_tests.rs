@@ -240,7 +240,7 @@ fn project_retention_waits_for_a_log_deletion_under_way() {
         .join(format!("test-cli-retention-lock-{}", uuid::Uuid::new_v4()));
     store::create_project(&store::open(&data).unwrap(), "api").unwrap();
     // The log writer of a server on the same data holds the lock.
-    let lock = retention::Lock::default().with_file(&data);
+    let lock = retention::Lock::default().with_dir(&data);
     let held = lock.hold_all().unwrap();
     let d = data.to_str().unwrap().to_owned();
     let (done, changed) = std::sync::mpsc::channel();

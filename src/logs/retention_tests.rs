@@ -2,7 +2,7 @@ use crate::logs::{
     LogLevel, LogRecord, LogSource, ORIGINAL_TIMESTAMP,
     store::{LogQuery, LogWriter, Overrides, State, no_overrides, search, strays},
 };
-use crate::retention::{LOCK_FILE, Lock};
+use crate::retention::Lock;
 use crate::test_support::scratch;
 use crate::time::{day_of, now_ns};
 use std::{
@@ -155,15 +155,15 @@ fn a_change_saved_during_a_pass_is_read_before_the_day_is_deleted_from() {
     run(&dir, 30, &[], batch);
     // Project 1 keeps 2 days when the pass starts, and 30 once a change
     // is saved. Each read says whether the lock within the server and the
-    // lock file the CLI takes were held during it.
+    // lock on the data directory the CLI takes were held during it.
     let data = scratch("logs-retention-changed-data");
     std::fs::create_dir_all(&data).unwrap();
-    let lock = Lock::default().with_file(&data);
+    let lock = Lock::default().with_dir(&data);
     let held = Arc::new(Mutex::new(Vec::new()));
-    let (seen, reads, file) = (lock.clone(), Arc::clone(&held), data.join(LOCK_FILE));
+    let (seen, reads, root) = (lock.clone(), Arc::clone(&held), data.clone());
     let read = move || {
         let mut reads = reads.lock().unwrap();
-        let locked = std::fs::File::open(&file).is_ok_and(|f| f.try_lock().is_err());
+        let locked = std::fs::File::open(&root).is_ok_and(|f| f.try_lock().is_err());
         reads.push((seen.is_held(), locked));
         let days = if reads.len() == 1 { 2 } else { 30 };
         Ok(HashMap::from([(1, days)]))

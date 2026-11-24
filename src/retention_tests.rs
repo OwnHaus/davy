@@ -4,13 +4,13 @@ use serde_json::json;
 use std::cell::RefCell;
 
 #[test]
-fn a_lock_on_the_file_waits_for_another_process_holding_it() {
-    let data = crate::test_support::scratch("retention-lock-file");
+fn a_lock_on_the_data_directory_waits_for_another_process_holding_it() {
+    let data = crate::test_support::scratch("retention-lock-dir");
     std::fs::create_dir_all(&data).unwrap();
     // Two locks on one data directory, as the server and the CLI have.
     let (server, cli) = (
-        Lock::default().with_file(&data),
-        Lock::default().with_file(&data),
+        Lock::default().with_dir(&data),
+        Lock::default().with_dir(&data),
     );
     let held = server.hold_all().unwrap();
     let (took, taken) = std::sync::mpsc::channel();
@@ -26,6 +26,27 @@ fn a_lock_on_the_file_waits_for_another_process_holding_it() {
     drop(held);
     assert_eq!(taken.recv_timeout(Duration::from_secs(10)), Ok(()));
     waiter.join().unwrap();
+    std::fs::remove_dir_all(&data).unwrap();
+}
+
+#[test]
+fn the_lock_creates_no_file_and_a_file_another_user_left_cannot_stop_it() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let data = crate::test_support::scratch("retention-lock-left");
+    std::fs::create_dir_all(&data).unwrap();
+    // What a CLI run as root left under a umask of 077, as this process
+    // sees it: a file it may not open.
+    let left = data.join("retention.lock");
+    std::fs::write(&left, "").unwrap();
+    std::fs::set_permissions(&left, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let lock = Lock::default().with_dir(&data);
+    let held = lock.hold_all().map(drop);
+    assert!(held.is_ok(), "{held:?}");
+    let names: Vec<_> = std::fs::read_dir(&data)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["retention.lock"]);
     std::fs::remove_dir_all(&data).unwrap();
 }
 
