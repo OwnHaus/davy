@@ -24,6 +24,65 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 /// A stored payload is at most 1 MiB of JSON, so this only stops a crafted blob.
 const MAX_PAYLOAD: u64 = 16 * 1024 * 1024;
 
+/// Whether SQLite should read the WAL database `path` as immutable: no
+/// connection has it open, as its `-wal` and `-shm` files are both missing
+/// (SQLite deletes them when the last connection closes), and the reader
+/// may not write its directory, as on a read-only mount. A plain read-only
+/// open fails there, since it must create `-shm`; and nothing can change
+/// the database while it reads, so reading it as immutable is exact.
+///
+/// In a directory the reader may write, it opens the plain way, which
+/// creates `-wal` and `-shm` as the reader's user and leaves them. An
+/// immutable connection would add no file there, but it never sees what a
+/// server writes after it opened, and a server may start at any time.
+fn immutable(path: &Path) -> bool {
+    let side = |ext: &str| {
+        let mut name = path.as_os_str().to_owned();
+        name.push(ext);
+        std::path::PathBuf::from(name).exists()
+    };
+    let dir = match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    !side("-wal") && !side("-shm") && !writable(dir)
+}
+
+#[cfg(unix)]
+fn writable(dir: &Path) -> bool {
+    nix::unistd::access(dir, nix::unistd::AccessFlags::W_OK).is_ok()
+}
+
+#[cfg(not(unix))]
+fn writable(_: &Path) -> bool {
+    true
+}
+
+/// The URI SQLite opens `path` with. With `immutable` it reads the main
+/// file alone, takes no lock and creates nothing.
+fn uri(path: &Path, immutable: bool) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut uri = "file:".to_owned();
+    for &b in path.as_os_str().as_encoded_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'.' | b'_' | b'-' | b'~' => {
+                uri.push(char::from(b));
+            }
+            _ => {
+                uri.push('%');
+                uri.push(char::from(HEX[usize::from(b >> 4)]));
+                uri.push(char::from(HEX[usize::from(b & 0xF)]));
+            }
+        }
+    }
+    uri.push_str(if immutable {
+        "?mode=ro&immutable=1"
+    } else {
+        "?mode=ro"
+    });
+    uri
+}
+
 /// What an agent needs to write a query, beyond the table definitions.
 const NOTES: &str = "Notes:
 - Times in projects, issues, events and releases are unix milliseconds. issue_hourly.hour is the start of its hour in unix milliseconds.
@@ -48,9 +107,10 @@ pub struct Rows {
     pub truncated: bool,
 }
 
-/// Opens the store read-only. It neither creates nor upgrades the database,
-/// so reading cannot change a directory: a directory without one, or with
-/// one an older Davy wrote, is an error that says what to run.
+/// Opens the store read-only. It neither creates nor upgrades the
+/// database: a directory without one, or with one another Davy wrote, is
+/// an error that says what to run. It reads a stopped server's directory on
+/// a read-only mount and adds no file there; see [`immutable`].
 pub fn open(data: &Path) -> Result<Connection> {
     let path = data.join(store::DB_FILE);
     if !path.exists() {
@@ -60,16 +120,26 @@ pub fn open(data: &Path) -> Result<Connection> {
             data.display()
         );
     }
-    let mut c = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    // A Windows path does not fit a URI as a unix one does.
+    let mut c = if cfg!(unix) {
+        let uri = uri(&path, immutable(&path));
+        Connection::open_with_flags(uri, flags | OpenFlags::SQLITE_OPEN_URI)?
+    } else {
+        Connection::open_with_flags(&path, flags)?
+    };
     c.busy_timeout(store::BUSY_TIMEOUT)?;
     let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if version < store::SCHEMA_VERSION {
         bail!(
             "the database in {} is from an older Davy: run davy serve --data {} once to upgrade it",
             data.display(),
+            data.display()
+        );
+    }
+    if version > store::SCHEMA_VERSION {
+        bail!(
+            "the database in {} is from a newer Davy: read it with that Davy or a newer one",
             data.display()
         );
     }
@@ -527,5 +597,93 @@ mod tests {
             )
             .unwrap();
         assert_eq!((version, tables), (older, 0));
+    }
+
+    #[test]
+    fn reading_a_database_of_a_newer_davy_refuses_it() {
+        let data = crate::test_support::scratch("query-new");
+        let c = store::open(&data).unwrap();
+        c.pragma_update(None, "user_version", store::SCHEMA_VERSION + 1)
+            .unwrap();
+        let err = open(&data).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "the database in {} is from a newer Davy: read it with that Davy or a newer one",
+                data.display()
+            )
+        );
+    }
+
+    fn listing(data: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(data)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn projects(c: &Connection) -> i64 {
+        c.query_row("SELECT count(*) FROM projects", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_reader_of_a_stopped_servers_directory_sees_what_a_server_writes_later() {
+        let data = crate::test_support::scratch("query-closed");
+        let c = store::open(&data).unwrap();
+        store::create_project(&c, "web").unwrap();
+        drop(c);
+        let r = open(&data).unwrap();
+        assert_eq!(projects(&r), 1);
+        let c = store::open(&data).unwrap();
+        store::create_project(&c, "shop").unwrap();
+        assert_eq!(projects(&r), 2);
+        drop((r, c));
+        std::fs::remove_dir_all(&data).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_servers_directory_reads_on_a_read_only_mount() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let data = crate::test_support::scratch("query-mount");
+        let c = store::open(&data).unwrap();
+        store::create_project(&c, "web").unwrap();
+        drop(c);
+        let mode = |m| std::fs::set_permissions(&data, std::fs::Permissions::from_mode(m));
+        mode(0o555).unwrap();
+        let read = open(&data).map(|r| projects(&r));
+        let after = listing(&data);
+        mode(0o700).unwrap();
+        assert_eq!(read.unwrap(), 1);
+        assert_eq!(after, ["davy.sqlite"]);
+        std::fs::remove_dir_all(&data).unwrap();
+    }
+
+    #[test]
+    fn a_reader_next_to_a_running_server_sees_what_it_wrote_last() {
+        let data = crate::test_support::scratch("query-open");
+        let c = store::open(&data).unwrap();
+        store::create_project(&c, "web").unwrap();
+        // Not checkpointed yet: the row is in the WAL alone.
+        store::create_project(&c, "shop").unwrap();
+        assert_eq!(projects(&open(&data).unwrap()), 2);
+        drop(c);
+        std::fs::remove_dir_all(&data).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_path_becomes_a_uri_sqlite_cannot_misread() {
+        assert_eq!(
+            uri(Path::new("/var/lib/my davy?#%/davy.sqlite"), true),
+            "file:/var/lib/my%20davy%3F%23%25/davy.sqlite?mode=ro&immutable=1"
+        );
+        assert_eq!(
+            uri(Path::new("/var/lib/davy/davy.sqlite"), false),
+            "file:/var/lib/davy/davy.sqlite?mode=ro"
+        );
     }
 }
