@@ -1,7 +1,10 @@
 use super::stray_line;
 use crate::logs::{
     LogLevel, LogRecord, LogSource, ORIGINAL_TIMESTAMP,
-    store::{LogQuery, LogWriter, Overrides, State, Stray, no_overrides, search, strays},
+    store::{
+        LogQuery, LogWriter, Overrides, State, Stray, no_overrides, search, strays,
+        tally::file::name,
+    },
 };
 use crate::retention::Lock;
 use crate::test_support::scratch;
@@ -510,5 +513,61 @@ fn settings_that_cannot_be_read_are_read_again_within_seconds() {
     assert_eq!(seen, [Some(1), Some(2)]);
     drop(writer.queue);
     writer.thread.join().unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// One day of logs of projects 1 and 2, five days old, with their counters
+/// on disk. Returns the day's directory.
+fn two_projects(dir: &Path, now: i64) -> std::path::PathBuf {
+    let old = now - 5 * DAY;
+    let batch = vec![
+        record(1, old, old, "api old"),
+        record(2, old, old, "web old"),
+    ];
+    run(dir, 30, &[], batch);
+    let day = dir.join(day_of(old).to_string());
+    assert!(day.join(name(1)).exists() && day.join(name(2)).exists());
+    day
+}
+
+#[test]
+fn a_failed_counter_cut_still_merges_and_is_retried_until_it_holds() {
+    let dir = scratch("logs-retention-tally-fails");
+    let now = now_ns();
+    let day = two_projects(&dir, now);
+    let counters = std::fs::read(day.join(name(2))).unwrap();
+    let blocker = day.join(format!("{}.blocker", name(2)));
+    std::fs::create_dir(&blocker).unwrap();
+    std::fs::write(blocker.join("x"), "x").unwrap();
+    run(&dir, 30, &[(2, 3)], vec![]);
+    assert_eq!(messages(&dir), ["api old"]);
+    assert!(!holds_deleted(&dir, now - 5 * DAY), "the merge ran");
+    assert!(!day.join(name(2)).exists());
+    std::fs::remove_dir_all(&blocker).unwrap();
+    // As if the counters were left by a pass that stopped before the cut.
+    std::fs::write(day.join(name(2)), counters).unwrap();
+    run(&dir, 30, &[(2, 3)], vec![]);
+    assert!(!day.join(name(2)).exists(), "the next pass cut them");
+    assert!(day.join(name(1)).exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_pass_after_a_crash_between_delete_and_merge_finishes_both() {
+    let dir = scratch("logs-retention-tally-crash");
+    let now = now_ns();
+    let day = two_projects(&dir, now);
+    let index = tantivy::Index::open_in_dir(&day).unwrap();
+    let project = index.schema().get_field("project").unwrap();
+    let mut writer: tantivy::IndexWriter = index.writer_with_num_threads(1, 15_000_000).unwrap();
+    writer.set_merge_policy(Box::new(tantivy::indexer::NoMergePolicy));
+    writer.delete_term(tantivy::Term::from_field_u64(project, 2));
+    writer.commit().unwrap();
+    drop(writer);
+    assert!(holds_deleted(&dir, now - 5 * DAY));
+    run(&dir, 30, &[(2, 3)], vec![]);
+    assert!(!holds_deleted(&dir, now - 5 * DAY));
+    assert!(!day.join(name(2)).exists());
+    assert_eq!(messages(&dir), ["api old"]);
     std::fs::remove_dir_all(&dir).unwrap();
 }

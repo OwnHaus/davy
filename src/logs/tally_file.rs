@@ -103,8 +103,10 @@ pub(super) fn save(dir: &Path, project: u64, bytes: &[u8]) -> Result<()> {
 
 /// Removes the files of the projects `cut` deletes the logs of, the
 /// temporary copies a crash left among them. A file already gone is fine,
-/// so the cut can run again until it holds.
+/// so the cut can run again until it holds. A file that cannot be removed
+/// does not keep the others, and its error is returned.
 pub(super) fn remove(dir: &Path, cut: &Cut) -> Result<()> {
+    let mut first = None;
     for file in names(dir)? {
         let Some((project, _)) = project_of(&file) else {
             continue;
@@ -118,10 +120,12 @@ pub(super) fn remove(dir: &Path, cut: &Cut) -> Result<()> {
             && let Err(e) = std::fs::remove_file(&path)
             && e.kind() != io::ErrorKind::NotFound
         {
-            return Err(anyhow::Error::from(e).context(format!("removing {}", path.display())));
+            first.get_or_insert(
+                anyhow::Error::from(e).context(format!("removing {}", path.display())),
+            );
         }
     }
-    Ok(())
+    first.map_or(Ok(()), Err)
 }
 
 /// Replaces `name` in `dir` with `bytes` so that a crash or a power loss

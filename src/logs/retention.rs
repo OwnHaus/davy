@@ -226,29 +226,43 @@ impl State {
         if !self.needs(day, &cut) {
             return Ok(Ok(false));
         }
-        Ok(match self.delete(day, &cut) {
-            Err(e) => Err(e),
-            Ok(Deleted::Day) => Ok(true),
-            Ok(Deleted::Nothing) => {
-                self.swept.insert(day, cut);
-                Ok(false)
-            }
+        let deleted = self.delete(day, &cut);
+        // The counters go with the logs, under the same lock and settings,
+        // and on every pass until the cut holds, so a crash or a failure
+        // between the deletion and this point leaves no count of a deleted
+        // log for long.
+        let counted = match &deleted {
+            Ok(Deleted::Nothing | Deleted::Marked { .. }) => self.cut_tally(day, &cut),
+            Ok(Deleted::Day) | Err(_) => Ok(()),
+        };
+        // The deletion is committed, so a change saved from here on comes
+        // after it.
+        drop(held);
+        let (kept, wrote) = match deleted {
+            Err(e) => return Ok(Err(e)),
+            Ok(Deleted::Day) => return Ok(Ok(true)),
+            Ok(Deleted::Nothing) => (Ok(true), false),
             Ok(Deleted::Marked {
                 index,
                 writer,
                 reader,
-            }) => {
-                // The deletion is committed, so a change saved from here on
-                // comes after it.
-                drop(held);
-                self.compact(day, cut, &index, *writer, &reader)
-                    .map(|()| true)
+            }) => (self.compact(day, &index, *writer, &reader), true),
+        };
+        Ok(match (kept, counted) {
+            (Err(e), _) | (Ok(true), Err(e)) => Err(e),
+            // The day went whole, its counters with it.
+            (Ok(false), _) => Ok(true),
+            (Ok(true), Ok(())) => {
+                self.swept.insert(day, cut);
+                Ok(wrote)
             }
         })
     }
 
     /// Marks what `cut` takes from `day` deleted and commits that, or
-    /// deletes the whole day when `cut` keeps nothing.
+    /// deletes the whole day when `cut` keeps nothing. A day with nothing
+    /// left to mark that still holds deleted logs, from a pass that stopped
+    /// before its merge, is handed on to be merged.
     fn delete(&mut self, day: Date, cut: &Cut) -> Result<Deleted> {
         if matches!(cut, Cut::AllBut(kept) if kept.is_empty()) {
             self.trash(day)?;
@@ -263,14 +277,17 @@ impl State {
             .reload_policy(ReloadPolicy::Manual)
             .try_into()?;
         let query = cut.query(&self.fields);
-        if reader.searcher().search(&*query, &Count)? == 0 {
+        let marked = reader.searcher().search(&*query, &Count)? > 0;
+        let metas = index.searchable_segment_metas()?;
+        if !marked && !metas.iter().any(tantivy::index::SegmentMeta::has_deletes) {
             return Ok(Deleted::Nothing);
         }
         let mut writer: IndexWriter = index.writer_with_num_threads(1, WRITER_HEAP)?;
         writer.set_merge_policy(Box::new(NoMergePolicy));
-        writer.delete_query(query)?;
-        writer.commit()?;
-        self.cut_tally(day, cut)?;
+        if marked {
+            writer.delete_query(query)?;
+            writer.commit()?;
+        }
         Ok(Deleted::Marked {
             index,
             writer: Box::new(writer),
@@ -279,15 +296,15 @@ impl State {
     }
 
     /// Rewrites the segments of `day` that hold deleted logs, so the logs
-    /// leave the disk, and deletes the day when nothing is left.
+    /// leave the disk, and deletes the day when nothing is left. Returns
+    /// whether the day is kept.
     fn compact(
         &mut self,
         day: Date,
-        cut: Cut,
         index: &Index,
         mut writer: IndexWriter,
         reader: &IndexReader,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let deleted: Vec<SegmentId> = index
             .searchable_segment_metas()?
             .iter()
@@ -300,10 +317,9 @@ impl State {
         writer.wait_merging_threads()?;
         reader.reload()?;
         if reader.searcher().num_docs() > 0 {
-            self.swept.insert(day, cut);
-            return Ok(());
+            return Ok(true);
         }
-        self.trash(day)
+        self.trash(day).map(|()| false)
     }
 
     /// Removes what a crash left in `.trash` between renaming a day there
