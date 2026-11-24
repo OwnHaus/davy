@@ -92,3 +92,25 @@ fn a_retention_change_waits_while_the_log_writer_deletes() {
     writer.thread.join().unwrap();
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn an_upgrade_builds_the_issue_timestamp_index_in_its_migration() {
+    let root = crate::test_support::scratch("store-issue-timestamp");
+    let c = open(&root).unwrap();
+    c.execute_batch("DROP INDEX events_issue_timestamp; PRAGMA user_version=15;")
+        .unwrap();
+    drop(c);
+    let c = open(&root).unwrap();
+    let built: i64 = c
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name='events_issue_timestamp'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let version: i64 = c
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!((built, version), (1, 16));
+    std::fs::remove_dir_all(&root).unwrap();
+}

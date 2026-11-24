@@ -303,7 +303,7 @@ fn migration_backfills_releases_from_old_events() {
     let version: i64 = c
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 15);
+    assert_eq!(version, 16);
 }
 #[test]
 fn migration_indexes_the_text_and_tags_of_old_issues() {
