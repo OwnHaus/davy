@@ -36,6 +36,10 @@ const IDLE_CLOSE: Duration = Duration::from_secs(600);
 /// How often the log writer reads the retention settings and deletes what
 /// expired, so a new setting holds within a minute.
 const RETENTION_EVERY: Duration = Duration::from_secs(60);
+/// How soon the log writer tries again after a pass failed, doubled after
+/// each failure up to [`RETENTION_EVERY`]. Until the settings are read,
+/// logs are timed by the server default.
+const RETENTION_RETRY: Duration = Duration::from_secs(5);
 /// How long one retention pass may spend deleting before it lets writes in.
 const RETENTION_BUDGET: Duration = Duration::from_secs(1);
 const WRITER_HEAP: usize = 64_000_000;
@@ -431,12 +435,22 @@ impl LogWriter {
             };
             let mut next_commit = Instant::now() + COMMIT_EVERY;
             let mut next_retention = Instant::now();
+            let mut retry = RETENTION_RETRY;
             loop {
                 // Retention goes first, so the first batch is settled with
                 // each project's own retention.
                 if Instant::now() >= next_retention {
-                    report("retention", state.retention(now_ns(), RETENTION_BUDGET));
-                    next_retention = Instant::now() + RETENTION_EVERY;
+                    let pass = state.retention(now_ns(), RETENTION_BUDGET);
+                    let wait = if pass.is_ok() {
+                        retry = RETENTION_RETRY;
+                        RETENTION_EVERY
+                    } else {
+                        let wait = retry;
+                        retry = (retry * 2).min(RETENTION_EVERY);
+                        wait
+                    };
+                    next_retention = Instant::now() + wait;
+                    report("retention", pass);
                 }
                 let wait = next_commit.saturating_duration_since(Instant::now());
                 match inbox.recv_timeout(wait) {

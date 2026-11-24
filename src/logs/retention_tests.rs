@@ -404,3 +404,28 @@ fn the_server_default_is_1_to_36500_days() {
     drop(writer.queue);
     writer.thread.join().unwrap();
 }
+
+#[test]
+fn settings_that_cannot_be_read_are_read_again_within_seconds() {
+    let dir = scratch("logs-retention-retry");
+    let (sent, reads) = std::sync::mpsc::channel();
+    let mut count = 0;
+    let read = move || {
+        count += 1;
+        sent.send(count).unwrap();
+        if count == 1 {
+            Err(anyhow::anyhow!("database is locked"))
+        } else {
+            Ok(HashMap::new())
+        }
+    };
+    let writer = LogWriter::start(dir.clone(), 30, Overrides::new(read, Lock::default())).unwrap();
+    // Until the second read, a log is timed by the server default. The
+    // next pass after one that worked is a minute away.
+    let wait = std::time::Duration::from_secs(15);
+    let seen: Vec<_> = (0..2).map(|_| reads.recv_timeout(wait).ok()).collect();
+    assert_eq!(seen, [Some(1), Some(2)]);
+    drop(writer.queue);
+    writer.thread.join().unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
