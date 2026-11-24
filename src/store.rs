@@ -376,7 +376,9 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
 /// it, a problem with one job only that job.
 pub(crate) fn write_batch(c: &mut Connection, batch: &[Write]) -> Vec<Outcome> {
     (|| -> Result<Vec<Outcome>> {
-        let tx = c.transaction()?;
+        // IMMEDIATE takes the write lock first, waiting for a CLI that
+        // writes: a batch that read first could not wait for it.
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut latest = Latest::default();
         let outcomes = batch
             .iter()

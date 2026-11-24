@@ -64,6 +64,32 @@ fn a_store_that_a_newer_davy_migrated_is_refused_unchanged() {
 }
 
 #[test]
+fn a_batch_that_reads_first_waits_for_a_cli_write_instead_of_failing() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WAITED: AtomicBool = AtomicBool::new(false);
+    fn waiting(_tries: i32) -> bool {
+        WAITED.store(true, Ordering::SeqCst);
+        thread::yield_now();
+        true
+    }
+    let root = crate::test_support::scratch("store-batch-busy");
+    let mut writer = open(&root).unwrap();
+    writer.busy_handler(Some(waiting)).unwrap();
+    // The CLI, as `davy resolve`, writing from a process of its own.
+    let cli = open(&root).unwrap();
+    cli.execute_batch("BEGIN IMMEDIATE; INSERT INTO id_floor(name, id) VALUES ('cli', 1);")
+        .unwrap();
+    // A sweep reads the late monitors before it writes.
+    let batch = thread::spawn(move || write_batch(&mut writer, &[job(0).0]));
+    while !WAITED.load(Ordering::SeqCst) && !batch.is_finished() {
+        thread::yield_now();
+    }
+    cli.execute_batch("COMMIT").unwrap();
+    assert_eq!(batch.join().unwrap(), [Ok(())]);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn a_retention_change_waits_while_the_log_writer_deletes() {
     use crate::retention::{By, Change, Setting, log_days};
     let root = crate::test_support::scratch("store-retention-lock");

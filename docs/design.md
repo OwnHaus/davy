@@ -140,7 +140,7 @@ issues_text USING fts5(title, culprit, content='issues', tokenize='trigram')
 - Timestamps are unix milliseconds.
 - `payload` is the zstd-compressed event JSON. Keep it for the first 50 events of an issue, then for every 100th, and for the newest, so an issue always shows its latest event. The newest drops its payload when a newer event arrives, unless the sample keeps it. A payload kept only for being the newest starts with an empty zstd skippable frame, `5D 2A 4D 18 00 00 00 00`, which zstd decoders skip, and only a payload with that mark is dropped. The sample cannot be worked out from `event_count` afterwards, because expired events lower it. Payloads stored before the mark keep theirs, at most one per issue. The writer compresses the newest event of each issue once per transaction, not every event, so a burst costs no more than before. Always write the `events` row and bump the counters, so counts stay exact while disk stays bounded under a burst.
 - A duplicate `event_id` in the same project is ignored (SDKs retry).
-- The writer drains the queue in batches and commits each batch in one transaction.
+- The writer drains the queue in batches and commits each batch in one transaction. The transaction begins IMMEDIATE, taking the write lock before its first read: a CLI that writes from its own process, such as `davy resolve`, then makes the batch wait out the 5 s busy timeout. A deferred transaction that read first cannot wait for a lock it takes later, so SQLite failed the whole batch with `database is locked`.
 
 ### CLI
 
