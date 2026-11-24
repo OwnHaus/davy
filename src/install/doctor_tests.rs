@@ -108,7 +108,7 @@ fn a_symlink_in_place_of_a_day_of_logs_warns() {
         not_ok(
             "logs",
             Status::Warn,
-            "not searched, written or deleted: 2026-01-05 is a symlink, not the day's directory",
+            r#"not searched, written or deleted: "2026-01-05" is a symlink, not the day's directory"#,
             fix
         )
     );

@@ -9,14 +9,15 @@
 //!
 //! The settings are read at the start of each pass and again right before
 //! each day is deleted from, under the lock a server takes while it saves a
-//! change and the lock file the CLI takes. A change that was saved is therefore never followed by a deletion
-//! under the setting it replaced, and a pass that cannot read the settings
-//! deletes nothing.
+//! change and the lock on the data directory the CLI takes. A change that
+//! was saved is therefore never followed by a deletion under the setting it
+//! replaced, and a pass that cannot read the settings deletes nothing.
 //!
 //! The pass remembers what it took from each day, so a day is read again
 //! only when a setting changed, the day outlived another project's
-//! retention, or a log was written to it. A pass that has deleted for longer than its budget stops, and
-//! the next one goes on, so writes wait at most about one day's merge.
+//! retention, or a log was written to it. A pass that has deleted for
+//! longer than its budget stops, and the next one goes on, so writes wait
+//! at most about one day's merge.
 
 use super::{
     DAY_NS, Fields, State, WRITER_HEAP,
@@ -30,7 +31,7 @@ use crate::{
 use anyhow::{Context, Result};
 use jiff::civil::Date;
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     time::{Duration, Instant},
 };
 use tantivy::{
@@ -165,7 +166,7 @@ impl State {
         let deadline = Instant::now().checked_add(budget);
         self.refresh()?;
         self.empty_trash();
-        let mut found = Vec::new();
+        let (mut found, mut strays) = (Vec::new(), HashSet::new());
         for entry in std::fs::read_dir(&self.root)? {
             // A symlink is not a day, so a deletion never leaves the root.
             match entry.map(|e| day_dirs::entry(&e)) {
@@ -174,11 +175,14 @@ impl State {
                     if self.strays.insert(stray.name.clone()) {
                         report_stray(&self.root, &stray);
                     }
+                    strays.insert(stray.name);
                 }
                 Ok(Entry::Other) => {}
                 Err(e) => report_entry(&e.into()),
             }
         }
+        // A stray that was moved away and comes back is reported again.
+        self.strays.retain(|name| strays.contains(name));
         found.sort_unstable();
         self.swept.retain(|day, _| found.contains(day));
         for day in found {
@@ -360,11 +364,21 @@ fn report(day: Date, e: &anyhow::Error) {
     reason = "the server has no logger yet, stderr is its log"
 )]
 fn report_stray(root: &std::path::Path, stray: &Stray) {
-    eprintln!(
-        "log writer: {} {}, so it is not searched, written or deleted until it is moved away",
-        root.join(&stray.name).display(),
+    eprintln!("{}", stray_line(root, stray));
+}
+
+/// The line that reports `stray`. The path is quoted and escaped, so a
+/// name with a newline or a terminal escape cannot forge a line of the log.
+#[expect(
+    clippy::unnecessary_debug_formatting,
+    reason = "the escaping of Debug is the point"
+)]
+fn stray_line(root: &std::path::Path, stray: &Stray) -> String {
+    format!(
+        "log writer: {:?} {}, so it is not searched, written or deleted until it is moved away",
+        root.join(&stray.name),
         stray.why
-    );
+    )
 }
 
 #[expect(

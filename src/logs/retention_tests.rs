@@ -1,6 +1,7 @@
+use super::stray_line;
 use crate::logs::{
     LogLevel, LogRecord, LogSource, ORIGINAL_TIMESTAMP,
-    store::{LogQuery, LogWriter, Overrides, State, no_overrides, search, strays},
+    store::{LogQuery, LogWriter, Overrides, State, Stray, no_overrides, search, strays},
 };
 use crate::retention::Lock;
 use crate::test_support::scratch;
@@ -336,6 +337,47 @@ fn a_symlink_named_like_a_day_is_not_searched_written_or_deleted_from() {
     assert_eq!(reported, ["+002026-01-05", &day]);
     std::fs::remove_dir_all(&dir).unwrap();
     std::fs::remove_dir_all(&elsewhere).unwrap();
+}
+
+#[test]
+fn a_stray_that_is_moved_away_and_comes_back_is_reported_again() {
+    let dir = scratch("logs-retention-stray-back");
+    let stray = dir.join("+002026-01-05");
+    std::fs::create_dir_all(&stray).unwrap();
+    let mut state = State::new(dir.clone(), 30, no_overrides());
+    state.retention(now_ns(), std::time::Duration::MAX).unwrap();
+    assert_eq!(state.strays.len(), 1);
+    std::fs::remove_dir(&stray).unwrap();
+    state.retention(now_ns(), std::time::Duration::MAX).unwrap();
+    assert_eq!(state.strays.len(), 0);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_stray_is_reported_with_its_path_quoted_and_escaped() {
+    let stray = Stray {
+        name: "2026-01-05\nlog writer: forged".into(),
+        why: "is not a directory",
+    };
+    assert_eq!(
+        stray_line(Path::new("/logs"), &stray),
+        r#"log writer: "/logs/2026-01-05\nlog writer: forged" is not a directory, so it is not searched, written or deleted until it is moved away"#
+    );
+}
+
+#[test]
+fn a_stray_in_a_days_place_loses_only_that_days_logs_of_a_batch() {
+    let dir = scratch("logs-retention-stray-batch");
+    let (now, old) = (now_ns(), now_ns() - 5 * DAY);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(day_of(old).to_string()), "not a day").unwrap();
+    let batch = vec![
+        record(1, old, old, "api stray"),
+        record(1, now, now, "api today"),
+    ];
+    run(&dir, 30, &[], batch);
+    assert_eq!(messages(&dir), ["api today"]);
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]

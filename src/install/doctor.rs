@@ -152,7 +152,7 @@ fn logs(root: &Path) -> Check {
         Ok(strays) => {
             let each: Vec<String> = strays
                 .iter()
-                .map(|s| format!("{} {}", s.name, s.why))
+                .map(|s| format!("{:?} {}", s.name, s.why))
                 .collect();
             not_ok(
                 "logs",

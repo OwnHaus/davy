@@ -89,8 +89,6 @@ fn has_values(index: &Index) -> bool {
     index.schema().get_field("values").is_ok()
 }
 
-/// The day a directory name stands for: only the canonical `YYYY-MM-DD`
-/// form of a date, so each day has one name.
 /// The day `name` is the directory of: `YYYY-MM-DD`, the one name of each
 /// date. jiff also reads `+002026-01-05`, and prints a year past 9999 or
 /// before 0 with six digits, so a day has exactly 10 characters.
@@ -233,14 +231,27 @@ impl State {
 
     pub(super) fn add(&mut self, batch: Vec<LogRecord>) -> Result<()> {
         let fields = self.fields;
+        let (mut failed, mut first) = (HashSet::new(), None);
         for mut r in batch {
             self.settle(&mut r);
             let day = day_of(r.timestamp);
+            if failed.contains(&day) {
+                continue;
+            }
             // `settle` judges a log by when it was observed, so one that
             // waited in the queue can land in a day retention has gone
             // through already. The next pass checks the day again.
             self.swept.remove(&day);
-            let open = self.writer(day)?;
+            // A day that cannot be opened, such as a stray in its place,
+            // loses its own logs, not those of the other days.
+            let open = match self.writer(day) {
+                Ok(open) => open,
+                Err(e) => {
+                    failed.insert(day);
+                    first.get_or_insert(e);
+                    continue;
+                }
+            };
             if let Err(e) = open.writer.add_document(document(&fields, r, open.values)) {
                 self.discard(day);
                 return Err(e.into());
@@ -252,7 +263,7 @@ impl State {
         if self.uncommitted >= COMMIT_AT_DOCS {
             self.commit()?;
         }
-        Ok(())
+        first.map_or(Ok(()), Err)
     }
 
     pub(super) fn commit(&mut self) -> Result<()> {
