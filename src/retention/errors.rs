@@ -19,7 +19,7 @@ use super::{Days, turns};
 use anyhow::Result;
 use rusqlite::{Connection, ErrorCode, params};
 use std::{
-    collections::{BTreeMap, btree_map::Entry},
+    collections::{BTreeMap, HashSet, btree_map::Entry},
     time::Duration,
 };
 
@@ -28,11 +28,22 @@ use std::{
 /// at most 1% of the writer's time. The monitors have a budget of their own,
 /// see `crate::monitor::retention::BUDGET`.
 pub const BUDGET: Duration = Duration::from_millis(100);
-/// Events one statement deletes. Each issue a batch touches costs a few
-/// more statements to keep its counts, about 0.3 ms when its pages are not
-/// cached, so a batch of 200 events in 200 issues stays near 60 ms and a
-/// sweep ends about that much past its budget (measured, `docs/design.md`).
+/// Events one batch deletes at most, and user feedback one statement
+/// deletes at most.
 const BATCH: i64 = 200;
+/// The work one batch of events may do, in units of about one event
+/// deleted, about 6 µs. An event costs 1, and 1 more per 4 KiB of payload,
+/// which SQLite frees page by page. The first event of an issue in a batch
+/// costs [`ISSUE_WORK`] more, for the statements that keep the issue's
+/// counts and tags. So a batch stops after about 10 ms of work, and a sweep
+/// ends at most that much past its budget, however its events spread over
+/// issues. The costs come from the measurements in `docs/design.md`.
+const WORK: i64 = 1_600;
+/// About 0.3 ms of page reads, what an issue a batch touches costs when its
+/// pages are not cached.
+const ISSUE_WORK: i64 = 50;
+/// The payload bytes that cost one unit of [`WORK`].
+const PAGE: i64 = 4_096;
 
 /// The events of a project's own or the server's `default` retention
 /// deleted first, then user feedback, as classes that take turns.
@@ -61,21 +72,17 @@ struct Taken {
     hours: BTreeMap<i64, i64>,
 }
 
-/// Deletes up to [`BATCH`] expired events, the oldest of each project
-/// first, and fixes what counted them. Returns whether the batch was full.
+/// Deletes one batch of expired events, see [`pick`], and fixes what
+/// counted them. Returns whether more may wait.
 fn events(c: &Connection, at: i64, default: Days) -> Result<bool> {
-    // CROSS JOIN keeps projects as the outer loop, so each project's expired
-    // events are one range of events_project_received, read in its order
-    // without a sort. The order is what lets `untag` look for tied events
-    // only.
-    let mut q = c.prepare_cached(
-        "DELETE FROM events WHERE id IN (SELECT e.id FROM projects p CROSS JOIN events e
-         ON e.project_id=p.id AND e.received_at<?1-coalesce(p.error_retention_days,?2)*?3
-         ORDER BY p.id, e.received_at, e.id LIMIT ?4)
+    let (ids, more) = pick(c, at, default)?;
+    let mut delete = c.prepare_cached(
+        "DELETE FROM events WHERE id=?1
          RETURNING project_id, issue_id, timestamp, received_at, environment, release",
     )?;
-    let gone: Vec<Gone> = q
-        .query_map(params![at, default.get(), super::DAY_MS, BATCH], |r| {
+    let mut gone = Vec::with_capacity(ids.len());
+    for id in ids {
+        gone.push(delete.query_row([id], |r| {
             Ok(Gone {
                 project: r.get(0)?,
                 issue: r.get(1)?,
@@ -84,9 +91,8 @@ fn events(c: &Connection, at: i64, default: Days) -> Result<bool> {
                 environment: r.get(4)?,
                 release: r.get(5)?,
             })
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-    let full = i64::try_from(gone.len()).is_ok_and(|n| n >= BATCH);
+        })?);
+    }
     let mut issues: BTreeMap<i64, Taken> = BTreeMap::new();
     let mut tags: BTreeMap<(&str, &str, i64), (i64, i64)> = BTreeMap::new();
     for g in &gone {
@@ -112,7 +118,45 @@ fn events(c: &Connection, at: i64, default: Days) -> Result<bool> {
     for (issue, taken) in issues {
         recount(c, issue, &taken)?;
     }
-    Ok(full)
+    Ok(more)
+}
+
+/// The expired events one batch deletes: the oldest of each project
+/// first, up to [`BATCH`] events and about [`WORK`] of work, and at least
+/// one. Returns their ids, and whether more may wait.
+fn pick(c: &Connection, at: i64, default: Days) -> Result<(Vec<i64>, bool)> {
+    // CROSS JOIN keeps projects as the outer loop, so each project's expired
+    // events are one range of events_project_received, read in its order
+    // without a sort. The order is what lets `untag` look for tied events
+    // only.
+    let mut q = c.prepare_cached(
+        "SELECT e.id, e.issue_id, coalesce(length(e.payload), 0) FROM projects p CROSS JOIN events e
+         ON e.project_id=p.id AND e.received_at<?1-coalesce(p.error_retention_days,?2)*?3
+         ORDER BY p.id, e.received_at, e.id LIMIT ?4",
+    )?;
+    let rows = q.query_map(params![at, default.get(), super::DAY_MS, BATCH], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, i64>(2)?,
+        ))
+    })?;
+    let mut ids = Vec::new();
+    let mut issues = HashSet::new();
+    let mut work = 0;
+    for row in rows {
+        let (id, issue, bytes) = row?;
+        let first = !issues.contains(&issue);
+        let cost = 1 + bytes / PAGE + if first { ISSUE_WORK } else { 0 };
+        if !ids.is_empty() && work + cost > WORK {
+            return Ok((ids, true));
+        }
+        issues.insert(issue);
+        work += cost;
+        ids.push(id);
+    }
+    let full = i64::try_from(ids.len()).is_ok_and(|n| n >= BATCH);
+    Ok((ids, full))
 }
 
 /// Drops the tag `key=value` of `issue` when no event that carries it is

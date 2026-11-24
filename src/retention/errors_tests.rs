@@ -332,6 +332,29 @@ fn first_and_last_seen_follow_the_events_left_whatever_their_clocks_said() {
 }
 
 #[test]
+fn a_batch_stops_at_its_work_however_its_events_spread_over_issues() {
+    let s = Server::new("errors-spread", &["api"]);
+    // Digits in a message are grouped as one, so the issues take letters.
+    let letter = |n: i64| char::from(b'a' + u8::try_from(n).unwrap());
+    let events = (0..200)
+        .map(|n| {
+            let message = format!("timeout {}{}", letter(n / 26), letter(n % 26));
+            error(&message, day(1) + n, "prod", "v1")
+        })
+        .collect();
+    s.ingest(1, events);
+    assert_eq!(s.number("SELECT count(*) FROM issues"), 200);
+    let days = Days::new(10).unwrap();
+    sweep(&s.c, day(20), days, Duration::ZERO).unwrap();
+    // Each event is the first of its issue in the batch.
+    let left = 200 - WORK / (ISSUE_WORK + 1);
+    assert_eq!(s.number("SELECT count(*) FROM events"), left);
+    assert_eq!(s.number("SELECT count(*) FROM issues"), left);
+    sweep(&s.c, day(20), days, Duration::from_secs(60)).unwrap();
+    assert_eq!(s.number("SELECT count(*) FROM issues"), 0);
+}
+
+#[test]
 fn a_row_that_still_points_at_an_issue_keeps_it_with_no_events() {
     let s = Server::new("errors-pinned", &["api"]);
     s.ingest(1, vec![error("timeout", day(1), "prod", "v1")]);
