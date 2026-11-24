@@ -25,7 +25,10 @@
 # paths it names. A download or a corpus is kept only after its SHA-256
 # matched, so a broken or partial one is never reused.
 #
-# Run it at normal priority: under `taskpolicy -b` times are 3 to 4x slower.
+# Run it at normal priority. Under `taskpolicy -b` times are 3 to 6x slower,
+# and as the writer commits every second, a slower ingest leaves more
+# segments: Disk / raw came out 8 to 24% higher in the one such run, see
+# docs/storage-benchmark.md.
 set -euo pipefail
 fail() { echo "footprint: $*" >&2; exit 1; }
 [ "$(uname)" = Darwin ] || fail "macOS only, see the header"

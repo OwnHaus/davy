@@ -239,7 +239,8 @@ def tables(logs, errors):
         one = f"{r['one_segment_per_raw']:.2f}×" if "one_segment_per_raw" in r else ""
         extra = max(r["ingest_peak_extra_disk_bytes"], r.get("merge_peak_extra_disk_bytes", 0))
         values = r["share_of_index"].get("values", 0)
-        print(f"| {r['corpus']} | {r['lines']:,} | {r['raw_bytes_per_line']:.0f} | {r['disk_per_raw']:.2f}× "
+        name = r["corpus"] + (", IP kept" if r.get("scrub") == "keep-ip" else "")
+        print(f"| {name} | {r['lines']:,} | {r['raw_bytes_per_line']:.0f} | {r['disk_per_raw']:.2f}× "
               f"| {r['disk_bytes_per_line']:.0f} | {one} | {values:.0%} | {mb(extra)} "
               f"| {r['ingest_cpu_us_per_row']:.1f} | {mb(r['ingest_peak_rss_bytes'])} |")
     print()
