@@ -292,7 +292,7 @@ pub fn set(c: &Connection, change: &Change, by: By) -> Result<Result<Stored, Str
         return Ok(Err(unknown(&change.project)));
     };
     if let By::Agent(defaults) = by
-        && let Some(why) = shortens(change, before, defaults)
+        && let Some(why) = refused(change, before, defaults)
     {
         return Ok(Err(why));
     }
@@ -337,9 +337,11 @@ fn report(by: By, project: &str, now: Stored) {
     );
 }
 
-/// Why `change` would keep data shorter than the project does now, if it
-/// would.
-fn shortens(change: &Change, before: Stored, defaults: Defaults) -> Option<String> {
+/// Why an agent may not make `change`, if it may not: it would keep data
+/// shorter than the project does now, or return a setting of the project's
+/// own to the server default. A default that keeps data longer today can be
+/// lowered tomorrow, and the project would lose the floor a person set.
+fn refused(change: &Change, before: Stored, defaults: Defaults) -> Option<String> {
     let kinds = [
         ("logs", change.logs_days, before.logs_days, defaults.logs),
         (
@@ -351,7 +353,14 @@ fn shortens(change: &Change, before: Stored, defaults: Defaults) -> Option<Strin
     ];
     kinds.into_iter().find_map(|(kind, asked, own, default)| {
         let now = own.unwrap_or(default).get();
-        let asked = asked?.stored().ok()?.unwrap_or(default).get();
+        let asked = asked?.stored().ok()?;
+        if let (None, Some(own)) = (asked, own) {
+            return Some(format!(
+                "an agent may not return {kind} to the server default: the project keeps them {} days of its own, and a lower default would delete what it keeps. A person does it with `davy project retention` or in the web UI",
+                own.get()
+            ));
+        }
+        let asked = asked.unwrap_or(default).get();
         (asked < now).then(|| {
             format!(
                 "an agent may only keep data longer: {kind} are kept {now} days and {asked} would delete what is older for good. A person shortens it with `davy project retention` or in the web UI"

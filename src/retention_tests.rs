@@ -117,7 +117,7 @@ fn an_agent_may_only_keep_data_longer() {
             errors_days: None
         })
     );
-    // Back to the default of 30 days is shorter than 90.
+    // Back to the default drops a setting of the project's own.
     assert!(agent(change("api", Some(default), None)).is_err());
     // One shorter setting refuses the whole change.
     assert!(
@@ -150,6 +150,37 @@ fn stored_of(c: &Connection, slug: &str) -> Stored {
     stored(c, slug).unwrap().unwrap()
 }
 
+#[test]
+fn an_agent_cannot_return_a_projects_own_retention_to_the_default() {
+    let c = memory();
+    store::create_project(&c, "api").unwrap();
+    store::create_project(&c, "web").unwrap();
+    let defaults = Defaults {
+        logs: Days::new(30).unwrap(),
+        errors: Days::new(365).unwrap(),
+    };
+    let agent = |ch: Change| set(&c, &ch, By::Agent(defaults)).unwrap();
+    let default = Setting::Default(ServerDefault::Default);
+    let own = change("api", Some(Setting::Days(7)), Some(Setting::Days(100)));
+    set(&c, &own, By::Person).unwrap().unwrap();
+    // The defaults keep both longer today, and could be lowered tomorrow.
+    assert_eq!(
+        agent(change("api", Some(default), None)),
+        Err("an agent may not return logs to the server default: the project keeps them 7 days of its own, and a lower default would delete what it keeps. A person does it with `davy project retention` or in the web UI".into())
+    );
+    assert!(agent(change("api", None, Some(default))).is_err());
+    let days = |n| Some(Days::new(n).unwrap());
+    let kept = Stored {
+        logs_days: days(7),
+        errors_days: days(100),
+    };
+    assert_eq!(stored_of(&c, "api"), kept);
+    // A project that follows the defaults may be told to follow them.
+    assert_eq!(
+        agent(change("web", Some(default), Some(default))),
+        Ok(Stored::default())
+    );
+}
 #[test]
 fn what_a_project_keeps_falls_back_to_the_server_default() {
     let c = memory();

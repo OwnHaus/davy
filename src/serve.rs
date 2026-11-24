@@ -22,11 +22,15 @@ pub struct Args {
     #[arg(long)]
     pub public_url: Option<Url>,
     /// Days of logs a project keeps unless it has a setting of its own, 1 to
-    /// 36,500. Change one project with `davy project retention`.
+    /// 36,500. Change one project with `davy project retention`. Lowering
+    /// it deletes the older logs of every project without a setting of its
+    /// own, within a minute and for good.
     #[arg(long, default_value_t = retention::DEFAULT_LOG_DAYS)]
     pub log_retention_days: u32,
     /// Days of errors a project keeps unless it has a setting of its own, 1
     /// to 36,500, by when Davy received them. The default keeps them all.
+    /// Lowering it deletes the older errors of every project without a
+    /// setting of its own, within 10 s and for good.
     #[arg(long, default_value_t = retention::DEFAULT_ERROR_DAYS)]
     pub error_retention_days: u32,
     /// The sender of alert e-mail, required when there is an SMTP URL.

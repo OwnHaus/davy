@@ -282,7 +282,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Keep a project's logs or errors longer: each 1 to 36500 days, or \"default\" for the server's. A shorter retention is refused, because it deletes data for good; a person shortens it with the CLI or the web UI. Returns, for logs and errors, the days kept, whether they are the server default, and deletes_before: what is older goes within a minute and cannot be restored. Errors expire by when Davy received them; an issue whose events have all expired is deleted, and a later event of the same error opens a new issue."
+        description = "Keep a project's logs or errors longer: each 1 to 36500 days, or \"default\" for the server's. A shorter retention is refused, because it deletes data for good, and so is \"default\" for a project with a retention of its own, because a lower default later would delete what it keeps; a person makes either change with the CLI or the web UI. Returns, for logs and errors, the days kept, whether they are the server default, and deletes_before: what is older goes within a minute and cannot be restored. Errors expire by when Davy received them; an issue whose events have all expired is deleted, and a later event of the same error opens a new issue."
     )]
     async fn set_retention(&self, Parameters(req): Parameters<SetRetention>) -> Reply {
         if req.logs_days.is_none() && req.errors_days.is_none() {
