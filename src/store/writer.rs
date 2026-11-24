@@ -158,15 +158,29 @@ impl std::fmt::Display for Refused {
 /// Queues `job` and waits until the writer has applied it. A full queue is
 /// refused at once, so a caller can answer `429`.
 pub async fn submit(sender: &Sender, job: Job) -> std::result::Result<(), Refused> {
+    queue(sender, job)?.applied().await
+}
+/// Queues `job` without waiting, so a caller can act on a queued job even
+/// when its own future is dropped before the writer applies it. A full
+/// queue is refused at once.
+pub fn queue(sender: &Sender, job: Job) -> std::result::Result<Queued, Refused> {
     let (done, outcome) = oneshot::channel();
     sender.try_send(Write { job, done }).map_err(|e| match e {
         TrySendError::Full(_) => Refused::Full,
         TrySendError::Disconnected(_) => Refused::Stopped,
     })?;
-    outcome
-        .await
-        .map_err(|_closed| Refused::Stopped)?
-        .map_err(Refused::Failed)
+    Ok(Queued(outcome))
+}
+/// A job [`queue`] queued.
+pub struct Queued(oneshot::Receiver<Outcome>);
+impl Queued {
+    /// Waits until the writer has applied the job.
+    pub async fn applied(self) -> std::result::Result<(), Refused> {
+        self.0
+            .await
+            .map_err(|_closed| Refused::Stopped)?
+            .map_err(Refused::Failed)
+    }
 }
 /// Queues `job` and waits until the writer has applied it. A full queue is
 /// tried again every 50 ms. Returns without waiting when the writer is gone.

@@ -472,8 +472,9 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
             events,
             held,
         };
-        store::submit(&app.sender, job).await?;
+        let queued = store::queue(&app.sender, job)?;
         count(Signal::Errors);
+        queued.applied().await?;
     }
     // After the event, so a full queue costs a report or feedback, not an error.
     if !parsed.items.is_empty() {
@@ -482,14 +483,16 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
             at: time::now_ms(),
             items: parsed.items,
         };
-        store::submit(&app.sender, job).await?;
+        let queued = store::queue(&app.sender, job)?;
         count(Signal::Sessions);
         count(Signal::Feedback);
+        queued.applied().await?;
     }
     if let Some(item) = parsed.check_in {
         let at = time::now_ms();
-        store::submit(&app.sender, Job::CheckIn { project, at, item }).await?;
+        let queued = store::queue(&app.sender, Job::CheckIn { project, at, item })?;
         count(Signal::Checkins);
+        queued.applied().await?;
     }
     Ok(json_response(&json!({"id":id.0})))
 }

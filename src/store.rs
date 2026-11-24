@@ -26,7 +26,7 @@ use std::path::Path;
 use tokio::sync::oneshot;
 #[cfg(test)]
 pub(crate) use writer::write_batch;
-pub use writer::{Refused, Writer, queue_and_wait, submit, sweep_every};
+pub use writer::{Queued, Refused, Writer, queue, queue_and_wait, submit, sweep_every};
 
 /// The queue of jobs from people in the web UI, apart from ingest, so a full
 /// ingest queue does not refuse a login.

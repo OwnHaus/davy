@@ -117,3 +117,28 @@ async fn a_refused_request_counts_nothing() {
     assert_eq!(r.status, 403);
     assert_eq!(counts(&s), []);
 }
+
+#[tokio::test]
+async fn a_request_dropped_after_its_event_was_queued_still_counts() {
+    let s = server();
+    let mut sending = Box::pin(s.send(post(
+        "/api/1/envelope/?sentry_key=key-a",
+        &[],
+        "{}\n{\"type\":\"event\"}\n{\"message\":\"boom\"}\n",
+    )));
+    // Drive the request until its event is queued, then drop it, as a
+    // client that hangs up before the writer answers does.
+    let write = loop {
+        tokio::select! {
+            biased;
+            _ = &mut sending => panic!("answered without the writer"),
+            () = tokio::task::yield_now() => {}
+        }
+        if let Ok(write) = s.error_inbox.try_recv() {
+            break write;
+        }
+    };
+    drop(sending);
+    drop(write);
+    assert_eq!(counts(&s), [(1, "errors", 1, 18)]);
+}
