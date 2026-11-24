@@ -145,11 +145,9 @@ pub async fn checks(data: &Path, defaults: retention::Defaults) -> Vec<Check> {
         },
     }
     checks.push(logs(&crate::logs::dir(data)));
-    checks.push(disk(
-        data,
-        fs4::available_space(data).ok(),
-        forecast(data, defaults),
-    ));
+    let (forecast, assumed) = forecast(data, defaults, crate::time::now_ns()).unzip();
+    let disk = disk(data, fs4::available_space(data).ok(), forecast);
+    checks.push(assuming(disk, assumed.flatten()));
     checks
 }
 
@@ -423,9 +421,14 @@ async fn initialized(mut r: reqwest::Response) -> bool {
     })
 }
 
-/// The disk forecast, `None` while the data directory has no database to
-/// read. Projects without a retention of their own keep `defaults`.
-fn forecast(data: &Path, defaults: retention::Defaults) -> Option<Result<Forecast, NoForecast>> {
+/// The disk forecast at `now_ns`, `None` while the data directory has no
+/// database to read, with the default log retention it assumed for a
+/// project without its own.
+fn forecast(
+    data: &Path,
+    defaults: retention::Defaults,
+    now_ns: i64,
+) -> Option<(Result<Forecast, NoForecast>, Option<u32>)> {
     if !data.join(crate::store::DB_FILE).exists() {
         return None;
     }
@@ -435,13 +438,21 @@ fn forecast(data: &Path, defaults: retention::Defaults) -> Option<Result<Forecas
         what_if: usage::forecast::WhatIf::default(),
         defaults,
     };
-    let report = crate::query::open(data)
-        .and_then(|c| usage::report(&c, data, &request, crate::time::now_ns()));
-    Some(
-        report
-            .map_err(|e| NoForecast::Other(format!("{e:#}")))
-            .and_then(|r| r.forecast),
-    )
+    let report = crate::query::open(data).and_then(|c| usage::report(&c, data, &request, now_ns));
+    Some(match report {
+        Ok(r) => (r.forecast, r.default_log_days),
+        Err(e) => (Err(NoForecast::Other(format!("{e:#}"))), None),
+    })
+}
+
+/// `disk` with the default log retention its forecast assumed, which
+/// doctor cannot read from a running server.
+fn assuming(mut disk: Check, days: Option<u32>) -> Check {
+    if let Some(n) = days {
+        let note = format!(", assuming {n} days of logs for projects without their own");
+        disk.detail.push_str(&note);
+    }
+    disk
 }
 
 /// Free space, and when the forecast puts the disk full: a warning under

@@ -547,6 +547,24 @@ fn a_worst_case_says_so_and_only_warns_until_the_disk_is_past_its_limit() {
 }
 
 #[test]
+fn the_disk_line_says_which_default_retention_it_assumed() {
+    let line = || {
+        ok(
+            "disk",
+            "40 GiB free, logs never fill it at the current rate",
+        )
+    };
+    assert_eq!(
+        assuming(line(), Some(90)),
+        ok(
+            "disk",
+            "40 GiB free, logs never fill it at the current rate, assuming 90 days of logs for projects without their own"
+        )
+    );
+    assert_eq!(assuming(line(), None), line());
+}
+
+#[test]
 fn a_forecast_missing_for_a_reason_other_than_history_warns() {
     let data = Path::new("/var/lib/davy");
     let fix = "shorten retention with davy project retention SLUG --data /var/lib/davy --logs N, or add disk";
@@ -567,7 +585,8 @@ fn the_forecast_takes_the_log_retention_doctor_is_given() {
     let data = scratch("doctor-retention");
     let c = crate::store::open(&data).unwrap();
     crate::store::create_project(&c, "api").unwrap();
-    let today = crate::time::day_of(crate::time::now_ns());
+    let now = crate::time::now_ns();
+    let today = crate::time::day_of(now);
     let yesterday = today.checked_sub(jiff::Span::new().days(1)).unwrap();
     let day = data.join("logs").join(yesterday.to_string());
     std::fs::create_dir_all(&day).unwrap();
@@ -579,14 +598,21 @@ fn the_forecast_takes_the_log_retention_doctor_is_given() {
     // 30 days of logs need 2 closed days, 1 day of logs only yesterday.
     let first = today.checked_sub(jiff::Span::new().days(30)).unwrap();
     assert_eq!(
-        forecast(&data, keep(30)).unwrap().map(|f| f.longest_days),
-        Err(NoForecast::History(format!(
-            "closed log days since {first}, the first day no retention has cut: the disk has 1, a forecast needs 2"
-        )))
+        forecast(&data, keep(30), now).map(|(f, n)| (f.map(|f| f.longest_days), n)),
+        Some((
+            Err(NoForecast::History(format!(
+                "closed log days since {first}, the first day no retention has cut: the disk has 1, a forecast needs 2"
+            ))),
+            Some(30)
+        ))
     );
     assert_eq!(
-        forecast(&data, keep(1)).unwrap().map(|f| f.longest_days),
-        Ok(1)
+        forecast(&data, keep(1), now).map(|(f, n)| (f.map(|f| f.longest_days), n)),
+        Some((Ok(1), Some(1)))
     );
+    // A project with a retention of its own assumes nothing.
+    c.execute("UPDATE projects SET log_retention_days = 1", [])
+        .unwrap();
+    assert_eq!(forecast(&data, keep(30), now).unwrap().1, None);
     std::fs::remove_dir_all(&data).unwrap();
 }

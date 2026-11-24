@@ -69,6 +69,6 @@ CREATE INDEX session_seen_started ON session_seen(started);",
     // The issues whose last event expired and that user feedback still
     // points at, so the error sweep finds them without reading every issue.
     "CREATE INDEX IF NOT EXISTS issues_emptied ON issues(id) WHERE event_count=0;",
-    // Records and bytes stored per day, project and signal.
+    // Records and bytes accepted per day, project and signal.
     crate::usage::MIGRATION,
 ];

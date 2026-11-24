@@ -306,7 +306,7 @@ A coding agent should get from "there is an error" to a fix without a human copy
 | `connect_project` | `slug`, `sdk?` | Existing project DSN, SDK instructions and test command. New projects require local CLI access. |
 | `project_status` | `slug` | Event count, last event time (ms), issue count, last log time (ns) and `retention`: the days of logs and errors the project keeps. |
 | `set_retention` | `project`, `logs_days?`, `errors_days?` | What the project keeps now, as `retention` in `project_status`. A setting is 1 to 36,500 days or `"default"`, and may only keep data longer. |
-| `usage` | `project?`, `since?`, `what_if?` | What each project stores and when the disk fills: `disk`, `davy`, `growth_per_day` of all logs together, `longest_log_days`, `projects` with records and bytes per signal over the window and per day, and `no_forecast` when there is too little history. Sizes as `4.1 GB`. See "Usage and disk forecast". |
+| `usage` | `project?`, `since?`, `what_if?` | What each project sent and when the disk fills: `disk`, `davy`, `growth_per_day` of all logs together, `longest_log_days` and `shortest_log_days`, `forecast`, `projects` with records and bytes accepted per signal over the window and per day, and `no_forecast` or `disk_error` when there is none. Sizes as `4.1 GB`. See "Usage and disk forecast". |
 | `release_health` | `project?`, `since?` | Per release and environment, newest first, at most 50: `sessions`, `errored`, `crashed`, `abnormal`, `crash_free_sessions`, `users`, `crashed_users`, `crash_free_users`, `first_hour`, `last_hour`. `since` defaults to `7d`. |
 | `issue_context` | `issue_id` | The issue, its latest event made compact, its recent events and releases, and the logs around the latest event. |
 | `mark_fixed` | `issue_id`, `release?` | A sentence that says which release the fix is expected in. |
@@ -1479,7 +1479,7 @@ the SDK's `beforeSend` for them.
 
 ## Usage and disk forecast
 
-An operator or an agent asks three questions: what Davy stores for each project, how fast it grows, and when the disk fills. Davy answers in resources, bytes and days, through the MCP tool `usage`, `davy usage` and a line of `davy doctor`.
+An operator or an agent asks three questions: what each project sends Davy, how fast it grows, and when the disk fills. Davy answers in resources, bytes and days, through the MCP tool `usage`, `davy usage` and a line of `davy doctor`.
 
 ### What is counted
 

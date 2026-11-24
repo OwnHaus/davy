@@ -1,4 +1,4 @@
-//! What Davy stores per project, how fast it grows and when the disk fills
+//! What each project sends Davy, how fast logs grow and when the disk fills
 //! (`docs/design.md`, "Usage and disk forecast"). Ingest counts accepted
 //! records and bytes in memory, and the writer adds them to `usage_daily`
 //! every few seconds.
@@ -291,7 +291,6 @@ pub fn between(
     Ok(out)
 }
 
-/// Log bytes per project counted on the days `from` to `to`, both included.
 #[cfg(test)]
 #[path = "usage/tests.rs"]
 mod tests;

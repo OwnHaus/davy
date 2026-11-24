@@ -193,7 +193,8 @@ async fn a_shutdown_flush_the_writer_failed_says_why_and_keeps_the_counts() {
 fn the_migration_goes_down_and_up_again() {
     let mut c = memory();
     write(&c, &[row("2026-11-24", 1, Signal::Logs, 1, 1)]).unwrap();
-    c.execute_batch(&format!("{UNDO} PRAGMA user_version=17;"))
+    let before = store::SCHEMA_VERSION - 1;
+    c.execute_batch(&format!("{UNDO} PRAGMA user_version={before};"))
         .unwrap();
     let tables = |c: &Connection| -> i64 {
         c.query_row(
@@ -207,10 +208,10 @@ fn the_migration_goes_down_and_up_again() {
     store::init(&mut c).unwrap();
     assert_eq!(tables(&c), 1);
     assert_eq!(stored(&c), []);
-    let version: i64 = c
+    let version: u32 = c
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 18);
+    assert_eq!(version, store::SCHEMA_VERSION);
 }
 
 #[test]
@@ -483,6 +484,7 @@ fn forecast_report(kept: (u32, u32), days_left: Option<u64>) -> Report {
         }),
         what_if: forecast::WhatIf::default(),
         projects: Vec::new(),
+        default_log_days: None,
     }
 }
 
@@ -545,4 +547,26 @@ fn a_disk_that_cannot_be_measured_still_gives_the_counts() {
         format!("the disk was not measured: {why}")
     );
     assert_eq!(v["projects"][0]["signals"]["errors"]["records"], 3);
+}
+
+#[test]
+fn a_report_says_which_default_log_retention_it_assumed() {
+    let c = memory();
+    let gone = std::path::Path::new("/nonexistent/davy");
+    let mut req = request("1d", forecast::WhatIf::default());
+    req.defaults.logs = crate::retention::Days::new(90).unwrap();
+    let now = at("2026-11-24T12:00:00Z");
+    let r = report(&c, gone, &req, now).unwrap();
+    assert_eq!(r.json(false)["default_log_days"], json!(90));
+    let mut text = Vec::new();
+    r.text(&mut text).unwrap();
+    let line = "assuming  90 days of logs for projects without their own; give --log-retention-days as davy serve has it\n";
+    assert!(String::from_utf8(text).unwrap().contains(line));
+    c.execute("UPDATE projects SET log_retention_days = 7", [])
+        .unwrap();
+    let r = report(&c, gone, &req, now).unwrap();
+    assert_eq!(
+        (r.default_log_days, &r.json(false)["default_log_days"]),
+        (None, &json!(null))
+    );
 }

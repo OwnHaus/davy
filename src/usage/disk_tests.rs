@@ -164,3 +164,33 @@ fn a_log_day_davy_may_not_read_leaves_the_growth_unknown() {
     assert!(disk.logs_unmeasured().is_some(), "{disk:?}");
     fs::remove_dir_all(&data).unwrap();
 }
+
+#[test]
+fn a_walk_names_what_lies_deeper_than_it_goes() {
+    let data = scratch("usage-disk-deep");
+    let deep = vec!["d"; 34].join("/");
+    file(&data, &format!("{deep}/a"), 1_000);
+    let disk = measure(&data, day("2026-11-24")).unwrap();
+    let cut = vec!["d"; 33].join("/");
+    assert_eq!(
+        (disk.gaps.skipped, disk.gaps.skipped_count, disk.logs_gap),
+        (
+            vec![format!("{cut}: more than 32 directories deep")],
+            1,
+            false
+        )
+    );
+    fs::remove_dir_all(&data).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fifo_is_sized_without_being_opened() {
+    let data = scratch("usage-disk-fifo");
+    fs::create_dir_all(&data).unwrap();
+    // Opening a FIFO with no writer would block the walk for good.
+    nix::unistd::mkfifo(&data.join("pipe"), nix::sys::stat::Mode::S_IRWXU).unwrap();
+    let disk = measure(&data, day("2026-11-24")).unwrap();
+    assert_eq!((disk.other, disk.gaps.is_empty()), (0, true));
+    fs::remove_dir_all(&data).unwrap();
+}

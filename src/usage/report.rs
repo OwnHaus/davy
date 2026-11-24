@@ -38,6 +38,9 @@ pub struct Report {
     pub forecast: Result<Forecast, NoForecast>,
     pub what_if: WhatIf,
     pub projects: Vec<Project>,
+    /// The server's log retention, when a project keeps it for want of
+    /// its own. `davy usage` and `davy doctor` assume it.
+    pub default_log_days: Option<u32>,
 }
 
 pub struct Project {
@@ -129,6 +132,11 @@ impl Prepared {
                 None => forecast::forecast(&self.input(d), &self.what_if),
             },
         };
+        let default_log_days = self
+            .kept
+            .iter()
+            .any(|(_, k)| k.logs.server_default)
+            .then_some(self.default_days);
         Report {
             since: self.since,
             days: self.days,
@@ -136,6 +144,7 @@ impl Prepared {
             forecast,
             what_if: self.what_if,
             projects: self.projects,
+            default_log_days,
         }
     }
 
@@ -235,6 +244,9 @@ impl Report {
         if !self.what_if.is_empty() {
             out["what_if"] = json!(self.what_if);
         }
+        if let Some(days) = self.default_log_days {
+            out["default_log_days"] = json!(days);
+        }
         if let Some(note) = f.and_then(|f| f.unseen.as_ref()) {
             out["what_if_note"] = json!(note);
         }
@@ -331,6 +343,13 @@ impl Report {
             )?;
         }
         writeln!(out, "{:<9} {}", "forecast", self.summary())?;
+        if let Some(n) = self.default_log_days {
+            writeln!(
+                out,
+                "{:<9} {n} days of logs for projects without their own; give --log-retention-days as davy serve has it",
+                "assuming"
+            )?;
+        }
         self.table(out)
     }
 

@@ -326,3 +326,49 @@ fn the_median_of_an_even_count_is_the_mean_of_the_middle_two() {
     assert_eq!(median(&[u64::MAX, u64::MAX]), Some(u64::MAX));
     assert_eq!(median(&[]), None);
 }
+
+#[test]
+fn a_disk_that_reaches_the_limit_exactly_at_steady_state_fills() {
+    // 10 GB a day kept 14 days and today: 160 GB, 110 GB more than Davy
+    // takes now. The limit is 450 GB.
+    let at = |used| {
+        let input = Input {
+            used,
+            projects: projects(&[("api", 14)]),
+            ..filling()
+        };
+        let what_if = WhatIf {
+            logs_bytes_per_day: Some(10 * GB),
+            ..WhatIf::default()
+        };
+        forecast(&input, &what_if).unwrap().days_left
+    };
+    assert_eq!(
+        (at(339 * GB), at(340 * GB), at(450 * GB)),
+        (None, Some(11), Some(0))
+    );
+}
+
+#[test]
+fn no_growth_never_fills_the_disk() {
+    let what_if = WhatIf {
+        logs_bytes_per_day: Some(0),
+        ..WhatIf::default()
+    };
+    let f = forecast(&filling(), &what_if).unwrap();
+    assert_eq!((f.steady_state, f.days_left), (10 * GB, None));
+}
+
+#[test]
+fn a_server_without_projects_takes_its_default_retention() {
+    let input = Input {
+        projects: Vec::new(),
+        default_days: 30,
+        ..filling()
+    };
+    let f = forecast(&input, &WhatIf::default()).unwrap();
+    assert_eq!(
+        (f.longest_days, f.shortest_days, f.days_left, f.worst_case()),
+        (30, 30, Some(19), false)
+    );
+}

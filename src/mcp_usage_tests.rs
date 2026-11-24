@@ -2,6 +2,20 @@
 
 use super::*;
 
+/// The keys of the usage tool's `disk`.
+const DISK_KEYS: [&str; 10] = [
+    "days_left",
+    "free",
+    "full_on",
+    "headroom",
+    "headroom_reason",
+    "partial",
+    "steady_state",
+    "total",
+    "used",
+    "worst_case",
+];
+
 #[tokio::test]
 async fn usage_shows_the_counts_and_the_forecast_with_human_sizes() {
     let s = server();
@@ -39,6 +53,7 @@ async fn usage_shows_the_counts_and_the_forecast_with_human_sizes() {
         keys(&v),
         [
             "davy",
+            "default_log_days",
             "disk",
             "forecast",
             "growth_per_day",
@@ -49,26 +64,14 @@ async fn usage_shows_the_counts_and_the_forecast_with_human_sizes() {
             "window"
         ]
     );
-    assert_eq!(
-        keys(&v["disk"]),
-        [
-            "days_left",
-            "free",
-            "full_on",
-            "headroom",
-            "headroom_reason",
-            "partial",
-            "steady_state",
-            "total",
-            "used",
-            "worst_case"
-        ]
-    );
+    assert_eq!(keys(&v["disk"]), DISK_KEYS);
     assert_eq!(v["disk"]["partial"], Value::Null);
     assert_eq!(v["growth_per_day"], "1.0 MB");
     assert!(v["disk"]["total"].as_str().unwrap().ends_with('B'), "{v}");
     let api = &v["projects"][0];
-    assert_eq!(v["longest_log_days"], 30);
+    // The test server's project keeps the default retention.
+    let days = (&v["longest_log_days"], &v["default_log_days"]);
+    assert_eq!(days, (&json!(30), &json!(30)));
     assert_eq!(
         keys(api),
         ["errors_days", "logs_days", "project", "signals"]
