@@ -398,3 +398,22 @@ fn a_report_stops_before_a_day_once_it_merged_50000_patterns_and_pairs() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_pattern_with_the_empty_template_keeps_the_example_of_its_newest_day() {
+    let dir = scratch("patterns-blank");
+    let now = now_ns();
+    run(&dir, &[], vec![info(1, now - DAY, " "), info(1, now, "  ")]);
+    let q = PatternQuery {
+        since: now - DAY,
+        ..query(Some(1), now)
+    };
+    let r = report(&dir, &q);
+    let row: Vec<(&str, &str, u64)> = r
+        .top
+        .iter()
+        .map(|p| (p.template.as_str(), p.example.as_str(), p.records))
+        .collect();
+    assert_eq!(row, [("", "  ", 2)]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

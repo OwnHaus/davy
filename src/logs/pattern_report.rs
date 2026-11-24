@@ -155,7 +155,9 @@ fn add(sums: &mut HashMap<u64, Sum>, merged: &mut usize, tally: &DayTally, q: &P
             *merged += 1;
             Sum::default()
         });
-        if s.template.is_empty() {
+        // The newest day comes first and names the pattern. A line of
+        // whitespace alone has the empty template, so records tell.
+        if s.records == 0 {
             s.template.clone_from(&entry.template);
             s.example.clone_from(&entry.example);
         }
