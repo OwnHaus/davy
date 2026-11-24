@@ -3,13 +3,14 @@
 //!
 //! footprint synth ROWS                   synthetic pino NDJSON on stdout
 //! footprint logs ADDR KEY FILE SHAPE DAYS
-//!     sends each line of FILE as a log record, spread over the last DAYS UTC
-//!     days. SHAPE is `line` (the line is the message), `json` (the line is a
-//!     JSON record) or `nginx` (a combined access log line, parsed into
-//!     attributes).
+//!     sends each line of FILE as a log record, spread evenly over the DAYS
+//!     whole UTC days before today. SHAPE is `line` (the line is the
+//!     message), `json` (the line is a JSON record) or `nginx` (a combined
+//!     access log line, parsed into attributes).
 //! footprint errors ADDR KEY PROJECT ENVELOPE ISSUES PER_ISSUE DAYS
 //!     sends ISSUES * PER_ISSUE copies of the event in a captured envelope,
-//!     each with its own id, fingerprint and time.
+//!     each with its own id, fingerprint and time in the DAYS whole UTC days
+//!     before today.
 //! footprint inspect DATA                 bytes per field of the log store
 //! footprint merge DATA                   merges each day into one segment
 //! footprint retain DATA DAYS             one retention pass that keeps DAYS
@@ -47,15 +48,16 @@ fn ratio(a: usize, b: f64) -> f64 {
     a as f64 / b
 }
 
-/// Midnight UTC `days - 1` days ago and now, in milliseconds: the span that
-/// fills exactly `days` day indexes.
+/// The `days` whole UTC days before today, in milliseconds, end exclusive.
+/// Whole days make the spacing of the timestamps, and so the bytes of the
+/// `ts` field, the same at any time of day.
 fn span(days: i64) -> (i64, i64) {
-    let now = jiff::Timestamp::now().as_millisecond();
+    let now = davy::time::now_ms();
     let midnight = now - now.rem_euclid(DAY_MS);
-    (midnight - (days - 1) * DAY_MS, now - 1000)
+    (midnight - days * DAY_MS, midnight)
 }
 
-/// The time of item `i` of `n`, spread evenly over `(start, end)`.
+/// The time of item `i` of `n`, spread evenly over `[start, end)`.
 fn at(start: i64, end: i64, i: usize, n: usize) -> Result<i64> {
     let offset = i128::from(end - start) * i128::try_from(i)? / i128::try_from(n.max(1))?;
     Ok(start + i64::try_from(offset)?)
@@ -227,7 +229,11 @@ fn log_bodies(file: &Path, shape: &str, days: i64) -> Result<(Vec<Vec<u8>>, usiz
         .split(|b| *b == b'\n')
         .filter(|l| !l.trim_ascii().is_empty())
         .collect();
-    let raw = kept.iter().map(|l| l.len() + 1).sum();
+    let unterminated = bytes
+        .rsplit(|b| *b == b'\n')
+        .next()
+        .is_some_and(|l| !l.trim_ascii().is_empty());
+    let raw = kept.iter().map(|l| l.len() + 1).sum::<usize>() - usize::from(unterminated);
     let lines: Vec<std::borrow::Cow<'_, str>> = kept
         .iter()
         .map(|l| String::from_utf8_lossy(l.strip_suffix(b"\r").unwrap_or(l)))
@@ -365,8 +371,7 @@ fn day_dirs(data: &Path) -> Result<Vec<PathBuf>> {
     let mut days = Vec::new();
     for entry in std::fs::read_dir(davy::logs::dir(data))? {
         let path = entry?.path();
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
-        if name.is_some_and(|n| n.parse::<jiff::civil::Date>().is_ok()) {
+        if day_of(&path).is_ok() {
             days.push(path);
         }
     }
@@ -445,15 +450,30 @@ fn merge(args: &[String]) -> Result<()> {
     ))
 }
 
+/// The UTC date of a day index directory.
+fn day_of(dir: &Path) -> Result<jiff::civil::Date> {
+    let name = dir.file_name().context("a day directory has a name")?;
+    Ok(name.to_string_lossy().parse()?)
+}
+
+/// Runs the log writer's retention once and fails unless that one pass
+/// kept exactly the days younger than DAYS, since a pass stops early when
+/// it runs over its time budget.
 fn retain(args: &[String]) -> Result<()> {
     let [data, days] = args else {
         bail!("usage: footprint retain DATA DAYS");
     };
-    let root = davy::logs::dir(Path::new(data));
+    let data = Path::new(data);
+    let keep: u32 = days.parse()?;
+    let cutoff = davy::time::day_of(davy::time::now_ns() - i64::from(keep) * DAY_MS * 1_000_000);
+    let mut expected = 0;
+    for day in day_dirs(data)? {
+        expected += usize::from(day_of(&day)? >= cutoff);
+    }
     let started = Instant::now();
     let writer = davy::logs::store::LogWriter::start(
-        root,
-        days.parse()?,
+        davy::logs::dir(data),
+        keep,
         davy::logs::store::no_overrides(),
     )?;
     drop(writer.queue);
@@ -461,10 +481,12 @@ fn retain(args: &[String]) -> Result<()> {
         .thread
         .join()
         .map_err(|_panic| anyhow!("the log writer panicked"))?;
-    out(&format!(
-        "retention_secs={:.3}",
-        started.elapsed().as_secs_f64()
-    ))
+    let secs = started.elapsed().as_secs_f64();
+    let kept = day_dirs(data)?.len();
+    if kept != expected {
+        bail!("retention kept {kept} days, expected {expected}: the pass stopped early");
+    }
+    out(&format!("retention_secs={secs:.3}"))
 }
 
 fn synth(args: &[String]) -> Result<()> {
