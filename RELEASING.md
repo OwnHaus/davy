@@ -6,7 +6,7 @@ No version has been released yet. `0.1.0` in `Cargo.toml` is unreleased. The mil
 
 - Davy follows [Semantic Versioning](https://semver.org/). The public surface is the ingest routes, the MCP tools, the CLI commands and their `--json` output, the webhook body and the data directory.
 - Before 1.0 a minor release may break the public surface and a patch release never does. 1.0 comes when the data directory and the webhook body are promised stable.
-- A newer Davy opens every data directory an older one wrote and migrates it. An older Davy never opens a newer one. A release that migrates data says so in the changelog. Downgrades are not supported, so back up the data directory before an upgrade.
+- A newer Davy opens every data directory an older one wrote and migrates it. An older Davy refuses a newer one, and names the newer release and the backup taken before the upgrade. A release that migrates data says so in the changelog. Downgrades are not supported, so back up the data directory before an upgrade: going back means restoring that backup.
 - A release is a tag `vX.Y.Z` on `main`, annotated and signed.
 
 ## Cadence

@@ -84,7 +84,7 @@ docker run -d --name davy --restart unless-stopped \
   -p 127.0.0.1:8000:8000 -v davy:/data ghcr.io/dominikzabcik/davy:0.2.0 serve --data /data
 ```
 
-A newer Davy migrates the data of an older one. An older one never opens newer data, so a downgrade means the backup. The [changelog](../CHANGELOG.md) says when a release migrates data.
+A newer Davy migrates the data of an older one. An older one refuses data that a newer one migrated and says so, so a downgrade means restoring the backup taken before the upgrade, without what arrived since. The [changelog](../CHANGELOG.md) says when a release migrates data.
 
 ## Verify the image
 

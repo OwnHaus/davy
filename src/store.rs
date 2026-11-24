@@ -102,14 +102,28 @@ pub fn open(data: &Path) -> Result<Connection> {
 /// process may open the same directory at once, so the version is read inside
 /// a write transaction.
 pub fn init(c: &mut Connection) -> Result<()> {
+    refuse_newer(c.query_row("PRAGMA user_version", [], |r| r.get(0))?)?;
     c.execute_batch(SCHEMA)?;
     let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let done: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    refuse_newer(done)?;
     for (version, sql) in (1_u32..).zip(MIGRATIONS).filter(|(v, _)| *v > done) {
         tx.execute_batch(sql)?;
         tx.pragma_update(None, "user_version", version)?;
     }
     tx.commit()?;
+    Ok(())
+}
+/// Refuses a store that a newer Davy migrated past `MIGRATIONS`. This one
+/// would ignore what those migrations added, such as the projects' own
+/// retention and `id_floor`, and could delete logs a project keeps or give
+/// a new issue the id of a deleted one.
+fn refuse_newer(done: u32) -> Result<()> {
+    let known = MIGRATIONS.len();
+    anyhow::ensure!(
+        usize::try_from(done).is_ok_and(|done| done <= known),
+        "a newer Davy has upgraded this data directory to schema version {done}, and this one knows versions up to {known}. Run that release or a newer one, or restore the backup taken before the upgrade"
+    );
     Ok(())
 }
 /// Creates the project, or returns the one that has this slug, so running

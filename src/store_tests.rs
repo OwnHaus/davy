@@ -44,3 +44,21 @@ fn people_who_keep_writing_leave_half_of_each_batch_to_ingest() {
         .count();
     assert_eq!((batch.len(), people), (64, 32));
 }
+
+#[test]
+fn a_store_that_a_newer_davy_migrated_is_refused_unchanged() {
+    let root = crate::test_support::scratch("store-newer");
+    let newer = i64::try_from(MIGRATIONS.len()).unwrap() + 1;
+    let c = open(&root).unwrap();
+    c.pragma_update(None, "user_version", newer).unwrap();
+    drop(c);
+    let refused = open(&root).unwrap_err().to_string();
+    assert!(refused.contains("newer Davy"), "{refused}");
+    assert!(refused.contains("restore the backup"), "{refused}");
+    let c = Connection::open(root.join(DB_FILE)).unwrap();
+    let version: i64 = c
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, newer);
+    std::fs::remove_dir_all(&root).unwrap();
+}

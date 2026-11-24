@@ -332,7 +332,7 @@ A new table holds when each release was first seen:
 releases(project_id INTEGER NOT NULL, version TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY(project_id, version))
 ```
 
-The writer inserts a row for each event with a release it has not seen. Schema changes from now on go through `PRAGMA user_version`. Version 1 creates `releases` and fills it from the existing `events` once, so an old data directory keeps the right first-seen times.
+The writer inserts a row for each event with a release it has not seen. Schema changes from now on go through `PRAGMA user_version`. A store whose version is above the migrations a binary knows was migrated by a newer Davy, and is refused before anything changes, with a message that names that release and the backup taken before the upgrade: an older binary ignores the tables and columns it does not know, and with per-project retention that deletes data. Builds from before this check opened such a store. Version 1 creates `releases` and fills it from the existing `events` once, so an old data directory keeps the right first-seen times.
 
 ### Writer
 
