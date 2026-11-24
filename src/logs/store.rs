@@ -637,7 +637,10 @@ mod tally;
 
 #[path = "pattern_report.rs"]
 mod pattern_report;
-pub use pattern_report::{MAX_PATTERN_ROWS, PatternQuery, PatternReport, PatternRow, top_patterns};
+pub use pattern_report::{
+    MAX_MERGED, MAX_PATTERN_ROWS, MAX_REPORT_DAYS, PatternQuery, PatternReport, PatternRow,
+    top_patterns,
+};
 
 #[cfg(test)]
 #[path = "values_tests.rs"]

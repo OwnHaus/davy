@@ -1,4 +1,4 @@
-use super::{PatternQuery, PatternReport, top_patterns};
+use super::{MAX_MERGED, MAX_REPORT_DAYS, PatternQuery, PatternReport, top_patterns};
 use crate::logs::{
     LogLevel, LogRecord, LogSource,
     patterns::{self as masks, OTHER},
@@ -316,6 +316,73 @@ fn counts_at_the_top_of_u64_add_up_to_the_top_and_no_further() {
     assert_eq!(
         r.top[0].levels.iter().collect::<Vec<_>>(),
         [(&"info", &u64::MAX)]
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Writes the counters of project 1 on the day of `at`: `patterns`
+/// patterns from id `first` on, each with `services` services of one
+/// record.
+fn write_day(dir: &Path, at: i64, first: u64, patterns: u64, services: usize) {
+    let one = [0, 0, 1, 0, 0, 0].map(|n| [n, n]);
+    let services: serde_json::Map<String, serde_json::Value> = (0..services)
+        .map(|s| (format!("s{s}"), serde_json::json!(one)))
+        .collect();
+    let entry = serde_json::json!({"template": "a", "example": "a", "services": services});
+    let all: serde_json::Map<String, serde_json::Value> = (first..first + patterns)
+        .map(|id| (id.to_string(), entry.clone()))
+        .collect();
+    let day = dir.join(day_of(at).to_string());
+    std::fs::create_dir_all(&day).unwrap();
+    let text = serde_json::json!({"version": 1, "patterns": all}).to_string();
+    std::fs::write(day.join(name(1)), text).unwrap();
+}
+
+#[test]
+fn a_window_past_92_days_counts_the_newest_92_and_says_so() {
+    let dir = scratch("patterns-window");
+    let now = now_ns();
+    for n in 0..=92 {
+        write_day(&dir, now - n * DAY, 1, 1, 1);
+    }
+    let q = PatternQuery {
+        since: now - 100 * DAY,
+        ..query(Some(1), now)
+    };
+    let r = report(&dir, &q);
+    assert_eq!(r.records, 92);
+    assert_eq!(MAX_REPORT_DAYS, 92);
+    assert_eq!(
+        (r.truncated, r.from),
+        (true, day_of(now - 91 * DAY).to_string())
+    );
+    let in_bound = PatternQuery {
+        since: now - 91 * DAY,
+        ..q
+    };
+    let r = report(&dir, &in_bound);
+    assert_eq!((r.records, r.truncated), (92, false));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_report_stops_before_a_day_once_it_merged_50000_patterns_and_pairs() {
+    let dir = scratch("patterns-merged");
+    let now = now_ns();
+    assert_eq!(MAX_MERGED, 50_000);
+    // 1,000 patterns and 9,000 pairs: 10,000 a day, 50,000 after five.
+    for n in 0..6 {
+        write_day(&dir, now - n * DAY, 1 + n.cast_unsigned() * 1000, 1000, 9);
+    }
+    let q = PatternQuery {
+        since: now - 10 * DAY,
+        ..query(Some(1), now)
+    };
+    let r = report(&dir, &q);
+    assert_eq!((r.records, r.patterns), (45_000, 5000));
+    assert_eq!(
+        (r.truncated, r.from),
+        (true, day_of(now - 4 * DAY).to_string())
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }

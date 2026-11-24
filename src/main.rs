@@ -565,6 +565,13 @@ fn print_patterns(out: &mut impl Write, r: &PatternReport, json: bool) -> anyhow
         let days = r.unread.join(", ");
         writeln!(out, "left out, counters unreadable: {days}")?;
     }
+    if r.truncated {
+        writeln!(
+            out,
+            "left out, past the bound of a report: the days before {}",
+            r.from
+        )?;
+    }
     for p in &r.top {
         let template = safe(&p.template);
         writeln!(

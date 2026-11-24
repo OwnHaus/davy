@@ -25,6 +25,11 @@ use std::{
 pub const MAX_PATTERN_ROWS: usize = 100;
 /// Services a row names. The rest are summed in one more entry.
 const SERVICES: usize = 3;
+/// Days a report reads at most, the newest first.
+pub const MAX_REPORT_DAYS: usize = 92;
+/// Patterns and pairs of pattern and service a report merges at most: it
+/// reads no further day once it holds this many.
+pub const MAX_MERGED: usize = 50_000;
 
 #[derive(Debug, Clone)]
 pub struct PatternQuery {
@@ -38,7 +43,8 @@ pub struct PatternQuery {
 #[derive(Debug, Serialize, PartialEq)]
 pub struct PatternReport {
     /// The first UTC day counted. Counters are per day, so the report covers
-    /// whole days from the day of `since` to the day of `until`.
+    /// whole days from the day of `since` to the day of `until`, or from a
+    /// later day when it is `truncated`.
     pub from: String,
     pub to: String,
     pub records: u64,
@@ -50,6 +56,11 @@ pub struct PatternReport {
     /// Days with counters that could not be read, left out of the report.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unread: Vec<String>,
+    /// The window held more than a report reads, [`MAX_REPORT_DAYS`] days
+    /// or [`MAX_MERGED`] patterns and pairs, so the days before `from` are
+    /// left out.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -90,19 +101,25 @@ pub fn top_patterns(root: &Path, q: &PatternQuery) -> Result<PatternReport> {
     };
     days.sort_unstable_by(|a, b| b.cmp(a));
     let live = tally::live(root);
-    let (mut sums, mut unread) = (HashMap::new(), Vec::new());
-    for day in days {
+    let (mut sums, mut unread, mut merged) = (HashMap::new(), Vec::new(), 0);
+    let (mut from, mut truncated) = (first, false);
+    for (n, day) in days.into_iter().enumerate() {
+        if n == MAX_REPORT_DAYS || merged >= MAX_MERGED {
+            truncated = true;
+            break;
+        }
+        from = day;
         if let Some(live) = &live {
             let held = live.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(tally) = held.get(&day) {
-                add(&mut sums, tally, q);
+                add(&mut sums, &mut merged, tally, q);
                 continue;
             }
         }
         let dir = root.join(day.to_string());
         match DayTally::load(&dir, q.project.map(i64::cast_unsigned)) {
             Ok((tally, failed)) => {
-                add(&mut sums, &tally, q);
+                add(&mut sums, &mut merged, &tally, q);
                 if !failed.is_empty() {
                     unread.push(day.to_string());
                 }
@@ -110,12 +127,15 @@ pub fn top_patterns(root: &Path, q: &PatternQuery) -> Result<PatternReport> {
             Err(_) => unread.push(day.to_string()),
         }
     }
-    let mut report = report(sums, first, last, q.limit);
+    let mut report = report(sums, if truncated { from } else { first }, last, q.limit);
     report.unread = unread;
+    report.truncated = truncated;
     Ok(report)
 }
 
-fn add(sums: &mut HashMap<u64, Sum>, tally: &DayTally, q: &PatternQuery) {
+/// Adds the counters of `tally` to `sums`, and the patterns and pairs it
+/// adds to `merged`.
+fn add(sums: &mut HashMap<u64, Sum>, merged: &mut usize, tally: &DayTally, q: &PatternQuery) {
     let projects = tally
         .projects
         .iter()
@@ -131,7 +151,10 @@ fn add(sums: &mut HashMap<u64, Sum>, tally: &DayTally, q: &PatternQuery) {
         if services.is_empty() {
             continue;
         }
-        let s = sums.entry(*id).or_default();
+        let s = sums.entry(*id).or_insert_with(|| {
+            *merged += 1;
+            Sum::default()
+        });
         if s.template.is_empty() {
             s.template.clone_from(&entry.template);
             s.example.clone_from(&entry.example);
@@ -142,7 +165,10 @@ fn add(sums: &mut HashMap<u64, Sum>, tally: &DayTally, q: &PatternQuery) {
             for (i, [n, _]) in levels.iter().enumerate().skip(lowest) {
                 s.levels[i] = s.levels[i].saturating_add(*n);
             }
-            let by_service = s.services.entry(service.clone()).or_default();
+            let by_service = s.services.entry(service.clone()).or_insert_with(|| {
+                *merged += 1;
+                0
+            });
             *by_service = by_service.saturating_add(records);
         }
     }
@@ -174,6 +200,7 @@ fn report(sums: HashMap<u64, Sum>, first: Date, last: Date, limit: usize) -> Pat
         patterns,
         top: rows.into_iter().map(|(id, s)| row(id, s, bytes)).collect(),
         unread: Vec::new(),
+        truncated: false,
     }
 }
 
