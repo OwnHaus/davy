@@ -121,7 +121,9 @@ impl Run {
     }
 }
 
-fn run(design: Option<Design>, args: &[String]) -> Result<()> {
+/// The data directory and the run that `args` ask for, checked before
+/// anything is written, so a test can see a refusal without a run.
+fn parse_run(args: &[String]) -> Result<(&Path, Run)> {
     let [data, issues, per_issue, per_tx] = args else {
         bail!("expected DATA ISSUES PER_ISSUE PER_TX");
     };
@@ -141,6 +143,11 @@ fn run(design: Option<Design>, args: &[String]) -> Result<()> {
             .is_some_and(|n| n <= MAX_EVENTS),
         "ISSUES times PER_ISSUE must be at most {MAX_EVENTS}"
     );
+    Ok((data, r))
+}
+
+fn run(design: Option<Design>, args: &[String]) -> Result<()> {
+    let (data, r) = parse_run(args)?;
     let mut target: Box<dyn Target> = match design {
         None => Box::new(Real::open(data)?),
         Some(d) => Box::new(Sim::open(data, d, r.issues)?),

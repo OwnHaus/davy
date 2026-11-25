@@ -33,13 +33,16 @@ fn a_run_refuses_zero_before_it_writes() {
     assert_eq!(e.to_string(), "ISSUES must be above 0");
     let e = run(Some(Design::Table), &args(&[&path, "10", "26", "0"])).unwrap_err();
     assert_eq!(e.to_string(), "PER_TX must be above 0");
+    // parse_run, not run: a cap that stopped refusing would start the run.
     for (issues, per_issue) in [("4294967296", "4294967296"), ("1000000", "1001")] {
-        let e = run(None, &args(&[&path, issues, per_issue, "64"])).unwrap_err();
+        let e = parse_run(&args(&[&path, issues, per_issue, "64"])).err();
         assert_eq!(
-            e.to_string(),
-            "ISSUES times PER_ISSUE must be at most 1000000000"
+            e.map(|e| e.to_string()).as_deref(),
+            Some("ISSUES times PER_ISSUE must be at most 1000000000")
         );
     }
+    let (_, r) = parse_run(&args(&[&path, "1000000", "1000", "64"])).unwrap();
+    assert_eq!(r.events(), 1_000_000_000);
     assert!(!data.exists());
     let e = reads::compare(&args(&["old", "new", "0"])).unwrap_err();
     assert_eq!(e.to_string(), "ROUNDS must be above 0");
