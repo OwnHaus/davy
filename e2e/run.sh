@@ -178,6 +178,60 @@ echo 'logs: wrong bearer 403, Logtail JSON 202'
 # the other three issues.
 (cd "$ROOT/e2e" && pnpm exec playwright install chromium --only-shell && DAVY_BIN="$BIN" DAVY_URL="$URL" DAVY_DATA="$SCRATCH/data" pnpm exec playwright test ui.spec.ts --reporter=line --output "$SCRATCH/playwright")
 echo 'web UI: verified sign-in, the list, the in-app frame, resolve, login, logs search, zoom and live, uptime, alerts, projects, setup, a password change, axe and CSP'
+# A Vercel Log Drain: the project key alone lets a drain in until the
+# project has the drain secret, then only a body signed with it.
+DSN=$("$BIN" project create vercel --data "$SCRATCH/data" --public-url "$URL")
+VKEY="${DSN#*://}"; VKEY="${VKEY%%@*}"
+DRAIN_SECRET=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
+export DRAIN_SECRET
+NOW_MS=$(python3 -c 'import time; print(int(time.time()*1000))')
+drain_body() {
+  printf '[{"id":"%s","deploymentId":"dpl_e2e","source":"lambda","host":"shop-e2e.vercel.app","timestamp":%s,"projectId":"prj_e2e","projectName":"shop","level":"%s","message":"%s","statusCode":%s,"requestId":"req-%s","traceId":"1b02cd14bb8642fd092bc23f54c7ffcd","spanId":"f24e8631bd11faa7","proxy":{"method":"GET","path":"/api/cart","statusCode":%s,"clientIp":"120.75.16.101"}}]' "$1" "$NOW_MS" "$2" "$3" "$4" "$1" "$4"
+}
+drain_sign() {
+  python3 -c 'import hashlib,hmac,os,sys; print(hmac.new(os.environ["DRAIN_SECRET"].encode(), sys.stdin.buffer.read(), hashlib.sha1).hexdigest())'
+}
+drain_post() { # body, then the signature header if any
+  curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $VKEY" -H 'Content-Type: application/json' ${2:+-H "x-vercel-signature: $2"} --data-binary "$1" "$URL/vercel/logs"
+}
+BODY=$(drain_body 1 info 'vercel unsigned before the secret' 200)
+STATUS=$(drain_post "$BODY")
+[ "$STATUS" = 200 ] || { echo "vercel drain without a secret gave $STATUS"; exit 1; }
+printf '%s\n' "$DRAIN_SECRET" | "$BIN" project vercel vercel --data "$SCRATCH/data" --secret-stdin > "$SCRATCH/vercel.json"
+[ "$(cat "$SCRATCH/vercel.json")" = '{"project":"vercel","signature_required":true}' ] || { echo "davy project vercel printed $(cat "$SCRATCH/vercel.json")"; exit 1; }
+BODY=$(drain_body 2 error 'vercel signed checkout failed' 500)
+SIGNATURE=$(printf '%s' "$BODY" | drain_sign)
+WRONG=$(printf '%s' "$BODY" | DRAIN_SECRET=another drain_sign)
+for sig in '' "$WRONG"; do
+  STATUS=$(drain_post "$BODY" "$sig")
+  [ "$STATUS" = 403 ] || { echo "vercel drain signed '$sig' gave $STATUS"; exit 1; }
+done
+STATUS=$(drain_post "$BODY" "$SIGNATURE")
+[ "$STATUS" = 200 ] || { echo "signed vercel drain gave $STATUS"; exit 1; }
+for i in {1..50}; do
+  "$BIN" logs --data "$SCRATCH/data" --project vercel --since 10m --json > "$SCRATCH/vercel.ndjson"
+  if [ "$(wc -l < "$SCRATCH/vercel.ndjson")" -ge 2 ]; then break; fi
+  sleep 0.2
+done
+"$BIN" logs --data "$SCRATCH/data" --project vercel --since 10m --json 'attributes.statusCode:500 AND attributes.source:lambda' > "$SCRATCH/vercel-500.ndjson"
+python3 - "$SCRATCH" <<'PY'
+import json,os,pathlib,sys
+p=pathlib.Path(sys.argv[1])
+rows=[json.loads(l) for l in (p/'vercel.ndjson').read_text().splitlines()]
+# Both records carry the same timestamp, so their order is not asserted.
+got=sorted((r['source'],r['level'],r['message'],r['service']) for r in rows)
+assert got==[('vercel','error','vercel signed checkout failed','shop'),('vercel','info','vercel unsigned before the secret','shop')],got
+signed=next(r for r in rows if r['level']=='error')
+assert (signed['trace_id'],signed['span_id'])==('1b02cd14bb8642fd092bc23f54c7ffcd','f24e8631bd11faa7'),signed
+assert signed['attributes']['proxy']['clientIp']=='[Filtered: ip]',signed['attributes']
+assert signed['attributes']['requestId']=='req-2',signed['attributes']
+found=[json.loads(l)['message'] for l in (p/'vercel-500.ndjson').read_text().splitlines()]
+assert found==['vercel signed checkout failed'],found
+secret=os.environ['DRAIN_SECRET']
+for f in ('server.log','vercel.json'):
+  assert secret not in (p/f).read_text(),f'{f} holds the drain secret'
+print('vercel: verified a drain with the key alone, then 403 unsigned and wrongly signed, a signed batch searchable by attribute, the client IP scrubbed and the secret in no output')
+PY
 DSN=$("$BIN" project create legacy --data "$SCRATCH/data" --public-url "$URL")
 KEY="${DSN#*://}"; KEY="${KEY%%@*}"
 PROJECT="${DSN##*/}"
