@@ -1,4 +1,4 @@
-use super::{BUSY_TIMEOUT, MIGRATIONS, init};
+use super::{BUSY_TIMEOUT, SCHEMA_VERSION, init};
 use anyhow::{Result, bail};
 use rusqlite::{Connection, ErrorCode};
 use std::{
@@ -54,7 +54,7 @@ pub(super) fn open(path: &Path, wait: Duration) -> Result<Connection> {
 /// True when the database `c` has not run every migration this build knows.
 fn pending(c: &Connection) -> Result<bool> {
     let done: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    Ok(usize::try_from(done)? < MIGRATIONS.len())
+    Ok(done < SCHEMA_VERSION)
 }
 
 /// Creates the schema and runs the pending migrations on a connection in

@@ -130,11 +130,10 @@ pub fn init(c: &mut Connection) -> Result<()> {
 /// would ignore what those migrations added, such as the projects' own
 /// retention and `id_floor`, and could delete logs a project keeps or give
 /// a new issue the id of a deleted one.
-fn refuse_newer(done: u32) -> Result<()> {
-    let known = MIGRATIONS.len();
+pub(crate) fn refuse_newer(done: u32) -> Result<()> {
     anyhow::ensure!(
-        usize::try_from(done).is_ok_and(|done| done <= known),
-        "a newer Davy has upgraded this data directory to schema version {done}, and this one knows versions up to {known}. Run that release or a newer one, or restore the backup taken before the upgrade"
+        done <= SCHEMA_VERSION,
+        "a newer Davy has upgraded this data directory to schema version {done}, and this one knows versions up to {SCHEMA_VERSION}. Run that release or a newer one, or restore the backup taken before the upgrade"
     );
     Ok(())
 }

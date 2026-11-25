@@ -109,16 +109,13 @@ pub fn open(data: &Path) -> Result<Connection> {
         ),
         Err(e) => return Err(e.into()),
     };
+    // The same refusal as a writer's: reading what this build does not
+    // know would answer from tables a newer Davy may have changed.
+    store::refuse_newer(version)?;
     if version < store::SCHEMA_VERSION {
         bail!(
             "the database in {} is from an older Davy: run davy serve --data {} once to upgrade it",
             data.display(),
-            data.display()
-        );
-    }
-    if version > store::SCHEMA_VERSION {
-        bail!(
-            "the database in {} is from a newer Davy: read it with that Davy or a newer one",
             data.display()
         );
     }
@@ -582,14 +579,14 @@ mod tests {
     fn reading_a_database_of_a_newer_davy_refuses_it() {
         let data = crate::test_support::scratch("query-new");
         let c = store::open(&data).unwrap();
-        c.pragma_update(None, "user_version", store::SCHEMA_VERSION + 1)
-            .unwrap();
+        let newer = store::SCHEMA_VERSION + 1;
+        c.pragma_update(None, "user_version", newer).unwrap();
         let err = open(&data).unwrap_err();
         assert_eq!(
             err.to_string(),
             format!(
-                "the database in {} is from a newer Davy: read it with that Davy or a newer one",
-                data.display()
+                "a newer Davy has upgraded this data directory to schema version {newer}, and this one knows versions up to {}. Run that release or a newer one, or restore the backup taken before the upgrade",
+                store::SCHEMA_VERSION
             )
         );
     }

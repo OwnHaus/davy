@@ -569,8 +569,11 @@ fn a_forecast_missing_for_a_reason_other_than_history_warns_with_its_own_fix() {
     let data = Path::new("/var/lib/davy");
     let stopped = "the disk walk stopped early, it read 1000000 entries, its limit, so not every log day is measured";
     let left_out = "part of logs is left out of the disk walk (disk.partial says what), so the growth of logs is unknown";
-    let newer =
-        "the database in /var/lib/davy is from a newer Davy: read it with that Davy or a newer one";
+    let known = crate::store::SCHEMA_VERSION;
+    let newer = format!(
+        "a newer Davy has upgraded this data directory to schema version {}, and this one knows versions up to {known}. Run that release or a newer one, or restore the backup taken before the upgrade",
+        known + 1
+    );
     let warn = |why: NoForecast| disk(data, Some(40 * GIB), Some(Err(why)));
     assert_eq!(
         warn(NoForecast::Stopped(stopped.into())),
@@ -591,7 +594,7 @@ fn a_forecast_missing_for_a_reason_other_than_history_warns_with_its_own_fix() {
         )
     );
     assert_eq!(
-        warn(NoForecast::Failed(newer.into())),
+        warn(NoForecast::Failed(newer.clone())),
         Check {
             name: "disk",
             status: Status::Warn,
