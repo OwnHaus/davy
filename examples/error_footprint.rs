@@ -38,6 +38,9 @@ const START: i64 = 1_793_491_200_000;
 /// Marked a payload kept only for being the newest, see the migration in
 /// `src/store/latest.rs`.
 const LATEST: [u8; 8] = [0x5D, 0x2A, 0x4D, 0x18, 0, 0, 0, 0];
+/// The most events a run writes, far past any run that fits a disk, so
+/// the counts, ids and times it computes from them cannot overflow.
+const MAX_EVENTS: usize = 1_000_000_000;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -131,6 +134,12 @@ fn run(design: Option<Design>, args: &[String]) -> Result<()> {
         per_tx: count("PER_TX", per_tx)?,
         event: serde_json::from_slice(envelope.items[0].payload)?,
     };
+    ensure!(
+        r.issues
+            .checked_mul(r.per_issue)
+            .is_some_and(|n| n <= MAX_EVENTS),
+        "ISSUES times PER_ISSUE must be at most {MAX_EVENTS}"
+    );
     let mut target: Box<dyn Target> = match design {
         None => Box::new(Real::open(data)?),
         Some(d) => Box::new(Sim::open(data, d, r.issues)?),

@@ -33,6 +33,13 @@ fn a_run_refuses_zero_before_it_writes() {
     assert_eq!(e.to_string(), "ISSUES must be above 0");
     let e = run(Some(Design::Table), &args(&[&path, "10", "26", "0"])).unwrap_err();
     assert_eq!(e.to_string(), "PER_TX must be above 0");
+    for (issues, per_issue) in [("4294967296", "4294967296"), ("1000000", "1001")] {
+        let e = run(None, &args(&[&path, issues, per_issue, "64"])).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "ISSUES times PER_ISSUE must be at most 1000000000"
+        );
+    }
     assert!(!data.exists());
     let e = reads::compare(&args(&["old", "new", "0"])).unwrap_err();
     assert_eq!(e.to_string(), "ROUNDS must be above 0");
