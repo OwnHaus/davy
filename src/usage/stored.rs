@@ -111,14 +111,15 @@ pub fn sample(c: &Connection, at_ms: i64) -> rusqlite::Result<()> {
 
 /// Deletes the rows of `log_days` and `store_days` of days other than the
 /// [`KEEP_DAYS`] that end on the day of `at_ms`, at most [`PRUNE_ROWS`] of
-/// each, as [`super::prune`] does for `usage_daily`.
+/// each, as [`super::prune`] does for `usage_daily`. A row of `log_days`
+/// goes only once it is cut: its logs may be kept longer than that.
 pub fn prune(c: &Connection, at_ms: i64) -> rusqlite::Result<()> {
     let today = time::day_of(at_ms.saturating_mul(1_000_000));
     if let Ok(cutoff) = today.checked_sub(KEEP_DAYS.days()) {
         let cutoff = cutoff.to_string();
         c.execute(
             "DELETE FROM log_days WHERE (day, project_id) IN
-             (SELECT day, project_id FROM log_days WHERE day<=?1 LIMIT ?2)",
+             (SELECT day, project_id FROM log_days WHERE day<=?1 AND cut=1 LIMIT ?2)",
             (&cutoff, PRUNE_ROWS),
         )?;
         c.execute(

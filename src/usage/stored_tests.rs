@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     event::ErrorEvent,
-    logs::store::log_days::{LogDays, Row, Segment},
+    logs::store::log_days::{LogDays, Mark, Row, Segment},
     store,
 };
 use serde_json::json;
@@ -157,11 +157,29 @@ fn store_days_count_live_pages_not_free_ones() {
     assert_eq!(bytes, live * number(&c, "PRAGMA page_size"));
 }
 
+/// Marks every row of the days in `days` cut.
+fn cut(c: &Connection, days: &[&str]) {
+    let marks = days
+        .iter()
+        .map(|d| Mark::AllBut(day(d), Vec::new()))
+        .collect();
+    let segments = vec![Segment {
+        rows: Vec::new(),
+        marks,
+    }];
+    let flush = Flush {
+        start: None,
+        segments,
+    };
+    write(c, &flush).unwrap();
+}
+
 #[test]
 fn log_days_and_store_days_are_pruned_after_400_days() {
     let c = memory();
     let flush = rows(vec![row("2025-10-19", 1, 1, 1), row("2025-10-20", 1, 1, 1)]);
     write(&c, &flush).unwrap();
+    cut(&c, &["2025-10-19", "2025-10-20"]);
     // 2026-11-23 is 400 days after 2025-10-19.
     let old = NOV_23 - 400 * DAY_MS;
     sample(&c, old).unwrap();
@@ -172,6 +190,25 @@ fn log_days_and_store_days_are_pruned_after_400_days() {
     assert_eq!(days, "2025-10-20");
     let kept: Vec<String> = store_days(&c).into_iter().map(|r| r.0).collect();
     assert_eq!(kept, ["2025-10-20"]);
+}
+
+#[test]
+fn a_row_whose_logs_are_kept_is_not_pruned_after_400_days() {
+    let c = memory();
+    let flush = rows(vec![row("2024-11-23", 1, 1, 1), row("2024-11-23", 2, 1, 1)]);
+    write(&c, &flush).unwrap();
+    let flush = Flush {
+        start: None,
+        segments: vec![Segment {
+            rows: Vec::new(),
+            marks: vec![Mark::Only(day("2024-11-23"), vec![2])],
+        }],
+    };
+    write(&c, &flush).unwrap();
+    prune(&c, NOV_23).unwrap();
+    let left = "SELECT coalesce(group_concat(project_id), '') FROM log_days";
+    let left: String = c.query_row(left, [], |r| r.get(0)).unwrap();
+    assert_eq!(left, "1");
 }
 
 #[test]
@@ -189,6 +226,7 @@ fn the_sweep_deletes_at_most_10000_old_log_days_at_a_time() {
         })
         .collect();
     write(&c, &rows(old)).unwrap();
+    c.execute("UPDATE log_days SET cut=1", []).unwrap();
     assert_eq!(number(&c, "SELECT count(*) FROM log_days"), 10_002);
     prune(&c, NOV_23).unwrap();
     assert_eq!(number(&c, "SELECT count(*) FROM log_days"), 2);
@@ -200,6 +238,7 @@ fn the_sweep_deletes_at_most_10000_old_log_days_at_a_time() {
 fn a_sweep_job_samples_and_prunes() {
     let mut c = memory();
     write(&c, &rows(vec![row("2025-10-19", 1, 1, 1)])).unwrap();
+    cut(&c, &["2025-10-19"]);
     let sweep = store::Write {
         job: store::Job::Sweep {
             at: NOV_23,
