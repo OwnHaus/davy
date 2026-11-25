@@ -349,8 +349,7 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
             crate::items::client_report::prune(c, *at)?;
             crate::items::session::prune(c, *at)?;
             crate::usage::prune(c, *at)?;
-            crate::usage::stored::prune(c, *at)?;
-            crate::usage::stored::sample(c, *at)?;
+            crate::usage::stored::sweep(c, *at)?;
             Ok(Ok(()))
         }
         Job::Usage(rows) => {

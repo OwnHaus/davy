@@ -83,6 +83,24 @@ fn mark(c: &Connection, m: &Mark) -> rusqlite::Result<usize> {
     }
 }
 
+/// Prunes and samples in a savepoint of the sweep's transaction. A failure
+/// is printed and rolled back alone, so it fails neither the rest of the
+/// sweep nor the jobs batched with it, every 10 s.
+#[expect(
+    clippy::print_stderr,
+    reason = "the server has no logger yet, stderr is its log"
+)]
+pub fn sweep(c: &Connection, at_ms: i64) -> rusqlite::Result<()> {
+    c.execute_batch("SAVEPOINT stored")?;
+    match prune(c, at_ms).and_then(|()| sample(c, at_ms)) {
+        Ok(()) => c.execute_batch("RELEASE stored"),
+        Err(e) => {
+            eprintln!("sweep: log_days and store_days not pruned or sampled: {e}");
+            c.execute_batch("ROLLBACK TO stored; RELEASE stored")
+        }
+    }
+}
+
 /// Writes SQLite's live size and the events kept at `at_ms`, unless the
 /// day of `at_ms` has its sample.
 pub fn sample(c: &Connection, at_ms: i64) -> rusqlite::Result<()> {

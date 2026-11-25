@@ -252,6 +252,36 @@ fn a_sweep_job_samples_and_prunes() {
 }
 
 #[test]
+fn a_failed_sample_fails_neither_the_sweep_nor_its_batch() {
+    let mut c = memory();
+    write(&c, &rows(vec![row("2025-10-19", 1, 1, 1)])).unwrap();
+    cut(&c, &["2025-10-19"]);
+    c.execute_batch("DROP INDEX issues_status_sorts").unwrap();
+    let batch = [
+        store::Job::Sweep {
+            at: NOV_23,
+            error_days: crate::retention::Days::new(30).unwrap(),
+        },
+        store::Job::First {
+            what: crate::firsts::First::Log,
+            at: NOV_23,
+        },
+    ]
+    .map(|job| store::Write {
+        job,
+        done: tokio::sync::oneshot::channel().0,
+    });
+    assert_eq!(store::write_batch(&mut c, &batch), [Ok(()), Ok(())]);
+    assert_eq!(number(&c, "SELECT count(*) FROM firsts"), 1);
+    assert_eq!(number(&c, "SELECT count(*) FROM store_days"), 0);
+    assert_eq!(
+        number(&c, "SELECT count(*) FROM log_days"),
+        1,
+        "the prune is rolled back with the sample"
+    );
+}
+
+#[test]
 fn the_migration_adds_both_tables_to_a_store_of_version_19() {
     let mut c = memory();
     write(&c, &rows(vec![row("2026-11-23", 1, 1, 1)])).unwrap();
