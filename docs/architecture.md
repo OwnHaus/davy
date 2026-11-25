@@ -7,7 +7,7 @@ A map of the code for whoever changes it next. It says where things live and whi
 One binary, `davy`, with subcommands. `davy serve` takes HTTP ingest, writes to disk and, with a token, serves MCP to coding agents. Every other subcommand reads or edits the same data directory from its own process.
 
 ```
-SDK / shipper ──HTTP──> http.rs ──parse──> envelope.rs, event.rs, logs/{logtail,otlp,sentry}.rs
+SDK / shipper ──HTTP──> http.rs ──parse──> envelope.rs, event.rs, logs/{logtail,otlp,sentry,vercel}.rs
                            │                        (pure: bytes in, typed records out)
                            ├── errors ──> sourcemaps::symbolicate ──> store::Writer (one thread) ──> data/davy.sqlite (SQLite, WAL)
                            └── logs ────> logs::store::LogWriter (one thread) ──> data/logs/YYYY-MM-DD/ (Tantivy)
@@ -43,7 +43,8 @@ CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::se
 - `src/net.rs` holds what checks and deliveries share when they reach a URL a user typed: the client, the `Reach` it enforces (any address, or public ones only for the cloud), the User-Agent and the error text that never holds the URL.
 - `src/tasks.rs` holds `poll`, the loop behind each background task in `davy serve` that reads due work from SQLite: one task per key, a limit on how many run, and the result stored through the writer before the key is free.
 - `src/logs/mod.rs` defines `LogRecord`, `LogLevel` and the timestamp and level rules shared by every log source.
-- `src/logs/{logtail,otlp,sentry}.rs` are the log adapters. Each is a pure function from a request body to `Vec<LogRecord>`.
+- `src/logs/{logtail,otlp,sentry,vercel}.rs` are the log adapters. Each is a pure function from a request body to `Vec<LogRecord>`.
+- `src/http/vercel.rs` is the Vercel Log Drain route and its `x-vercel-signature` check, and `src/vercel.rs` keeps a project's drain secret and `davy project vercel`.
 - `src/logs/store.rs` owns the Tantivy schema, the log writer thread and search. `src/logs/retention.rs` deletes from it the logs each project keeps no longer.
 - `src/logs/patterns.rs` masks the values in a log message to its pattern, a pure function. `src/logs/tally.rs` counts records and bytes per pattern in the writer thread and keeps them in a file per project in each day's directory (`src/logs/tally_file.rs`), and `src/logs/pattern_report.rs` reads them for `log_patterns`.
 - `src/retention.rs` holds how long each project keeps its logs and errors: the server defaults, a project's own settings, their limits and the change the writer applies. `src/retention/errors.rs` deletes expired events and user feedback on the writer thread and keeps issue counts, first seen and tags true.
@@ -52,11 +53,12 @@ CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::se
 
 ## Trust boundaries
 
-Five kinds of caller reach the server. Each route belongs to exactly one.
+Six kinds of caller reach the server. Each route belongs to exactly one.
 
 | Caller | Credential | Routes | May do |
 |---|---|---|---|
 | SDK or log shipper | Project ingest key, public | `/api/{project}/envelope/`, `/api/{project}/store/`, `/`, `/v1/logs` | Write events and logs into the one project the key names |
+| Vercel Log Drain | Project ingest key, public, in a custom `Authorization` header; plus `x-vercel-signature`, the HMAC of the body as sent under the drain secret, when the project has one. The secret guards this route only: the same key still writes through the SDK routes above | `/vercel/logs` | Write logs into the one project the key names |
 | Heartbeat sender, such as a cron job | Heartbeat token, secret, in the path | `/api/heartbeat/{token}`, `/api/heartbeat/{token}/fail` | Record a ping or a failure for the one monitor the token names |
 | Coding agent | Admin token, secret | `/mcp`, `/api/projects/{project}/scrub` | Read everything, mark issues fixed, set how long a project keeps its logs and errors, tighten project scrubbing |
 | `sentry-cli` | Admin token, secret | `/api/0/organizations/{org}/chunk-upload/`, `.../artifactbundle/assemble/` | Write source map builds |
@@ -64,13 +66,13 @@ Five kinds of caller reach the server. Each route belongs to exactly one.
 
 The pages under `/ui/` and the login, logout and welcome routes need no credential. The admin token opens nothing under `/ui/`, and the session cookie opens nothing outside it. A UI write also needs `Content-Type: application/json` and the exact `Origin` of the public URL.
 
-The CLI is a sixth caller. `davy user add` prints the welcome link a person sets their password with. It runs on the host with file access to the data directory and needs no credential. The cloud service adds tenants above projects. A cloud feature must not let one tenant's key or token reach another tenant's data, so every query the cloud runs carries the tenant in its type, not in a string filter.
+The CLI is a seventh caller. `davy user add` prints the welcome link a person sets their password with. It runs on the host with file access to the data directory and needs no credential. The cloud service adds tenants above projects. A cloud feature must not let one tenant's key or token reach another tenant's data, so every query the cloud runs carries the tenant in its type, not in a string filter.
 
 ## Invariants
 
 - **Parsers are pure.** Everything that turns wire bytes into domain types takes bytes and returns a value or an error. No I/O, no clock reads except a passed-in `observed_at`, no global state. Each is tested on fixtures captured from real clients.
 - **Validation happens once, at the boundary.** `http.rs` and the parsers check input. Code behind them trusts the types and does not re-check.
-- **One writer thread per store.** Inside the server, only `store::Writer` writes SQLite and only `LogWriter` writes Tantivy, retention included. HTTP handlers and MCP tools queue work and never write directly. A full queue is a `429` or a tool error, never an unbounded buffer. The SQLite writer has a second queue for jobs from people in the UI and takes from it first, so a login commits while ingest fills the first queue. CLI commands that write (`project create`, `project retention`, `resolve`) use their own connection, and SQLite's lock orders them with the writer. That lock does not cover Tantivy, so a retention change from the CLI is not ordered with a log deletion already under way, see "Retention per project" in `design.md`.
+- **One writer thread per store.** Inside the server, only `store::Writer` writes SQLite and only `LogWriter` writes Tantivy, retention included. HTTP handlers and MCP tools queue work and never write directly. A full queue is a `429` or a tool error, never an unbounded buffer. The SQLite writer has a second queue for jobs from people in the UI and takes from it first, so a login commits while ingest fills the first queue. CLI commands that write (`project create`, `project retention`, `project vercel`, `resolve`) use their own connection, and SQLite's lock orders them with the writer. That lock does not cover Tantivy, so a retention change from the CLI is not ordered with a log deletion already under way, see "Retention per project" in `design.md`.
 - **Source maps are files, not rows.** `upload.rs` writes chunks and builds under `data/chunks/` and `data/sourcemaps/` by writing a temporary file and renaming it. A build is named by its debug ID, a content hash, so a second upload of the same build writes the same bytes and nothing needs a lock.
 - **Readers live in other processes.** The CLI opens the data directory while the server writes. SQLite WAL and Tantivy's segment files make that safe. Search retries once on a missing segment file.
 - **Lenient on fields, strict on framing.** A malformed envelope or body is an error status. A wrong field inside a valid record falls back to a default, and one bad record never fails a batch.

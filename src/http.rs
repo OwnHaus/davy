@@ -34,6 +34,7 @@ pub mod body;
 mod heartbeat;
 mod sdk;
 mod serve;
+mod vercel;
 use crate::scrub::{Item, Policy};
 use heartbeat::{fail, ping};
 use sdk::{check_in, scrubbed, scrubbed_logs, sdk_item};
@@ -80,6 +81,11 @@ impl Keys {
     fn monitor_for(&self, token: &HeartbeatToken) -> Result<Option<i64>, Failure> {
         let db = self.db.lock().map_err(internal)?;
         monitor::store::by_token(&db, token).map_err(internal)
+    }
+    /// Not cached, so `davy project vercel` applies to the next request.
+    fn vercel_secret(&self, project: i64) -> Result<Option<String>, Failure> {
+        let db = self.db.lock().map_err(internal)?;
+        crate::vercel::secret(&db, project).map_err(internal)
     }
     fn policy(&self, project: i64) -> Result<Arc<Policy>, Failure> {
         self.policies.get(&self.db, project).map_err(internal)
@@ -131,6 +137,7 @@ fn ingest_routes(app: App) -> Router {
                 .options(preflight),
         )
         .route("/v1/logs", post(otlp_ingest).options(preflight))
+        .route("/vercel/logs", post(vercel::ingest))
         .route("/api/heartbeat/{token}", get(ping).post(ping))
         .route("/api/heartbeat/{token}/fail", get(fail).post(fail))
         .with_state(app)
@@ -504,13 +511,14 @@ async fn ingest_logs(
     headers: &HeaderMap,
     raw: Body,
     policy: Arc<Policy>,
+    signed: Option<vercel::Signed>,
     parse: impl FnOnce(&[u8], &mut Held) -> Result<Vec<LogRecord>, Failure> + Send + 'static,
 ) -> Result<(), Failure> {
     let mut held = app.budget.hold();
     let bytes = body::read(raw, &mut held).await?;
     let encoding = encoding(headers);
     let (records, size, _held) = blocking(move || {
-        let body = body::decode(bytes, &encoding, &mut held)?;
+        let body = vercel::decode(signed, bytes, &encoding, &mut held)?;
         let mut records = parse(&body, &mut held)?;
         if records.len() > MAX_RECORDS {
             return Err(too_many_records());
@@ -537,6 +545,7 @@ async fn logtail_ingest(State(app): State<App>, req: Request) -> Response {
             &parts.headers,
             raw,
             app.keys.policy(project)?,
+            None,
             move |body, held| {
                 let refused = |e| (StatusCode::NOT_ACCEPTABLE, e);
                 held.take(logtail::cost(body, &content_type).map_err(refused)?)?;
@@ -566,6 +575,7 @@ async fn otlp_ingest(State(app): State<App>, req: Request) -> Response {
             &parts.headers,
             raw,
             app.keys.policy(project)?,
+            None,
             move |body, held| {
                 held.take(otlp::cost(body, encoding).map_err(bad)?)?;
                 let request = otlp::decode(body, encoding).map_err(bad)?;

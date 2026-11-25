@@ -63,7 +63,7 @@ const NOTES: &str = "Notes:
 - issues.status is unresolved, resolved or ignored. A resolved issue reopens when an event arrives without a release, in the release it was resolved in, or in a release first seen after resolved_at.
 - projects.log_retention_days and projects.error_retention_days are the days of logs and errors a project keeps, NULL for the server default; project_status shows the days in effect. Events and user feedback received before that are deleted. issues.event_count, first_seen, last_seen and issue_hourly follow the events kept. An issue with no event left is deleted once no user feedback points at it, and has event_count 0 until then. A new issue never takes a deleted issue's id: id_floor holds the highest id deleted.
 - issue_tags holds each environment and release that an issue's kept events named, and in last_at when the newest of them was received. issues_text is a trigram full-text index of issues.title and issues.culprit: SELECT rowid FROM issues_text WHERE issues_text MATCH '\"timed out\"' finds issues whose title or culprit contains the phrase, ignoring case, for phrases of three characters or more.
-- monitors.state is pending, up, failing or down. Times in monitors, checks and incidents are unix milliseconds. An incident with no resolved_at is open. monitors.heartbeat_token, monitors.url, channels.url and channels.secret read as NULL.
+- monitors.state is pending, up, failing or down. Times in monitors, checks and incidents are unix milliseconds. An incident with no resolved_at is open. monitors.heartbeat_token, monitors.url, channels.url, channels.secret and projects.vercel_secret read as NULL.
 - channels.dropped counts issue, feedback and operator notices that a full outbox dropped, so above 0 a real alert was lost. channels.sdk_dropped counts dropped notices of monitors made by check-ins, which anyone with a project's DSN can raise.
 - A heartbeat with monitors.slug also takes Sentry SDK check-ins for that slug. monitors.source is cli for a monitor made by davy monitor add and sdk for one made by a check-in. A heartbeat expects every every_s seconds, or every months calendar months, or at the times of the crontab cron, both in the IANA zone; due_at is when the sweep marks it down. run_id and run_started_at belong to a run started by an in_progress check-in. Refused check-ins are counted in client_reports with category monitor and reason davy_too_large, davy_invalid, davy_bad_slug, davy_unknown_monitor, davy_bad_config, davy_monitor_cap or davy_rate.
 - users.password, sessions.hash and invites.hash read as NULL.
@@ -156,7 +156,7 @@ pub fn open(data: &Path) -> Result<Connection> {
 /// prompt-injected agent could leak it, so they read as NULL. A monitor URL
 /// often carries a token in its query string. A password hash can be cracked
 /// offline, and the session and invite hashes are kept out the same way.
-const CREDENTIALS: [(&str, &str); 7] = [
+const CREDENTIALS: [(&str, &str); 8] = [
     ("monitors", "heartbeat_token"),
     ("monitors", "url"),
     ("channels", "url"),
@@ -164,6 +164,7 @@ const CREDENTIALS: [(&str, &str); 7] = [
     ("users", "password"),
     ("sessions", "hash"),
     ("invites", "hash"),
+    ("projects", "vercel_secret"),
 ];
 
 /// SQLite counts ATTACH and most PRAGMAs as read-only, so `Statement::readonly`

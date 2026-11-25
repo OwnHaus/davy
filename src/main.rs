@@ -166,6 +166,10 @@ fn level(s: &str) -> Result<LogLevel, String> {
 enum Project {
     /// Read or replace server-side scrubbing settings.
     Scrub(davy::scrub::settings::Args),
+    /// Sets or clears the secret a Vercel Log Drain signs with, and prints
+    /// whether drain requests must be signed. The secret comes on standard
+    /// input and is never printed.
+    Vercel(davy::vercel::Args),
     /// Prints project IDs and slugs as JSON.
     List {
         #[arg(long)]
@@ -336,6 +340,7 @@ async fn main() -> anyhow::Result<()> {
 fn run_project(out: &mut impl Write, command: Project) -> anyhow::Result<()> {
     match command {
         Project::Scrub(args) => davy::scrub::settings::run(out, &args)?,
+        Project::Vercel(args) => davy::vercel::run(out, &args, std::io::stdin().lock())?,
         Project::List { data } => davy::connect::list(out, &data)?,
         Project::Create {
             slug,

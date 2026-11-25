@@ -390,7 +390,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Search logs from every source (Sentry, OpenTelemetry, Logtail shippers). Returns hits oldest first with level, service, message, trace_id and attributes."
+        description = "Search logs from every source (Sentry, OpenTelemetry, Logtail shippers, Vercel Log Drains). Returns hits oldest first with level, service, message, trace_id and attributes."
     )]
     async fn search_logs(&self, Parameters(req): Parameters<SearchLogs>) -> Reply {
         self.blocking(move |data| {

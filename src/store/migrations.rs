@@ -1,6 +1,6 @@
 /// Schema changes after the first release, applied in order. `PRAGMA
 /// user_version` counts how many ran.
-pub(super) const MIGRATIONS: [&str; 20] = [
+pub(super) const MIGRATIONS: [&str; 21] = [
     "CREATE TABLE releases(project_id INTEGER NOT NULL REFERENCES projects(id), version TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY(project_id, version));
 INSERT INTO releases SELECT project_id, release, min(received_at) FROM events WHERE release IS NOT NULL GROUP BY project_id, release;",
     "CREATE TABLE monitors(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), name TEXT NOT NULL, kind TEXT NOT NULL, url TEXT, expect TEXT, keyword TEXT, heartbeat_token TEXT UNIQUE, every_s INTEGER NOT NULL, timeout_s INTEGER, grace_s INTEGER, state TEXT NOT NULL, last_check_at INTEGER, last_ping_at INTEGER, created_at INTEGER NOT NULL);
@@ -77,4 +77,6 @@ CREATE INDEX session_seen_started ON session_seen(started);",
     // retention cut, and SQLite's size once a day, which the disk forecast
     // cannot rebuild later.
     crate::usage::stored::MIGRATION,
+    // The secret a Vercel Log Drain signs its requests with, per project.
+    crate::vercel::MIGRATION,
 ];

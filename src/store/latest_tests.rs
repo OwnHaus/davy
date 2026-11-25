@@ -9,7 +9,9 @@ const AFTER: usize = 19;
 const BEFORE: usize = AFTER - 1;
 /// The version every migration leaves.
 const LAST: usize = store::migrations::MIGRATIONS.len();
-const LATER: &str = crate::usage::stored::UNDO;
+/// `crate::vercel::UNDO` then `crate::usage::stored::UNDO`, newest first.
+const LATER: &str =
+    "ALTER TABLE projects DROP COLUMN vercel_secret; DROP TABLE log_days; DROP TABLE store_days;";
 
 #[test]
 fn the_fixtures_undo_every_migration_after_the_newest_payload_one() {
@@ -17,8 +19,12 @@ fn the_fixtures_undo_every_migration_after_the_newest_payload_one() {
     assert_eq!(store::migrations::MIGRATIONS[BEFORE], super::MIGRATION);
     assert_eq!(
         later,
-        [crate::usage::stored::MIGRATION],
+        [crate::usage::stored::MIGRATION, crate::vercel::MIGRATION],
         "a later migration needs its undo in LATER"
+    );
+    assert_eq!(
+        LATER,
+        format!("{} {}", crate::vercel::UNDO, crate::usage::stored::UNDO)
     );
 }
 

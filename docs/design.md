@@ -211,7 +211,7 @@ Migration 19 creates `latest_payloads` and moves into it each payload with the m
 
 ## Milestone 3: logs
 
-Three wire formats come in. One `LogRecord` shape goes out to one store. Each source is an adapter: a pure function from bytes to records, unit-tested on captured fixtures. The HTTP layer does auth, size caps and decompression the same way for all of them.
+Four wire formats come in. One `LogRecord` shape goes out to one store. Each source is an adapter: a pure function from bytes to records, unit-tested on captured fixtures, except Vercel's, which no drain has been captured for yet and which is tested on the examples of Vercel's reference. The HTTP layer does auth, size caps and decompression the same way for all of them.
 
 ### Wire protocol (what we accept)
 
@@ -220,10 +220,11 @@ Three wire formats come in. One `LogRecord` shape goes out to one store. Each so
 | Logtail (`@logtail/node`, `@logtail/pino`, Vector, Fluent Bit) | `POST /` | `Authorization: Bearer <public_key>` | msgpack, JSON or NDJSON | `202`, empty body |
 | OTLP/HTTP logs | `POST /v1/logs` | `Authorization: Bearer <public_key>` | protobuf (`application/x-protobuf`) or JSON (`application/json`) | `200`, empty `ExportLogsServiceResponse` in the request's encoding and content type |
 | Sentry `log` item | the existing envelope route | the existing Sentry key rules | `{"items":[...]}` inside an envelope | the existing `200 {"id":...}` |
+| Vercel Log Drain, custom endpoint | `POST /vercel/logs` | `Authorization: Bearer <public_key>` as a custom header, plus `x-vercel-signature` for a project with a drain secret | JSON or NDJSON | `200`, empty body |
 
 - The bearer token is the project's `public_key`, so one DSN key also works as a Logtail source token and an OTLP header (`OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <key>`). The token alone picks the project.
-- All three use the existing `Content-Encoding` handling and the 20 MiB / 64 MiB caps and the memory budget. The token is checked before decompression.
-- Errors. `401` missing token, `403` unknown token, `413` too large, `429` with `Retry-After: 1` when the log queue is full. An undecodable Logtail body is `406` (what Better Stack answers). An undecodable OTLP body is `400` with a `google.rpc.Status` in the request's encoding. An OTLP content type other than protobuf or JSON is `415`.
+- All four use the existing `Content-Encoding` handling and the 20 MiB / 64 MiB caps and the memory budget. The token is checked before decompression, and so is a Vercel drain signature, which covers the body as sent.
+- Errors. `401` missing token, `403` unknown token, `413` too large, `429` with `Retry-After: 1` when the log queue is full. An undecodable Logtail body is `406` (what Better Stack answers). An undecodable OTLP body is `400` with a `google.rpc.Status` in the request's encoding. An OTLP content type other than protobuf or JSON is `415`. An undecodable Vercel body is `400`, since Vercel documents no status for it. A missing, malformed or wrong `x-vercel-signature` to a project with a drain secret is `403`, the status of Vercel's sample endpoint.
 - Lenient on fields here too. A record that is not an object is skipped. A field of the wrong type falls back to a default. A batch never fails because of one record.
 
 ### Data shape
@@ -278,8 +279,15 @@ One timestamp function for every source. A number below 1e11 is seconds (fractio
 - Every other key stays in `attributes` under Vercel's own name, nested `proxy` object included, so the drain reference is the attribute reference: `attributes.statusCode:500`, `attributes.source:lambda`, `attributes.proxy.clientIp`. `clientIp` is scrubbed like any IP ("Server-side data scrubbing").
 - Vercel's `id` stays an attribute and is not used to drop duplicates. No log source is deduplicated, so a batch that Davy stored and Vercel sends again, after a lost answer or a timeout, is stored twice.
 
-No drain has been captured yet. The adapter follows Vercel's documented schema and has not been checked against a live drain, and its tests use the two example records of Vercel's reference verbatim, as JSON and as NDJSON.
+No drain has been captured yet. The adapter and the route follow Vercel's documented schema and signing and have not been checked against a live drain, and its tests use the two example records of Vercel's reference verbatim, as JSON and as NDJSON.
 
+**Vercel drain signatures.** Vercel signs each drain request: `x-vercel-signature` is the hex HMAC-SHA1 of the body under the drain's signature verification secret. A project can keep the drain secret, and then a request to `/vercel/logs` for it needs both the key and a valid signature. That is all the secret proves: a log with source `vercel` in such a project came in a request signed with the secret, or in a replay of one, since the signature covers only the body and holds no time. It does not close the project to anyone else with the key. The key is in every DSN of the project, and it still writes logs through `/` and `/v1/logs` and events through the envelope routes, signed or not. So each drain should get a Davy project of its own, whose key lives only in the drain's custom header. Whether a project with a drain secret should refuse the other log routes is open.
+
+- `davy project vercel <slug> --data <dir> --secret-stdin` stores the secret in `projects.vercel_secret` (migration 21, which gives an existing store the column empty, so no project needs a signature until one is set), `--no-secret` clears it, and the command alone prints `{"project":...,"signature_required":...}`. The secret comes in on standard input, never as an argument, so it stays out of `ps` and shell history. It is one line of at most 1,024 bytes without control characters, read without the spaces and line breaks around it, and an empty one is refused. No output, error or log holds it, and the SQL tool reads the column as NULL, as it does `channels.secret`.
+- It is stored as Vercel shows it, not hashed, because checking an HMAC needs the key, as for the signing secret of an alert channel.
+- The server reads it per request, after the key and before the body, so a change applies to the next request with no restart. A missing or malformed header (not 40 hex digits) is a `403` before the body is read. The HMAC is checked once the body is read and before it is decompressed or parsed, in constant time.
+- The signature covers the body exactly as sent, as in Vercel's sample endpoint, which hashes the raw request body. Vercel does not document compressed deliveries. A body with a `Content-Encoding` is decompressed under the usual caps only after its bytes as sent match, and a body signed in its decompressed form is a `403`.
+- A project without a secret takes drain requests with the key alone and ignores the header. Vercel tests the endpoint when a drain is created, and its docs do not say whether that test is signed. The secret can be set in Davy before the drain is created, since Vercel shows it in the form; if the creation test then gets `403`, it was unsigned, and clearing the secret, creating the drain and setting the secret again is the way through.
 
 ### Storage (Tantivy, one index per UTC day)
 
@@ -1304,7 +1312,7 @@ A security review of `370e4cd` showed that a client without a key could make the
 - A Sentry request with the key in `X-Sentry-Auth` or `?sentry_key=` is checked before the body is read.
 - `/store/` has no envelope header, so a `/store/` request without a header or query key is a `401` before the body is read.
 - An envelope without a header or query key is read only until its first line decompresses: at most 128 KiB of the body, plus the frame that crosses that mark. Davy decompresses at most 64 KiB of that line, parses it as the envelope header and checks the key in its `dsn` against the project in the path. Only then does it read the rest. A header line over 64 KiB, or none in the first 128 KiB, is a `400`. Each try decompresses from the start, so a new try waits until the body has doubled, and a body sent a byte at a time costs a few tries, not one per byte.
-- Logtail and OTLP check the bearer token before reading the body, as before.
+- Logtail, OTLP and Vercel drains check the bearer token before reading the body, as before. A Vercel drain to a project with a drain secret also needs a well-formed `x-vercel-signature` before the body is read, and its HMAC is checked over the bytes as sent, before the body is decompressed or parsed.
 
 ### Sizes and counts
 

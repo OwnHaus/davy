@@ -110,6 +110,28 @@ fn credential_columns_read_as_null() {
     crate::monitor::store::add(&store::open(&data).unwrap(), 1, &site, 0).unwrap();
     let r = run(&c, "SELECT name, url FROM monitors WHERE kind = 'http'").unwrap();
     assert_eq!(r.rows, [vec![json!("Site"), Value::Null]]);
+    store::open(&data)
+        .unwrap()
+        .execute(
+            "UPDATE projects SET vercel_secret = 'drain-secret' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+    let r = run(
+        &c,
+        "SELECT slug, vercel_secret, length(vercel_secret), vercel_secret IS NULL FROM projects",
+    )
+    .unwrap();
+    assert_eq!(
+        r.rows,
+        [vec![json!("web"), Value::Null, Value::Null, json!(1)]]
+    );
+    let r = run(
+        &c,
+        "SELECT count(*) FROM projects WHERE vercel_secret LIKE '%'",
+    )
+    .unwrap();
+    assert_eq!(r.rows, [vec![json!(0)]]);
 }
 
 #[test]
@@ -277,15 +299,16 @@ fn reading_a_directory_without_a_database_says_so_and_creates_nothing() {
 fn reading_a_database_of_an_older_davy_asks_for_an_upgrade_and_leaves_it() {
     let data = crate::test_support::scratch("query-old");
     let c = store::open(&data).unwrap();
-    // A store as version 17 left it, before usage_daily, latest_payloads
-    // and log_days.
+    // A store as version 17 left it, before usage_daily, latest_payloads,
+    // log_days and the Vercel drain secret.
     c.execute_batch(&format!(
-        "DROP TABLE latest_payloads; {} {}",
+        "DROP TABLE latest_payloads; {} {} {}",
         crate::usage::UNDO,
-        crate::usage::stored::UNDO
+        crate::usage::stored::UNDO,
+        crate::vercel::UNDO
     ))
     .unwrap();
-    let older = store::SCHEMA_VERSION - 3;
+    let older = store::SCHEMA_VERSION - 4;
     c.pragma_update(None, "user_version", older).unwrap();
     let err = open(&data).unwrap_err();
     assert_eq!(

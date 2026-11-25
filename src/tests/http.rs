@@ -17,9 +17,12 @@ use std::{sync::Arc, time::Duration};
 use tower::ServiceExt;
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+/// The Vercel drain secret of project `c`.
+const DRAIN_SECRET: &str = "drain-secret-of-c";
 
-/// The router with projects `a` (id 1, key `key-a`) and `b` (id 2, key `key-b`),
-/// a heartbeat monitor (id 1, token [`TOKEN`]) in `a`, both ingest queues one
+/// The router with projects `a` (id 1, key `key-a`), `b` (id 2, key `key-b`)
+/// and `c` (id 3, key `key-c`, Vercel drain secret [`DRAIN_SECRET`]), a
+/// heartbeat monitor (id 1, token [`TOKEN`]) in `a`, both ingest queues one
 /// slot deep and [`BUDGET`] for bodies.
 struct Server {
     app: Router,
@@ -50,8 +53,14 @@ fn server() -> Server {
     let c = memory();
     store::create_project(&c, "a").unwrap();
     store::create_project(&c, "b").unwrap();
+    store::create_project(&c, "c").unwrap();
     c.execute("UPDATE projects SET public_key='key-' || slug", [])
         .unwrap();
+    c.execute(
+        "UPDATE projects SET vercel_secret=?1 WHERE slug='c'",
+        [DRAIN_SECRET],
+    )
+    .unwrap();
     c.execute(
         &format!(
             "INSERT INTO monitors(project_id,name,kind,heartbeat_token,every_s,grace_s,state,created_at)
@@ -206,6 +215,7 @@ async fn every_ingest_route_is_429_while_the_budget_is_spent() {
         post("/api/1/envelope/?sentry_key=key-a", &[], SESSION),
         post("/", &[("authorization", "Bearer key-a")], "[]"),
         otlp("application/json", "{}"),
+        post("/vercel/logs", &[("authorization", "Bearer key-a")], "[]"),
     ] {
         let uri = req.uri().to_string();
         let r = s.send(req).await;
@@ -237,6 +247,11 @@ async fn a_body_that_stalls_is_408() {
         post("/api/1/envelope/?sentry_key=key-a", &[], stalled()),
         post("/", &[("authorization", "Bearer key-a")], stalled()),
         otlp("application/json", stalled()),
+        post(
+            "/vercel/logs",
+            &[("authorization", "Bearer key-a")],
+            stalled(),
+        ),
     ] {
         let uri = req.uri().to_string();
         assert_eq!(s.send(req).await.status, 408, "{uri}");
@@ -635,3 +650,5 @@ mod scrub_http;
 mod surface;
 #[path = "http_usage.rs"]
 mod usage_http;
+#[path = "http_vercel.rs"]
+mod vercel;

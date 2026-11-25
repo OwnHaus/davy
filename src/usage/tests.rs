@@ -206,12 +206,13 @@ async fn a_shutdown_flush_the_writer_failed_says_why_and_keeps_the_counts() {
 fn the_migration_goes_down_and_up_again() {
     let mut c = memory();
     write(&c, &[row("2026-11-24", 1, Signal::Logs, 1, 1)]).unwrap();
-    // usage_daily is 18; the newest payload table, 19, and the stored log
-    // counts, 20, go down with it.
-    let before = store::SCHEMA_VERSION - 3;
+    // usage_daily is 18; the newest payload table, 19, the stored log
+    // counts, 20, and the Vercel drain secret, 21, go down with it.
+    let before = store::SCHEMA_VERSION - 4;
     c.execute_batch(&format!(
-        "DROP TABLE latest_payloads; {UNDO} {} PRAGMA user_version={before};",
-        stored::UNDO
+        "DROP TABLE latest_payloads; {UNDO} {} {} PRAGMA user_version={before};",
+        stored::UNDO,
+        crate::vercel::UNDO
     ))
     .unwrap();
     let tables = |c: &Connection| -> i64 {

@@ -285,15 +285,20 @@ fn a_failed_sample_fails_neither_the_sweep_nor_its_batch() {
 fn the_migration_adds_both_tables_to_a_store_of_version_19() {
     let mut c = memory();
     write(&c, &rows(vec![row("2026-11-23", 1, 1, 1)])).unwrap();
-    c.execute_batch(&format!("{UNDO} PRAGMA user_version=19;"))
-        .unwrap();
+    c.execute_batch(&format!(
+        "{UNDO} {} PRAGMA user_version=19;",
+        crate::vercel::UNDO
+    ))
+    .unwrap();
     let tables = "SELECT count(*) FROM sqlite_master WHERE name IN ('log_days', 'store_days')";
     assert_eq!(number(&c, tables), 0);
     store::init(&mut c).unwrap();
     assert_eq!(number(&c, tables), 2);
     assert_eq!(number(&c, "SELECT count(*) FROM log_days"), 0);
-    assert_eq!(number(&c, "PRAGMA user_version"), 20);
-    assert_eq!(store::SCHEMA_VERSION, 20);
+    assert_eq!(
+        number(&c, "PRAGMA user_version"),
+        i64::from(store::SCHEMA_VERSION)
+    );
 }
 
 /// The next job the flush puts in `inbox`, within 10 s, so a flush that
