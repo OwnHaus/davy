@@ -234,3 +234,47 @@ fn the_migration_leaves_a_marked_payload_of_an_older_event() {
         serde_json::from_slice(&zstd::decode_all(blob.as_slice()).unwrap()).unwrap();
     assert_eq!(raw["extra"]["n"], 0);
 }
+
+#[test]
+fn the_migration_moves_the_newest_payload_of_each_project_and_passes_an_empty_issue() {
+    let mut c = memory();
+    store::create_project(&c, "api").unwrap();
+    // The same error in two projects is two issues, 1 and 2.
+    for project in [1, 2] {
+        for n in 0..51 {
+            store::insert(&c, project, &event("boom", n)).unwrap();
+        }
+    }
+    // Issue 3 kept no event, as when retention deleted them all but feedback
+    // still points at it.
+    let gone = ErrorEvent::parse(json!({"message":"gone"})).unwrap();
+    store::insert(&c, 1, &gone).unwrap();
+    c.execute("DELETE FROM events WHERE issue_id=3", [])
+        .unwrap();
+    let rows: Vec<(i64, Vec<u8>)> = c
+        .prepare("SELECT event, payload FROM latest_payloads")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    for (event, payload) in &rows {
+        mark(&c, *event, payload);
+    }
+    c.execute_batch(&format!(
+        "DROP TABLE latest_payloads; PRAGMA user_version={BEFORE};"
+    ))
+    .unwrap();
+    store::init(&mut c).unwrap();
+    let moved: Vec<String> = c
+        .prepare("SELECT issue_id || ':' || event FROM latest_payloads ORDER BY issue_id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(moved, ["1:51", "2:102"]);
+    assert_eq!(number(&c, "SELECT count(payload) FROM events"), 100);
+    assert_eq!(store::payload(&c, 2).unwrap().unwrap()["extra"]["n"], 50);
+    assert_eq!(store::payload(&c, 3).unwrap(), None);
+}
