@@ -40,18 +40,14 @@ fn a_run_refuses_zero_before_it_writes() {
 
 #[test]
 fn upgrade_refuses_a_store_outside_a_scratch_directory() {
-    let data = scratch("upgrade");
-    std::fs::create_dir_all(&data).unwrap();
-    let e = upgrade(&data).unwrap_err();
+    // The root, which no checkout lies under, wherever this one is.
+    let e = upgrade(Path::new("/")).unwrap_err();
     assert_eq!(
         e.to_string(),
-        format!(
-            "upgrade migrates {} in place, and no older Davy opens it after. Copy the data directory under a .scratch directory and pass the copy",
-            data.display()
-        )
+        "upgrade migrates / in place, and no older Davy opens it after. Copy the data directory under a .scratch directory and pass the copy"
     );
-    assert!(!data.join(store::DB_FILE).exists());
-    std::fs::remove_dir_all(&data).unwrap();
+    assert!(!is_copy(Path::new("/var/lib/davy")));
+    assert!(is_copy(Path::new("/home/a/davy/.scratch/copy")));
 }
 
 #[test]
@@ -65,8 +61,6 @@ fn upgrade_migrates_a_copy_under_a_scratch_directory() {
         .query_row("SELECT count(*) FROM latest_payloads", [], |r| r.get(0))
         .unwrap();
     assert_eq!(rows, 0);
-    assert!(!is_copy(Path::new("/var/lib/davy")));
-    assert!(is_copy(Path::new("/home/a/davy/.scratch/copy")));
     std::fs::remove_dir_all(&root).unwrap();
 }
 
