@@ -628,3 +628,68 @@ fn a_counter_cut_is_done_before_the_retention_lock_is_let_go() {
     state.close_all().unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// The counter files in `day`, sorted.
+fn counter_files(day: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(day)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.starts_with("patterns-"))
+        .collect();
+    names.sort();
+    names
+}
+
+/// What keeps a cut of the counters of project 2 in `day` from holding.
+fn blocker(day: &Path) -> std::path::PathBuf {
+    day.join(format!("{}.blocker", name(2)))
+}
+
+/// A writer whose pass deleted the logs of project 2 from the day of
+/// [`two_projects`] and failed to cut their counters, the settings it
+/// reads, and the day's directory.
+fn cut_failed(dir: &Path, now: i64) -> (State, Arc<Mutex<HashMap<u64, u32>>>, std::path::PathBuf) {
+    let day = two_projects(dir, now);
+    std::fs::create_dir(blocker(&day)).unwrap();
+    std::fs::write(blocker(&day).join("x"), "x").unwrap();
+    let settings = Arc::new(Mutex::new(HashMap::from([(2, 3)])));
+    let seen = settings.clone();
+    let read = move || Ok(seen.lock().unwrap().clone());
+    let mut state = State::new(dir.to_path_buf(), 30, Overrides::new(read, Lock::default()));
+    state.retention(now, std::time::Duration::MAX).unwrap();
+    assert_eq!(messages(dir), ["api old"]);
+    (state, settings, day)
+}
+
+#[test]
+fn a_failed_counter_cut_is_retried_after_the_retention_is_lengthened() {
+    let dir = scratch("logs-retention-tally-longer");
+    let now = now_ns();
+    let (mut state, settings, day) = cut_failed(&dir, now);
+    std::fs::remove_dir_all(blocker(&day)).unwrap();
+    // As if the cut had left the file.
+    std::fs::write(day.join(name(2)), "{").unwrap();
+    *settings.lock().unwrap() = HashMap::from([(2, 30)]);
+    state.retention(now, std::time::Duration::MAX).unwrap();
+    state.close_all().unwrap();
+    assert_eq!(counter_files(&day), ["patterns-1.json"]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_failed_counter_cut_leaves_the_counts_of_a_log_written_since() {
+    let dir = scratch("logs-retention-tally-later");
+    let now = now_ns();
+    let (mut state, settings, day) = cut_failed(&dir, now);
+    *settings.lock().unwrap() = HashMap::from([(2, 30)]);
+    state.retention(now, std::time::Duration::MAX).unwrap();
+    let late = now - 5 * DAY + 1000;
+    state.add(vec![record(2, late, now, "web late")]).unwrap();
+    state.commit().unwrap();
+    std::fs::remove_dir_all(blocker(&day)).unwrap();
+    state.retention(now, std::time::Duration::MAX).unwrap();
+    state.close_all().unwrap();
+    assert_eq!(messages(&dir), ["api old", "web late"]);
+    assert_eq!(counter_files(&day), ["patterns-1.json", "patterns-2.json"]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

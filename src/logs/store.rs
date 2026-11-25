@@ -184,6 +184,9 @@ pub(super) struct State {
     overrides: Overrides,
     /// What retention last deleted from each day.
     swept: HashMap<Date, retention::Cut>,
+    /// Cuts of counters that failed after the logs they count were
+    /// deleted, tried again on every pass until they hold.
+    uncut: HashMap<Date, Vec<retention::Cut>>,
     /// The strays retention has reported, so each is reported once.
     strays: HashSet<String>,
     open: HashMap<Date, OpenDay>,
@@ -201,6 +204,7 @@ impl State {
             policy: retention::Policy::new(retention_days, HashMap::new()),
             overrides,
             swept: HashMap::new(),
+            uncut: HashMap::new(),
             strays: HashSet::new(),
             open: HashMap::new(),
             uncommitted: 0,
@@ -257,8 +261,11 @@ impl State {
             }
             // `settle` judges a log by when it was observed, so one that
             // waited in the queue can land in a day retention has gone
-            // through already. The next pass checks the day again.
+            // through already. The next pass checks the day again. A
+            // failed cut of its counters is not tried again, as it would
+            // take the counts of this log too.
             self.swept.remove(&day);
+            self.uncut.remove(&day);
             // A day that cannot be opened, such as a stray in its place,
             // loses its own logs, not those of the other days. Counted once
             // the day is open, so a day that fails to open counts nothing. A

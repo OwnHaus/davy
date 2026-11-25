@@ -185,7 +185,11 @@ impl State {
         self.strays.retain(|name| strays.contains(name));
         found.sort_unstable();
         self.swept.retain(|day, _| found.contains(day));
+        self.uncut.retain(|day, _| found.contains(day));
         for day in found {
+            if let Err(e) = self.recut(day) {
+                report(day, &e);
+            }
             match self.sweep_day(day, now)? {
                 Ok(wrote) => {
                     if wrote && deadline.is_some_and(|d| Instant::now() >= d) {
@@ -204,6 +208,27 @@ impl State {
             Cut::Only(gone) if gone.is_empty() => false,
             _ => self.swept.get(&day) != Some(cut),
         }
+    }
+
+    /// Tries again the cuts of counters of `day` that failed after their
+    /// logs were deleted, whatever the settings say now: those logs are
+    /// gone under any setting. It needs no lock, as only this thread writes
+    /// counters, and a log written to the day since drops the cuts.
+    fn recut(&mut self, day: Date) -> Result<()> {
+        let Some(cuts) = self.uncut.remove(&day) else {
+            return Ok(());
+        };
+        let (mut left, mut first) = (Vec::new(), None);
+        for cut in cuts {
+            if let Err(e) = self.cut_tally(day, &cut) {
+                first.get_or_insert(e);
+                left.push(cut);
+            }
+        }
+        if !left.is_empty() {
+            self.uncut.insert(day, left);
+        }
+        first.map_or(Ok(()), Err)
     }
 
     /// Deletes what expired at `now` from `day`. Returns whether it wrote
@@ -235,6 +260,12 @@ impl State {
             Ok(Deleted::Nothing | Deleted::Marked { .. }) => self.cut_tally(day, &cut),
             Ok(Deleted::Day) | Err(_) => Ok(()),
         };
+        if counted.is_err() {
+            let cuts = self.uncut.entry(day).or_default();
+            if !cuts.contains(&cut) {
+                cuts.push(cut.clone());
+            }
+        }
         // The deletion is committed, so a change saved from here on comes
         // after it.
         drop(held);
@@ -356,6 +387,7 @@ impl State {
         self.drop_tally(day);
         self.close(day)?;
         self.swept.remove(&day);
+        self.uncut.remove(&day);
         days::forget(&self.root, day);
         let trash = self.root.join(".trash");
         std::fs::create_dir_all(&trash)?;
