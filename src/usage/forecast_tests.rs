@@ -372,3 +372,19 @@ fn a_server_without_projects_takes_its_default_retention() {
         (30, 30, Some(19), false)
     );
 }
+
+#[test]
+fn davy_already_past_its_steady_state_never_fills_the_disk() {
+    // 8 GB a day kept 30 days and today is 248 GB of logs and 10 GB of
+    // SQLite and uploads: 258 GB, less than the 270 GB Davy takes now, as
+    // after a retention was shortened.
+    let input = Input {
+        davy: 270 * GB,
+        ..filling()
+    };
+    let f = forecast(&input, &WhatIf::default()).unwrap();
+    assert_eq!(
+        (f.growth, f.steady_state, f.days_left, f.full_on),
+        (8 * GB, 258 * GB, None, None)
+    );
+}
