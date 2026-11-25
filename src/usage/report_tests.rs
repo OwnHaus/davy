@@ -291,6 +291,7 @@ fn a_new_server_forecasts_from_the_first_hour_counted() {
     let start_ms = at("2026-11-24T18:00:00Z") / 1_000_000;
     let flush = log_days::Flush {
         start: Some(start_ms),
+        drops: Vec::new(),
         segments: vec![log_days::Segment {
             rows: vec![log_days::Row {
                 day: day("2026-11-24"),
@@ -397,6 +398,7 @@ fn raw_days_reach_30_days_back() {
     };
     let flush = log_days::Flush {
         start: None,
+        drops: Vec::new(),
         segments: vec![log_days::Segment {
             rows: vec![row("2026-10-24"), row("2026-10-25")],
             marks: Vec::new(),

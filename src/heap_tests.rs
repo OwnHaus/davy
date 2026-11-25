@@ -74,6 +74,7 @@ fn a_record_pays_for_its_text_and_attributes() {
         observed_at: 0,
         source: LogSource::Logtail,
         level: LogLevel::Info,
+        level_unknown: false,
         message: "hello".into(),
         service: Some("api".into()),
         trace_id: None,

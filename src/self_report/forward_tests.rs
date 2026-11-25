@@ -58,6 +58,7 @@ fn each_line_becomes_a_record_scrubbed_with_the_projects_policy() {
             observed_at: batch[0].observed_at,
             source: LogSource::Davy,
             level: LogLevel::Warn,
+            level_unknown: false,
             message: warned.to_owned(),
             service: Some("davy".to_owned()),
             trace_id: None,

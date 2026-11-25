@@ -25,6 +25,7 @@ fn day(s: &str) -> Date {
 fn rows(rows: Vec<Row>) -> Flush {
     Flush {
         start: None,
+        drops: Vec::new(),
         segments: vec![Segment {
             rows,
             marks: Vec::new(),
@@ -88,6 +89,7 @@ fn counting_start_is_recorded_once() {
     // A server started later counts from then, but the first start stays.
     let later = Flush {
         start: Some(NOV_23 + DAY_MS),
+        drops: Vec::new(),
         segments: Vec::new(),
     };
     write(&c, &later).unwrap();
@@ -101,6 +103,7 @@ fn a_cut_row_stays_cut() {
     let d = day("2026-11-20");
     let flush = Flush {
         start: None,
+        drops: Vec::new(),
         segments: vec![
             Segment {
                 rows: vec![row("2026-11-20", 1, 1, 1), row("2026-11-20", 2, 1, 1)],
@@ -169,6 +172,7 @@ fn cut(c: &Connection, days: &[&str]) {
     }];
     let flush = Flush {
         start: None,
+        drops: Vec::new(),
         segments,
     };
     write(c, &flush).unwrap();
@@ -199,6 +203,7 @@ fn a_row_whose_logs_are_kept_is_not_pruned_after_400_days() {
     write(&c, &flush).unwrap();
     let flush = Flush {
         start: None,
+        drops: Vec::new(),
         segments: vec![Segment {
             rows: Vec::new(),
             marks: vec![Mark::Only(day("2024-11-23"), vec![2])],
@@ -286,7 +291,8 @@ fn the_migration_adds_both_tables_to_a_store_of_version_19() {
     let mut c = memory();
     write(&c, &rows(vec![row("2026-11-23", 1, 1, 1)])).unwrap();
     c.execute_batch(&format!(
-        "{} {} {} {UNDO} PRAGMA user_version=19;",
+        "{} {} {} {} {UNDO} PRAGMA user_version=19;",
+        crate::drops::UNDO,
         crate::usage::savings::UNDO,
         crate::self_report::own::UNDO,
         crate::vercel::UNDO

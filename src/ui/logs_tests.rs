@@ -26,6 +26,7 @@ fn log(timestamp: i64, level: LogLevel, message: &str) -> LogRecord {
         observed_at: timestamp,
         source: LogSource::Otlp,
         level,
+        level_unknown: false,
         message: message.into(),
         service: Some("checkout".into()),
         trace_id: None,

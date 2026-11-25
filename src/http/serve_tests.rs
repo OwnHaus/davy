@@ -11,6 +11,7 @@ fn record(project_id: i64, at: i64) -> LogRecord {
         observed_at: at,
         source: LogSource::Logtail,
         level: LogLevel::Info,
+        level_unknown: false,
         message: "payment declined".into(),
         service: None,
         trace_id: None,

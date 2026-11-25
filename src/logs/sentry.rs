@@ -44,10 +44,8 @@ fn record(v: Value, project_id: i64, observed_at: i64) -> Option<LogRecord> {
         .and_then(Value::as_i64)
         .unwrap_or(0);
     let level_text = m.get("level").and_then(Value::as_str).unwrap_or("");
-    let level = match LogLevel::parse(level_text) {
-        Some(l) => l,
-        None => LogLevel::from_severity(i32::try_from(severity).unwrap_or(0), level_text),
-    };
+    let level = LogLevel::parse(level_text)
+        .or_else(|| LogLevel::from_severity(i32::try_from(severity).unwrap_or(0), level_text));
     let id = |m: &Map<String, Value>, key: &str, len| {
         m.get(key)
             .and_then(Value::as_str)
@@ -66,7 +64,8 @@ fn record(v: Value, project_id: i64, observed_at: i64) -> Option<LogRecord> {
         timestamp,
         observed_at,
         source: LogSource::Sentry,
-        level,
+        level: level.unwrap_or_default(),
+        level_unknown: level.is_none(),
         message,
         service,
         trace_id,

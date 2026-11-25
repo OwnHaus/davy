@@ -107,6 +107,7 @@ fn project_status_returns_only_the_requested_projects_latest_log() {
         observed_at: timestamp,
         source: LogSource::Logtail,
         level: LogLevel::Info,
+        level_unknown: false,
         message: "connected".into(),
         service: None,
         trace_id: None,

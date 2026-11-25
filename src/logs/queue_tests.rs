@@ -10,6 +10,7 @@ fn record(message: &str) -> LogRecord {
         observed_at: 1,
         source: LogSource::Logtail,
         level: LogLevel::Info,
+        level_unknown: false,
         message: message.into(),
         service: None,
         trace_id: None,

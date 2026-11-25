@@ -32,6 +32,40 @@ fn reorders(c: char) -> bool {
     )
 }
 
+/// A character a person cannot see or tell from a space: a control
+/// character, a format character (Unicode category Cf: bidi marks, zero
+/// width spaces and joiners, U+2060, U+FEFF and the rest), a line or
+/// paragraph separator, or a no-break space. Rule text that holds one
+/// would look like a rule it is not.
+pub fn invisible(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00A0}'
+                | '\u{00AD}'
+                | '\u{0600}'..='\u{0605}'
+                | '\u{061C}'
+                | '\u{06DD}'
+                | '\u{070F}'
+                | '\u{0890}'..='\u{0891}'
+                | '\u{08E2}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{110BD}'
+                | '\u{110CD}'
+                | '\u{13430}'..='\u{1343F}'
+                | '\u{1BCA0}'..='\u{1BCA3}'
+                | '\u{1D173}'..='\u{1D17A}'
+                | '\u{E0001}'
+                | '\u{E0020}'..='\u{E007F}'
+        )
+}
+
 /// `value` as JSON, on one line or with `pretty` indented, safe to print in
 /// a terminal and still exact: serde escapes C0 controls, and this writes
 /// DEL, C1 controls and every mark [`printable`] replaces as `\uXXXX`

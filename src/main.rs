@@ -72,6 +72,11 @@ enum Command {
         #[command(subcommand)]
         command: davy::discard::Issue,
     },
+    /// Drop rules: lines a project's logs drop before they are stored.
+    Drop {
+        #[command(subcommand)]
+        command: davy::drops::Drop,
+    },
     /// Lists issues, the most recently seen first. A discarded issue says
     /// so after its status, and in `discarded_at` with --json.
     Issues {
@@ -307,6 +312,12 @@ async fn main() -> anyhow::Result<()> {
         Command::Channel { command } => run_channel(&mut out.lock(), command)?,
         Command::User { command } => davy::accounts::cli::run(&mut out.lock(), command)?,
         Command::Issue { command } => davy::discard::run(&mut out.lock(), command)?,
+        Command::Drop { command } => {
+            let stdin = std::io::stdin();
+            let mut terminal = std::io::IsTerminal::is_terminal(&stdin).then(|| stdin.lock());
+            let answer = terminal.as_mut().map(|t| t as &mut dyn std::io::BufRead);
+            davy::drops::run(&mut out.lock(), &mut std::io::stderr(), answer, command)?;
+        }
         Command::Issues {
             data,
             project,

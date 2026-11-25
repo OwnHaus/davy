@@ -26,6 +26,7 @@ fn record(project_id: i64, timestamp: i64, observed_at: i64, message: &str) -> L
         observed_at,
         source: LogSource::Logtail,
         level: LogLevel::Info,
+        level_unknown: false,
         message: message.into(),
         service: None,
         trace_id: None,

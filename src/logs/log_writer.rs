@@ -18,6 +18,8 @@ pub struct LogWriter {
     pub thread: thread::JoinHandle<()>,
     /// What the writer stored and retention cut, for the usage flusher.
     pub log_days: LogDays,
+    /// Where the drop rules are put in force, see src/drops.rs.
+    pub drops: crate::drops::Live,
 }
 
 impl LogWriter {
@@ -32,6 +34,7 @@ impl LogWriter {
         let (queue, inbox) = LogQueue::bounded(QUEUE_ROWS, QUEUE_BYTES);
         let mut state = State::new(root, retention_days, overrides);
         let log_days = state.log_days.clone();
+        let drops = state.drops.clone();
         let thread = thread::spawn(move || {
             let mut next_commit = Instant::now() + COMMIT_EVERY;
             let mut next_flush = Instant::now() + tally::FLUSH_EVERY;
@@ -80,6 +83,7 @@ impl LogWriter {
             queue,
             thread,
             log_days,
+            drops,
         })
     }
 }

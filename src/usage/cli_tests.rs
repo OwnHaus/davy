@@ -142,3 +142,54 @@ fn davy_usage_view_savings_prints_the_entries_and_bounds_top() {
     assert_eq!(parse("0"), Err(clap::error::ErrorKind::ValueValidation));
     std::fs::remove_dir_all(&data).unwrap();
 }
+
+#[test]
+fn lines_live_drop_rules_dropped_show_as_logs_filtered() {
+    let data = data_with_counts("usage-filtered");
+    let c = crate::store::open(&data).unwrap();
+    let today = time::day_of(time::now_ns());
+    let key = |rule, live| crate::drops::Key {
+        day: today,
+        rule,
+        live,
+        project: 2,
+    };
+    crate::drops::write(
+        &c,
+        &[
+            (key(1, true), crate::usage::Count::new(400, 40_000)),
+            (key(2, false), crate::usage::Count::new(90, 9_000)),
+        ],
+    )
+    .unwrap();
+    let mut args = Args {
+        data: data.clone(),
+        project: Some("shop".into()),
+        since: "7d".into(),
+        logs_days: None,
+        logs_bytes_per_day: None,
+        log_retention_days: 30,
+        view: View::Summary,
+        top: 3,
+        json: true,
+    };
+    let mut out = Vec::new();
+    run(&mut out, &args).unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let filtered = &v["projects"][0]["logs_filtered"];
+    // A shadow rule's lines were stored, so they are not filtered.
+    assert_eq!(
+        (&filtered["records"], &filtered["bytes"]),
+        (&json!(400), &json!(40_000))
+    );
+    args.json = false;
+    let mut out = Vec::new();
+    run(&mut out, &args).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let row = format!(
+        "{:<20} {:<11} {:>10} {:>10}",
+        "shop", "logs_filtered", 400, "40.0 KB"
+    );
+    assert!(text.contains(&row), "{text}");
+    std::fs::remove_dir_all(&data).unwrap();
+}

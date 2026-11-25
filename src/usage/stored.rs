@@ -55,7 +55,7 @@ pub fn write(c: &Connection, flush: &Flush) -> rusqlite::Result<()> {
             mark(c, m)?;
         }
     }
-    Ok(())
+    crate::drops::write(c, &flush.drops)
 }
 
 /// Sets `cut` on the rows `m` names. A cut row stays cut.

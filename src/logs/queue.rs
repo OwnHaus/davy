@@ -70,6 +70,15 @@ impl LogQueue {
         (queue, LogInbox { receiver })
     }
 
+    /// Whether `batch` fits now. Other pushes can take the room before
+    /// this one's: for a single producer, such as a benchmark, that waits
+    /// for room instead of pushing a copy that may be refused.
+    pub fn has_room(&self, batch: &[LogRecord]) -> bool {
+        let bytes: usize = batch.iter().map(heap::of_record).sum();
+        self.load.rows.load(SeqCst) + batch.len() <= self.rows
+            && self.load.bytes.load(SeqCst) + bytes <= self.bytes
+    }
+
     pub fn push(&self, batch: Vec<LogRecord>) -> Result<(), QueueError> {
         let rows = batch.len();
         if rows == 0 {

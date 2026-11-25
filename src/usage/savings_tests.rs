@@ -342,6 +342,7 @@ fn write_logs(data: &Path, now: i64) {
         observed_at: now,
         source: LogSource::Logtail,
         level,
+        level_unknown: false,
         message: message.into(),
         service: Some("api".into()),
         trace_id: None,

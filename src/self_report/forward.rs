@@ -183,6 +183,7 @@ pub fn record(project: i64, line: Line, now: i64) -> LogRecord {
         observed_at: now,
         source: LogSource::Davy,
         level: line.level,
+        level_unknown: false,
         message: line.message,
         service: Some(SERVICE.to_owned()),
         trace_id: None,

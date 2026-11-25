@@ -147,8 +147,12 @@ impl Report {
             "project", "signal", "records", "bytes", "records/day", "bytes/day"
         )?;
         for p in &self.projects {
-            let names = Signal::ALL.iter().map(|s| s.name()).chain(["logs_stored"]);
-            for (name, n) in names.zip(p.counts.iter().chain([&p.stored])) {
+            let names = Signal::ALL
+                .iter()
+                .map(|s| s.name())
+                .chain(["logs_stored", "logs_filtered"]);
+            let counts = p.counts.iter().chain([&p.stored, &p.filtered]);
+            for (name, n) in names.zip(counts) {
                 writeln!(
                     out,
                     "{:<20} {name:<11} {:>10} {:>10} {:>12} {:>10}",

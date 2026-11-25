@@ -236,6 +236,7 @@ pub struct LogRecord {
     pub observed_at: i64,        // unix nanoseconds, when Davy received it
     pub source: LogSource,       // Logtail | Otlp | Sentry | Vercel
     pub level: LogLevel,         // Trace < Debug < Info < Warn < Error < Fatal, stored as 1..=6
+    pub level_unknown: bool,     // no level, or one not understood; in flight only, never stored
     pub message: String,
     pub service: Option<String>,
     pub trace_id: Option<String>, // 32 lowercase hex, None when empty or all zeros
@@ -244,15 +245,20 @@ pub struct LogRecord {
 }
 ```
 
+### Log levels
+
 One level table for every source (`LogLevel::parse`). Logs default to `Info`, unlike error events.
 
 | Input | Level |
 |---|---|
 | number (pino): ≤10, ≤20, ≤30, ≤40, ≤50, above | Trace, Debug, Info, Warn, Error, Fatal |
+| a string that is a finite number, such as `"30"` or `"50.0"` | as the same number |
 | OTLP `severity_number` 1-4, 5-8, 9-12, 13-16, 17-20, 21-24 | Trace, Debug, Info, Warn, Error, Fatal |
-| string, case-insensitive: `trace`; `debug`; `info`, `information`, `notice`, `log`; `warn`, `warning`; `error`, `err`; `fatal`, `critical`, `crit`, `alert`, `emerg`, `emergency`, `panic` | in that order |
-| OTLP `severity_number` 0 | parse `severity_text`, else Info |
-| anything else | Info |
+| string, case-insensitive: `trace`, `t`; `debug`, `d`; `info`, `information`, `notice`, `log`, `i`; `warn`, `warning`, `w`; `error`, `err`, `severe`, `fault`, `failure`, `exception`, `e`; `fatal`, `critical`, `crit`, `alert`, `emerg`, `emergency`, `panic`, `f` | in that order |
+| OTLP `severity_number` 0 | parse `severity_text` |
+| anything else, or no level | Info, marked not understood |
+
+Before a string is looked up, whitespace and the characters `[ ] ( ) < > :` around it are trimmed and only the text after its last `.` is kept, so `[error]`, `error:`, ` WARN ` and `Level.ERROR` are read as their level. A level that was missing or not understood is stored as Info and counts as Info everywhere, but the record carries `level_unknown` while it is in flight: a drop rule of `--level` never matches such a line (see [Drop rules](#drop-rules)), as nobody can tell it is not an error. The flag is not stored.
 
 One timestamp function for every source. A number below 1e11 is seconds (fractions allowed), below 1e14 milliseconds, below 1e17 microseconds, else nanoseconds. Fractional numbers are rounded to the microsecond, because an f64 holds about 16 significant digits and the nanosecond digits of a seconds value are noise. A string is RFC 3339, with a naive `YYYY-MM-DDTHH:MM:SS[.f]` or a bare date read as UTC. A msgpack timestamp extension (type -1, 4, 8 or 12 bytes) is decoded per the msgpack spec, which allows at most 999,999,999 nanoseconds. `@logtail/pino` sends `dt` as an RFC 3339 string (captured fixture), but other msgpack shippers may encode a date natively. Anything else, or a time older than its project's log retention or more than 24 h in the future, becomes `observed_at`, and the original value is kept in the attribute `davy.original_timestamp`.
 
@@ -363,7 +369,7 @@ A coding agent should get from "there is an error" to a fix without a human copy
 | `connect_project` | `slug`, `sdk?` | Existing project DSN, SDK instructions and test command. New projects require local CLI access. |
 | `project_status` | `slug` | Event count, last event time (ms), issue count, last log time (ns), `retention`: the days of logs and errors the project keeps, and `davy`: Davy's own warnings, errors and crashes of the last 24 hours (see "Self-monitoring"). |
 | `set_retention` | `project`, `logs_days?`, `errors_days?` | What the project keeps now, as `retention` in `project_status`. A setting is 1 to 36,500 days or `"default"`, and may only keep data longer. |
-| `usage` | `project?`, `since?`, `what_if?`, `view?`, `top?` | What each project sent and when the disk fills: `disk`, `davy`, `growth_per_day` of all logs together, `longest_log_days` and `shortest_log_days`, `forecast`, `projects` with records and bytes accepted per signal over the window and per day and `logs_stored`, records and raw bytes of the logs stored by index day, and `no_forecast` or `disk_error` when there is none. Sizes as `4.1 GB`. See "Usage and disk forecast". `view` `savings` answers with where logs and errors could take less instead, at most `top` entries of each kind; see "Savings". |
+| `usage` | `project?`, `since?`, `what_if?`, `view?`, `top?` | What each project sent and when the disk fills: `disk`, `davy`, `growth_per_day` of all logs together, `longest_log_days` and `shortest_log_days`, `forecast`, `projects` with records and bytes accepted per signal over the window and per day and `logs_stored`, records and raw bytes of the logs stored by index day, and `logs_filtered`, those live drop rules dropped by day of receipt, and `no_forecast` or `disk_error` when there is none. Sizes as `4.1 GB`. See "Usage and disk forecast". `view` `savings` answers with where logs and errors could take less instead, at most `top` entries of each kind; see "Savings". |
 | `release_health` | `project?`, `since?` | Per release and environment, newest first, at most 50: `sessions`, `errored`, `crashed`, `abnormal`, `crash_free_sessions`, `users`, `crashed_users`, `crash_free_users`, `first_hour`, `last_hour`. `since` defaults to `7d`. |
 | `issue_context` | `issue_id` | The issue, its latest event made compact, its recent events and releases, and the logs around the latest event. |
 | `mark_fixed` | `issue_id`, `release?` | A sentence that says which release the fix is expected in. |
@@ -1266,7 +1272,7 @@ An agent asks what fills a project's logs and what it could drop. Patterns answe
 
 #### When mask v2 is planned
 
-Nothing names a pattern by its id across a change today, so a bump costs only the ids agents noted. Drop rules, planned next, name lines by pattern id and template under the mask they were made with. Once they exist, no masker change ships without this plan, or at least a forecast that adds back what rules of the old mask no longer drop, a `davy doctor` failure on enforced rules of the old mask, and upgrade notes that say so:
+Drop rules (see [Drop rules](#drop-rules)) name lines by pattern id under the mask they were made with, so a bump no longer costs only the ids agents noted. No masker change ships without this plan, or at least a forecast that adds back what rules of the old mask no longer drop, a `davy doctor` failure on enforced rules of the old mask, and upgrade notes that say so:
 
 1. Mask 1 stays in the binary as a frozen module beside mask 2. The log writer runs it only for projects that have rules of mask 1, so enforced rules keep dropping exactly what was approved.
 2. Rule listings and `davy doctor` show such rules as "runs on mask 1", a warning.
@@ -1315,7 +1321,7 @@ The rounds differ from each other by up to 1.5 µs, so the cost, about 0.2 µs p
 
 ### Not in this feature
 
-Rules that drop a pattern at ingest, suggestions of what to drop, when a pattern was last searched, and a view in the web UI.
+A view in the web UI. Rules that drop a pattern at ingest came later, see [Drop rules](#drop-rules), and so did when a pattern was last searched, see [Last queried](#last-queried).
 
 ## Hardening
 
@@ -1597,7 +1603,7 @@ An operator or an agent asks three questions: what each project sends Davy, how 
 
 `store_days` samples SQLite once a day: the SQLite writer's sweep writes one row on its first run of each UTC day, after it deleted what expired. `bytes` is `(page_count - freelist_count) * page_size`, the live pages: space retention freed is reused, so the difference between two days is net growth. `events` is `SUM(issues.event_count)`, the events kept now, read from the covering index `issues_status_sorts`, so no event row is read.
 
-`usage` and `davy usage` show `logs_stored` per project: records and raw bytes from `log_days` on the index days of the window, and per day. `logs.bytes` is what clients sent, decompressed, by accept day. `logs_stored` is raw bytes as the pattern counters count them, by index day. They measure different things and are never subtracted from each other.
+`usage` and `davy usage` show `logs_stored` per project: records and raw bytes from `log_days` on the index days of the window, and per day. `logs.bytes` is what clients sent, decompressed, by accept day. `logs_stored` is raw bytes as the pattern counters count them, by index day. They measure different things and are never subtracted from each other. `logs_filtered` is the lines live drop rules dropped, by day of receipt: in `logs`, never in `logs_stored`.
 
 Limits: a mark is set on a whole pair, so logs written to a day after retention cut it, such as a late log of a project that keeps fewer days, leave the pair marked. A pair whose logs a crash took between the deletion and the flush, whose day is still on the disk and no longer past its project's retention after a raise, stays unmarked. The forecast below reads these counts.
 
@@ -1649,7 +1655,7 @@ Limits: the forecast assumes the rate of the last week holds. SQLite grows by er
 
 ### Interfaces
 
-- MCP tool `usage`, with `project`, `since` (default `7d`, at most `90d`, as `release_health` reads it), `view` (`summary`, the default, or `savings`, see [The savings view](#the-savings-view)), `top` and `what_if`, such as `{"project":"shop","logs_days":14}` or `{"logs_bytes_per_day":2000000000}`, which takes no project. It answers compact JSON: `disk` (`used`, `free`, `total`, `full_on`, `days_left`, `beyond_10_years`, `worst_case`, `steady_state`, `headroom`, `headroom_reason`, `partial`), `estimate` (`full_on`, `days_left`, `steady_state`, `beyond_10_years`, `clamped`, true when it took the bound's day; null for a what-if of `logs_bytes_per_day` and without a forecast), `davy` (what Davy's files take), `growth_per_day` (the growth the forecast decides on, the high end of the range for `blended` and `first_day`, 0 for `errors_only`), `longest_log_days`, `shortest_log_days`, `forecast` (the summary), `basis` (`confidence`, `full_on_range`, the range of the growth alone, null for never or beyond 10 years, so in a worst case both days are the earliest, `why`, with the reason when confidence is low, and `logs` with the `basis`, one of `measured`, `measured_disk`, `blended`, `first_day` and `errors_only`, `growth_per_day` low, middle and high, `own_days`, `possible_days`, `raw_per_day`, `raw_days`, `counted_hours`, `ratio`, `ratio_range`, `own_ratio`, `footprint_ratio` and `footprint`, the run the constants come from, and `errors`, null when no project received error events in the last 7 closed days, or today for a project whose errors began today, with `projects`, `events_per_day`, `bytes_per_event`, `own_days`, `basis`, `growth_per_day`, the bound's, what errors add a day before they hold their retention, and `estimate_growth_per_day`, the estimate's, with `bytes_per_event` being it over `events_per_day`, rounded down; null for a what-if of `logs_bytes_per_day`, which has no basis), `what_if` and `what_if_note`, `projects` with each signal's `records` and `bytes` over the window and per day, `logs_stored` with the `records` and raw `bytes` of the logs stored on the index days from the window's first day to tomorrow, as a line may be up to a day ahead, and per day (a line sent in the window with a time before it is in `projects` only), `errors_discarded`, the error events of discarded issues Davy counted on the window's UTC days instead of storing them (see [Discarding an issue](#discarding-an-issue)), and the project's retention, `window`, `default_log_days` when a project has no log retention of its own and the forecast assumed the server default for it, and, without a forecast, `no_forecast` with the reason, or `disk_error` in place of `disk` and `davy` when the walk failed. Sizes are strings such as `4.1 GB`, in powers of 1000. Counts are kept per UTC day, so the window starts at midnight UTC of the day `since` names, `30m` at 15:00 included, and records and bytes per day both divide by the time since that midnight. A `since` in the future is an error.
+- MCP tool `usage`, with `project`, `since` (default `7d`, at most `90d`, as `release_health` reads it), `view` (`summary`, the default, or `savings`, see [The savings view](#the-savings-view)), `top` and `what_if`, such as `{"project":"shop","logs_days":14}` or `{"logs_bytes_per_day":2000000000}`, which takes no project. It answers compact JSON: `disk` (`used`, `free`, `total`, `full_on`, `days_left`, `beyond_10_years`, `worst_case`, `steady_state`, `headroom`, `headroom_reason`, `partial`), `estimate` (`full_on`, `days_left`, `steady_state`, `beyond_10_years`, `clamped`, true when it took the bound's day; null for a what-if of `logs_bytes_per_day` and without a forecast), `davy` (what Davy's files take), `growth_per_day` (the growth the forecast decides on, the high end of the range for `blended` and `first_day`, 0 for `errors_only`), `longest_log_days`, `shortest_log_days`, `forecast` (the summary), `basis` (`confidence`, `full_on_range`, the range of the growth alone, null for never or beyond 10 years, so in a worst case both days are the earliest, `why`, with the reason when confidence is low, and `logs` with the `basis`, one of `measured`, `measured_disk`, `blended`, `first_day` and `errors_only`, `growth_per_day` low, middle and high, `own_days`, `possible_days`, `raw_per_day`, `raw_days`, `counted_hours`, `ratio`, `ratio_range`, `own_ratio`, `footprint_ratio` and `footprint`, the run the constants come from, and `errors`, null when no project received error events in the last 7 closed days, or today for a project whose errors began today, with `projects`, `events_per_day`, `bytes_per_event`, `own_days`, `basis`, `growth_per_day`, the bound's, what errors add a day before they hold their retention, and `estimate_growth_per_day`, the estimate's, with `bytes_per_event` being it over `events_per_day`, rounded down; null for a what-if of `logs_bytes_per_day`, which has no basis), `what_if` and `what_if_note`, `projects` with each signal's `records` and `bytes` over the window and per day, `logs_stored` with the `records` and raw `bytes` of the logs stored on the index days from the window's first day to tomorrow, as a line may be up to a day ahead, and per day (a line sent in the window with a time before it is in `projects` only), `errors_discarded`, the error events of discarded issues Davy counted on the window's UTC days instead of storing them (see [Discarding an issue](#discarding-an-issue)), `logs_filtered`, the records and raw bytes of the log lines live drop rules dropped on the window's UTC days of receipt (see [Drop rules](#drop-rules)), and the project's retention, `window`, `default_log_days` when a project has no log retention of its own and the forecast assumed the server default for it, and, without a forecast, `no_forecast` with the reason, or `disk_error` in place of `disk` and `davy` when the walk failed. Sizes are strings such as `4.1 GB`, in powers of 1000. Counts are kept per UTC day, so the window starts at midnight UTC of the day `since` names, `30m` at 15:00 included, and records and bytes per day both divide by the time since that midnight. A `since` in the future is an error.
 - `davy usage --data DATA [--project SLUG] [--since 7d] [--logs-days N] [--logs-bytes-per-day N] [--log-retention-days N] [--view summary|savings] [--top N] [--json]` prints the same as text, with a `basis` line and, when the low and high growth fill the disk on different days, a `range` line, at the high and low growth of logs, or of errors for `errors_only`, "at the earliest" in a worst case, and the rate as "up to" where the forecast decides on the high growth, or as JSON with sizes in bytes. `--view savings` prints the savings view instead (see [The savings view](#the-savings-view)). It opens the database read-only, so it runs next to `davy serve`.
 - `davy doctor` extends its disk line: it warns when the forecast puts the disk full in under 14 days and fails under 2, with the fix to shorten retention with `davy project retention` or add disk, `--logs N`, or `--errors N` for an `errors_only` forecast, which it judges like any other. The bound's days left decide; beyond 10 years counts as never. The estimate never raises the status: it is never earlier than the bound, so it could not warn where the bound does not. It only lets a worst case under 2 days warn instead of fail, as follows. The line names its day where it differs from the bound's, and says what it assumes: each project's logs kept as long as it keeps them in a worst case, else the middle growth of logs. A worst case says "at the earliest at the current rate, if every project kept logs N days", and while the disk has days left it only warns where the estimate puts the disk full later than the bound, never, or is missing, as the worst case may then never fill on its day; where the estimate lands on the bound's day, under 2 days fails. Its fix asks to watch free space over a few days first. A `first_day` forecast likewise only warns while the disk has days left, names the hours it rests on and low confidence, and its fix asks to run doctor again once a whole day has closed before a retention is shortened. `--log-retention-days` gives the server's default log retention, 30 when not given. The line names that default for projects without their own, except on `errors_only`, where logs count as 0. Without a forecast for too little history, as on a new server, it judges free space alone. Without one for any other reason it warns, and its fix fits the reason, because a shorter retention would delete logs and bring no forecast back: a walk that stopped at its limit asks to watch free space by hand, a part of `logs` left out asks for `logs` as a plain directory on the data directory's filesystem that doctor may read, and a database or disk it cannot read has no fix beyond what its error says. The fix to shorten retention or add disk comes only with low free space or few days left.
 
@@ -1765,3 +1771,106 @@ Per project, Davy compares the oldest data its searches read with the logs it ke
 ### Noisy issues
 
 From `issue_hourly`, an issue is noisy when it sent at least 20% of its project's error events in the window, and at least 100 of them, as a share of a handful of events is not noise. `issue_hourly` counts events by their own time, floored to the hour, so a window counts the events that say they happened in it. A discarded issue is left out, as its events are already not stored. `share` is of the project's error events in the window, to two decimals. The suggestion is to fix it, or to discard it (see [Discarding an issue](#discarding-an-issue)).
+
+## Drop rules
+
+A pattern that fills a project's logs and that nobody reads can be dropped before it is stored. A drop rule names lines of one project, and the log writer drops them, or all but a share of them. A rule starts in shadow, where it drops nothing and counts what it would drop, so a person sees what a rule costs before it costs anything. Rules live in `src/drops.rs`.
+
+### What a rule names
+
+A rule names exactly one of:
+
+- `--pattern ID`: the lines of a pattern below warn, 12 hex digits as `log_patterns` and the savings view show it (see [Log patterns](#log-patterns)). `other` is refused, as it counts many kinds of lines. A pattern groups lines by their text, not their level, so the same text logged once as a warning is skipped unless the rule says `--any-level`, which only `davy drop add` takes, never an agent. A pattern rule at any level is another rule than the same one below warn.
+- `--level LEVEL`: the lines of that level and every lower one, so `debug` takes trace and debug. A line whose level was missing or not understood is never taken by a level rule, though it counts as Info elsewhere (see [Log levels](#log-levels)).
+- `--message TEXT`: the lines whose message holds the text, byte for byte, case and all. With a `*` the text matches the whole message: the part before the first `*` starts it, the part after the last ends it, each part between comes in order, and the start and the end do not overlap, so `ab*b` does not match `ab`.
+
+`--service NAME` narrows a rule to the lines whose service is that name exactly; `*` is no wildcard in it. Two rules of a project never match the same way: adding one equal to a rule the project has answers that rule, with `created` false.
+
+A message text and a service are refused when they are:
+
+- empty, or over 256 bytes;
+- only `*`: a message of only `*` matches every line, so the answer says to use `--level` or name the text, and a service of only `*` says to leave `--service` out;
+- holding a character a person cannot see or tell from a space: a control character, a format character (Unicode category Cf, such as U+200B or a bidi mark), U+2028, U+2029 or U+00A0. The answer names it as `U+XXXX`.
+
+`--keep N%` takes digits only, so `+5` and `5 %` are refused.
+
+`--keep N%`, from 1 to 99, keeps that share of the lines the rule matches; without it the rule drops them all. Keeping is exact, not random: each rule adds N to a counter per line it matches and keeps the line each time the counter reaches 100, starting one step short of it. So the first line is kept, then exactly N of every 100 after it: 1% keeps lines 0, 100, ... 900 of 1,000 and 33% keeps 330. The counter lives in the log writer and starts over when the rule changes or the server restarts, so a line is kept at each start.
+
+### In what order
+
+Per project, the log writer tries the live rules in their order and the first that matches decides: it drops the line, or keeps it when its share says so, and no later live rule sees it. A line no live rule matched then goes to every shadow rule, each counting on its own what it would drop. So a shadow rule counts what it would add to the live rules in force, not what they already take.
+
+A rule is added after the project's others. Making a rule live puts it after the project's live rules.
+
+### Shadow and live
+
+- A live rule drops a line before it is stored: the line is in no index, no pattern counter and not in `logs_stored`. Ingest still accepted it, so it counts in `logs` like any line a client sent, and it counts as `logs_filtered`, see below.
+- A shadow rule drops nothing. Per UTC day it counts the lines it would drop and their raw bytes, as `logs_stored` counts raw bytes.
+- `drop_daily(day, rule_id, live, project_id, records, bytes)` holds both counts per UTC day of receipt (`observed_at`), rule and state. The log writer counts in memory and the usage flusher writes the counts with the logs stored every 5 s, in the same transaction, so a crash loses the same last seconds of both. A rule a person removes keeps its counts until they are pruned, while an agent's shadow rule that the agent removes takes its counts with it, as they only counted a proposal. A removed rule's id is never used again, so a new rule never inherits them. The sweep deletes the days before the 400 days that end today, at most 10,000 rows a sweep, as it prunes `usage_daily`. Per day a project has at most a row per rule and state, and at most 50 rules at once.
+- `usage` and `davy usage` show `logs_filtered` per project: the records and raw bytes live rules dropped on the UTC days of the window. Shadow counts are not in it, as nothing was dropped.
+
+### Who may do what
+
+The risk of a rule is a rule that drops what someone needs. So only a person makes a rule that drops.
+
+- A person adds, lists, toggles and removes rules with `davy drop`, the only way to write a live rule or make a rule live:
+  - `davy drop add (--pattern ID [--any-level] | --level LEVEL | --message TEXT) [--service NAME] [--keep N%] [--shadow] --data DATA SLUG` adds a rule, live unless `--shadow` is given, and prints it as JSON.
+  - `davy drop list [--json] --data DATA [SLUG]` lists the rules in the order the log writer tries them, with what each dropped or would drop in the last 7 days, today included. `--json` gives raw bytes.
+  - `davy drop live ID [--yes] --data DATA` makes a rule live, `davy drop shadow ID --data DATA` makes it a shadow rule again, `davy drop remove ID --data DATA` removes it. A person holds a rule once they toggled it, and it never expires.
+  - Before a shadow rule goes live, `davy drop live` prints on stderr the rule as the list words it, the lines and raw bytes it would have dropped in the last 7 days, and `it can drop warnings and errors too` when it can (a message rule, a level rule at warn or above, or a pattern rule at any level), then asks `make it live, so these lines are dropped from now on? [y/N]`. Only `y` or `yes` goes on; any other answer leaves it a shadow rule and fails. `--yes` asks nothing. Without a terminal on stdin and without `--yes` it refuses and says to add `--yes`, so a script never makes a rule live by accident. The command a listing prints carries no `--yes`, so a person who pastes it is asked.
+  - `live` and `shadow` refuse an agent's rule that expired, though the sweep has not deleted it yet: it answers `no rule ID, or it expired`.
+  - `list` opens the store read-only, and `live`, `shadow` and `remove` open it without creating or upgrading it. A data directory with no store, or a store of an older schema, is an error that says to run `davy serve --data DATA` first or once; a store of a newer schema is refused as elsewhere. `add` opens the store as `davy project` does.
+- An agent may only add and remove shadow rules, over MCP, at most 10 of its own per project at once, and each expires 14 days after it was made. It removes only its own shadow rules. A rule that expired leaves its room at once and the sweep deletes it.
+- No MCP tool, route or ingest path writes a live rule or turns a rule live: `drops::add` refuses a live rule from an agent, and no agent path calls `drops::set_live`. A shadow rule's listing names the command a person runs to make it live, `davy drop live --data DATA ID` with the absolute data directory quoted for a POSIX shell, so it works from any directory. An agent's prompt can carry text someone else wrote, so it can propose a rule and count it, never enforce it.
+- A list words each rule as `pattern 0000000abcde below warn` or `at any level`, `level debug and below`, `message contains "ok"` or `message like "ok*"`, then `service "api"` and `drop all` or `keep 5%`. A message and a service are quoted, with `"` and `\` escaped by a `\`, so a text cannot close its quotes and read as more of the rule. The project, a message and a service are printed with control characters and bidi marks as U+FFFD, so a rule's text cannot move the cursor or forge a line, and JSON is written through `text::json`.
+
+### Bounds and cost
+
+A project holds at most 50 rules, live and shadow together, so the log writer tries at most 50 on a line. A project without rules costs a hash lookup per line. The server reads the rules at start, before the first line, and every 5 s after, and compiles them only when they changed: a message becomes a `memchr` finder, or a glob of finders, once per change, not per line. A change made with `davy drop` reaches the log writer within 5 s, at its next batch. A failed read keeps the rules in force and is reported as a warning of Davy's own project.
+
+A pattern rule needs the line's pattern. It is worked out once per line, only when a pattern rule is tried, and the pattern counters take it from there instead of masking the line again, so a pattern rule costs nothing more on a line that is stored.
+
+Measured on an Apple M2 Max with load average 3.3 to 8, with the commands below, which print these numbers:
+
+- The judge alone, `cargo run --release --example drop_judge`: `Judge::keep` over lines made before the clock starts, fastest of 7 rounds, 20,000 access lines of about 90 bytes, or 1,000 lines of 64 KiB, the most a line holds. Rules that never match are tried in full on every line, the most a rule costs on a line that is stored.
+
+  | case | ns per line (measured) |
+  | --- | --- |
+  | no rule | 1.9 |
+  | 10 message rules, none match | 70.7 |
+  | 50 message rules, none match | 327.4 |
+  | 50 globs, none match | 222.9 |
+  | 1 message rule that matches, keep 1% | 57.1 |
+  | 1 glob that matches, drop all | 48.2 |
+  | 1 pattern rule, drops a quarter | 923.4 |
+  | no rule, 64 KiB messages | 2.0 |
+  | 10 message rules, none match, 64 KiB messages | 18,719.9 |
+  | 50 message rules, none match, 64 KiB messages | 146,084.7 |
+  | 50 message rules, 64 KiB of near misses | 92,617.8 |
+  | 50 globs, 64 KiB of near misses | 252.3 |
+
+  A message rule reads the whole message, so the cost grows with its length: 50 rules on a 64 KiB message take about 0.15 ms. That is the most a line can cost, so messages are not cut short before a rule reads them. The pattern rule's time is mostly working out the line's pattern, which a stored line needs anyway.
+- End to end, `cargo build --release --example fill_logs` and then `target/release/examples/fill_logs DATA 300000 24 4 RULES` (300,000 records of the made-up API over 24 hours in 4 projects, made before the clock starts and handed to `LogWriter` without a copy, wall time including the last commit), with `RULES` shadow rules per project whose message texts no line holds, so every rule is tried on every line and none matches. Five rounds, rotating which run went first:
+
+  | | median (measured) | fastest |
+  | --- | --- | --- |
+  | 0 rules | 9.65 µs per record | 9.54 µs |
+  | 10 rules per project | 9.64 µs per record | 9.47 µs |
+  | 50 rules per project | 9.57 µs per record | 9.49 µs |
+
+  The rounds of one run differ by up to 0.5 µs, more than the 0.33 µs 50 rules add by the judge's numbers, so a whole run cannot tell the rules apart.
+
+### Davy's own project
+
+Rules apply to Davy's own project (see [Self-monitoring](#self-monitoring)) like to any project, as its lines go through the log writer.
+
+- A shadow rule hides nothing: Davy's warnings and errors are stored and shown in `project_status` and `davy doctor` as before, and the rule counts them.
+- A live rule a person made drops Davy's own lines it names before they are stored, warnings and errors too when it names them (a level rule at warn or above, a message rule, a pattern rule at any level): they are then missing from `search_logs`, `log_patterns`, the `davy` block of `project_status` and the counts of `davy doctor`, and counted as `logs_filtered`. They still go to stderr. A rule can only take what it names, so a rule of `--level debug` takes none of Davy's lines, which are info and above.
+- Crashes are issues, not log lines, so no rule drops one.
+
+### Migration 24
+
+Schema version 24 adds both tables in one entry, so a branch that takes the same number renumbers one line:
+
+- `drop_rules(id INTEGER PRIMARY KEY AUTOINCREMENT, project_id, position, live, by, pattern, level, message, service, keep_percent, any_level, created_at, changed_at, expires_at)`, with checks that `live` is 0 or 1, `by` is `person` or `agent`, `keep_percent` is from 0 to 99, exactly one of `pattern`, `level` and `message` is set, and `any_level` is 0 or 1, default 0, and 1 only on a pattern rule, and a unique index on what a rule matches, `any_level` included, so two rules of a project never match the same way. `pattern` holds the signed bits of the id, `level` the level from 1 (trace) to 6 (fatal), and times are unix milliseconds.
+- `drop_daily(day, rule_id, live, project_id, records, bytes)`, `WITHOUT ROWID`, keyed by day, rule and state.

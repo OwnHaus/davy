@@ -20,6 +20,7 @@ fn record(project_id: i64, timestamp: i64, level: LogLevel, message: &str) -> Lo
         observed_at: timestamp,
         source: LogSource::Logtail,
         level,
+        level_unknown: false,
         message: message.into(),
         service: Some("api".into()),
         trace_id: None,

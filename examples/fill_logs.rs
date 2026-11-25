@@ -2,7 +2,11 @@
 //! store, spread evenly over the last `span` hours, for timing searches on a
 //! large store without timing ingest.
 //!
-//! cargo run --release --example fill_logs -- DATA ROWS HOURS PROJECTS
+//! cargo run --release --example fill_logs -- DATA ROWS HOURS PROJECTS [RULES]
+//!
+//! RULES, 0 by default, puts that many shadow drop rules in force in each
+//! project, message texts no line holds, so the log writer tries every one
+//! on every line: what drop rules cost at most.
 
 use anyhow::{Context, Result, bail};
 use davy::logs::{
@@ -95,6 +99,7 @@ fn record(rng: &mut Rng, project_id: i64, timestamp: i64) -> LogRecord {
         observed_at: timestamp,
         source: LogSource::Logtail,
         level,
+        level_unknown: false,
         message,
         service: Some(rng.pick(&SERVICES).to_owned()),
         trace_id,
@@ -103,14 +108,40 @@ fn record(rng: &mut Rng, project_id: i64, timestamp: i64) -> LogRecord {
     }
 }
 
+/// `n` shadow rules in each of `projects` that match no line.
+fn rules(n: usize, projects: u64) -> Result<davy::drops::Set> {
+    let mut rules = Vec::new();
+    for project in 1..=i64::try_from(projects)? {
+        for i in 0..n {
+            let text = format!("no line holds {i}");
+            let spec = davy::drops::Spec::new(None, None, Some(&text), None, None)
+                .map_err(anyhow::Error::msg)?;
+            let id = i64::try_from(rules.len())? + 1;
+            rules.push(davy::drops::Stored {
+                id,
+                project,
+                position: id,
+                live: false,
+                by: davy::drops::By::Person,
+                spec,
+                created_at: 0,
+                changed_at: 0,
+                expires_at: None,
+            });
+        }
+    }
+    Ok(davy::drops::Set::compile(&rules))
+}
+
 fn main() -> Result<()> {
-    let usage = "usage: fill_logs DATA ROWS HOURS PROJECTS";
+    let usage = "usage: fill_logs DATA ROWS HOURS PROJECTS [RULES]";
     let mut args = std::env::args().skip(1);
     let mut next = || args.next().context(usage);
     let data = std::path::PathBuf::from(next()?);
     let rows: i64 = next()?.parse().context(usage)?;
     let hours: i64 = next()?.parse().context(usage)?;
     let projects: u64 = next()?.parse().context(usage)?;
+    let n_rules: usize = args.next().map_or(Ok(0), |n| n.parse()).context(usage)?;
     let span = hours * 3_600_000_000_000;
     let end = davy::time::now_ns();
     let writer = LogWriter::start(
@@ -118,23 +149,33 @@ fn main() -> Result<()> {
         30,
         davy::logs::store::no_overrides(),
     )?;
+    writer.drops.set(rules(n_rules, projects)?);
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
-    let started = Instant::now();
-    let batch = 5_000;
-    for first in (0..rows).step_by(batch) {
-        let batch: Vec<_> = (first..(first + i64::try_from(batch)?).min(rows))
+    // The records are made before the clock starts, so it times the log
+    // writer and not the making of records.
+    let size = 5_000;
+    let mut batches = Vec::new();
+    for first in (0..rows).step_by(size) {
+        let batch: Vec<_> = (first..(first + i64::try_from(size)?).min(rows))
             .map(|i| {
                 let project = i64::try_from(1 + rng.below(projects)).unwrap_or(1);
                 record(&mut rng, project, end - span + span / rows * i)
             })
             .collect();
-        loop {
-            match writer.queue.push(batch.clone()) {
-                Ok(()) => break,
-                Err(QueueError::Full) => std::thread::sleep(Duration::from_millis(5)),
-                Err(QueueError::TooLarge) => bail!("a batch is larger than the log queue"),
-                Err(QueueError::Stopped) => bail!("the log writer stopped"),
-            }
+        batches.push(batch);
+    }
+    let started = Instant::now();
+    for batch in batches {
+        // The only producer: once there is room, the push is not refused
+        // as full, so the batch is not copied to try again.
+        while !writer.queue.has_room(&batch) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        match writer.queue.push(batch) {
+            Ok(()) => {}
+            Err(QueueError::Full) => bail!("the log queue filled while it had room"),
+            Err(QueueError::TooLarge) => bail!("a batch is larger than the log queue"),
+            Err(QueueError::Stopped) => bail!("the log writer stopped"),
         }
     }
     drop(writer.queue);
@@ -142,10 +183,12 @@ fn main() -> Result<()> {
         .thread
         .join()
         .map_err(|_panic| anyhow::anyhow!("the log writer panicked"))?;
+    let took = started.elapsed().as_secs_f64();
+    #[expect(clippy::cast_precision_loss, reason = "a count of rows to 3 digits")]
+    let per = took * 1e6 / rows.max(1) as f64;
     writeln!(
         std::io::stdout(),
-        "wrote {rows} logs over {hours} h in {:.1}s",
-        started.elapsed().as_secs_f64()
+        "wrote {rows} logs over {hours} h in {took:.1}s: {per:.2} µs per record"
     )?;
     Ok(())
 }

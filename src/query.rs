@@ -91,14 +91,7 @@ pub struct Rows {
 /// when they are missing and leaves them. Where it cannot, it is an error
 /// that says why; see [`cannot_open_read_only`].
 pub fn open(data: &Path) -> Result<Connection> {
-    let path = data.join(store::DB_FILE);
-    if !path.exists() {
-        bail!(
-            "no database in {}: run davy serve --data {} first",
-            data.display(),
-            data.display()
-        );
-    }
+    let path = store::exists(data)?;
     let mut c = Connection::open_with_flags(
         &path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -115,14 +108,7 @@ pub fn open(data: &Path) -> Result<Connection> {
     };
     // The same refusal as a writer's: reading what this build does not
     // know would answer from tables a newer Davy may have changed.
-    store::refuse_newer(version)?;
-    if version < store::SCHEMA_VERSION {
-        bail!(
-            "the database in {} is from an older Davy: run davy serve --data {} once to upgrade it",
-            data.display(),
-            data.display()
-        );
-    }
+    store::current(data, version)?;
     // SQLite's default of 1 GB lets one `hex(zeroblob(..))` take that much
     // memory, and the timeout cannot stop a single allocation.
     c.set_limit(Limit::SQLITE_LIMIT_LENGTH, MAX_LENGTH)?;

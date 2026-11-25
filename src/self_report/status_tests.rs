@@ -16,6 +16,7 @@ fn line(project: i64, level: LogLevel, at_ms: i64) -> LogRecord {
         observed_at: at_ms * 1_000_000,
         source: LogSource::Davy,
         level,
+        level_unknown: false,
         message: "log writer: retention of 2020-01-01 was skipped".into(),
         service: Some("davy".into()),
         trace_id: None,

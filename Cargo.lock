@@ -696,6 +696,7 @@ dependencies = [
  "http-body-util",
  "jiff",
  "lettre",
+ "memchr",
  "nix",
  "opentelemetry-proto",
  "peak_alloc",

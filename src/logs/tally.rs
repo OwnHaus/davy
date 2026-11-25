@@ -410,7 +410,7 @@ pub(super) fn level_index(level: LogLevel) -> usize {
 }
 
 /// What a record weighs as JSON text: its message, ids and attributes.
-pub(super) fn raw_bytes(r: &LogRecord) -> u64 {
+pub(crate) fn raw_bytes(r: &LogRecord) -> u64 {
     struct Counter(usize);
     impl Write for Counter {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -436,9 +436,16 @@ impl State {
     }
 
     /// Counts `r`, which weighs `bytes`, in `day` and returns the pattern
-    /// to stamp on it.
-    pub(super) fn tally(&mut self, day: Date, r: &LogRecord, bytes: u64) -> u64 {
-        let pattern = patterns::of(&r.message);
+    /// to stamp on it. `pattern` is that of `r` when a drop rule worked it
+    /// out already.
+    pub(super) fn tally(
+        &mut self,
+        day: Date,
+        r: &LogRecord,
+        bytes: u64,
+        pattern: Option<patterns::Pattern>,
+    ) -> u64 {
+        let pattern = pattern.unwrap_or_else(|| patterns::of(&r.message));
         let dir = self.root.join(day.to_string());
         let mut tallies = self.tallies();
         let tally = tallies.entry(day).or_insert_with(|| open(day, &dir));

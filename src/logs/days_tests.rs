@@ -14,6 +14,7 @@ fn record(timestamp: i64, message: &str) -> LogRecord {
         observed_at: timestamp,
         source: LogSource::Logtail,
         level: LogLevel::Info,
+        level_unknown: false,
         message: message.into(),
         service: None,
         trace_id: None,

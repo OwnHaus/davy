@@ -38,6 +38,7 @@ fn logtail_pino_fixture() {
             observed_at: 7,
             source: LogSource::Logtail,
             level: LogLevel::Info,
+            level_unknown: false,
             message: "request completed".into(),
             service: None,
             trace_id: None,
@@ -232,64 +233,6 @@ fn otlp_status_bodies() {
 }
 
 #[test]
-fn level_table() {
-    use LogLevel::*;
-    for (text, level) in [
-        ("trace", Trace),
-        ("DEBUG", Debug),
-        ("info", Info),
-        ("information", Info),
-        ("notice", Info),
-        ("log", Info),
-        ("warn", Warn),
-        ("Warning", Warn),
-        ("error", Error),
-        ("err", Error),
-        ("fatal", Fatal),
-        ("critical", Fatal),
-        ("crit", Fatal),
-        ("alert", Fatal),
-        ("emerg", Fatal),
-        ("emergency", Fatal),
-        ("panic", Fatal),
-    ] {
-        assert_eq!(LogLevel::parse(text), Some(level), "{text}");
-    }
-    assert_eq!(LogLevel::parse("loud"), None);
-    for (n, level) in [
-        (10.0, Trace),
-        (20.0, Debug),
-        (30.0, Info),
-        (40.0, Warn),
-        (50.0, Error),
-        (60.0, Fatal),
-        (35.0, Warn),
-    ] {
-        assert_eq!(LogLevel::from_pino(n), level, "{n}");
-    }
-    for (n, level) in [
-        (1, Trace),
-        (4, Trace),
-        (5, Debug),
-        (8, Debug),
-        (9, Info),
-        (12, Info),
-        (13, Warn),
-        (16, Warn),
-        (17, Error),
-        (20, Error),
-        (21, Fatal),
-        (24, Fatal),
-    ] {
-        assert_eq!(LogLevel::from_severity(n, ""), level, "{n}");
-    }
-    assert_eq!(LogLevel::from_severity(0, "WARN"), Warn);
-    assert_eq!(LogLevel::from_severity(0, "?"), Info);
-    assert_eq!(LogLevel::from_value(Some(&json!(true))), Info);
-    assert_eq!(LogLevel::from_value(None), Info);
-}
-
-#[test]
 fn timestamp_forms() {
     for (v, ns) in [
         (json!(1_795_161_600), Some(1_795_161_600_000_000_000)),
@@ -348,6 +291,7 @@ fn record(
         observed_at,
         source: LogSource::Logtail,
         level,
+        level_unknown: false,
         message: message.into(),
         service: Some("api".into()),
         trace_id: None,

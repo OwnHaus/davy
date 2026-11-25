@@ -21,6 +21,10 @@ pub struct LogRecord {
     pub observed_at: i64,
     pub source: LogSource,
     pub level: LogLevel,
+    /// True when the line named no level or one Davy does not understand:
+    /// `level` is then info, and a level drop rule never matches the line.
+    /// Not stored.
+    pub level_unknown: bool,
     pub message: String,
     pub service: Option<String>,
     pub trace_id: Option<String>,
@@ -88,14 +92,19 @@ impl LogLevel {
         Self::parse(s).ok_or_else(|| format!("unknown level {s:?}"))
     }
 
+    /// A level name in the common spellings, case aside: `warn`, `W`,
+    /// `[error]`, `error:`, `Level.ERROR`, `severe`. See `docs/design.md`,
+    /// "Log levels", for the whole table.
     pub fn parse(s: &str) -> Option<Self> {
-        Some(match s.trim().to_ascii_lowercase().as_str() {
-            "trace" => Self::Trace,
-            "debug" => Self::Debug,
-            "info" | "information" | "notice" | "log" => Self::Info,
-            "warn" | "warning" => Self::Warn,
-            "error" | "err" => Self::Error,
-            "fatal" | "critical" | "crit" | "alert" | "emerg" | "emergency" | "panic" => {
+        let s = s.trim_matches(|c: char| c.is_whitespace() || "[]()<>:".contains(c));
+        let s = s.rsplit_once('.').map_or(s, |(_, name)| name);
+        Some(match s.to_ascii_lowercase().as_str() {
+            "trace" | "t" => Self::Trace,
+            "debug" | "d" => Self::Debug,
+            "info" | "information" | "notice" | "log" | "i" => Self::Info,
+            "warn" | "warning" | "w" => Self::Warn,
+            "error" | "err" | "severe" | "fault" | "failure" | "exception" | "e" => Self::Error,
+            "fatal" | "critical" | "crit" | "alert" | "emerg" | "emergency" | "panic" | "f" => {
                 Self::Fatal
             }
             _ => return None,
@@ -111,22 +120,32 @@ impl LogLevel {
             _ => Self::Fatal,
         }
     }
-    pub fn from_severity(number: i32, text: &str) -> Self {
-        match number {
+    /// An OTLP severity number, else its text. None when neither says a
+    /// level.
+    pub fn from_severity(number: i32, text: &str) -> Option<Self> {
+        Some(match number {
             1..=4 => Self::Trace,
             5..=8 => Self::Debug,
             9..=12 => Self::Info,
             13..=16 => Self::Warn,
             17..=20 => Self::Error,
             21..=24 => Self::Fatal,
-            _ => Self::parse(text).unwrap_or_default(),
-        }
+            _ => return Self::parse(text),
+        })
     }
-    pub fn from_value(v: Option<&Value>) -> Self {
-        match v {
-            Some(Value::Number(n)) => n.as_f64().map(Self::from_pino).unwrap_or_default(),
-            Some(Value::String(s)) => Self::parse(s).unwrap_or_default(),
-            _ => Self::Info,
+    /// The `level` of a JSON line: a pino number, the same number as a
+    /// string, or a name. None when it is missing or not understood.
+    pub fn from_value(v: Option<&Value>) -> Option<Self> {
+        match v? {
+            Value::Number(n) => n.as_f64().map(Self::from_pino),
+            Value::String(s) => Self::parse(s).or_else(|| {
+                s.trim()
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|n| n.is_finite())
+                    .map(Self::from_pino)
+            }),
+            _ => None,
         }
     }
     pub fn from_code(code: u64) -> Self {
@@ -238,5 +257,7 @@ fn message(mut v: Option<Value>, attributes: &mut Map<String, Value>) -> String 
     text
 }
 
+#[cfg(test)]
+mod level_tests;
 #[cfg(test)]
 mod tests;

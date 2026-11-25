@@ -27,6 +27,7 @@ fn record(project_id: i64, service: Option<&str>, message: &str) -> LogRecord {
         observed_at: 0,
         source: LogSource::Logtail,
         level: LogLevel::Info,
+        level_unknown: false,
         message: message.into(),
         service: service.map(Into::into),
         trace_id: None,
@@ -493,7 +494,7 @@ fn count_with(state: &mut State, path: &Path, mode: u32) -> bool {
     let now = now_ns();
     chmod(path, mode);
     let line = line_at(now, now);
-    state.tally(day_of(now), &line, raw_bytes(&line));
+    state.tally(day_of(now), &line, raw_bytes(&line), None);
     chmod(path, 0o700);
     let mut tallies = state.tallies();
     let tally = tallies.get_mut(&day_of(now)).unwrap();

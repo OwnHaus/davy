@@ -54,6 +54,9 @@ pub struct Project {
     /// Error events of discarded issues counted and not stored, on the UTC
     /// days of the window, see src/discard.rs.
     pub discarded: u64,
+    /// Log lines live drop rules dropped, on the UTC days of receipt of
+    /// the window, see src/drops.rs: in `logs`, never stored.
+    pub filtered: Count,
 }
 
 /// The report on `data`, which walks the disk now.
@@ -117,6 +120,7 @@ pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
     // A record may be indexed up to a day ahead, see `logs::store::State::settle`.
     let stored = super::stored::between(c, from, today.tomorrow()?, filter)?;
     let discarded = crate::discard::between(c, from, today, filter)?;
+    let filtered = crate::drops::filtered_between(c, from, today, filter)?;
     let projects = kept
         .iter()
         .filter(|(id, _)| filter.is_none_or(|f| f == *id))
@@ -127,6 +131,7 @@ pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
             counts: Signal::ALL.map(|s| counted.get(&(*id, s)).copied().unwrap_or_default()),
             stored: stored.get(id).copied().unwrap_or_default(),
             discarded: discarded.get(id).copied().unwrap_or_default(),
+            filtered: filtered.get(id).copied().unwrap_or_default(),
         })
         .collect();
     // The estimate counts a project's logs on disk as far back as it, or
@@ -519,6 +524,7 @@ impl Report {
             "errors_days": p.errors_days,
             "signals": signals,
             "logs_stored": count(p.stored),
+            "logs_filtered": count(p.filtered),
             "errors_discarded": p.discarded,
         })
     }

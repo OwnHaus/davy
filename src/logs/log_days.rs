@@ -60,6 +60,8 @@ pub struct Flush {
     /// job that carries it is committed.
     pub start: Option<i64>,
     pub segments: Vec<Segment>,
+    /// The lines drop rules dropped or would drop, see src/drops.rs.
+    pub drops: Vec<(crate::drops::Key, Count)>,
 }
 
 type Counts = HashMap<(Date, i64), Count>;
@@ -68,6 +70,9 @@ type Counts = HashMap<(Date, i64), Count>;
 struct Queue {
     start: Option<i64>,
     segments: VecDeque<(Counts, Vec<Mark>)>,
+    /// Kept apart from the segments: no mark touches them, and there are
+    /// at most a few per rule.
+    drops: HashMap<crate::drops::Key, Count>,
 }
 
 /// Settled counts and marks until the next flush, shared by the log writer
@@ -81,7 +86,7 @@ impl LogDays {
     pub fn new(start_ms: i64) -> Self {
         let queue = Queue {
             start: Some(start_ms),
-            segments: VecDeque::new(),
+            ..Queue::default()
         };
         Self(Arc::new(Mutex::new(queue)))
     }
@@ -99,6 +104,17 @@ impl LogDays {
         let (last, _) = q.segments.back_mut().expect("pushed above");
         for (project, count) in counts {
             last.entry((day, project)).or_default().add(count);
+        }
+    }
+
+    /// Adds what drop rules counted.
+    pub(super) fn add_drops(&self, counts: HashMap<crate::drops::Key, Count>) {
+        if counts.is_empty() {
+            return;
+        }
+        let mut q = self.queue();
+        for (key, n) in counts {
+            q.drops.entry(key).or_default().add(n);
         }
     }
 
@@ -121,9 +137,12 @@ impl LogDays {
     /// not fit stay with its marks, so the marks go with the last of them.
     pub fn take_up_to(&self, n: usize) -> Option<Flush> {
         let mut q = self.queue();
+        let mut drops: Vec<_> = q.drops.drain().collect();
+        drops.sort_unstable_by_key(|(k, _)| *k);
         let mut flush = Flush {
             start: q.start.take(),
             segments: Vec::new(),
+            drops,
         };
         let mut room = n.max(1);
         while room > 0
@@ -143,7 +162,8 @@ impl LogDays {
             room = room.saturating_sub(rows.len() + marks.len());
             flush.segments.push(Segment { rows, marks });
         }
-        (flush.start.is_some() || !flush.segments.is_empty()).then_some(flush)
+        (flush.start.is_some() || !flush.segments.is_empty() || !flush.drops.is_empty())
+            .then_some(flush)
     }
 
     /// Puts back what a job the writer did not commit took, before
@@ -152,6 +172,9 @@ impl LogDays {
         let mut q = self.queue();
         if flush.start.is_some() {
             q.start = flush.start;
+        }
+        for (key, n) in flush.drops {
+            q.drops.entry(key).or_default().add(n);
         }
         for s in flush.segments.into_iter().rev() {
             let counts = s.rows.into_iter().map(|r| ((r.day, r.project), r.count));

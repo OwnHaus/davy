@@ -131,12 +131,14 @@ pub fn convert<E>(
                     .and_then(|t| i64::try_from(t).ok())
                     .unwrap_or(observed_at);
                 let message = message(r.body.map(any), &mut attributes);
+                let level = LogLevel::from_severity(r.severity_number, &r.severity_text);
                 let record = LogRecord {
                     project_id,
                     timestamp,
                     observed_at,
                     source: LogSource::Otlp,
-                    level: LogLevel::from_severity(r.severity_number, &r.severity_text),
+                    level: level.unwrap_or_default(),
+                    level_unknown: level.is_none(),
                     message,
                     service: service.clone(),
                     trace_id: hex_bytes(&r.trace_id, 32),

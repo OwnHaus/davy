@@ -17,6 +17,7 @@ brotli-decompressor = "6"
 clap = { version = "4", features = ["derive", "env"] }
 blake3 = "1"
 regex = "1"
+memchr = "2"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
 anyhow = "1"

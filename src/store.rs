@@ -20,7 +20,7 @@ use crate::{
 use anyhow::Result;
 use latest::Latest;
 use migrations::MIGRATIONS;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde::Serialize;
 use std::path::Path;
 use tokio::sync::oneshot;
@@ -109,6 +109,46 @@ pub fn open(data: &Path) -> Result<Connection> {
     let mut c = migrate::open(&data.join(DB_FILE), migrate::WAIT)?;
     init(&mut c)?;
     Ok(c)
+}
+/// Opens the database in `data` for a command that changes a few rows,
+/// such as `davy drop live`: it creates neither the directory nor the
+/// database and runs no migration. A missing store, or one an older or a
+/// newer Davy wrote, is an error that says what to run.
+pub fn open_current(data: &Path) -> Result<Connection> {
+    let path = exists(data)?;
+    let c = Connection::open_with_flags(
+        &path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    c.busy_timeout(BUSY_TIMEOUT)?;
+    c.pragma_update(None, "foreign_keys", true)?;
+    current(data, c.query_row("PRAGMA user_version", [], |r| r.get(0))?)?;
+    Ok(c)
+}
+/// The database file in `data`, or an error that says to start a server
+/// there first, for a command that does not create one.
+pub(crate) fn exists(data: &Path) -> Result<std::path::PathBuf> {
+    let path = data.join(DB_FILE);
+    anyhow::ensure!(
+        path.exists(),
+        "no database in {}: run davy serve --data {} first",
+        data.display(),
+        data.display()
+    );
+    Ok(path)
+}
+/// Refuses a database at schema `version` that this build did not
+/// migrate to: a newer one, see [`refuse_newer`], or an older one, which
+/// a server upgrades.
+pub(crate) fn current(data: &Path, version: u32) -> Result<()> {
+    refuse_newer(version)?;
+    anyhow::ensure!(
+        version >= SCHEMA_VERSION,
+        "the database in {} is from an older Davy: run davy serve --data {} once to upgrade it",
+        data.display(),
+        data.display()
+    );
+    Ok(())
 }
 /// Creates the schema and runs pending migrations. The server and a CLI
 /// process may open the same directory at once, so the version is read inside
@@ -362,6 +402,7 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
             crate::discard::prune(c, *at)?;
             crate::usage::savings::searches::prune(c, *at)?;
             crate::usage::stored::sweep(c, *at)?;
+            crate::drops::counts::prune(c, *at)?;
             Ok(Ok(()))
         }
         Job::Usage(rows) => Ok(Ok(crate::usage::write(c, rows)?)),

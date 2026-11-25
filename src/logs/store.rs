@@ -199,12 +199,18 @@ pub(super) struct State {
     listed: bool,
     /// Whether a record not of Davy's own was added since the last commit.
     foreign: bool,
+    /// The drop rules in force, see src/drops.rs.
+    drops: crate::drops::Live,
+    judge: crate::drops::Judge,
 }
 
 impl State {
     pub(super) fn new(root: PathBuf, retention_days: u32, overrides: Overrides) -> Self {
         let tallies = tally::register(&root);
+        let drops = crate::drops::Live::default();
         Self {
+            judge: crate::drops::Judge::new(drops.clone()),
+            drops,
             root,
             tallies,
             fields: schema().1,
@@ -271,8 +277,15 @@ impl State {
     pub(super) fn add(&mut self, batch: Vec<LogRecord>) -> Result<()> {
         let fields = self.fields;
         let (mut failed, mut first) = (HashSet::new(), None);
+        self.judge.refresh();
         for mut r in batch {
             self.settle(&mut r);
+            // A dropped line is counted for its rule and nowhere else: not
+            // stored, so not in `log_days` or the pattern counters.
+            let mut seen = crate::drops::Seen::default();
+            if !self.judge.keep(&r, &mut seen) {
+                continue;
+            }
             let day = day_of(r.timestamp);
             if failed.contains(&day) {
                 continue;
@@ -298,10 +311,10 @@ impl State {
                     continue;
                 }
             };
-            let bytes = tally::raw_bytes(&r);
+            let bytes = seen.bytes(&r);
             let source = r.source;
             self.count_stored(day, r.project_id, bytes);
-            let id = stamp.map(|field| (field, self.tally(day, &r, bytes)));
+            let id = stamp.map(|field| (field, self.tally(day, &r, bytes, seen.take_pattern())));
             let open = self.writer(day)?;
             if let Err(e) = open
                 .writer
@@ -315,6 +328,7 @@ impl State {
             self.uncommitted += 1;
             self.foreign |= source != LogSource::Davy;
         }
+        self.log_days.add_drops(self.judge.take());
         if self.uncommitted >= COMMIT_AT_DOCS {
             self.commit()?;
         }
@@ -619,6 +633,7 @@ pub use queue::{Held, LogInbox, LogQueue, QueueError};
 
 #[path = "tally.rs"]
 mod tally;
+pub(crate) use tally::raw_bytes;
 
 #[path = "log_days.rs"]
 pub mod log_days;

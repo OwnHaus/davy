@@ -150,6 +150,7 @@ fn a_log_days_write_that_fails_leaves_the_rest_of_its_batch_stored() {
     };
     let stored = Job::LogDays(crate::logs::store::log_days::Flush {
         start: Some(1_795_392_000_000),
+        drops: Vec::new(),
         segments: vec![crate::logs::store::log_days::Segment {
             rows: vec![crate::logs::store::log_days::Row {
                 day: "2026-11-23".parse().unwrap(),

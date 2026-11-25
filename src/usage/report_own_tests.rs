@@ -68,6 +68,7 @@ fn report(start: &str, own_lines: bool, days: &[&str], closed: &[&str], now: &st
     }
     let flush = log_days::Flush {
         start: Some(at(start) / 1_000_000),
+        drops: Vec::new(),
         segments: vec![log_days::Segment {
             rows,
             marks: Vec::new(),

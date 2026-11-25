@@ -207,10 +207,12 @@ fn the_migration_goes_down_and_up_again() {
     let mut c = memory();
     write(&c, &[row("2026-11-24", 1, Signal::Logs, 1, 1)]).unwrap();
     // usage_daily is 18; the newest payload table, 19, the stored log counts,
-    // 20, the drain secret, 21, Davy's own project, 22, and savings, 23, too.
-    let before = store::SCHEMA_VERSION - 6;
+    // 20, the drain secret, 21, Davy's own project, 22, savings, 23, and
+    // drop rules, 24, too.
+    let before = store::SCHEMA_VERSION - 7;
     c.execute_batch(&format!(
-        "DROP TABLE latest_payloads; {UNDO} {} {} {} {} PRAGMA user_version={before};",
+        "DROP TABLE latest_payloads; {UNDO} {} {} {} {} {} PRAGMA user_version={before};",
+        crate::drops::UNDO,
         stored::UNDO,
         savings::UNDO,
         crate::self_report::own::UNDO,
@@ -246,7 +248,7 @@ fn sizes_read_in_powers_of_1000() {
         (u64::MAX, "18446.7 PB"),
     ];
     for (bytes, text) in cases {
-        assert_eq!(report::human(bytes), text, "{bytes}");
+        assert_eq!(human(bytes), text, "{bytes}");
     }
 }
 
@@ -308,6 +310,7 @@ fn stored_row(day: Date, project: i64, records: u64, bytes: u64) -> log_days::Ro
 fn stored_flush(rows: Vec<log_days::Row>) -> log_days::Flush {
     log_days::Flush {
         start: None,
+        drops: Vec::new(),
         segments: vec![log_days::Segment {
             rows,
             marks: Vec::new(),

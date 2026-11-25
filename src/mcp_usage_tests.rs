@@ -43,6 +43,7 @@ fn write_stored(c: &rusqlite::Connection, yesterday: jiff::civil::Date) {
     let earlier = yesterday.checked_sub(jiff::ToSpan::days(2)).unwrap();
     let flush = logs::store::log_days::Flush {
         start: None,
+        drops: Vec::new(),
         segments: vec![logs::store::log_days::Segment {
             rows: vec![
                 stored(earlier, 1, 1),
@@ -121,6 +122,7 @@ async fn usage_shows_the_counts_and_the_forecast_with_human_sizes() {
             "errors_days",
             "errors_discarded",
             "logs_days",
+            "logs_filtered",
             "logs_stored",
             "project",
             "signals"

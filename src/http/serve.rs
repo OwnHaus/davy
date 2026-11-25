@@ -77,7 +77,7 @@ fn admin_routes(
     Ok(admin)
 }
 
-type Tasks = [(&'static str, tokio::task::JoinHandle<()>); 3];
+type Tasks = [(&'static str, tokio::task::JoinHandle<()>); 4];
 
 /// The usage flusher, stopped between two sends rather than aborted, so a
 /// job it sent is never left without an answer.
@@ -103,7 +103,7 @@ fn tasks(
     smtp: Option<alert::mail::Smtp>,
     public_url: &url::Url,
     usage: &crate::usage::Counter,
-    log_days: &logs::store::LogDays,
+    log_writer: &LogWriter,
 ) -> anyhow::Result<(Tasks, Flusher)> {
     let sweeper = store::sweep_every(sender.clone(), SWEEP_EVERY, retention.errors);
     let checker = monitor::check::run(
@@ -119,10 +119,15 @@ fn tasks(
         NOTIFY_EVERY,
         public_url.clone(),
     );
+    let drops = crate::drops::reload_every(
+        store::open(data)?,
+        log_writer.drops.clone(),
+        crate::drops::RELOAD_EVERY,
+    );
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let flusher = crate::usage::flush_every(
         usage.clone(),
-        log_days.clone(),
+        log_writer.log_days.clone(),
         sender.clone(),
         crate::usage::FLUSH_EVERY,
         stopped,
@@ -132,6 +137,7 @@ fn tasks(
             ("sweeper", tokio::spawn(sweeper)),
             ("checker", tokio::spawn(checker)),
             ("notifier", tokio::spawn(notifier)),
+            ("drop rules", tokio::spawn(drops)),
         ],
         Flusher {
             stop,
@@ -257,6 +263,7 @@ pub async fn serve(
     let early = self_report.then(|| Early::install(data));
     let writer = store::Writer::start(store::open(data)?, 1024);
     let log_writer = log_writer(data, retention, writer.retention.clone().with_dir(data))?;
+    crate::drops::reload(&store::open(data)?, &log_writer.drops)?;
     let app = App {
         keys: Arc::new(Keys::new(store::open(data)?)),
         sender: writer.sender.clone(),
@@ -288,7 +295,6 @@ pub async fn serve(
     let routes = router(app, admin.merge(ui));
     let listener = tokio::net::TcpListener::bind(listen).await?;
     crate::ready::notify()?;
-    let log_days = log_writer.log_days.clone();
     let (tasks, flusher) = tasks(
         data,
         &writer.sender,
@@ -296,7 +302,7 @@ pub async fn serve(
         smtp,
         public_url,
         &usage,
-        &log_days,
+        &log_writer,
     )?;
     #[cfg(unix)]
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
