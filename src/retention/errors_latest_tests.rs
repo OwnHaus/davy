@@ -173,3 +173,42 @@ fn a_sampled_event_the_same_batch_expires_leaves_the_newest_payload_before_it() 
     let row = s.rows("SELECT issue_id || ':' || event FROM latest_payloads");
     assert_eq!(row, ["1:99"]);
 }
+
+#[test]
+fn a_sampled_event_swept_and_its_id_given_to_another_issue_keeps_the_row() {
+    let s = Server::new("errors-same-batch-sampled-reuse", &["api"]);
+    // 99 events: the row names event 99, and the next event is in the sample.
+    let timeouts = (0..99).map(|n| error("timeout", day(15) + n, "prod", "v1"));
+    s.ingest(1, timeouts.collect());
+    let row = || s.rows("SELECT issue_id || ':' || event FROM latest_payloads");
+    assert_eq!(row(), ["1:99"]);
+    let write = |job| Write {
+        job,
+        done: tokio::sync::oneshot::channel().0,
+    };
+    let hold = || crate::http::body::Budget::new(0).hold();
+    // Event 100 of timeout, sampled, expires in the sweep, and hang, a new
+    // issue, gets its id back in the same batch. The delete for timeout's
+    // sampled newest event must not take hang's event 100 for its own.
+    let batch = [
+        write(Job::Ingest {
+            project: 1,
+            events: vec![error("timeout", day(1), "prod", "v1")],
+            held: hold(),
+        }),
+        write(Job::Sweep {
+            at: day(20),
+            error_days: Days::new(10).unwrap(),
+        }),
+        write(Job::Ingest {
+            project: 1,
+            events: vec![error("hang", day(15), "prod", "v1")],
+            held: hold(),
+        }),
+    ];
+    let outcomes = store::write_batch(&mut store::open(&s.root).unwrap(), &batch);
+    assert_eq!(outcomes, [Ok(()), Ok(()), Ok(())]);
+    let event = s.rows("SELECT issue_id || ':' || id FROM events WHERE id=100");
+    assert_eq!(event, ["2:100"]);
+    assert_eq!(row(), ["1:99"]);
+}
