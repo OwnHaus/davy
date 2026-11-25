@@ -284,3 +284,36 @@ async fn a_status_change_applies_to_every_named_issue_or_to_none() {
             .starts_with("unknown field `why`")
     );
 }
+
+#[tokio::test]
+async fn the_event_of_an_issue_past_its_sample_is_its_newest() {
+    let (s, cookie) = shop();
+    // 52 events: the first 50 keep their payload, 51 lost its own when 52
+    // came, and 52, outside the sample, is kept for being the newest.
+    for n in 1..=52 {
+        add(
+            &s,
+            json!({ "event_id": format!("{n:032x}"), "message": "boom" }),
+        );
+    }
+    let r = read(&s, &cookie, "/ui/api/issues/1/event").await;
+    assert_eq!(
+        (r.status, &r.body["event_id"]),
+        (200, &json!(format!("{:032x}", 52)))
+    );
+    let named = format!("/ui/api/issues/1/event?event={:032x}", 52);
+    assert_eq!(read(&s, &cookie, &named).await.body, r.body);
+    let gone = read(
+        &s,
+        &cookie,
+        &format!("/ui/api/issues/1/event?event={:032x}", 51),
+    )
+    .await;
+    assert_eq!(
+        (gone.status, gone.body),
+        (
+            404,
+            json!({ "error": "Davy kept no payload of that event" })
+        )
+    );
+}

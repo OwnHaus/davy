@@ -675,3 +675,6 @@ async fn log_patterns_shows_what_fills_the_logs_and_its_id_finds_the_lines() {
 
 #[path = "mcp_usage_tests.rs"]
 mod usage_tests;
+
+#[path = "mcp_issue_tests.rs"]
+mod issue_tests;
