@@ -209,11 +209,17 @@ impl State {
         self.log_days.mark(Mark::AllBut(day, Vec::new()));
     }
 
-    /// Marks every row of a day not in `present`, once per server.
+    /// Marks every row of a day not in `present`, once per server. A log
+    /// directory that holds no day marks nothing: a restore that brought
+    /// SQLite back first or a mount that is missing looks the same, and a
+    /// mark is never taken back. The first start that finds a day marks
+    /// the rest. A fresh data directory has no row to mark anyway.
     pub(super) fn mark_absent(&mut self, present: BTreeSet<Date>) {
         if !self.listed {
             self.listed = true;
-            self.log_days.mark(Mark::Absent(present));
+            if !present.is_empty() {
+                self.log_days.mark(Mark::Absent(present));
+            }
         }
     }
 }

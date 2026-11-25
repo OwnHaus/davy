@@ -326,3 +326,40 @@ fn a_job_the_writer_did_not_commit_goes_back_before_what_came_since() {
     assert_eq!(marks, [vec![], vec![Mark::Only(d, vec![1])], vec![]]);
     assert_eq!(log_days.take_up_to(500), None);
 }
+
+#[test]
+fn a_start_that_finds_no_day_marks_nothing_until_one_comes_back() {
+    let dir = scratch("log-days-empty-root");
+    let now = now_ns();
+    let (old, new) = (now - 2 * DAY, now);
+    let c = memory();
+    let (mut state, _) = with_settings(&dir, 30);
+    state
+        .add(vec![record(1, old, old, "old"), record(1, new, new, "new")])
+        .unwrap();
+    state.commit().unwrap();
+    state.close_all().unwrap();
+    stored::write(&c, &state.log_days.take()).unwrap();
+    drop(state);
+    // A restore that brought SQLite back first, or a mount that is missing.
+    let away = dir.with_extension("away");
+    std::fs::rename(&dir, &away).unwrap();
+    std::fs::create_dir(&dir).unwrap();
+    let (mut state, _) = with_settings(&dir, 30);
+    state.retention(now, PASS).unwrap();
+    stored::write(&c, &state.log_days.take()).unwrap();
+    let (old, new) = (day_of(old).to_string(), day_of(new).to_string());
+    assert_eq!(
+        stored_rows(&c),
+        [(old.clone(), 1, 1, 0), (new.clone(), 1, 1, 0)]
+    );
+    // The logs come back without the old day: that one start marks it.
+    std::fs::remove_dir(&dir).unwrap();
+    std::fs::rename(&away, &dir).unwrap();
+    std::fs::remove_dir_all(dir.join(&old)).unwrap();
+    let (mut state, _) = with_settings(&dir, 30);
+    state.retention(now, PASS).unwrap();
+    stored::write(&c, &state.log_days.take()).unwrap();
+    assert_eq!(stored_rows(&c), [(old, 1, 1, 1), (new, 1, 1, 0)]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
