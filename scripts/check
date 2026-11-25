@@ -70,7 +70,7 @@ fi
 
 # Tests wait for the event they expect and none is skipped. scripts/test-sleeps
 # lists the sleeps that remain, and the counts must match it exactly.
-sleeps=$(git grep --untracked -c -e 'sleep(' -- 'src/*tests.rs' 'src/tests/*' || true)
+sleeps=$(git grep --untracked -c -e 'sleep(' -- 'src/*tests.rs' 'src/tests/*' 'examples/*tests.rs' || true)
 if ! printf '%s\n' "$sleeps" | awk -F: '
     BEGIN {
         while ((getline line < "scripts/test-sleeps") > 0) {
@@ -91,13 +91,13 @@ if ! printf '%s\n' "$sleeps" | awk -F: '
     }'; then
     problem 'wait for the event instead of sleeping, or lower the count in scripts/test-sleeps when a sleep goes'
 fi
-if git grep --untracked -n -e '#\[ignore' -- src; then
+if git grep --untracked -n -e '#\[ignore' -- src examples; then
     problem 'an ignored test in the lines above, fix it or delete it'
 fi
 
 # Big files are where agents pile up unrelated code. Split by responsibility.
 max_lines=700
-for f in $(git ls-files --cached --others --exclude-standard 'src/*.rs' 'src/**/*.rs'); do
+for f in $(git ls-files --cached --others --exclude-standard 'src/*.rs' 'src/**/*.rs' 'examples/*.rs'); do
     n=$(wc -l <"$f")
     if [ "$n" -gt "$max_lines" ]; then
         problem "$f has $n lines, the limit is $max_lines"
