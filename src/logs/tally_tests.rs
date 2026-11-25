@@ -8,12 +8,14 @@ use super::{
 use crate::logs::{
     LogLevel, LogRecord, LogSource,
     patterns::{self, OTHER},
-    store::{State, no_overrides},
+    store::{Overrides, State, no_overrides},
 };
+use crate::retention::Lock;
 use crate::test_support::scratch;
 use crate::time::{day_of, now_ns};
 use serde_json::json;
 use std::{
+    collections::HashMap,
     path::Path,
     time::{Duration, Instant},
 };
@@ -587,5 +589,32 @@ fn a_cut_removes_the_temporary_and_set_aside_copies_of_its_projects() {
         copies,
         "project 1 went, project 2 stayed whole"
     );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_retention_cut_drops_the_counts_of_its_projects_not_written_yet() {
+    let dir = scratch("tally-cut-unwritten");
+    let now = now_ns();
+    let old = now - 5 * DAY;
+    let day = dir.join(day_of(old).to_string());
+    let line = |project| LogRecord {
+        project_id: project,
+        ..line_at(old, now)
+    };
+    let read = || Ok(HashMap::from([(2, 3)]));
+    let mut state = State::new(dir.clone(), 30, Overrides::new(read, Lock::default()));
+    state.add(vec![line(1), line(1), line(2)]).unwrap();
+    state.commit().unwrap();
+    assert!(!day.join(name(1)).exists(), "no file is written yet");
+    state.retention(now, Duration::MAX).unwrap();
+    state.flush_tallies(Instant::now() + Duration::from_secs(3600));
+    assert_eq!(saved(&day, 1), 2);
+    assert!(
+        !day.join(name(2)).exists(),
+        "the counts of project 2 went with its logs"
+    );
+    state.close_all().unwrap();
+    assert!(!day.join(name(2)).exists());
     std::fs::remove_dir_all(&dir).unwrap();
 }
