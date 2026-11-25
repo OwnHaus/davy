@@ -72,7 +72,7 @@ fn connect_reuses_a_project_and_prints_local_instructions() {
     let kept = shown.as_object_mut().unwrap().remove("retention").unwrap();
     assert_eq!(
         shown,
-        serde_json::json!({"event_count":0,"last_event_time":null,"issue_count":0,"last_log_time":null,"scrub":{"keys":true,"credentials":true,"cards":true,"email":false,"ip":true,"personal":false,"extra_keys":[]}})
+        serde_json::json!({"event_count":0,"last_event_time":null,"issue_count":0,"last_log_time":null,"davy":{"warnings_24h":0,"errors_24h":0,"crashes_24h":[],"crashes_waiting":0},"scrub":{"keys":true,"credentials":true,"cards":true,"email":false,"ip":true,"personal":false,"extra_keys":[]}})
     );
     assert_eq!(kept["project"], "api");
     assert_eq!(kept["logs"]["days"], 30);

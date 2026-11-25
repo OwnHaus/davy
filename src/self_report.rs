@@ -26,6 +26,7 @@ use std::{
 pub mod crash;
 mod forward;
 mod limit;
+pub mod status;
 pub use forward::Forwarder;
 pub use limit::{Admit, Limiter, MAX_KEYS, OVERFLOW, PER_WINDOW, WINDOW_NS};
 

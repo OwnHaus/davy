@@ -145,6 +145,7 @@ pub async fn checks(data: &Path, defaults: retention::Defaults) -> Vec<Check> {
         },
     }
     checks.push(logs(&crate::logs::dir(data)));
+    checks.push(davy::davy(data, &d, crate::time::now_ms()));
     let (forecast, assumed) = forecast(data, defaults, crate::time::now_ns()).unzip();
     let errors_only = matches!(&forecast, Some(Ok(f)) if f.errors_only());
     let disk = disk(data, fs4::available_space(data).ok(), forecast);
@@ -669,6 +670,9 @@ fn open_mode(path: &Path) -> Option<u32> {
 fn open_mode(_path: &Path) -> Option<u32> {
     None
 }
+
+#[path = "doctor_davy.rs"]
+mod davy;
 
 #[cfg(test)]
 #[path = "doctor_tests.rs"]

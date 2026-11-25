@@ -88,6 +88,10 @@ async fn a_healthy_install_passes_every_check() {
                 "no SMTP server set, alerts go to webhooks and Slack only"
             ),
             ok("logs", "every day of logs is a directory of its own"),
+            ok(
+                "davy",
+                "no crash, error or warning of Davy's own in the last 24 hours"
+            ),
         ]
     );
 }

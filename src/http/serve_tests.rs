@@ -174,6 +174,46 @@ async fn a_warning_of_davy_is_found_with_search_logs_in_the_project_davy() {
     std::fs::remove_dir_all(&data).unwrap();
 }
 
+/// What an agent reads of the crash `issue` over `mcp`: the event with
+/// `issue_context` and the summary in `project_status`.
+async fn shows_crash(mcp: Router, issue: i64) {
+    let context = mcp_tool(
+        mcp.clone(),
+        "issue_context",
+        serde_json::json!({"issue_id": issue}),
+    )
+    .await;
+    let context: serde_json::Value = serde_json::from_str(&context).unwrap();
+    let event = &context["latest_event"];
+    assert_eq!(event["level"], "fatal", "{context}");
+    assert_eq!(
+        event["release"],
+        format!("davy@{}", env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(event["platform"], "rust");
+    let exception = &event["exceptions"][0];
+    assert_eq!(exception["type"], "panic");
+    assert_eq!(
+        exception["value"],
+        "index out of bounds: the len is 0 but the index is 3"
+    );
+    assert_eq!(exception["handled"], false);
+    assert_eq!(
+        exception["frames"][0]["function"],
+        "davy::logs::store::State::add"
+    );
+    let status = mcp_tool(mcp, "project_status", serde_json::json!({"slug": "davy"})).await;
+    let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+    let crashed = &status["davy"]["crashes_24h"];
+    assert_eq!(crashed[0]["issue_id"], issue, "{status}");
+    assert_eq!(
+        crashed[0]["title"],
+        "panic: index out of bounds: the len is 0 but the index is 3"
+    );
+    assert_eq!(crashed[0]["event_count"], 1);
+    assert_eq!(status["davy"]["crashes_waiting"], 0);
+}
+
 /// A crash file of an earlier run becomes an issue an agent opens with
 /// `issue_context`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -223,26 +263,7 @@ async fn a_crash_of_davy_is_an_issue_of_the_project_davy() {
     .await;
     let rows: serde_json::Value = serde_json::from_str(&found).unwrap();
     let issue = rows["rows"][0][0].as_i64().unwrap();
-    let context = mcp_tool(mcp, "issue_context", serde_json::json!({"issue_id": issue})).await;
-    let context: serde_json::Value = serde_json::from_str(&context).unwrap();
-    let event = &context["latest_event"];
-    assert_eq!(event["level"], "fatal", "{context}");
-    assert_eq!(
-        event["release"],
-        format!("davy@{}", env!("CARGO_PKG_VERSION"))
-    );
-    assert_eq!(event["platform"], "rust");
-    let exception = &event["exceptions"][0];
-    assert_eq!(exception["type"], "panic");
-    assert_eq!(
-        exception["value"],
-        "index out of bounds: the len is 0 but the index is 3"
-    );
-    assert_eq!(exception["handled"], false);
-    assert_eq!(
-        exception["frames"][0]["function"],
-        "davy::logs::store::State::add"
-    );
+    shows_crash(mcp, issue).await;
     assert!(
         app.usage
             .take()

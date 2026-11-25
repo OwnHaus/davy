@@ -478,7 +478,7 @@ async fn connect_reads_an_existing_key_but_never_creates_a_project() {
     let kept = status.as_object_mut().unwrap().remove("retention").unwrap();
     assert_eq!(
         status,
-        json!({"event_count":0,"last_event_time":null,"issue_count":0,"last_log_time":null,"scrub":{"keys":true,"credentials":true,"cards":true,"email":false,"ip":true,"personal":false,"extra_keys":[]}})
+        json!({"event_count":0,"last_event_time":null,"issue_count":0,"last_log_time":null,"davy":{"warnings_24h":0,"errors_24h":0,"crashes_24h":[],"crashes_waiting":0},"scrub":{"keys":true,"credentials":true,"cards":true,"email":false,"ip":true,"personal":false,"extra_keys":[]}})
     );
     assert_eq!(kept["errors"]["days"], 36_500);
 }

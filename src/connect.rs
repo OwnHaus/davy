@@ -145,6 +145,10 @@ pub struct Status {
     pub last_log_time: Option<String>,
     /// How long the project keeps its logs and errors.
     pub retention: retention::Retention,
+    /// Davy's own warnings, errors and crashes of the last 24 hours, kept in
+    /// the project `davy`, whatever project was asked for. A failure to
+    /// read them is an `error` field here and does not fail the status.
+    pub davy: crate::self_report::status::Davy,
 }
 
 /// Whether the project `slug` has sent anything yet, and how long it keeps
@@ -181,6 +185,7 @@ pub fn status(data: &Path, slug: &str, defaults: retention::Defaults) -> anyhow:
         issue_count,
         last_log_time,
         retention,
+        davy: crate::self_report::status::Davy::read(&c, data, time::now_ms()),
     })
 }
 
