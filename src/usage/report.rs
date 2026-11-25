@@ -313,8 +313,17 @@ impl Report {
             Ok(f) => f,
         };
         let Some(n) = f.days_left else {
+            let past = self
+                .disk
+                .as_ref()
+                .is_ok_and(|d| d.used() >= d.total.saturating_sub(f.headroom));
+            let past = if past {
+                ". The disk is past total minus headroom already, from files Davy does not grow, so watch its free space"
+            } else {
+                ""
+            };
             return format!(
-                "logs never fill the disk at the current rate: even the longest log retention, {} days, holds Davy at {}",
+                "logs never fill the disk at the current rate: even the longest log retention, {} days, holds Davy at {}{past}",
                 f.longest_days,
                 human(f.steady_state)
             );

@@ -247,14 +247,19 @@ fn measured(input: &Input, shortest: u32) -> Result<u64, NoForecast> {
 }
 
 /// Days until used space reaches total minus headroom, while Davy grows by
-/// `growth` a day until it reaches `steady`. `None` when it never does.
+/// `growth` a day until it reaches `steady`. `None` when it never does,
+/// which includes a disk already past the limit while Davy no longer
+/// grows: other files filled it, and logs add nothing more.
 fn days_left(input: &Input, growth: u64, steady: u64, headroom: u64) -> Option<u64> {
     let limit = input.total.saturating_sub(headroom);
+    let room = steady.saturating_sub(input.davy);
+    if growth == 0 || room == 0 {
+        return None;
+    }
     if input.used >= limit {
         return Some(0);
     }
-    let room = steady.saturating_sub(input.davy);
-    if growth == 0 || input.used.saturating_add(room) < limit {
+    if input.used.saturating_add(room) < limit {
         return None;
     }
     Some((limit - input.used).div_ceil(growth))

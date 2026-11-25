@@ -471,7 +471,12 @@ fn forecast_report(kept: (u32, u32), days_left: Option<u64>) -> Report {
     Report {
         since: day("2026-11-24"),
         days: 1.0,
-        disk: Ok(disk::Disk::default()),
+        // 2 TB used of 5 TB, under the limit of total minus headroom.
+        disk: Ok(disk::Disk {
+            total: 5_000_000_000_000,
+            free: 3_000_000_000_000,
+            ..disk::Disk::default()
+        }),
         forecast: Ok(forecast::Forecast {
             growth: 10_000_000_000,
             shortest_days: kept.0,
@@ -521,6 +526,16 @@ fn a_worst_case_says_so_in_the_summary_and_the_json() {
     assert_eq!(
         forecast_report((30, 365), Some(0)).summary(),
         "the disk is past total minus headroom now"
+    );
+    let mut past = forecast_report((30, 30), None);
+    past.disk = Ok(disk::Disk {
+        total: 5_000_000_000_000,
+        free: 50_000_000_000,
+        ..disk::Disk::default()
+    });
+    assert_eq!(
+        past.summary(),
+        "logs never fill the disk at the current rate: even the longest log retention, 30 days, holds Davy at 3.7 TB. The disk is past total minus headroom already, from files Davy does not grow, so watch its free space"
     );
 }
 

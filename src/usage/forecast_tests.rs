@@ -287,6 +287,27 @@ fn a_disk_past_the_limit_is_full_today() {
 }
 
 #[test]
+fn a_disk_past_the_limit_with_davy_no_longer_growing_never_fills_from_logs() {
+    // 460 GB used of 500 GB, past the 450 GB limit, by files that are not
+    // Davy's growth: Davy takes 270 GB, past its 258 GB steady state.
+    let stable = Input {
+        used: 460 * GB,
+        davy: 270 * GB,
+        ..filling()
+    };
+    let f = forecast(&stable, &WhatIf::default()).unwrap();
+    assert_eq!((f.days_left, f.full_on), (None, None));
+    // No logs a day: nothing of Davy grows either.
+    let quiet = Input {
+        used: 460 * GB,
+        closed: closed(&[0; 7]),
+        ..filling()
+    };
+    let f = forecast(&quiet, &WhatIf::default()).unwrap();
+    assert_eq!((f.growth, f.days_left, f.full_on), (0, None, None));
+}
+
+#[test]
 fn a_what_if_must_name_a_project_that_exists_keep_logs_and_not_split_bytes() {
     let check = |what_if: WhatIf| what_if.check(["api", "shop"].into_iter());
     let unknown = WhatIf {
