@@ -207,17 +207,22 @@ pub fn prune(c: &Connection, at_ms: i64) -> rusqlite::Result<()> {
 /// Sends the counts and what the log writer stored and cut to the writer
 /// every `period`. What the writer did not commit, because its queue was
 /// full or the write failed, waits for the next tick. The task ends when
-/// the writer stops.
+/// the writer stops, or between two sends once `stop` resolves, so a job
+/// it sent is answered and one that failed is put back for the last flush.
 pub async fn flush_every(
     counter: Counter,
     log_days: LogDays,
     sender: store::Sender,
     period: Duration,
+    mut stop: tokio::sync::oneshot::Receiver<()>,
 ) {
     let mut ticks = tokio::time::interval(period);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        ticks.tick().await;
+        tokio::select! {
+            _ = ticks.tick() => {}
+            _ = &mut stop => return,
+        }
         match send(&counter, &log_days, &sender).await {
             Ok(()) | Err(Refused::Full) => {}
             Err(Refused::Stopped) => return,

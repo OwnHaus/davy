@@ -77,7 +77,23 @@ fn admin_routes(
     Ok(admin)
 }
 
-type Tasks = [(&'static str, tokio::task::JoinHandle<()>); 4];
+type Tasks = [(&'static str, tokio::task::JoinHandle<()>); 3];
+
+/// The usage flusher, stopped between two sends rather than aborted, so a
+/// job it sent is never left without an answer.
+struct Flusher {
+    stop: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Flusher {
+    async fn stop(self) -> anyhow::Result<()> {
+        drop(self.stop);
+        self.task
+            .await
+            .map_err(|e| anyhow::anyhow!("usage flusher: {e}"))
+    }
+}
 
 /// Spawns the tasks that queue jobs for the writer on a timer.
 fn tasks(
@@ -88,7 +104,7 @@ fn tasks(
     public_url: &url::Url,
     usage: &crate::usage::Counter,
     log_days: &logs::store::LogDays,
-) -> anyhow::Result<Tasks> {
+) -> anyhow::Result<(Tasks, Flusher)> {
     let sweeper = store::sweep_every(sender.clone(), SWEEP_EVERY, retention.errors);
     let checker = monitor::check::run(
         store::open(data)?,
@@ -103,18 +119,25 @@ fn tasks(
         NOTIFY_EVERY,
         public_url.clone(),
     );
+    let (stop, stopped) = tokio::sync::oneshot::channel();
     let flusher = crate::usage::flush_every(
         usage.clone(),
         log_days.clone(),
         sender.clone(),
         crate::usage::FLUSH_EVERY,
+        stopped,
     );
-    Ok([
-        ("sweeper", tokio::spawn(sweeper)),
-        ("checker", tokio::spawn(checker)),
-        ("notifier", tokio::spawn(notifier)),
-        ("usage flusher", tokio::spawn(flusher)),
-    ])
+    Ok((
+        [
+            ("sweeper", tokio::spawn(sweeper)),
+            ("checker", tokio::spawn(checker)),
+            ("notifier", tokio::spawn(notifier)),
+        ],
+        Flusher {
+            stop,
+            task: tokio::spawn(flusher),
+        },
+    ))
 }
 
 /// Stops the tasks. They hold senders, and the writer thread ends only when
@@ -174,7 +197,7 @@ pub async fn serve(
     let listener = tokio::net::TcpListener::bind(listen).await?;
     crate::ready::notify()?;
     let log_days = log_writer.log_days.clone();
-    let tasks = tasks(
+    let (tasks, flusher) = tasks(
         data,
         &writer.sender,
         retention,
@@ -196,6 +219,7 @@ pub async fn serve(
         })
         .await;
     stop(tasks).await?;
+    flusher.stop().await?;
     shut_down(log_writer, &usage, writer).await?;
     result?;
     Ok(())

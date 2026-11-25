@@ -109,11 +109,13 @@ async fn the_flush_task_hands_the_counts_to_the_writer_and_stops_with_it() {
     let (sender, inbox) = crossbeam_channel::bounded(1);
     let counter = Counter::default();
     counter.put(day("2026-11-24"), 2, Signal::Feedback, Count::new(1, 60));
+    let (_stop, stopped) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(flush_every(
         counter.clone(),
         LogDays::default(),
         sender,
         Duration::from_millis(1),
+        stopped,
     ));
     let (rows, write) = next(&inbox).await;
     assert_eq!(rows, [row("2026-11-24", 2, Signal::Feedback, 1, 60)]);
@@ -128,11 +130,13 @@ async fn counts_the_writer_failed_to_store_go_out_again_on_the_next_tick() {
     let (sender, inbox) = crossbeam_channel::bounded(1);
     let counter = Counter::default();
     counter.put(day("2026-11-24"), 1, Signal::Logs, Count::new(3, 300));
+    let (_stop, stopped) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(flush_every(
         counter.clone(),
         LogDays::default(),
         sender,
         Duration::from_millis(1),
+        stopped,
     ));
     let (first, write) = next(&inbox).await;
     write.done.send(Err("disk I/O error".into())).unwrap();

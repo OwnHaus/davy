@@ -261,3 +261,30 @@ async fn stored_logs_go_after_the_counts_and_come_back_when_the_writer_fails() {
     assert_eq!(refused.to_string(), "disk I/O error");
     assert_eq!(stored.take(), sent, "put back for the next flush");
 }
+
+#[tokio::test]
+async fn a_stopped_flusher_waits_for_the_job_it_sent_and_puts_a_failed_one_back() {
+    let (sender, inbox) = crossbeam_channel::bounded(1);
+    let stored = LogDays::new(NOV_23);
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(crate::usage::flush_every(
+        crate::usage::Counter::default(),
+        stored.clone(),
+        sender,
+        std::time::Duration::from_secs(3600),
+        stopped,
+    ));
+    let write = next(&inbox).await;
+    let store::Job::LogDays(sent) = &write.job else {
+        panic!("a log_days job");
+    };
+    let sent = sent.clone();
+    drop(stop);
+    tokio::task::yield_now().await;
+    write
+        .done
+        .send(Err("disk I/O error".into()))
+        .expect("a stopped flusher still waits for the answer");
+    task.await.unwrap();
+    assert_eq!(stored.take(), sent, "put back for the last flush");
+}
