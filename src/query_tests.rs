@@ -397,3 +397,62 @@ fn a_data_path_that_would_misread_as_a_uri_opens() {
     }
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// The query the notes give for every stored payload of issue 1.
+const PAYLOADS: &str = "SELECT e.id, payload_json(coalesce(e.payload, l.payload)) AS payload FROM events e LEFT JOIN latest_payloads l ON l.issue_id = e.issue_id AND l.event = e.id WHERE e.issue_id = 1";
+
+/// Issue 1 with 52 events, each with its number in `extra.n`, so event 51
+/// is outside the sample and the newest, and issue 2 with one event.
+fn store_with_a_newest_payload() -> (std::path::PathBuf, Connection) {
+    let data = crate::test_support::scratch("query-latest");
+    let c = store::open(&data).unwrap();
+    store::create_project(&c, "web").unwrap();
+    for n in 0..52 {
+        let v = json!({"message":"boom","extra":{"n":n}});
+        store::insert(&c, 1, &crate::event::ErrorEvent::parse(v).unwrap()).unwrap();
+    }
+    let other = json!({"message":"other","extra":{"n":"other"}});
+    store::insert(&c, 1, &crate::event::ErrorEvent::parse(other).unwrap()).unwrap();
+    (data.clone(), open(&data).unwrap())
+}
+
+#[test]
+fn the_notes_read_the_newest_payload_of_an_issue() {
+    let (data, c) = store_with_a_newest_payload();
+    assert!(schema(&c).unwrap().contains(PAYLOADS), "the notes changed");
+    // A row of issue 2 that names event 51 of issue 1, as one left behind
+    // when its event was deleted and the id given again. It is not read.
+    let stray = zstd::encode_all(br#"{"extra":{"n":"stray"}}"#.as_slice(), 1).unwrap();
+    store::open(&data)
+        .unwrap()
+        .execute(
+            "INSERT INTO latest_payloads(issue_id, event, payload) VALUES (2, 51, ?1)",
+            [stray],
+        )
+        .unwrap();
+    let r = run(
+        &c,
+        &format!("SELECT json_extract(payload, '$.extra.n') FROM ({PAYLOADS}) ORDER BY id"),
+    )
+    .unwrap();
+    let n: Vec<Value> = r.rows.into_iter().map(|mut row| row.remove(0)).collect();
+    let expected: Vec<Value> = (0..50)
+        .map(|n| json!(n))
+        .chain([Value::Null, json!(51)])
+        .collect();
+    assert_eq!(n, expected);
+}
+
+#[test]
+fn the_notes_find_the_newest_payload_by_its_key() {
+    let (_data, c) = store_with_a_newest_payload();
+    let r = run(&c, &format!("EXPLAIN QUERY PLAN {PAYLOADS}")).unwrap();
+    let plan: Vec<&Value> = r.rows.iter().map(|row| &row[3]).collect();
+    assert_eq!(
+        plan,
+        [
+            "SEARCH e USING INDEX events_issue_timestamp (issue_id=?)",
+            "SEARCH l USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN"
+        ]
+    );
+}
