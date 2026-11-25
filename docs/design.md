@@ -233,7 +233,7 @@ pub struct LogRecord {
     pub project_id: i64,
     pub timestamp: i64,          // unix nanoseconds; logs need sub-millisecond order inside a burst
     pub observed_at: i64,        // unix nanoseconds, when Davy received it
-    pub source: LogSource,       // Logtail | Otlp | Sentry
+    pub source: LogSource,       // Logtail | Otlp | Sentry | Vercel
     pub level: LogLevel,         // Trace < Debug < Info < Warn < Error < Fatal, stored as 1..=6
     pub message: String,
     pub service: Option<String>,
@@ -267,6 +267,19 @@ One timestamp function for every source. A number below 1e11 is seconds (fractio
 - `AnyValue` converts to JSON as string, bool, integer, float, array, object (from a kvlist), and base64 string (from bytes).
 
 **Sentry `log` item.** `ItemKind::Log` moves from `Drop` to a new `Disposition::StoreLogs`. The item header has `item_count` and `content_type: application/vnd.sentry.items.log+json` but no `length`, so the payload runs to the end of its line. The payload is `{"version":2,"items":[{"timestamp": <float seconds>, "trace_id", "span_id"?, "level", "body", "severity_number"?, "attributes": {"<key>": {"value": ..., "type": ...}}}]}`. Attributes are flattened to `<key>: value`. `service.name`, when present, becomes `service`. An envelope with only log items still answers `200 {"id": ...}`. A log item that does not parse is skipped and the rest of the envelope is stored, as with other unknown items.
+
+**Vercel Log Drains.** The body of a custom drain endpoint (<https://vercel.com/docs/drains/reference/logs>): a JSON array of records, one record, or one record per line (NDJSON). The content type does not matter: a body that is not one JSON value is read as NDJSON, and a record that is not an object is skipped, as for Logtail. Mapping:
+
+- `timestamp`, unix milliseconds, is the timestamp, through the one timestamp function.
+- `level` (`info`, `warning`, `error`, `fatal`) through the level table, so `warning` is Warn.
+- `message` is the message. Vercel cuts it at 256 KB and Davy at 64 KiB, as for every source.
+- `projectName` becomes `service`, or `projectId` when there is no name. `projectId` stays an attribute too, since the Vercel API takes it.
+- `traceId` and `spanId` become `trace_id` and `span_id` when they are valid hex. Older drains also send `trace.id` and `span.id` with the same values: they are read when `traceId` is missing and dropped when they hold the id already lifted.
+- Every other key stays in `attributes` under Vercel's own name, nested `proxy` object included, so the drain reference is the attribute reference: `attributes.statusCode:500`, `attributes.source:lambda`, `attributes.proxy.clientIp`. `clientIp` is scrubbed like any IP ("Server-side data scrubbing").
+- Vercel's `id` stays an attribute and is not used to drop duplicates. No log source is deduplicated, so a batch that Davy stored and Vercel sends again, after a lost answer or a timeout, is stored twice.
+
+No drain has been captured yet. The adapter follows Vercel's documented schema and has not been checked against a live drain, and its tests use the two example records of Vercel's reference verbatim, as JSON and as NDJSON.
+
 
 ### Storage (Tantivy, one index per UTC day)
 

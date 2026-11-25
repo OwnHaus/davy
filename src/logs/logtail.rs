@@ -65,7 +65,7 @@ pub fn parse(
     Ok(records)
 }
 
-fn json(body: &[u8]) -> Result<Vec<Value>, String> {
+pub(super) fn json(body: &[u8]) -> Result<Vec<Value>, String> {
     match serde_json::from_slice(body) {
         Ok(v) => Ok(vec![v]),
         Err(e) => ndjson(body).map_err(|line_err| format!("{e} (as ndjson: {line_err})")),
@@ -158,7 +158,7 @@ pub(crate) fn msgpack_timestamp(b: &[u8]) -> Option<i64> {
     secs.checked_mul(1_000_000_000)?.checked_add(nanos)
 }
 
-fn take_str(m: &mut Map<String, Value>, key: &str) -> Option<String> {
+pub(super) fn take_str(m: &mut Map<String, Value>, key: &str) -> Option<String> {
     match m.remove(key) {
         Some(Value::String(s)) => Some(s),
         Some(other) => {
@@ -169,7 +169,7 @@ fn take_str(m: &mut Map<String, Value>, key: &str) -> Option<String> {
     }
 }
 
-fn take_id(m: &mut Map<String, Value>, key: &str, len: usize) -> Option<String> {
+pub(super) fn take_id(m: &mut Map<String, Value>, key: &str, len: usize) -> Option<String> {
     let id = m
         .get(key)
         .and_then(Value::as_str)

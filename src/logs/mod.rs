@@ -4,6 +4,7 @@ pub mod otlp;
 pub mod patterns;
 pub mod sentry;
 pub mod store;
+pub mod vercel;
 
 use crate::time;
 use serde::Serialize;
@@ -34,6 +35,7 @@ pub enum LogSource {
     Logtail,
     Otlp,
     Sentry,
+    Vercel,
 }
 
 impl LogSource {
@@ -42,12 +44,14 @@ impl LogSource {
             Self::Logtail => 1,
             Self::Otlp => 2,
             Self::Sentry => 3,
+            Self::Vercel => 4,
         }
     }
     pub fn from_code(code: u64) -> Self {
         match code {
             2 => Self::Otlp,
             3 => Self::Sentry,
+            4 => Self::Vercel,
             _ => Self::Logtail,
         }
     }
