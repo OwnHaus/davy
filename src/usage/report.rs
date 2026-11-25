@@ -464,13 +464,25 @@ impl Report {
         })
     }
 
-    /// When the disk fills, in a sentence, and in a worst case why the
-    /// day is the earliest.
+    /// When the disk fills, in a sentence, in a worst case why the day is
+    /// the earliest, and on errors while logs are left out that it may be
+    /// earlier.
     pub fn summary(&self) -> String {
         let f = match &self.forecast {
             Err(reason) => return format!("no forecast: {reason}"),
             Ok(f) => f,
         };
+        let when = self.when(f);
+        if f.logs_pending() && f.days_left != Some(0) {
+            format!(
+                "{when}. Logs are not in this forecast yet, so the disk may fill earlier once they count"
+            )
+        } else {
+            when
+        }
+    }
+
+    fn when(&self, f: &Forecast) -> String {
         let rates = rates(f);
         if f.beyond_10_years {
             return format!(
@@ -488,6 +500,12 @@ impl Report {
             } else {
                 ""
             };
+            if f.errors_only() {
+                return format!(
+                    "errors never fill the disk at the current rate: each project's error retention holds Davy at {}{past}",
+                    human(f.steady_state)
+                );
+            }
             let (what, errors, holds) = match f.errors {
                 Some(_) => (
                     "logs and errors",
@@ -541,6 +559,7 @@ mod text;
 /// them.
 fn rates(f: &Forecast) -> String {
     match f.errors {
+        Some(e) if f.errors_only() => format!("{} of errors a day", human(e.growth)),
         Some(e) => format!(
             "{} of logs and {} of errors a day",
             rate(f),
@@ -553,3 +572,7 @@ fn rates(f: &Forecast) -> String {
 #[cfg(test)]
 #[path = "report_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "report_forecast_tests.rs"]
+mod forecast_tests;

@@ -199,21 +199,33 @@ fn only_closed_days_within_the_shortest_retention_count() {
 
 #[test]
 fn too_few_closed_days_no_retention_has_cut_give_no_forecast() {
-    for (sizes, kept, first, need) in [
-        (vec![], 30, "2026-10-25", 2),
-        (vec![5 * GB], 30, "2026-10-25", 2),
-        (vec![], 1, "2026-11-23", 1),
-    ] {
+    let input = Input {
+        closed: closed(&[5 * GB]),
+        projects: projects(&[("api", 30)]),
+        ..filling()
+    };
+    assert_eq!(
+        forecast(&input, &WhatIf::default()),
+        Err(NoForecast::History(
+            "closed log days since 2026-10-25, the first day no retention has cut: the disk has 1, a forecast needs 2".to_owned()
+        ))
+    );
+}
+
+/// No closed day in the window, no raw bytes and no errors: nothing grows,
+/// which the reason says instead of the closed days alone.
+#[test]
+fn a_server_where_nothing_grows_has_no_forecast() {
+    for (kept, first) in [(30, "2026-10-25"), (1, "2026-11-23")] {
         let input = Input {
-            closed: closed(&sizes),
+            closed: Vec::new(),
             projects: projects(&[("api", kept)]),
             ..filling()
         };
         assert_eq!(
             forecast(&input, &WhatIf::default()),
             Err(NoForecast::History(format!(
-                "closed log days since {first}, the first day no retention has cut: the disk has {}, a forecast needs {need}",
-                sizes.len()
+                "nothing grows yet: Davy counted no raw log bytes in the last 30 days, the disk holds no closed log day since {first}, and no project received error events in the last 7 days"
             )))
         );
     }

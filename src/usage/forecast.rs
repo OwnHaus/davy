@@ -20,7 +20,7 @@ mod estimate;
 mod fill;
 mod growth;
 
-pub use errors::{ErrorBasis, Errors, MIN_EVENTS, ProjectErrors, StoreDay};
+pub use errors::{ErrorBasis, Errors, Lean, MIN_EVENTS, ProjectErrors, StoreDay};
 pub use fill::{Fill, HORIZON_DAYS};
 pub use growth::{Basis, Confidence, LOOK_BACK, Logs, RawDay, Spread, hours};
 
@@ -35,7 +35,8 @@ pub const DAYS: usize = 7;
 /// Errors that add more than this of what the bound adds, or of the room
 /// left to the limit where it never fills, in parts per million, lower a
 /// high confidence while their bytes per event are not measured on 7
-/// days: 5%.
+/// days: 5%. On errors alone, errors that began recently lower it once
+/// they add more than this of the errors' growth.
 const MEDIUM_SHARE_PPM: u64 = 50_000;
 /// The share of the filesystem the forecast keeps free.
 pub const HEADROOM_PERCENT: u64 = 10;
@@ -207,14 +208,38 @@ impl Forecast {
     /// fewest days there can be at the current rate of logs: the disk
     /// fills that day or later, or never.
     pub fn worst_case(&self) -> bool {
-        self.shortest_days < self.longest_days
+        self.shortest_days < self.longest_days && !self.errors_only()
+    }
+
+    /// Whether logs add nothing and the forecast rests on errors alone:
+    /// log retentions then hold no growth to cap.
+    pub fn errors_only(&self) -> bool {
+        self.logs
+            .as_ref()
+            .is_some_and(|l| matches!(l.basis, Basis::ErrorsOnly { .. }))
+    }
+
+    /// Whether the forecast rests on errors alone while logs that arrived
+    /// are too few or too new for a log basis: it may then fill earlier.
+    pub fn logs_pending(&self) -> bool {
+        self.logs.as_ref().is_some_and(|l| {
+            matches!(
+                l.basis,
+                Basis::ErrorsOnly {
+                    logs_pending: true,
+                    ..
+                }
+            )
+        })
     }
 
     /// What the estimate takes that the bound does not, in a phrase: each
     /// project's own retention where they differ, else only the middle
     /// growth.
     pub fn estimate_takes(&self) -> &'static str {
-        if self.worst_case() {
+        if self.errors_only() {
+            "at the middle bytes per event of errors"
+        } else if self.worst_case() {
             "with each project's logs kept as long as it keeps them and packing alike"
         } else {
             "at the middle growth of logs"
@@ -265,11 +290,19 @@ pub fn forecast(input: &Input, what_if: &WhatIf) -> Result<Forecast, NoForecast>
     let after = kept_after(input, what_if);
     let longest = after.iter().map(|(_, n)| *n).max();
     let longest = longest.unwrap_or(what_if.logs_days.unwrap_or(input.default_days));
+    let found = errors::errors(
+        &input.errors,
+        &input.store,
+        input.prior,
+        input.today,
+        input.now,
+    );
     let logs = match what_if.logs_bytes_per_day {
         Some(_) => None,
-        None => Some(growth::logs(
+        None => Some(log_growth(
             input,
-            measured(input, shortest.unwrap_or(input.default_days)),
+            shortest.unwrap_or(input.default_days),
+            found.as_ref(),
         )?),
     };
     let (growth, range) = match (&logs, what_if.logs_bytes_per_day) {
@@ -278,22 +311,21 @@ pub fn forecast(input: &Input, what_if: &WhatIf) -> Result<Forecast, NoForecast>
     };
     let headroom = input.total / 100 * HEADROOM_PERCENT;
     let limit = input.total.saturating_sub(headroom);
-    let found = errors::errors(
-        &input.errors,
-        &input.store,
-        input.prior,
-        input.today,
-        input.now,
-    );
     let none = Vec::new();
     let (bound_errors, estimate_errors) = found
         .as_ref()
         .map_or((&none, &none), |f| (&f.bound, &f.estimate));
     let freed = freed(input, longest);
-    let run = |growth| bound(input, growth, longest, freed, bound_errors, limit);
-    let b = run(growth);
+    let run = |growth, errors: &[Part]| bound(input, growth, longest, freed, errors, limit);
+    let b = run(growth, bound_errors);
     let fill = Fill::new(input.today, b.days);
-    let at = |growth| Fill::new(input.today, run(growth).days).full_on;
+    let at = |growth, errors: &[Part]| Fill::new(input.today, run(growth, errors).days).full_on;
+    // Logs that add nothing have no range of their own: the errors' bytes
+    // per event of the bound and of the estimate give it.
+    let full_on_range = match logs.as_ref().map(|l| l.basis) {
+        Some(Basis::ErrorsOnly { .. }) => [at(0, bound_errors), at(0, estimate_errors)],
+        _ => [at(range.high, bound_errors), at(range.low, bound_errors)],
+    };
     let split = logs
         .as_ref()
         .map(|l| estimate::logs(input, l, &after, longest));
@@ -313,9 +345,16 @@ pub fn forecast(input: &Input, what_if: &WhatIf) -> Result<Forecast, NoForecast>
         days_left: fill.days_left,
         full_on: fill.full_on,
         beyond_10_years: fill.beyond_10_years,
-        unseen: unseen(input, what_if, &after, longest, by_project),
+        unseen: match &logs {
+            Some(l)
+                if what_if.logs_days.is_some() && matches!(l.basis, Basis::ErrorsOnly { .. }) =>
+            {
+                Some(LOGS_AS_0.to_owned())
+            }
+            _ => unseen(input, what_if, &after, longest, by_project),
+        },
         logs,
-        full_on_range: [at(range.high), at(range.low)],
+        full_on_range,
         estimate,
     })
 }
@@ -442,6 +481,11 @@ fn kept_after<'a>(input: &'a Input, what_if: &WhatIf) -> Vec<(&'a str, u32)> {
         .collect()
 }
 
+/// What a what-if of a log retention does to a forecast on errors alone,
+/// which takes no log retention: only the closed log days it deletes
+/// leave the disk.
+const LOGS_AS_0: &str = "this forecast counts logs as 0, as it rests on errors alone, so a log retention changes it only by the log days on disk it deletes";
+
 /// Why the what-if for one project leaves the bound as it is, when it
 /// does: another project keeps logs `longest` days with it and without
 /// it. The bound already takes the project's logs as kept that long, and
@@ -476,6 +520,53 @@ fn unseen(
     })
 }
 
+/// The log growth. Logs add nothing where Davy counted no raw log bytes
+/// and the direct method finds no closed day, and [`growth::logs`] has no
+/// forecast where logs are too few or too new. Either way a growth of 0
+/// where errors grow in `found`, which with logs that arrived can only
+/// understate, so its confidence is low. Without errors there is no
+/// forecast. A server with a log basis gets what it got before.
+fn log_growth(
+    input: &Input,
+    shortest: u32,
+    found: Option<&errors::Found>,
+) -> Result<Logs, NoForecast> {
+    let first = first_uncut(input, shortest);
+    let day = input
+        .closed
+        .iter()
+        .any(|(day, _)| *day >= first && *day < input.today);
+    let pending = if day || growth::counted_bytes(input) > 0 {
+        match growth::logs(input, measured(input, shortest)) {
+            Err(NoForecast::History(why)) => Some(why),
+            logs => return logs,
+        }
+    } else {
+        None
+    };
+    match (found, pending) {
+        (Some(f), pending) => Ok(growth::errors_only(
+            input,
+            f.lean,
+            first,
+            pending.as_deref(),
+        )),
+        (None, Some(why)) => Err(NoForecast::History(why)),
+        (None, None) => Err(NoForecast::History(format!(
+            "nothing grows yet: Davy counted no raw log bytes in the last 30 days, the disk holds no closed log day since {first}, and no project received error events in the last 7 days"
+        ))),
+    }
+}
+
+/// The first day no retention has cut: within the `shortest` retention of
+/// any project.
+fn first_uncut(input: &Input, shortest: u32) -> Date {
+    input
+        .today
+        .checked_sub(i64::from(shortest).days())
+        .unwrap_or(Date::MIN)
+}
+
 /// What the disk sizes of the closed days measured.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Direct {
@@ -492,10 +583,7 @@ pub struct Direct {
 /// project. An older day lost the logs of the projects that keep fewer
 /// days, and would make the growth look smaller than it is.
 fn measured(input: &Input, shortest: u32) -> Result<Direct, NoForecast> {
-    let first = input
-        .today
-        .checked_sub(i64::from(shortest).days())
-        .unwrap_or(Date::MIN);
+    let first = first_uncut(input, shortest);
     let days: Vec<&(Date, u64)> = input
         .closed
         .iter()
@@ -537,3 +625,11 @@ fn median(sizes: &[u64]) -> Option<u64> {
 #[cfg(test)]
 #[path = "forecast_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "forecast_errors_only_tests.rs"]
+mod errors_only_tests;
+
+#[cfg(test)]
+#[path = "forecast_pending_tests.rs"]
+mod pending_tests;

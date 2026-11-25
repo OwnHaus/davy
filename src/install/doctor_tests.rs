@@ -560,13 +560,26 @@ fn the_disk_line_says_which_default_retention_it_assumed() {
         )
     };
     assert_eq!(
-        assuming(line(), Some(90)),
+        assuming(line(), Some(90), false),
         ok(
             "disk",
             "40 GiB free, logs never fill it at the current rate, assuming 90 days of logs for projects without their own"
         )
     );
-    assert_eq!(assuming(line(), None), line());
+    assert_eq!(assuming(line(), None, false), line());
+}
+
+/// A forecast on errors alone takes no log retention, so the line does not
+/// say it assumed one.
+#[test]
+fn the_disk_line_of_errors_alone_assumes_no_log_retention() {
+    let line = || {
+        ok(
+            "disk",
+            "40 GiB free, errors never fill it at the current rate",
+        )
+    };
+    assert_eq!(assuming(line(), Some(30), true), line());
 }
 
 #[test]

@@ -146,8 +146,9 @@ pub async fn checks(data: &Path, defaults: retention::Defaults) -> Vec<Check> {
     }
     checks.push(logs(&crate::logs::dir(data)));
     let (forecast, assumed) = forecast(data, defaults, crate::time::now_ns()).unzip();
+    let errors_only = matches!(&forecast, Some(Ok(f)) if f.errors_only());
     let disk = disk(data, fs4::available_space(data).ok(), forecast);
-    checks.push(assuming(disk, assumed.flatten()));
+    checks.push(assuming(disk, assumed.flatten(), errors_only));
     checks
 }
 
@@ -446,9 +447,10 @@ fn forecast(
 }
 
 /// `disk` with the default log retention its forecast assumed, which
-/// doctor cannot read from a running server.
-fn assuming(mut disk: Check, days: Option<u32>) -> Check {
-    if let Some(n) = days {
+/// doctor cannot read from a running server. A forecast on errors alone
+/// takes no log retention.
+fn assuming(mut disk: Check, days: Option<u32>, errors_only: bool) -> Check {
+    if let Some(n) = days.filter(|_| !errors_only) {
         let note = format!(", assuming {n} days of logs for projects without their own");
         disk.detail.push_str(&note);
     }
@@ -464,7 +466,12 @@ fn assuming(mut disk: Check, days: Option<u32>) -> Check {
 /// forecast missing for another reason has a fix of its own.
 fn disk(data: &Path, free: Option<u64>, forecast: Option<Result<Forecast, NoForecast>>) -> Check {
     let d = sh(&data.to_string_lossy());
-    let retention = format!("davy project retention SLUG --data {d} --logs N");
+    // Logs that add nothing leave error retention to shorten.
+    let signal = match &forecast {
+        Some(Ok(f)) if f.errors_only() => "errors",
+        _ => "logs",
+    };
+    let retention = format!("davy project retention SLUG --data {d} --{signal} N");
     let (by_free, free) = match free {
         None => (Status::Warn, "free space is unknown".to_owned()),
         Some(b) if b < GIB => (Status::Fail, format!("{} MiB free", b >> 20)),
@@ -550,6 +557,7 @@ fn by_days(f: &Forecast) -> (Status, String) {
     let Some(n) = f.days_left else {
         let said = match f.errors {
             _ if f.beyond_10_years => ", forecast full beyond 10 years at the current rate",
+            Some(_) if f.errors_only() => ", errors never fill it at the current rate",
             Some(_) => ", logs and errors never fill it at the current rate",
             None => ", logs never fill it at the current rate",
         };

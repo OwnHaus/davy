@@ -330,6 +330,7 @@ fn errors_without_measured_days_take_the_footprint() {
             },
             bound: vec![part],
             estimate: vec![part],
+            lean: Lean::Benchmark(0),
         }
     );
     let none = errors(

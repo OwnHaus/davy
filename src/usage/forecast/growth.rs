@@ -5,7 +5,7 @@
 //! server holds whole and blended with the footprint benchmark until there
 //! are enough such days.
 
-use super::{DAYS, Direct, Input, NoForecast, median};
+use super::{DAYS, Direct, Input, NoForecast, errors::Lean, median};
 use crate::{
     time::{self, DAY_NS, HOUR_NS},
     usage::footprint::{Band, Prior},
@@ -45,6 +45,12 @@ pub enum Basis {
     /// Raw bytes per hour of a server without a whole closed day, times
     /// the footprint benchmark.
     FirstDay,
+    /// The forecast rests on errors alone, with `lean` what they rest on.
+    /// Without `logs_pending`, Davy counted no raw log bytes and the disk
+    /// holds no closed log day the direct method reads, so logs add
+    /// nothing. With it, logs arrived but are too few or too new for a log
+    /// basis, so they count as 0 until one forms.
+    ErrorsOnly { lean: Lean, logs_pending: bool },
 }
 
 impl Basis {
@@ -54,6 +60,7 @@ impl Basis {
             Self::MeasuredDisk => "measured_disk",
             Self::Blended => "blended",
             Self::FirstDay => "first_day",
+            Self::ErrorsOnly { .. } => "errors_only",
         }
     }
 }
@@ -130,7 +137,7 @@ impl Logs {
     pub fn bound(&self) -> u64 {
         match self.basis {
             Basis::Blended | Basis::FirstDay => self.growth.high,
-            Basis::Measured | Basis::MeasuredDisk => self.growth.mid,
+            Basis::Measured | Basis::MeasuredDisk | Basis::ErrorsOnly { .. } => self.growth.mid,
         }
     }
 
@@ -140,6 +147,7 @@ impl Logs {
         match self.basis {
             Basis::FirstDay => Confidence::Low,
             _ if self.lowered(partial).is_some() => Confidence::Low,
+            Basis::ErrorsOnly { lean, .. } => lean.confidence(),
             Basis::Blended | Basis::MeasuredDisk => Confidence::Medium,
             Basis::Measured => Confidence::High,
         }
@@ -147,9 +155,17 @@ impl Logs {
 
     /// `why`, and why the confidence is low where the basis does not say.
     pub fn explain(&self, partial: bool) -> String {
-        match self.lowered(partial) {
-            Some(reason) => format!("{}; confidence is low {reason}", self.why),
-            None => self.why.clone(),
+        match (self.lowered(partial), self.basis) {
+            (Some(reason), _) => format!("{}; confidence is low {reason}", self.why),
+            (None, Basis::ErrorsOnly { lean, .. }) => match lean.reason() {
+                Some(reason) => format!(
+                    "{}; confidence is {} {reason}",
+                    self.why,
+                    lean.confidence().name()
+                ),
+                None => self.why.clone(),
+            },
+            (None, _) => self.why.clone(),
         }
     }
 
@@ -157,7 +173,20 @@ impl Logs {
     fn lowered(&self, partial: bool) -> Option<&'static str> {
         if partial {
             Some("as the disk walk left something out")
-        } else if self.recent && !matches!(self.basis, Basis::MeasuredDisk | Basis::FirstDay) {
+        } else if matches!(
+            self.basis,
+            Basis::ErrorsOnly {
+                logs_pending: true,
+                ..
+            }
+        ) {
+            Some("while logs are left out")
+        } else if self.recent
+            && !matches!(
+                self.basis,
+                Basis::MeasuredDisk | Basis::FirstDay | Basis::ErrorsOnly { .. }
+            )
+        {
             Some("while Davy has counted raw log bytes for under 7 whole days")
         } else {
             None
@@ -217,12 +246,7 @@ pub fn logs(input: &Input, direct: Result<Direct, NoForecast>) -> Result<Logs, N
         raw: raw_per_day(&raws),
         raw_days: raws.len(),
         counted_ns: None,
-        recent: input.counted_since.is_some_and(|c| {
-            input
-                .today
-                .checked_sub(7.days())
-                .is_ok_and(|d| c > time::midnight(d))
-        }),
+        recent: recent_count(input),
         ratio: None,
         own_ratio: median(&ratios),
         prior: input.prior,
@@ -259,6 +283,54 @@ pub fn logs(input: &Input, direct: Result<Direct, NoForecast>) -> Result<Logs, N
             _ => direct.map(|d| disk_only(&base, d, SMALL)),
         },
     }
+}
+
+/// The logs of a forecast on errors alone: a growth of 0, and `lean`, what
+/// its errors rest on. `pending` is why logs that arrived have no log
+/// basis yet; without it they add nothing, as none arrived in the 30 days
+/// read and the disk holds no closed log day since `first`, the first day
+/// the direct method reads.
+pub fn errors_only(input: &Input, lean: Lean, first: Date, pending: Option<&str>) -> Logs {
+    let raws: Vec<u64> = closed(input)
+        .iter()
+        .filter(|d| d.whole)
+        .take(DAYS)
+        .map(|d| d.raw)
+        .collect();
+    Logs {
+        basis: Basis::ErrorsOnly {
+            lean,
+            logs_pending: pending.is_some(),
+        },
+        growth: Spread::flat(0),
+        own_days: 0,
+        possible_days: possible(input),
+        raw: raw_per_day(&raws),
+        raw_days: raws.len(),
+        counted_ns: None,
+        recent: recent_count(input),
+        ratio: None,
+        own_ratio: None,
+        prior: input.prior,
+        why: match pending {
+            Some(reason) => format!(
+                "logs are not in this forecast yet, so it rests on errors alone and counts logs as 0: {reason}"
+            ),
+            None => format!(
+                "Davy counted no raw log bytes in the last 30 days and the disk holds no closed log day since {first}, so logs add nothing and the forecast rests on errors alone"
+            ),
+        },
+    }
+}
+
+/// Whether counting raw bytes started inside the newest 7 days.
+fn recent_count(input: &Input) -> bool {
+    input.counted_since.is_some_and(|c| {
+        input
+            .today
+            .checked_sub(7.days())
+            .is_ok_and(|d| c > time::midnight(d))
+    })
 }
 
 /// The closed days of the newest [`LOOK_BACK`], newest first.
@@ -325,7 +397,7 @@ fn upgraded(input: &Input, d: &Direct) -> bool {
 
 /// Every raw byte counted on the index days of the newest [`LOOK_BACK`]
 /// and on.
-fn counted_bytes(input: &Input) -> u128 {
+pub(super) fn counted_bytes(input: &Input) -> u128 {
     recent(input)
         .flat_map(|r| &r.projects)
         .fold(0, |sum, (_, b, _)| sum + u128::from(*b))

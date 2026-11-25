@@ -81,12 +81,16 @@ impl Report {
             }
             [None, _] => return Ok(()),
         };
+        let (high, low, what) = match f.errors {
+            Some(e) if f.errors_only() => (e.growth, e.estimate_growth, "errors"),
+            _ => (l.growth.high, l.growth.low, "logs"),
+        };
         writeln!(
             out,
-            "{:<9} {range}, at {} to {} of logs a day",
+            "{:<9} {range}, at {} to {} of {what} a day",
             "range",
-            human(l.growth.high),
-            human(l.growth.low)
+            human(high),
+            human(low)
         )
     }
 

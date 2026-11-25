@@ -220,10 +220,11 @@ fn a_full_day_counted_narrows_the_first_day_range() {
     );
 }
 
-/// A server that stores errors only has no forecast on its first day
-/// either, rather than "never" then and none from its third day on.
+/// A server that stores neither logs nor errors has no forecast on its
+/// first day either, rather than "never" then and none from its third day
+/// on, and the reason says nothing grows.
 #[test]
-fn a_server_without_logs_has_no_forecast_on_any_day() {
+fn a_server_without_logs_or_errors_has_no_forecast_on_any_day() {
     for (now, first) in [
         ("2026-11-20T20:00:00Z", "2026-10-21"),
         ("2026-11-23T12:00:00Z", "2026-10-24"),
@@ -232,7 +233,7 @@ fn a_server_without_logs_has_no_forecast_on_any_day() {
         assert_eq!(
             forecast(&input, &WhatIf::default()),
             Err(NoForecast::History(format!(
-                "closed log days since {first}, the first day no retention has cut: the disk has 0, a forecast needs 2"
+                "nothing grows yet: Davy counted no raw log bytes in the last 30 days, the disk holds no closed log day since {first}, and no project received error events in the last 7 days"
             ))),
             "{now}"
         );

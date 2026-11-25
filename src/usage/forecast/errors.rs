@@ -4,7 +4,11 @@
 //! per event come from SQLite's daily growth where enough events arrived,
 //! and from the footprint benchmark until 7 days measured it.
 
-use super::{DAYS, LOOK_BACK, fill::Part, growth::spread};
+use super::{
+    DAYS, LOOK_BACK, MEDIUM_SHARE_PPM,
+    fill::Part,
+    growth::{Confidence, spread},
+};
 use crate::{
     time::{self, DAY_NS, HOUR_NS},
     usage::{Count, footprint::Prior},
@@ -102,6 +106,8 @@ pub struct Found {
     pub errors: Errors,
     pub bound: Vec<Part>,
     pub estimate: Vec<Part>,
+    /// What the errors rest on, for a forecast on them alone.
+    pub lean: Lean,
 }
 
 /// The error growth of `errors`, or `None` when no project received an
@@ -131,6 +137,7 @@ pub fn errors(
         },
         bound: Vec::new(),
         estimate: Vec::new(),
+        lean: Lean::Measured,
     };
     let rates: Vec<(&ProjectErrors, u64, u64)> = errors
         .iter()
@@ -140,6 +147,9 @@ pub fn errors(
         })
         .collect();
     let mean = mean_prior(&rates);
+    // The bound's growth of errors that began under a whole day and under
+    // 7 whole days ago.
+    let (mut hours, mut week) = (0_u64, 0_u64);
     for (p, per_day, prior) in rates {
         let mid = blend(own, prior, mean);
         let high = own
@@ -149,6 +159,14 @@ pub fn errors(
             part(per_day, high, p.days, p.stored),
             part(per_day, mid, p.days, p.stored),
         );
+        match began(p, today) {
+            Some(Lean::Hours) => {
+                hours = hours.saturating_add(bound.growth);
+                week = week.saturating_add(bound.growth);
+            }
+            Some(_) => week = week.saturating_add(bound.growth),
+            None => {}
+        }
         let e = &mut found.errors;
         e.projects += 1;
         e.events_per_day = e.events_per_day.saturating_add(per_day);
@@ -159,7 +177,84 @@ pub fn errors(
     }
     let e = &mut found.errors;
     e.bytes_per_event = e.estimate_growth / e.events_per_day.max(1);
+    found.lean = lean(e, hours, week);
     (e.projects > 0).then_some(found)
+}
+
+/// What the errors of a server whose logs add nothing rest on, which
+/// alone sets how far its forecast can be trusted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lean {
+    /// SQLite growth measured bytes per event on 7 days.
+    Measured,
+    /// The footprint benchmark gives bytes per event for the days SQLite
+    /// growth did not measure, of 7: the count measured.
+    Benchmark(usize),
+    /// Errors that began less than a whole day ago add over 5% of the
+    /// bound's error growth, so it rests on hours.
+    Hours,
+    /// Errors that began less than 7 whole days ago add over 5% of it.
+    Days,
+}
+
+impl Lean {
+    pub fn confidence(self) -> Confidence {
+        match self {
+            Self::Measured => Confidence::High,
+            Self::Benchmark(_) => Confidence::Medium,
+            Self::Hours | Self::Days => Confidence::Low,
+        }
+    }
+
+    /// Why the confidence is below high, to follow "confidence is low".
+    pub fn reason(self) -> Option<String> {
+        match self {
+            Self::Measured => None,
+            Self::Benchmark(k) => Some(format!(
+                "as SQLite growth measured bytes per event on {k} of 7 days and the footprint benchmark gives the rest"
+            )),
+            Self::Hours => Some(
+                "as errors that began less than a whole day ago add over 5% of the errors' growth, so it rests on hours"
+                    .to_owned(),
+            ),
+            Self::Days => Some(
+                "while errors that began less than 7 whole days ago add over 5% of the errors' growth"
+                    .to_owned(),
+            ),
+        }
+    }
+}
+
+/// What `errors` rest on, given the bound's growth of the errors that
+/// began under a whole day ago, `hours`, and under 7 whole days ago,
+/// `week`. Recent errors lower it only when they add over 5% of the
+/// growth, as the 5% rule for errors next to logs does, so one new project
+/// with a few events leaves the rest as it is.
+fn lean(errors: &Errors, hours: u64, week: u64) -> Lean {
+    let over = |part: u64| {
+        let ppm = (u128::from(part) * PPM).div_ceil(u128::from(errors.growth.max(1)));
+        ppm > u128::from(MEDIUM_SHARE_PPM)
+    };
+    match errors.own_days {
+        _ if over(hours) => Lean::Hours,
+        _ if over(week) => Lean::Days,
+        k if k >= DAYS => Lean::Measured,
+        k => Lean::Benchmark(k),
+    }
+}
+
+/// How recently `p`'s errors began: `Hours` before a whole day has closed
+/// since, as in [`rate`], `Days` before 7, else `None`.
+fn began(p: &ProjectErrors, today: Date) -> Option<Lean> {
+    let start = p.created.max(time::midnight(p.first));
+    let week = today.checked_sub(7.days()).map_or(i64::MIN, time::midnight);
+    if time::midnight(today).saturating_sub(start) < DAY_NS {
+        Some(Lean::Hours)
+    } else if start > week {
+        Some(Lean::Days)
+    } else {
+        None
+    }
 }
 
 /// Events per day a project received and the count they come from: the

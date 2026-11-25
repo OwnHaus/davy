@@ -1,7 +1,7 @@
 use super::*;
 use crate::usage::{
     footprint::FIXTURE,
-    forecast::{ErrorBasis, Errors, Estimate, Fill, Logs, Spread},
+    forecast::{ErrorBasis, Errors, Estimate, Fill, Lean, Logs, Spread},
 };
 use jiff::civil::Date;
 
@@ -249,4 +249,155 @@ fn a_disk_full_beyond_10_years_is_ok() {
     };
     let check = disk(data, Some(40 * GIB), Some(Ok(errors)));
     assert_eq!((check.status, check.detail.as_str()), (Status::Ok, said));
+}
+
+/// A forecast on errors alone, `days` left or never, with projects keeping
+/// logs 7 and 30 days: retentions of logs that add nothing make no worst
+/// case.
+fn errors_only(days: Option<u64>) -> Forecast {
+    let mut f = full_in(
+        Basis::ErrorsOnly {
+            lean: Lean::Benchmark(0),
+            logs_pending: false,
+        },
+        days.unwrap_or(0),
+    );
+    f.days_left = days;
+    f.full_on = f.full_on.filter(|_| days.is_some());
+    f.growth = 0;
+    f.shortest_days = 7;
+    f.errors = Some(Errors {
+        projects: 1,
+        events_per_day: 100_000,
+        bytes_per_event: 1_600,
+        own_days: 0,
+        basis: ErrorBasis::Footprint,
+        growth: 160_000_000,
+        estimate_growth: 160_000_000,
+        share_ppm: 1_000_000,
+    });
+    if let Some(logs) = &mut f.logs {
+        logs.growth = Spread::flat(0);
+    }
+    f
+}
+
+#[test]
+fn a_forecast_on_errors_alone_warns_and_fails_as_any_other() {
+    let data = Path::new("/var/lib/davy");
+    let fix = "shorten retention with davy project retention SLUG --data /var/lib/davy --errors N, or add disk";
+    for (days, status, detail, fix) in [
+        (
+            Some(1),
+            Status::Fail,
+            "40 GiB free, forecast full on 2026-11-25, in 1 day",
+            Some(fix),
+        ),
+        (
+            Some(10),
+            Status::Warn,
+            "40 GiB free, forecast full on 2026-12-04, in 10 days",
+            Some(fix),
+        ),
+        (
+            Some(14),
+            Status::Ok,
+            "40 GiB free, forecast full on 2026-12-08, in 14 days",
+            None,
+        ),
+        (
+            None,
+            Status::Ok,
+            "40 GiB free, errors never fill it at the current rate",
+            None,
+        ),
+    ] {
+        let check = disk(data, Some(40 * GIB), Some(Ok(errors_only(days))));
+        assert_eq!(
+            (check.status, check.detail.as_str(), check.fix.as_deref()),
+            (status, detail, fix),
+            "{days:?}"
+        );
+    }
+    let beyond = Forecast {
+        beyond_10_years: true,
+        ..errors_only(None)
+    };
+    let check = disk(data, Some(40 * GIB), Some(Ok(beyond)));
+    assert_eq!(
+        (check.status, check.detail.as_str()),
+        (
+            Status::Ok,
+            "40 GiB free, forecast full beyond 10 years at the current rate"
+        )
+    );
+}
+
+/// A server past its limit with 100 000 errors a day from 2026-11-15 and
+/// no logs, counting since 2026-11-10. Its first 10 log records, 1 869
+/// raw bytes today, have no log basis: the forecast still rests on the
+/// errors, so doctor still fails.
+#[test]
+fn a_first_log_line_does_not_clear_a_failing_errors_forecast() {
+    use crate::usage::{
+        Count,
+        forecast::{Input, ProjectErrors, RawDay, WhatIf, forecast},
+    };
+    let day = |s: &str| -> Date { s.parse().unwrap() };
+    let first = day("2026-11-15");
+    let mut input = Input {
+        today: day("2026-11-25"),
+        closed: Vec::new(),
+        davy: 3 * GIB,
+        fixed: 3 * GIB,
+        used: 460 * GIB,
+        total: 500 * GIB,
+        projects: vec![("api".to_owned(), 30)],
+        default_days: 30,
+        raw: Vec::new(),
+        counted_since: Some(crate::time::midnight(day("2026-11-10"))),
+        now: crate::time::midnight(day("2026-11-25")) + 12 * HOUR,
+        store: Vec::new(),
+        errors: vec![ProjectErrors {
+            slug: "api".to_owned(),
+            created: crate::time::midnight(first),
+            first,
+            daily: (0..10)
+                .map(|i| {
+                    let records = 100_000;
+                    let d = first.checked_add(jiff::Span::new().days(i)).unwrap();
+                    (
+                        d,
+                        Count {
+                            records,
+                            bytes: records * 2_000,
+                        },
+                    )
+                })
+                .collect(),
+            stored: 1_000_000,
+            days: 30,
+        }],
+        prior: FIXTURE,
+    };
+    let data = Path::new("/var/lib/davy");
+    let said = "40 GiB free, forecast full on 2026-11-25, in 0 days";
+    let fix = "shorten retention with davy project retention SLUG --data /var/lib/davy --errors N, or add disk";
+    for raw in [
+        Vec::new(),
+        vec![RawDay {
+            day: day("2026-11-25"),
+            projects: vec![("api".to_owned(), 1_869, false)],
+        }],
+    ] {
+        input.raw = raw;
+        let f = forecast(&input, &WhatIf::default());
+        let check = disk(data, Some(40 * GIB), Some(f));
+        assert_eq!(
+            (check.status, check.detail.as_str(), check.fix.as_deref()),
+            (Status::Fail, said, Some(fix)),
+            "{:?}",
+            input.raw
+        );
+    }
 }
