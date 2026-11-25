@@ -252,15 +252,21 @@ fn recount(c: &Connection, issue: i64, taken: &Taken) -> Result<()> {
 
 /// Deletes an issue that has no event left. While user feedback points at
 /// the issue it stays, with an `event_count` of 0, until [`unlink`] has
-/// unlinked the last or [`feedback`] has deleted it. A row of another table that points at it keeps it
+/// unlinked the last or [`feedback`] has deleted it. A discarded issue
+/// stays the same way, and `--undo` forgets it, see src/discard.rs. A row of another table that points at it keeps it
 /// the same way rather than fail the writer's batch, ingest included.
-fn forget(c: &Connection, issue: i64) -> Result<()> {
+pub(crate) fn forget(c: &Connection, issue: i64) -> Result<()> {
     c.prepare_cached("DELETE FROM issue_hourly WHERE issue_id=?1")?
         .execute([issue])?;
     c.prepare_cached("DELETE FROM issue_tags WHERE issue_id=?1")?
         .execute([issue])?;
+    // A discarded issue stays with no event, so its mark outlives its
+    // events and later ones are still discarded.
     let linked: bool = c
-        .prepare_cached("SELECT EXISTS(SELECT 1 FROM user_feedback WHERE issue_id=?1)")?
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM user_feedback WHERE issue_id=?1)
+             OR EXISTS(SELECT 1 FROM issues WHERE id=?1 AND discarded_at IS NOT NULL)",
+        )?
         .query_row([issue], |r| r.get(0))?;
     let kept = linked
         || match c

@@ -519,3 +519,32 @@ fn prepare_reads_error_days_events_and_store_samples() {
         ]
     );
 }
+
+#[test]
+fn each_project_shows_the_error_events_it_discarded_in_the_window() {
+    let mut c = Connection::open_in_memory().unwrap();
+    store::init(&mut c).unwrap();
+    store::create_project(&c, "shop").unwrap();
+    for (d, n) in [("2026-11-16", 50), ("2026-11-23", 3), ("2026-11-24", 1)] {
+        c.execute(
+            "INSERT INTO discarded_daily(day, project_id, records) VALUES (?1, 1, ?2)",
+            (d, n),
+        )
+        .unwrap();
+    }
+    let req = Request {
+        project: None,
+        since: None,
+        what_if: WhatIf::default(),
+        defaults: retention::Defaults::default(),
+    };
+    let r = prepare(&c, &req, at("2026-11-24T12:00:00Z"))
+        .unwrap()
+        .finish(Err("not walked".into()));
+    assert_eq!(r.json(false)["projects"][0]["errors_discarded"], 4);
+    let mut out = Vec::new();
+    r.text(&mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let line = "shop                 keeps logs 30 days, errors 36500 days, discarded 4 error events received\n";
+    assert!(text.contains(line), "{text}");
+}

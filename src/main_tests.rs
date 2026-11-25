@@ -133,6 +133,7 @@ fn text_output_replaces_control_characters() {
         count: 2,
         title: "Error: \u{1b}]52;c;cHduZWQ=\u{7}".into(),
         culprit: Some("a\tb\u{9b}2J".into()),
+        discarded_at: None,
     };
     print_issues(&mut out, vec![issue], false).unwrap();
     let hit = LogHit {
@@ -156,6 +157,30 @@ fn text_output_replaces_control_characters() {
         String::from_utf8(out).unwrap(),
         "1\tunresolved\t2\tError: \u{fffd}]52;c;cHduZWQ=\u{fffd}\ta\u{fffd}b\u{fffd}2J\n\
          2026-11-20T10:00:00Z info  api\u{fffd} line\u{fffd}\u{fffd}[2Jgone k\u{fffd}=v\u{fffd}\n"
+    );
+}
+
+#[test]
+fn a_discarded_issue_is_marked_and_json_escapes_c1_and_bidi_controls() {
+    let issue = || store::Issue {
+        id: 7,
+        status: "unresolved".into(),
+        count: 120,
+        title: "bot \u{9b}2J\u{202E}gnp.exe".into(),
+        culprit: None,
+        discarded_at: Some("2026-11-25T10:00:00Z".into()),
+    };
+    let mut out = Vec::new();
+    print_issues(&mut out, vec![issue()], false).unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "7\tunresolved (discarded)\t120\tbot \u{fffd}2J\u{fffd}gnp.exe\t\n"
+    );
+    let mut out = Vec::new();
+    print_issues(&mut out, vec![issue()], true).unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "[{\"id\":7,\"status\":\"unresolved\",\"count\":120,\"title\":\"bot \\u009b2J\\u202egnp.exe\",\"culprit\":null,\"discarded_at\":\"2026-11-25T10:00:00Z\"}]\n"
     );
 }
 

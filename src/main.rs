@@ -67,13 +67,22 @@ enum Command {
         #[command(subcommand)]
         command: davy::accounts::cli::User,
     },
-    /// Lists issues, the most recently seen first.
+    /// Discards an issue, so its new events are counted and not stored.
+    Issue {
+        #[command(subcommand)]
+        command: davy::discard::Issue,
+    },
+    /// Lists issues, the most recently seen first. A discarded issue says
+    /// so after its status, and in `discarded_at` with --json.
     Issues {
         #[arg(long)]
         data: PathBuf,
         /// Only the issues of this project slug.
         #[arg(long)]
         project: Option<String>,
+        /// Only the issues that `davy issue discard` discarded.
+        #[arg(long)]
+        discarded: bool,
         #[arg(long)]
         json: bool,
     },
@@ -297,12 +306,14 @@ async fn main() -> anyhow::Result<()> {
         Command::Monitor { command } => monitor::cli::run(&mut out.lock(), command)?,
         Command::Channel { command } => run_channel(&mut out.lock(), command)?,
         Command::User { command } => davy::accounts::cli::run(&mut out.lock(), command)?,
+        Command::Issue { command } => davy::discard::run(&mut out.lock(), command)?,
         Command::Issues {
             data,
             project,
+            discarded,
             json,
         } => {
-            let issues = store::issues(&store::open(&data)?, project.as_deref())?;
+            let issues = store::issues(&store::open(&data)?, project.as_deref(), discarded)?;
             print_issues(&mut out.lock(), issues, json)?;
         }
         Command::Event { issue_id, data } => {
@@ -324,7 +335,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Context { issue_id, data } => {
             let context = context::issue_context(&store::open(&data)?, &data, issue_id)?
                 .ok_or_else(|| anyhow::anyhow!("no issue {issue_id}"))?;
-            writeln!(out, "{}", serde_json::to_string_pretty(&context)?)?;
+            writeln!(out, "{}", text::json(&context, true)?)?;
         }
         Command::Resolve {
             issue_id,
@@ -506,13 +517,18 @@ fn create_project(data: &Path, slug: &str, public_url: &url::Url) -> anyhow::Res
 }
 fn print_issues(out: &mut impl Write, issues: Vec<store::Issue>, json: bool) -> anyhow::Result<()> {
     if json {
-        writeln!(out, "{}", serde_json::to_string(&issues)?)?;
+        writeln!(out, "{}", text::json(&issues, false)?)?;
         return Ok(());
     }
     for i in issues {
+        let mark = if i.discarded_at.is_some() {
+            " (discarded)"
+        } else {
+            ""
+        };
         writeln!(
             out,
-            "{}\t{}\t{}\t{}\t{}",
+            "{}\t{}{mark}\t{}\t{}\t{}",
             i.id,
             safe(&i.status),
             i.count,

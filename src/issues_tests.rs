@@ -117,6 +117,27 @@ fn a_row_counts_its_events_per_hour_up_to_the_current_one() {
 }
 
 #[test]
+fn a_row_says_when_its_issue_was_discarded() {
+    let mut c = three_issues();
+    crate::discard::set(&mut c, 2, false, NOW).unwrap();
+    let page = list(&c, &Filter::default(), Sort::LastSeen, None, NOW).unwrap();
+    let marks: Vec<(&str, Option<&str>)> = page
+        .issues
+        .iter()
+        .map(|i| (i.title.as_str(), i.discarded_at.as_deref()))
+        .collect();
+    assert_eq!(
+        marks,
+        [
+            ("beta failed", Some("2025-11-22T12:30:00Z")),
+            ("alpha failed", None),
+            ("gamma failed", None),
+            ("delta failed", None),
+        ]
+    );
+}
+
+#[test]
 fn every_filter_narrows_the_list() {
     let c = three_issues();
     let only = |filter: Filter| titles(&c, &filter, Sort::LastSeen);

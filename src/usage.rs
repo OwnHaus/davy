@@ -22,6 +22,7 @@ pub mod disk;
 pub mod footprint;
 pub mod forecast;
 mod report;
+pub mod savings;
 pub mod stored;
 pub use cli::{Args, run};
 pub use report::{Prepared, Report, Request, prepare, report};

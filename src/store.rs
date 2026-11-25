@@ -189,6 +189,10 @@ fn add<'a>(c: &Connection, project: i64, e: &'a ErrorEvent, latest: &mut Latest<
         return Ok(());
     }
     let g = group(e);
+    // A person discarded the issue: count the event, store nothing.
+    if crate::discard::discarded(c, project, g.version, &g.fingerprint)? {
+        return Ok(crate::discard::count(c, project, e.received_at)?);
+    }
     // An id is never used twice, so a link sent for an issue that expired
     // does not lead to another, see src/retention/errors.rs.
     let created = c.execute("INSERT INTO issues(id,project_id,grouping_version,fingerprint,title,culprit,level,status,first_seen,last_seen,event_count) VALUES (max(coalesce((SELECT max(id) FROM issues),0),coalesce((SELECT id FROM id_floor WHERE name='issues'),0))+1,?1,?2,?3,?4,?5,?6,'unresolved',?7,?7,0) ON CONFLICT(project_id,grouping_version,fingerprint) DO NOTHING", params![project,g.version,g.fingerprint,g.title,g.culprit,e.level.as_str(),e.timestamp])? == 1;
@@ -349,6 +353,7 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
             crate::items::client_report::prune(c, *at)?;
             crate::items::session::prune(c, *at)?;
             crate::usage::prune(c, *at)?;
+            crate::discard::prune(c, *at)?;
             crate::usage::stored::sweep(c, *at)?;
             Ok(Ok(()))
         }
@@ -405,16 +410,22 @@ pub struct Issue {
     pub count: i64,
     pub title: String,
     pub culprit: Option<String>,
+    /// When a person discarded the issue, RFC 3339, null when it is not
+    /// discarded, see src/discard.rs.
+    pub discarded_at: Option<String>,
 }
-pub fn issues(c: &Connection, project: Option<&str>) -> Result<Vec<Issue>> {
-    let mut q = c.prepare("SELECT i.id,i.status,i.event_count,i.title,i.culprit FROM issues i JOIN projects p ON p.id=i.project_id WHERE (?1 IS NULL OR p.slug=?1) ORDER BY i.last_seen DESC,i.id DESC")?;
-    Ok(q.query_map([project], |r| {
+/// The issues of project `project`, or of every project, the most
+/// recently seen first, with `discarded` only the discarded ones.
+pub fn issues(c: &Connection, project: Option<&str>, discarded: bool) -> Result<Vec<Issue>> {
+    let mut q = c.prepare("SELECT i.id,i.status,i.event_count,i.title,i.culprit,i.discarded_at FROM issues i JOIN projects p ON p.id=i.project_id WHERE (?1 IS NULL OR p.slug=?1) AND (?2=0 OR i.discarded_at IS NOT NULL) ORDER BY i.last_seen DESC,i.id DESC")?;
+    Ok(q.query_map(params![project, discarded], |r| {
         Ok(Issue {
             id: r.get(0)?,
             status: r.get(1)?,
             count: r.get(2)?,
             title: r.get(3)?,
             culprit: r.get(4)?,
+            discarded_at: r.get::<_, Option<Timestamp>>(5)?.map(time::rfc3339_ms),
         })
     })?
     .collect::<rusqlite::Result<_>>()?)
@@ -446,11 +457,15 @@ pub struct IssueDetail {
     #[serde(skip)]
     pub last_seen_ms: Timestamp,
     pub event_count: i64,
+    /// When a person discarded the issue, null when it is not discarded:
+    /// a discarded issue's new events are counted, not stored, so its
+    /// `last_seen` stops while the error goes on, see src/discard.rs.
+    pub discarded_at: Option<String>,
 }
 pub fn issue(c: &Connection, id: i64) -> Result<Option<IssueDetail>> {
     let ts = |ms: Option<Timestamp>| ms.map(time::rfc3339_ms);
     Ok(c.query_row(
-        "SELECT i.id,i.project_id,p.slug,i.title,i.culprit,i.level,i.status,i.resolved_in_release,i.resolved_at,i.regressed_at,i.first_seen,i.last_seen,i.event_count FROM issues i JOIN projects p ON p.id=i.project_id WHERE i.id=?1",
+        "SELECT i.id,i.project_id,p.slug,i.title,i.culprit,i.level,i.status,i.resolved_in_release,i.resolved_at,i.regressed_at,i.first_seen,i.last_seen,i.event_count,i.discarded_at FROM issues i JOIN projects p ON p.id=i.project_id WHERE i.id=?1",
         [id],
         |r| {
             Ok(IssueDetail {
@@ -468,6 +483,7 @@ pub fn issue(c: &Connection, id: i64) -> Result<Option<IssueDetail>> {
                 last_seen: time::rfc3339_ms(r.get(11)?),
                 last_seen_ms: r.get(11)?,
                 event_count: r.get(12)?,
+                discarded_at: ts(r.get(13)?),
             })
         },
     )

@@ -1,4 +1,4 @@
-use super::{printable, size};
+use super::{json, printable, size};
 
 #[test]
 fn control_characters_and_marks_that_reorder_text_are_replaced() {
@@ -26,4 +26,23 @@ fn sizes_read_in_three_digits_and_powers_of_1000() {
     for (bytes, shown) in cases {
         assert_eq!(size(bytes), shown, "{bytes}");
     }
+}
+
+#[test]
+fn json_escapes_c1_controls_and_marks_and_reads_back_the_same() {
+    let title = "a\u{9b}2J\u{202E}b\u{1b}c\u{7f}d\u{2066}é";
+    let value = serde_json::json!({ "title": title, "n": [1, 2] });
+    let line = json(&value, false).unwrap();
+    assert_eq!(
+        line,
+        r#"{"n":[1,2],"title":"a\u009b2J\u202eb\u001bc\u007fd\u2066é"}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&line).unwrap(),
+        value
+    );
+    assert_eq!(
+        json(&value, true).unwrap(),
+        "{\n  \"n\": [\n    1,\n    2\n  ],\n  \"title\": \"a\\u009b2J\\u202eb\\u001bc\\u007fd\\u2066é\"\n}"
+    );
 }

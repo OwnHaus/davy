@@ -13,7 +13,7 @@ import { StatusButtons, statusKey } from "../parts/Actions";
 import { Breadcrumbs, Contexts, CopyButton, Exceptions, LogLines, Pairs, UserAndTrace } from "../parts/Event";
 import { Axis, Strip, StripTable, peakWords } from "../parts/HeatStrip";
 import { Icon } from "../parts/Icon";
-import { Level, Regressed, StatusMark } from "../parts/Marks";
+import { Discarded, Level, Regressed, StatusMark } from "../parts/Marks";
 import { lastList, savedSort } from "../search";
 import { IssuesRail, Shell, type KeyHint } from "./Shell";
 
@@ -133,6 +133,7 @@ export function Issue() {
                     <span className="hint">in {shown(issue.resolved_in_release)}</span>
                   ) : null}
                   {issue.regressed_at !== null ? <Regressed /> : null}
+                  {issue.discarded_at === null ? null : <Discarded at={issue.discarded_at} />}
                 </div>
                 <h1>{shown(issue.title)}</h1>
                 <div className="sub">

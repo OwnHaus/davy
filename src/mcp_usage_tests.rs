@@ -119,6 +119,7 @@ async fn usage_shows_the_counts_and_the_forecast_with_human_sizes() {
         keys(api),
         [
             "errors_days",
+            "errors_discarded",
             "logs_days",
             "logs_stored",
             "project",

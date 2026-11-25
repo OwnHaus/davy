@@ -347,7 +347,7 @@ fn the_migration_backfills_when_each_tag_was_last_seen() {
         store::insert(&c, 1, &e).unwrap();
     }
     c.execute_batch(&format!(
-        "{} {UNDO} ALTER TABLE projects DROP COLUMN scrub; DROP TABLE latest_payloads; DROP TABLE log_days; DROP TABLE store_days; ALTER TABLE projects DROP COLUMN vercel_secret; DROP INDEX projects_own; ALTER TABLE projects DROP COLUMN own; PRAGMA user_version=13;",
+        "{} {UNDO} ALTER TABLE projects DROP COLUMN scrub; DROP TABLE latest_payloads; DROP TABLE log_days; DROP TABLE store_days; ALTER TABLE projects DROP COLUMN vercel_secret; ALTER TABLE issues DROP COLUMN discarded_at; DROP TABLE discarded_daily; DROP TABLE searches; DROP TABLE search_days; DROP INDEX projects_own; ALTER TABLE projects DROP COLUMN own; PRAGMA user_version=13;",
         crate::usage::UNDO
     ))
     .unwrap();

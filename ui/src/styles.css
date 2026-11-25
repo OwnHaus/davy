@@ -302,6 +302,8 @@ tr.row.done td.title a { color: var(--muted); font-weight: 400; }
 /* Parts the React port adds to the prototype */
 .accent-fill { fill: var(--accent); }
 .reg.flush { margin-left: 0; }
+.dsc { color: var(--faint); font-size: 11.5px; flex: none; margin-left: 8px; }
+.ihead .tags .dsc, #insp .meta .dsc { margin-left: 0; }
 .axis span.end { justify-self: end; }
 th .axis.sm { width: 166px; margin: 0; line-height: 26px; }
 .w-chk { width: 36px; } .w-level { width: 88px; } .w-cul { width: 166px; } .w-status { width: 104px; }

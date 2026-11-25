@@ -9,7 +9,7 @@ import { StatusButtons } from "../parts/Actions";
 import { topFrame, where } from "../parts/Event";
 import { Axis, Strip, StripTable, peakWords } from "../parts/HeatStrip";
 import { Icon } from "../parts/Icon";
-import { Level, Regressed, StatusMark } from "../parts/Marks";
+import { Discarded, Level, Regressed, StatusMark } from "../parts/Marks";
 import type { ListRow } from "./Issues";
 
 /** The issue under the cursor. The row shows at once, the rest once j rests. */
@@ -46,6 +46,7 @@ export function Inspector({ row, busy, onAct }: { row: ListRow | undefined; busy
         <StatusMark status={row.status} />
         {issue?.status === "resolved" && issue.resolved_in_release !== null ? <span className="hint">in {shown(issue.resolved_in_release)}</span> : null}
         {issue?.regressed_at ? <Regressed /> : null}
+        {row.discarded_at === null ? null : <Discarded at={row.discarded_at} />}
       </div>
       <h1>{shown(row.title)}</h1>
       <div className="hint">

@@ -187,6 +187,48 @@ fn a_crash_file_recorded_before_is_deleted_and_not_counted_again() {
 }
 
 #[test]
+fn a_crash_of_an_issue_a_person_discarded_is_counted_and_not_stored() {
+    let s = Store::new("ingest-discarded");
+    let dir = dir(&s.data);
+    let policy = own::policy();
+    let mut told = Told::default();
+    let first = write(&dir, &report("no value")).unwrap();
+    assert_eq!(
+        record(&[first], &s.target(&policy, s.project), &mut told),
+        1
+    );
+    let issue = s.number("SELECT id FROM issues");
+    crate::discard::set(&mut s.db.lock().unwrap(), issue, false, AT_MS).unwrap();
+    // The same panic again, as a new crash with an event id of its own.
+    let again = write(
+        &dir,
+        &Report {
+            event_id: "fedcba9876543210fedcba9876543210".to_owned(),
+            ..report("no value")
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        record(
+            std::slice::from_ref(&again),
+            &s.target(&policy, s.project),
+            &mut told
+        ),
+        1
+    );
+    assert!(!again.exists(), "a counted crash does not wait");
+    assert_eq!(s.number("SELECT count(*) FROM events"), 1);
+    assert_eq!(
+        s.number(&format!(
+            "SELECT records FROM discarded_daily WHERE project_id = {}",
+            s.project
+        )),
+        1
+    );
+    s.stop();
+}
+
+#[test]
 fn a_full_refused_directory_deletes_what_cannot_be_read() {
     let data = scratch("ingest-refused-full");
     let dir = dir(&data);

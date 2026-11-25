@@ -508,7 +508,7 @@ fn the_migration_gives_old_heartbeats_their_due_time() {
     let id = store::add(&c, 1, &m, 0).unwrap().id;
     store::ping(&c, id, ms("2026-11-23T16:00:00Z"), false).unwrap();
     c.execute_batch(&format!(
-        "{} ALTER TABLE channels DROP COLUMN sdk_dropped; ALTER TABLE projects DROP COLUMN scrub; DROP TABLE latest_payloads; DROP TABLE log_days; DROP TABLE store_days; ALTER TABLE projects DROP COLUMN vercel_secret; DROP INDEX projects_own; ALTER TABLE projects DROP COLUMN own; {} {} PRAGMA user_version=11;",
+        "{} ALTER TABLE channels DROP COLUMN sdk_dropped; ALTER TABLE projects DROP COLUMN scrub; DROP TABLE latest_payloads; DROP TABLE log_days; DROP TABLE store_days; ALTER TABLE projects DROP COLUMN vercel_secret; ALTER TABLE issues DROP COLUMN discarded_at; DROP TABLE discarded_daily; DROP TABLE searches; DROP TABLE search_days; DROP INDEX projects_own; ALTER TABLE projects DROP COLUMN own; {} {} PRAGMA user_version=11;",
         crate::usage::UNDO,
         super::checkin_store::UNDO,
         crate::retention::UNDO

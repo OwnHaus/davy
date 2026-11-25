@@ -11,7 +11,7 @@ import { ago, stamp } from "../lib/time";
 import { StatusButtons, statusKey } from "../parts/Actions";
 import { Axis, Strip } from "../parts/HeatStrip";
 import { Icon } from "../parts/Icon";
-import { Level, StatusMark } from "../parts/Marks";
+import { Discarded, Level, StatusMark } from "../parts/Marks";
 import { rememberList, saveSort, savedSort, type IssuesSearch } from "../search";
 import { Inspector } from "./Inspector";
 import { IssuesRail, Shell, type KeyHint } from "./Shell";
@@ -351,6 +351,7 @@ const Row = memo(function Row({ row, now, cur, sel, leaving, onCursor, onToggle,
           <Link to="/issues/$id" params={{ id: String(row.id) }} title={title}>
             {title}
           </Link>
+          {row.discarded_at === null ? null : <Discarded at={row.discarded_at} />}
         </div>
       </td>
       <td className="cul" title={culprit ? `${shown(row.project)} / ${culprit}` : shown(row.project)}>

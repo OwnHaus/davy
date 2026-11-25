@@ -158,6 +158,8 @@ pub struct IssueRow {
     pub last_seen: String,
     /// Events in each of the [`HOURS`] hours from `IssuePage::hours_from`.
     pub hourly: Vec<u32>,
+    /// When a person discarded the issue, null when it is not discarded.
+    pub discarded_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -189,7 +191,7 @@ pub fn list(
     let column = sort.column();
     let (sql, args) = page_ids(filter, column, after)?;
     let sql = format!(
-        "SELECT i.id,p.slug,i.title,i.culprit,i.level,i.status,i.event_count,i.first_seen,i.last_seen,{column} FROM ({sql}) t JOIN issues i ON i.id=t.id JOIN projects p ON p.id=i.project_id ORDER BY {column} DESC,i.id DESC"
+        "SELECT i.id,p.slug,i.title,i.culprit,i.level,i.status,i.event_count,i.first_seen,i.last_seen,{column},i.discarded_at FROM ({sql}) t JOIN issues i ON i.id=t.id JOIN projects p ON p.id=i.project_id ORDER BY {column} DESC,i.id DESC"
     );
     let from = hours_from(now);
     let mut q = c.prepare(&sql)?;
@@ -208,6 +210,7 @@ pub fn list(
                 first_seen: time::rfc3339_ms(r.get(7)?),
                 last_seen: time::rfc3339_ms(r.get(8)?),
                 hourly: vec![0; HOURS],
+                discarded_at: r.get::<_, Option<Timestamp>>(10)?.map(time::rfc3339_ms),
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;

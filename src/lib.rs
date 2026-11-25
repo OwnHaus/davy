@@ -2,6 +2,7 @@ pub mod accounts;
 pub mod alert;
 pub mod connect;
 pub mod context;
+pub mod discard;
 pub mod envelope;
 pub mod event;
 pub mod event_view;

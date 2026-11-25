@@ -25,7 +25,11 @@ export type IssueRow = { id: number, project: string, title: string, culprit: st
 /**
  * Events in each of the [`HOURS`] hours from `IssuePage::hours_from`.
  */
-hourly: Array<number>, };
+hourly: Array<number>, 
+/**
+ * When a person discarded the issue, null when it is not discarded.
+ */
+discarded_at: string | null, };
 
 export type IssuePage = { issues: Array<IssueRow>, 
 /**
@@ -37,7 +41,13 @@ next: string | null,
  */
 hours_from: string, };
 
-export type IssueDetail = { id: number, project_id: number, project: string, title: string, culprit: string | null, level: string, status: Status, resolved_in_release: string | null, resolved_at: string | null, regressed_at: string | null, first_seen: string, last_seen: string, event_count: number, };
+export type IssueDetail = { id: number, project_id: number, project: string, title: string, culprit: string | null, level: string, status: Status, resolved_in_release: string | null, resolved_at: string | null, regressed_at: string | null, first_seen: string, last_seen: string, event_count: number, 
+/**
+ * When a person discarded the issue, null when it is not discarded:
+ * a discarded issue's new events are counted, not stored, so its
+ * `last_seen` stops while the error goes on, see src/discard.rs.
+ */
+discarded_at: string | null, };
 
 export type ReleaseCount = { release: string, events: number, last_seen: string, };
 

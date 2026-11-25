@@ -159,9 +159,13 @@ impl Report {
                     human(bytes_per_day(n.bytes, self.days)),
                 )?;
             }
+            let discarded = match p.discarded {
+                0 => String::new(),
+                n => format!(", discarded {n} error events received"),
+            };
             writeln!(
                 out,
-                "{:<20} keeps logs {} days, errors {} days",
+                "{:<20} keeps logs {} days, errors {} days{discarded}",
                 p.slug, p.logs_days, p.errors_days
             )?;
         }

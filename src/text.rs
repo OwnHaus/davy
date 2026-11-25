@@ -21,11 +21,49 @@ pub fn printable(s: &str, with: char) -> Cow<'_, str> {
 /// A control character, C0 and C1, or a bidirectional mark, embedding,
 /// override or isolate.
 fn hidden(c: char) -> bool {
-    c.is_control()
-        || matches!(
-            c,
-            '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
-        )
+    c.is_control() || reorders(c)
+}
+
+/// A bidirectional mark, embedding, override or isolate.
+fn reorders(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// `value` as JSON, on one line or with `pretty` indented, safe to print in
+/// a terminal and still exact: serde escapes C0 controls, and this writes
+/// DEL, C1 controls and every mark [`printable`] replaces as `\uXXXX`
+/// escapes too, which JSON reads back as the same characters. Each of them
+/// can only stand inside a string, as JSON's own syntax is ASCII.
+pub fn json(value: &impl serde::Serialize, pretty: bool) -> serde_json::Result<String> {
+    let s = if pretty {
+        serde_json::to_string_pretty(value)?
+    } else {
+        serde_json::to_string(value)?
+    };
+    if !s.chars().any(escaped) {
+        return Ok(s);
+    }
+    let mut out = String::with_capacity(s.len() + 16);
+    for c in s.chars() {
+        if escaped(c) {
+            out.push_str("\\u");
+            let n = u32::from(c);
+            for shift in [12, 8, 4, 0] {
+                out.extend(char::from_digit((n >> shift) & 0xf, 16));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    Ok(out)
+}
+
+/// What [`json`] escapes that serde leaves raw.
+fn escaped(c: char) -> bool {
+    ('\u{7f}'..='\u{9f}').contains(&c) || reorders(c)
 }
 
 /// `bytes` for a person: `74 B`, `1.2 KB`, `56 MB`, in powers of 1000.

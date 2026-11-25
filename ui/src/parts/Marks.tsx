@@ -1,5 +1,6 @@
 import type { Delivery, State, Status } from "../api/types";
 import { shown } from "../lib/text";
+import { stamp } from "../lib/time";
 import { Icon, type IconName } from "./Icon";
 
 const LEVEL_ICON: Record<string, IconName> = { fatal: "fatal", error: "error", warning: "warning", warn: "warning" };
@@ -21,6 +22,15 @@ export function StatusMark({ status }: { status: Status }) {
     <span className={`stt st-${status}`}>
       <Icon name={status} />
       <span>{status}</span>
+    </span>
+  );
+}
+
+/** Plain words, not a badge: a discarded issue keeps its status and only stops storing events. */
+export function Discarded({ at }: { at: string }) {
+  return (
+    <span className="dsc" title={`Discarded ${stamp(at)}: new events are counted, not stored`}>
+      discarded
     </span>
   );
 }
