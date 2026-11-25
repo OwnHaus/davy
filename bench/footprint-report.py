@@ -30,7 +30,7 @@ BIG_LINES = 500_000
 SAMPLED_MERGE_SECS = 2.0
 # The tables an error event touches; footprint.sh counts each index with
 # its table, and the FTS5 shadow tables of issues_text with the issue.
-EVENT_TABLES = ("events",)
+EVENT_TABLES = ("events", "latest_payloads")
 ISSUE_TABLES = ("issues", "issues_text", "issues_text_data", "issues_text_idx",
                 "issues_text_docsize", "issues_text_config", "issues_text_content")
 HOURLY_TABLES = ("issue_hourly",)
@@ -94,6 +94,9 @@ def logs_row(r):
         "disk_bytes": disk, "disk_per_raw": round(disk / raw, 4),
         "disk_bytes_per_line": round(disk / lines, 1),
         "ingest_peak_extra_disk_bytes": max(0, r["ingest_peak_disk_bytes"] - disk),
+        # Part of disk_bytes: the pattern counter files of each day.
+        "patterns_files": r["patterns_files"], "patterns_bytes": r["patterns_bytes"],
+        "patterns_disk_bytes": r["patterns_disk_bytes"],
         "share_of_index": share,
         "ingest_cpu_us_per_row": round(r["ingest_cpu_secs"] * 1e6 / lines, 2),
         "ingest_accept_rows_per_s": r["accept_rows_per_s"],
@@ -135,6 +138,7 @@ def errors_row(r):
         "compacted_sqlite_bytes": r["compacted_sqlite_bytes"],
         "compacted_row_bytes_per_event": round((r["compacted_table_events_bytes"] - payload) / n, 1),
         "payloads": r["payloads"], "payloads_per_issue": round(r["payloads"] / issues, 1),
+        "latest_payloads": r["latest_payloads"], "freelist_bytes": r["freelist_bytes"],
         "raw_event_bytes": r["raw_event_bytes"],
         "bytes_per_payload": round(payload / max(1, r["payloads"]), 1),
         "payloads_follow_sampling": r["payloads"] == issues * kept_payloads(r["per_issue"]),
@@ -198,6 +202,9 @@ def coefficients(logs, errors):
             "extra_bytes_per_day_index": spread(per_day),
             "ingest_peak_extra_disk_per_disk": spread([r["ingest_peak_extra_disk_bytes"] / r["disk_bytes"] for r in big]),
             "merge_peak_extra_disk_per_disk": spread([r["merge_peak_extra_disk_bytes"] / r["disk_bytes"] for r in merged]),
+            # The pattern counter files, already part of the disk ratios.
+            "patterns_disk_bytes_per_day_index": spread([r["patterns_disk_bytes"] / r["day_indexes"]
+                                                         for r in logs if r["complete"]]),
             "ingest_cpu_us_per_row": by(real + synthetic, "ingest_cpu_us_per_row"),
             "ingest_peak_rss_bytes": by(big, "ingest_peak_rss_bytes"),
             "ingest_peak_footprint_bytes": by(big, "ingest_peak_footprint_bytes"),
@@ -213,12 +220,12 @@ def coefficients(logs, errors):
                 "row_bytes": cold["row_bytes_per_event"],
                 "payload_per_raw_event_json": cold["payload_per_raw"],
             },
-            # The newest event of an issue in each write transaction gets a
-            # payload that the next transaction drops, and the dropped bytes
-            # stay as a hole in the page. So row_bytes_as_written grows with
-            # payload_bytes and with how few events of one issue share a
-            # transaction: it is measured for this event shape and this run,
-            # and it scales with both, not a constant per event.
+            # The newest payload of an issue outside the sample sits in
+            # latest_payloads, one row per issue, so it leaves no hole in the
+            # pages of events. Before that table, row_bytes_as_written grew
+            # with payload_bytes and with how few events of one issue shared
+            # a transaction. events_table_unused_share shows whether holes
+            # come back.
             "event_without_payload": hot and {
                 "measured_at_events_per_issue": hot["events_per_issue"],
                 "measured_at_issues": hot["issues"],

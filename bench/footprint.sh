@@ -411,6 +411,11 @@ run_logs() {
   wait "$SAMPLER" || true; SAMPLER=''
   kv ingest_peak_disk_bytes "$(cat "$RUN/ingest-peak")"
   kv disk_bytes "$(bytes "$data/logs")"
+  # The pattern counters of each project and day, in the day's directory, so
+  # disk_bytes counts them.
+  kv patterns_files "$(find "$data/logs" -name 'patterns-*.json' | wc -l | tr -d ' ')"
+  kv patterns_bytes "$(find "$data/logs" -name 'patterns-*.json' -exec stat -f %z {} + | awk '{s += $1} END {print s + 0}')"
+  kv patterns_disk_bytes "$(find "$data/logs" -name 'patterns-*.json' -exec du -k {} + | awk '{s += $1} END {print s * 1024}')"
   kv sqlite_bytes "$(cat "$data"/davy.sqlite* | wc -c | tr -d ' ')"
   "$EX" inspect "$data" >> "$RUN/result.env"
   if [ "$days" -gt 1 ]; then
@@ -453,20 +458,23 @@ for table, size in tables.items():
   print(f"table_{table}_bytes={size}")
 print(f"stored_events={one('SELECT count(*) FROM events')}")
 print(f"stored_issues={one('SELECT count(*) FROM issues')}")
-print(f"payloads={one('SELECT count(payload) FROM events')}")
-print(f"payload_bytes={one('SELECT coalesce(sum(length(payload)), 0) FROM events')}")
+# The newest event of an issue outside the sample keeps its payload in
+# latest_payloads, one row per issue, so a payload is in one table or the other.
+print(f"payloads={one('SELECT count(payload) FROM events') + one('SELECT count(*) FROM latest_payloads')}")
+print(f"payload_bytes={one('SELECT coalesce(sum(length(payload)), 0) FROM events') + one('SELECT coalesce(sum(length(payload)), 0) FROM latest_payloads')}")
+print(f"latest_payloads={one('SELECT count(*) FROM latest_payloads')}")
+print(f"freelist_bytes={one('PRAGMA freelist_count') * one('PRAGMA page_size')}")
 print(f"hourly_rows={one('SELECT count(*) FROM issue_hourly')}")
 print(f"tag_rows={one('SELECT count(*) FROM issue_tags')}")
-# An event's payload is dropped by an UPDATE once a newer event of its
-# issue arrives, which leaves the space in its page. A compacted copy shows
-# what the same rows take without those holes.
+# Space freed inside the pages of events stays there. A compacted copy shows
+# what the same rows take without such holes.
 unused, btree = c.execute("SELECT sum(unused), sum(pgsize) FROM dbstat WHERE name='events'").fetchone()
 print(f"events_unused_bytes={unused}")
 print(f"events_btree_bytes={btree}")
 c.execute("VACUUM INTO ?", (sys.argv[2],))
 v = sqlite3.connect(sys.argv[2])
 print(f"compacted_sqlite_bytes={v.execute('PRAGMA page_count').fetchone()[0] * v.execute('PRAGMA page_size').fetchone()[0]}")
-events = v.execute("SELECT sum(pgsize) FROM dbstat WHERE name IN (SELECT name FROM sqlite_master WHERE tbl_name='events')").fetchone()[0]
+events = v.execute("SELECT sum(pgsize) FROM dbstat WHERE name IN (SELECT name FROM sqlite_master WHERE tbl_name IN ('events', 'latest_payloads'))").fetchone()[0]
 print(f"compacted_table_events_bytes={events}")
 PY
   rm -rf "$data"
