@@ -354,7 +354,9 @@ pub struct EventPage {
 
 /// The query of [`events`]: `?1` the issue, `?2` the cursor, `?3` the
 /// rows. Public, like [`STORED_PAYLOAD_SQL`], so that the benchmark in
-/// `examples/error_footprint` times the query Davy runs.
+/// `examples/error_footprint` times the query Davy runs. It reads the issue
+/// of any project, so a caller checks first that the issue is one of a
+/// project it may read.
 pub const EVENT_PAGE_SQL: &str = "SELECT id,event_id,timestamp,release,environment,payload IS NOT NULL OR id IS (SELECT event FROM latest_payloads WHERE issue_id=?1) FROM events WHERE issue_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3";
 
 /// One page of the events of `issue`, newest first. `after` is the
@@ -383,7 +385,7 @@ pub fn events(c: &Connection, issue: i64, after: Option<i64>) -> Result<EventPag
 }
 
 /// The query of [`stored_payload`]: `?1` the issue, `?2` the event id or
-/// NULL.
+/// NULL. Like [`EVENT_PAGE_SQL`], it checks no project.
 pub const STORED_PAYLOAD_SQL: &str = "SELECT e.event_id,coalesce(e.payload,l.payload) FROM events e LEFT JOIN latest_payloads l ON l.issue_id=?1 AND l.event=e.id WHERE e.issue_id=?1 AND (e.payload IS NOT NULL OR l.event IS NOT NULL) AND (?2 IS NULL OR e.event_id=?2) ORDER BY e.id DESC LIMIT 1";
 
 /// The compressed payload of the event `event_id` of `issue`, or of its
