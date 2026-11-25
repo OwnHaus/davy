@@ -50,17 +50,49 @@ fn upgrade_refuses_a_store_outside_a_scratch_directory() {
     assert!(is_copy(Path::new("/home/a/davy/.scratch/copy")));
 }
 
+/// A store one version behind, as the version before `latest_payloads`
+/// left it: one issue of 51 events, the newest one's payload in its events
+/// row behind the mark.
+fn behind(data: &Path) {
+    let mut real = Real::open(data).unwrap();
+    let events = (0..51)
+        .map(|n| ErrorEvent::parse(json!({"message": "boom", "extra": {"n": n}})).unwrap())
+        .collect();
+    real.write(events).unwrap();
+    drop(real);
+    let c = Connection::open(data.join(store::DB_FILE)).unwrap();
+    let payload: Vec<u8> = c
+        .query_row("SELECT payload FROM latest_payloads", [], |r| r.get(0))
+        .unwrap();
+    let marked = [LATEST.as_slice(), &payload].concat();
+    c.execute("UPDATE events SET payload=?1 WHERE id=51", [marked])
+        .unwrap();
+    let version: i64 = c
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    c.execute_batch(&format!(
+        "DROP TABLE latest_payloads; PRAGMA user_version={};",
+        version - 1
+    ))
+    .unwrap();
+}
+
 #[test]
 fn upgrade_migrates_a_copy_under_a_scratch_directory() {
     let root = scratch("upgrade");
     let data = root.join(".scratch").join("copy");
-    std::fs::create_dir_all(&data).unwrap();
+    behind(&data);
     upgrade(&data).unwrap();
     let c = Connection::open(data.join(store::DB_FILE)).unwrap();
-    let rows: i64 = c
-        .query_row("SELECT count(*) FROM latest_payloads", [], |r| r.get(0))
+    let moved: (i64, i64) = c
+        .query_row(
+            "SELECT (SELECT event FROM latest_payloads), (SELECT count(*) FROM events
+             WHERE substr(payload, 1, 8)=x'5D2A4D1800000000')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
         .unwrap();
-    assert_eq!(rows, 0);
+    assert_eq!(moved, (51, 0));
     std::fs::remove_dir_all(&root).unwrap();
 }
 
