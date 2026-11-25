@@ -197,6 +197,8 @@ pub(super) struct State {
     log_days: LogDays,
     /// Whether the log directory was listed for [`log_days::Mark::Absent`].
     listed: bool,
+    /// Whether a record not of Davy's own was added since the last commit.
+    foreign: bool,
 }
 
 impl State {
@@ -217,7 +219,14 @@ impl State {
             pending: HashMap::new(),
             log_days: LogDays::new(crate::time::now_ms()),
             listed: false,
+            foreign: false,
         }
+    }
+
+    /// Whether the next commit holds a record not of Davy's own, so its
+    /// failure loses more than Davy's own lines.
+    pub(super) fn foreign(&self) -> bool {
+        self.foreign
     }
 
     fn settle(&self, r: &mut LogRecord) {
@@ -290,6 +299,7 @@ impl State {
                 }
             };
             let bytes = tally::raw_bytes(&r);
+            let source = r.source;
             self.count_stored(day, r.project_id, bytes);
             let id = stamp.map(|field| (field, self.tally(day, &r, bytes)));
             let open = self.writer(day)?;
@@ -303,6 +313,7 @@ impl State {
             open.last_write = Instant::now();
             open.dirty = true;
             self.uncommitted += 1;
+            self.foreign |= source != LogSource::Davy;
         }
         if self.uncommitted >= COMMIT_AT_DOCS {
             self.commit()?;
@@ -325,6 +336,7 @@ impl State {
             self.settled(day);
         }
         self.uncommitted = 0;
+        self.foreign = false;
         let mut first = None;
         for (day, e) in failed {
             self.discard(day);

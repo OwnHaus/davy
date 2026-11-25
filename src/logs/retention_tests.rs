@@ -365,7 +365,7 @@ fn a_stray_is_reported_with_its_path_quoted_and_escaped() {
     };
     assert_eq!(
         stray_line(Path::new("/logs"), &stray),
-        r#"log writer: "/logs/2026-01-05\nlog writer: forged" is not a directory, so it is not searched, written or deleted until it is moved away"#
+        r#""/logs/2026-01-05\nlog writer: forged" is not a directory, so it is not searched, written or deleted until it is moved away"#
     );
 }
 

@@ -9,7 +9,7 @@ use tokio::{task::JoinSet, time::MissedTickBehavior};
 /// the same item. A failed read is reported and tried on the next tick.
 /// Runs until aborted, which aborts the work in flight.
 pub async fn poll<T, K, Fut>(
-    name: &str,
+    name: &'static str,
     period: Duration,
     limit: usize,
     mut due: impl FnMut() -> anyhow::Result<Vec<T>>,
@@ -56,12 +56,8 @@ pub async fn poll<T, K, Fut>(
     }
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "the server has no logger yet, stderr is its log"
-)]
-fn report(name: &str, e: &anyhow::Error) {
-    eprintln!("{name}: reading due work: {e:#}");
+fn report(name: &'static str, e: &anyhow::Error) {
+    crate::self_report::error(name, format_args!("reading due work: {e:#}"));
 }
 
 #[cfg(test)]

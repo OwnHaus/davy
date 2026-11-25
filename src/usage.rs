@@ -139,6 +139,11 @@ impl Counter {
         let mut map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         map.entry((day, project, signal)).or_default().add(count);
     }
+    /// Whether every count held is of `project`, and one is.
+    pub fn only(&self, project: i64) -> bool {
+        let map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        !map.is_empty() && map.keys().all(|(_, p, _)| *p == project)
+    }
     /// Takes every count out, sorted so tests can compare.
     pub fn take(&self) -> Vec<Row> {
         self.take_up_to(usize::MAX)
@@ -227,7 +232,9 @@ pub async fn flush_every(
         match send(&counter, &log_days, &sender).await {
             Ok(()) | Err(Refused::Full) => {}
             Err(Refused::Stopped) => return,
-            Err(e @ Refused::Failed(_)) => warn("counts not stored, kept for the next try", &e),
+            Err(e @ Refused::Failed(_)) => {
+                warn_held(&counter, "counts not stored, kept for the next try", &e);
+            }
         }
     }
 }
@@ -247,12 +254,18 @@ pub async fn flush(
     }
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "the server has no logger yet, stderr is its log"
-)]
+/// Reports counts that were not stored. When the counts held are those of
+/// the project `davy` alone, the line goes to stderr only: it would be
+/// counted in turn, and fail to be stored again.
+pub fn warn_held(counter: &Counter, what: &str, e: &Refused) {
+    let own = crate::self_report::project_id().is_some_and(|id| counter.only(id));
+    let _quiet = own.then(crate::self_report::quiet);
+    warn(what, e);
+}
+
+/// Reports counts that were not stored.
 pub fn warn(what: &str, e: &Refused) {
-    eprintln!("usage flusher: {what}: {e}");
+    crate::self_report::warn("usage flusher", format_args!("{what}: {e}"));
 }
 
 /// Hands the counts, then what the log writer stored and cut, to the

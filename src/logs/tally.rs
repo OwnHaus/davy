@@ -29,6 +29,7 @@ use crate::{
         LogLevel, LogRecord,
         patterns::{self, OTHER},
     },
+    self_report,
     text::printable,
 };
 use anyhow::Result;
@@ -600,12 +601,11 @@ fn open(day: Date, dir: &Path) -> DayTally {
     tally
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "the server has no logger yet, stderr is its log"
-)]
 fn report(day: Date, what: &str, e: &anyhow::Error) {
-    eprintln!("log writer: {what} the patterns of {day}: {e:#}");
+    self_report::warn(
+        "log writer",
+        format_args!("{what} the patterns of {day}: {e:#}"),
+    );
 }
 
 #[cfg(test)]

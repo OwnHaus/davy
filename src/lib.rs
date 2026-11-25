@@ -24,6 +24,7 @@ pub mod ready;
 pub mod retention;
 pub mod scrub;
 pub mod secret;
+pub mod self_report;
 pub mod serve;
 pub mod sourcemaps;
 pub mod store;

@@ -58,16 +58,15 @@ pub fn set(c: &Connection, project: i64, policy: &Policy) -> anyhow::Result<bool
 }
 
 /// Writes a change of policy to the server's log.
-#[expect(
-    clippy::print_stderr,
-    reason = "the server has no logger yet, stderr is its log"
-)]
 fn log_change(project: &str, by: &str, old: &Policy, new: &Policy) {
     let json = |p: &Policy| serde_json::to_string(p).unwrap_or_default();
-    eprintln!(
-        "scrub: warning: project {project} policy changed {by}: {} -> {}",
-        json(old),
-        json(new)
+    crate::self_report::warn(
+        "scrub",
+        format_args!(
+            "warning: project {project} policy changed {by}: {} -> {}",
+            json(old),
+            json(new)
+        ),
     );
 }
 

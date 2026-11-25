@@ -318,12 +318,8 @@ impl IntoResponse for Refusal {
 
 /// The text of an internal error goes to the log, not to a browser that may
 /// not even have logged in.
-#[expect(
-    clippy::print_stderr,
-    reason = "the server has no logger yet, stderr is its log"
-)]
 fn report(message: &str) {
-    eprintln!("ui: {message}");
+    crate::self_report::error("ui", message);
 }
 
 /// Queues `change` on the writer's UI queue and waits until it commits.

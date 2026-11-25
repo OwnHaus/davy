@@ -36,6 +36,8 @@ pub enum LogSource {
     Otlp,
     Sentry,
     Vercel,
+    /// Davy's own warnings, errors and crashes, see `crate::self_report`.
+    Davy,
 }
 
 impl LogSource {
@@ -45,6 +47,7 @@ impl LogSource {
             Self::Otlp => 2,
             Self::Sentry => 3,
             Self::Vercel => 4,
+            Self::Davy => 5,
         }
     }
     pub fn from_code(code: u64) -> Self {
@@ -52,6 +55,7 @@ impl LogSource {
             2 => Self::Otlp,
             3 => Self::Sentry,
             4 => Self::Vercel,
+            5 => Self::Davy,
             _ => Self::Logtail,
         }
     }

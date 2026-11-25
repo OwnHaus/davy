@@ -15,6 +15,7 @@ fn args(data: &Path, listen: Option<&str>, public_url: Option<&str>) -> Args {
         log_retention_days: 30,
         error_retention_days: 36_500,
         mail_from: None,
+        no_self_report: false,
     }
 }
 

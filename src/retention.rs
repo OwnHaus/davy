@@ -424,10 +424,6 @@ pub fn set(c: &Connection, change: &Change, by: By) -> Result<Result<Stored, Str
 
 /// One line in the log for each stored change, so it shows who changed
 /// what.
-#[expect(
-    clippy::print_stderr,
-    reason = "the server has no logger yet, stderr is its log"
-)]
 fn report(by: By, project: &str, now: Stored) {
     let shown =
         |d: Option<Days>| d.map_or("the default".to_owned(), |d| format!("{} days", d.get()));
@@ -436,10 +432,13 @@ fn report(by: By, project: &str, now: Stored) {
     } else {
         "an agent"
     };
-    eprintln!(
-        "retention: {who} set project {project:?} to logs {}, errors {}",
-        shown(now.logs_days),
-        shown(now.errors_days),
+    crate::self_report::info(
+        "retention",
+        format_args!(
+            "{who} set project {project:?} to logs {}, errors {}",
+            shown(now.logs_days),
+            shown(now.errors_days),
+        ),
     );
 }
 

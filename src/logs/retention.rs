@@ -26,6 +26,7 @@ use super::{
 };
 use crate::{
     retention::Lock,
+    self_report,
     time::{day_of, now_ns},
 };
 use anyhow::{Context, Result};
@@ -440,20 +441,15 @@ impl State {
     }
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "the server has no logger yet, stderr is its log"
-)]
 fn report(day: Date, e: &anyhow::Error) {
-    eprintln!("log writer: retention of {day}, skipped until the next pass: {e:#}");
+    self_report::warn(
+        "log writer",
+        format_args!("retention of {day}, skipped until the next pass: {e:#}"),
+    );
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "the server has no logger yet, stderr is its log"
-)]
 fn report_stray(root: &std::path::Path, stray: &Stray) {
-    eprintln!("{}", stray_line(root, stray));
+    self_report::warn("log writer", stray_line(root, stray));
 }
 
 /// The line that reports `stray`. The path is quoted and escaped, so a
@@ -464,26 +460,21 @@ fn report_stray(root: &std::path::Path, stray: &Stray) {
 )]
 fn stray_line(root: &std::path::Path, stray: &Stray) -> String {
     format!(
-        "log writer: {:?} {}, so it is not searched, written or deleted until it is moved away",
+        "{:?} {}, so it is not searched, written or deleted until it is moved away",
         root.join(&stray.name),
         stray.why
     )
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "the server has no logger yet, stderr is its log"
-)]
 fn report_entry(e: &anyhow::Error) {
-    eprintln!("log writer: retention skipped an entry it cannot read: {e:#}");
+    self_report::warn(
+        "log writer",
+        format_args!("retention skipped an entry it cannot read: {e:#}"),
+    );
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "the server has no logger yet, stderr is its log"
-)]
 fn report_trash(e: &anyhow::Error) {
-    eprintln!("log writer: emptying the trash: {e:#}");
+    self_report::warn("log writer", format_args!("emptying the trash: {e:#}"));
 }
 
 /// Whether `name` is one [`State::trash`] gives a day: `YYYY-MM-DD-` and

@@ -8,7 +8,7 @@ use crate::{
         self,
         store::{LogWriter, Overrides},
     },
-    mcp, monitor, net, sourcemaps, store,
+    mcp, monitor, net, self_report, sourcemaps, store,
     token::Token,
     upload,
 };
@@ -154,6 +154,66 @@ async fn stop(tasks: Tasks) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Davy's own lines on their way to the project `davy`, and the thread
+/// that records them.
+struct SelfReport {
+    installed: self_report::Installed,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Davy's own lines, queued from before the store and log writers start,
+/// so what their first pass reports, such as a stray day of logs, is
+/// recorded too. The queue holds [`self_report::QUEUE`] lines and drops and
+/// counts the rest until the forwarder starts.
+struct Early {
+    installed: self_report::Installed,
+    lines: std::sync::mpsc::Receiver<self_report::Line>,
+}
+
+impl Early {
+    /// Queues Davy's own lines from now on.
+    fn install() -> Self {
+        let (sink, lines) = self_report::Sink::new(self_report::QUEUE);
+        let installed = self_report::install(&sink);
+        Self { installed, lines }
+    }
+
+    /// Sends the lines queued and to come to a new forwarder. A forwarder
+    /// that does not start is reported, and the lines go to stderr only.
+    fn start(self, data: &std::path::Path, app: &App) -> SelfReport {
+        let Self { installed, lines } = self;
+        let forwarder = self_report::Forwarder {
+            data: data.to_owned(),
+            logs: app.logs.clone(),
+            usage: app.usage.clone(),
+            policies: app.keys.policies(),
+        };
+        let thread = forwarder
+            .start(lines)
+            .inspect_err(|e| self_report::stderr("self report", format_args!("not started: {e}")))
+            .ok();
+        SelfReport { installed, thread }
+    }
+}
+
+impl SelfReport {
+    /// Records what is queued and stops. Lines from now on go to stderr
+    /// only. A forwarder that panicked is reported and does not fail the
+    /// shutdown.
+    async fn stop(self) {
+        drop(self.installed);
+        let Some(thread) = self.thread else {
+            return;
+        };
+        let joined = tokio::task::spawn_blocking(move || join([("self report", thread)])).await;
+        match joined {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => self_report::stderr("self report", e),
+            Err(e) => self_report::stderr("self report", e),
+        }
+    }
+}
+
 /// Serves ingest, and with a token `/mcp` and the source map upload.
 /// `public_url` is where clients reach this server.
 pub async fn serve(
@@ -163,7 +223,9 @@ pub async fn serve(
     retention: crate::retention::Defaults,
     token: Option<Token>,
     smtp: Option<alert::mail::Smtp>,
+    self_report: bool,
 ) -> anyhow::Result<()> {
+    let early = self_report.then(Early::install);
     let writer = store::Writer::start(store::open(data)?, 1024);
     let log_writer = log_writer(data, retention, writer.retention.clone().with_dir(data))?;
     let app = App {
@@ -175,6 +237,7 @@ pub async fn serve(
         usage: crate::usage::Counter::default(),
     };
     let usage = app.usage.clone();
+    let reporter = early.map(|early| early.start(data, &app));
     let maps = Arc::clone(&app.sourcemaps);
     let ui = crate::ui::serve(
         data,
@@ -219,6 +282,9 @@ pub async fn serve(
         })
         .await;
     stop(tasks).await?;
+    if let Some(reporter) = reporter {
+        reporter.stop().await;
+    }
     flusher.stop().await?;
     shut_down(log_writer, &usage, writer).await?;
     result?;
@@ -237,12 +303,12 @@ async fn shut_down(
 ) -> anyhow::Result<()> {
     let log_days = log_writer.log_days;
     if let Err(e) = crate::usage::flush(usage, &log_days, &writer.sender).await {
-        crate::usage::warn("the counts since the last flush were not stored", &e);
+        crate::usage::warn_held(usage, "the counts since the last flush were not stored", &e);
     }
     drop(log_writer.queue);
     let logs_stopped = join([("log writer", log_writer.thread)]);
     if let Err(e) = crate::usage::flush(usage, &log_days, &writer.sender).await {
-        crate::usage::warn("the log writer's last counts were not stored", &e);
+        crate::usage::warn_held(usage, "the log writer's last counts were not stored", &e);
     }
     drop(writer.sender);
     drop(writer.ui);

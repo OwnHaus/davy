@@ -85,7 +85,7 @@ export type Request = { method: string | null, url: string | null, };
 
 export type Context = { name: string, fields: Cut<Pair>, };
 
-export type LogSource = "logtail" | "otlp" | "sentry" | "vercel";
+export type LogSource = "logtail" | "otlp" | "sentry" | "vercel" | "davy";
 
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error" | "fatal";
 
