@@ -1,7 +1,7 @@
 use super::*;
 use crate::usage::{
     footprint::FIXTURE,
-    forecast::{Logs, Spread},
+    forecast::{ErrorBasis, Errors, Estimate, Fill, Logs, Spread},
 };
 use jiff::civil::Date;
 
@@ -92,6 +92,116 @@ fn a_first_day_forecast_only_warns_while_the_disk_has_days_left() {
     }
 }
 
+fn with_estimate(mut f: Forecast, days: Option<u64>) -> Forecast {
+    let today: Date = "2026-11-24".parse().unwrap();
+    f.estimate = Some(Estimate {
+        steady_state: 80 * GIB,
+        fill: Fill::new(today, days),
+        clamped: false,
+    });
+    f
+}
+
+/// A worst case: api keeps logs 30 days, shop 7.
+fn worst(days: u64) -> Forecast {
+    Forecast {
+        shortest_days: 7,
+        ..full_in(Basis::Measured, days)
+    }
+}
+
+#[test]
+fn the_estimate_shows_its_day_when_it_differs_from_the_bound() {
+    let data = Path::new("/var/lib/davy");
+    let free = Some(40 * GIB);
+    let worst_fix = "the day takes the logs of every project as kept 30 days; watch free space over a few days before you shorten a retention with davy project retention SLUG --data /var/lib/davy --logs N, or add disk";
+    let earliest = "40 GiB free, forecast full on 2026-12-04, in 10 days at the earliest at the current rate, if every project kept logs 30 days";
+    for (estimate, status, also) in [
+        (Some(10), Status::Warn, String::new()),
+        (
+            Some(13),
+            Status::Warn,
+            "; with each project's logs kept as long as it keeps them and packing alike, the estimate is full on 2026-12-07, in 13 days".to_owned(),
+        ),
+        (
+            Some(40),
+            Status::Warn,
+            "; with each project's logs kept as long as it keeps them and packing alike, the estimate is full on 2027-01-03, in 40 days".to_owned(),
+        ),
+        (
+            Some(4_000),
+            Status::Warn,
+            "; with each project's logs kept as long as it keeps them and packing alike, the estimate is full beyond 10 years".to_owned(),
+        ),
+        (
+            None,
+            Status::Warn,
+            "; with each project's logs kept as long as it keeps them and packing alike, the estimate is never full".to_owned(),
+        ),
+    ] {
+        assert_eq!(
+            disk(data, free, Some(Ok(with_estimate(worst(10), estimate)))),
+            Check {
+                name: "disk",
+                status,
+                detail: format!("{earliest}{also}"),
+                fix: Some(worst_fix.to_owned()),
+            },
+            "{estimate:?}"
+        );
+    }
+}
+
+/// The estimate never raises the status: the bound does, as the
+/// estimate assumes every project's logs pack alike. Outside a worst case
+/// it changes nothing, even under 2 days.
+#[test]
+fn the_estimate_never_raises_the_status() {
+    let data = Path::new("/var/lib/davy");
+    let free = Some(40 * GIB);
+    for (bound, estimate, status) in [
+        (20, Some(20), Status::Ok),
+        (20, Some(13), Status::Ok),
+        (20, None, Status::Ok),
+        (10, Some(10), Status::Warn),
+        (10, Some(40), Status::Warn),
+        (10, None, Status::Warn),
+        (1, Some(40), Status::Fail),
+        (1, None, Status::Fail),
+    ] {
+        let check = disk(
+            data,
+            free,
+            Some(Ok(with_estimate(full_in(Basis::Measured, bound), estimate))),
+        );
+        assert_eq!(check.status, status, "{bound} {estimate:?}");
+    }
+}
+
+/// A worst case under 2 days only warns where the estimate puts the disk
+/// full later, or never, or there is none: the projects' own retentions
+/// may save it. Where the estimate lands on its day, it fails.
+#[test]
+fn a_worst_case_fails_where_the_estimate_lands_on_its_day() {
+    let data = Path::new("/var/lib/davy");
+    let free = Some(40 * GIB);
+    for (estimate, status) in [
+        (Some(Some(1)), Status::Fail),
+        (Some(Some(2)), Status::Warn),
+        (Some(None), Status::Warn),
+        (None, Status::Warn),
+    ] {
+        let f = match estimate {
+            Some(days) => with_estimate(worst(1), days),
+            None => worst(1),
+        };
+        assert_eq!(disk(data, free, Some(Ok(f))).status, status, "{estimate:?}");
+    }
+    // A bound past the limit fails whatever the estimate says.
+    let check = disk(data, free, Some(Ok(with_estimate(worst(0), None))));
+    assert_eq!(check.status, Status::Fail);
+}
+
 #[test]
 fn a_disk_full_beyond_10_years_is_ok() {
     let data = Path::new("/var/lib/davy");
@@ -102,12 +212,41 @@ fn a_disk_full_beyond_10_years_is_ok() {
         full_on_range: [None; 2],
         ..full_in(Basis::Measured, 20)
     };
-    let check = disk(data, Some(40 * GIB), Some(Ok(beyond)));
-    assert_eq!(
-        (check.status, check.detail.as_str()),
+    let said = "40 GiB free, forecast full beyond 10 years at the current rate";
+    for (estimate, also) in [
+        (Some(5_000), ""),
+        // A bound beyond 10 years and an estimate of never differ: one
+        // project, so the estimate differs by the middle growth only.
         (
-            Status::Ok,
-            "40 GiB free, forecast full beyond 10 years at the current rate"
-        )
-    );
+            None,
+            "; at the middle growth of logs, the estimate is never full",
+        ),
+    ] {
+        let check = disk(
+            data,
+            Some(40 * GIB),
+            Some(Ok(with_estimate(beyond.clone(), estimate))),
+        );
+        assert_eq!(
+            (check.status, check.detail),
+            (Status::Ok, format!("{said}{also}")),
+            "{estimate:?}"
+        );
+    }
+    // Errors do not change the words: the disk fills, beyond 10 years.
+    let errors = Forecast {
+        errors: Some(Errors {
+            projects: 1,
+            events_per_day: 10_000,
+            bytes_per_event: 2_100,
+            own_days: 0,
+            basis: ErrorBasis::Footprint,
+            growth: 21_000_000,
+            estimate_growth: 21_000_000,
+            share_ppm: 1_000_000,
+        }),
+        ..beyond
+    };
+    let check = disk(data, Some(40 * GIB), Some(Ok(errors)));
+    assert_eq!((check.status, check.detail.as_str()), (Status::Ok, said));
 }

@@ -457,8 +457,9 @@ fn assuming(mut disk: Check, days: Option<u32>) -> Check {
 
 /// Free space, and when the forecast puts the disk full: a warning under
 /// 14 days, a failure under 2. A worst case, which mixed log retentions
-/// give, only warns until the disk is past its limit: the disk may never
-/// fill on its day. So does a first day, which rests on hours of logs.
+/// give, only warns until the disk is past its limit when the estimate
+/// puts the disk full later: the disk may never fill on its day. So does
+/// a first day, which rests on hours of logs.
 /// Only low free space or few days left advise a shorter retention; a
 /// forecast missing for another reason has a fix of its own.
 fn disk(data: &Path, free: Option<u64>, forecast: Option<Result<Forecast, NoForecast>>) -> Check {
@@ -490,7 +491,7 @@ fn disk(data: &Path, free: Option<u64>, forecast: Option<Result<Forecast, NoFore
                 );
             }
             let (status, said) = by_days(&f);
-            (status, said, (Status::Ok, None))
+            (status, said + &by_estimate(&f), (Status::Ok, None))
         }
     };
     let space = worse(by_free, days);
@@ -542,8 +543,9 @@ fn first_day(f: &Forecast) -> Option<f64> {
 }
 
 /// What the forecast's days left say, which alone decide its status. A
-/// worst case or a first day only warns until the disk is past its limit:
-/// the one may never fill on its day, the other rests on hours of logs.
+/// worst case that may fill later, or a first day, only warns until the
+/// disk is past its limit: the one may never fill on its day, the other
+/// rests on hours of logs.
 fn by_days(f: &Forecast) -> (Status, String) {
     let Some(n) = f.days_left else {
         let said = match f.errors {
@@ -555,7 +557,7 @@ fn by_days(f: &Forecast) -> (Status, String) {
     };
     let unit = if n == 1 { "day" } else { "days" };
     let status = match n {
-        0..2 if n > 0 && (f.worst_case() || first_day(f).is_some()) => Status::Warn,
+        0..2 if n > 0 && (may_fill_later(f) || first_day(f).is_some()) => Status::Warn,
         0..2 => Status::Fail,
         2..14 => Status::Warn,
         _ => Status::Ok,
@@ -577,6 +579,42 @@ fn by_days(f: &Forecast) -> (Status, String) {
         status,
         format!(", forecast full {on}in {n} {unit}{earliest}{thin}"),
     )
+}
+
+/// Whether a worst case may fill later than its day: the estimate puts
+/// the disk full later, or never, or there is none. Where the estimate
+/// lands on the bound's day, the projects' own retentions do not save it.
+fn may_fill_later(f: &Forecast) -> bool {
+    f.worst_case()
+        && f.estimate.is_none_or(|e| {
+            e.fill
+                .days_left
+                .is_none_or(|n| f.days_left.is_some_and(|b| n > b))
+        })
+}
+
+/// The estimate's day where it differs from the bound's. It never raises
+/// the status, as it assumes every project's logs pack alike and the
+/// forecast never puts it before the bound. It only lets a worst case
+/// under 2 days that it puts later warn instead of fail, see
+/// [`may_fill_later`].
+fn by_estimate(f: &Forecast) -> String {
+    let Some(e) = f.estimate else {
+        return String::new();
+    };
+    let fill = e.fill;
+    if fill.days_left == f.days_left && fill.beyond_10_years == f.beyond_10_years {
+        return String::new();
+    }
+    let when = match (fill.days_left, fill.full_on) {
+        (Some(n), Some(on)) => format!(
+            "full on {on}, in {n} {}",
+            if n == 1 { "day" } else { "days" }
+        ),
+        _ if fill.beyond_10_years => "full beyond 10 years".to_owned(),
+        _ => "never full".to_owned(),
+    };
+    format!("; {}, the estimate is {when}", f.estimate_takes())
 }
 
 fn worse(a: Status, b: Status) -> Status {
