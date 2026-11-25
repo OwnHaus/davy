@@ -664,7 +664,7 @@ The docs URL is the repository's raw `docs/` on the release tag until Davy has i
 
 - `docs/install.md` is a list of steps. Each step has one command, what it prints on success, and what to do when it fails. No step needs a browser, a terminal prompt or a GUI.
 - The agent asks the person only for what it cannot know: the public URL and whether TLS is already in front of it, and optionally an SMTP server for e-mail alerts.
-- `docs/connect/` has one page per client: Node, the browser with source maps through `sentry-cli`, Python, Go, Logtail and pino, and OpenTelemetry. Each uses the official SDK and changes only the DSN or token.
+- `docs/connect/` has one page per client: Node, the browser with source maps through `sentry-cli`, Python, Go, Logtail and pino, OpenTelemetry, and Vercel Log Drains. Each uses the official SDK or integration and changes only the DSN or token.
 - `llms.txt` at the root of the repository lists these pages with one line each.
 - Every command in a fenced `sh` block of these pages runs in e2e (Done means), so a page cannot fall behind the binary.
 

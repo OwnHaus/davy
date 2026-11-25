@@ -21,7 +21,7 @@ Davy replaces Sentry and Better Stack for a team that wants to run its own. It i
 ## What it does
 
 - **Errors.** Takes what the official Sentry SDKs send, groups it into issues and reopens an issue when it comes back in the release that fixed it or a newer one. Minified browser stacks turn back into source through maps uploaded with `sentry-cli`. What users write in the SDK's feedback widget shows up on the issue, and the SDK's client reports say what it dropped before sending. Release health counts the sessions the SDKs send, so crash-free sessions and users show per release.
-- **Logs.** Takes logs from Logtail shippers (pino, Vector, Fluent Bit), OpenTelemetry and Sentry's logger, with full-text search, a histogram and live tail. Logs next to an error show up on the error.
+- **Logs.** Takes logs from Logtail shippers (pino, Vector, Fluent Bit), OpenTelemetry, Vercel Log Drains and Sentry's logger, with full-text search, a histogram and live tail. Logs next to an error show up on the error.
 - **Uptime.** HTTP checks with status and keyword, and heartbeats for cron jobs, which also take the cron check-ins of the Sentry SDKs (`Sentry.withMonitor`) with their crontab schedule and time zone.
 - **Alerts.** A notice when an issue is new or regressed and when a monitor goes down or comes back, never on every event. To webhooks (signed), Slack and e-mail.
 - **Agents.** An MCP server with thirteen tools: `schema`, `sql`, `search_logs`, `count_logs`, `log_patterns`, `release_health`, `issue_context`, `mark_fixed`, `submit_feedback`, `connect_project`, `project_status`, `set_retention` and `usage`. Every operator step is also a CLI command with `--json`.
@@ -87,6 +87,7 @@ Run `davy connect my-app --data /var/lib/davy --sdk node` for JSON with the DSN,
 | `sentry-go` | the DSN | [Go](docs/connect/go.md) |
 | pino, Vector, Fluent Bit or another Logtail shipper | the endpoint and source token | [Logtail](docs/connect/logtail.md) |
 | an OpenTelemetry log exporter | two environment variables | [OpenTelemetry](docs/connect/opentelemetry.md) |
+| a Vercel Log Drain | the endpoint and a custom header | [Vercel](docs/connect/vercel.md) |
 | Claude Code, Codex or Cursor | one MCP config from `davy mcp-config` | [Agents](docs/connect/agents.md) |
 
 The tests run the real `@sentry/node` 7 and 10, `@logtail/pino`, the OpenTelemetry exporters, `sentry-cli` and an MCP client against the release binary. The Python and Go SDKs speak the same protocol and are not in the tests yet.

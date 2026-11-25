@@ -188,6 +188,7 @@ Follow docs/install.md in https://github.com/dominikzabcik/davy from top to bott
           <tr><td><code>sentry-go</code></td><td>the DSN</td></tr>
           <tr><td>pino, Vector, Fluent Bit or another Logtail shipper</td><td>the endpoint and source token</td></tr>
           <tr><td>an OpenTelemetry log exporter</td><td>two environment variables</td></tr>
+          <tr><td>a Vercel Log Drain</td><td>the endpoint and a custom header</td></tr>
           <tr><td>Claude Code, Codex or Cursor</td><td>one MCP config from <code>davy mcp-config</code></td></tr>
         </tbody>
       </table>
@@ -343,7 +344,7 @@ frame  src/routes/recipes.ts  scaleHandler</code></pre></div>
     </figure>
     <div class="notes">
       <h2 class="runin">Logs</h2>
-      <p>From pino, Vector, Fluent Bit and other Logtail shippers, from OpenTelemetry and from Sentry's logger. Full-text search, a histogram and live tail.</p>
+      <p>From pino, Vector, Fluent Bit and other Logtail shippers, from OpenTelemetry, from Vercel Log Drains and from Sentry's logger. Full-text search, a histogram and live tail.</p>
       <p>A bare word such as a request ID matches the message and every attribute value. The UI takes the same query as the CLI:</p>
       <div class="code-plate small"><pre><code><span class="l">davy logs --data ./data \
 </span><span class="l">  --since 30d --count timeout</span></code></pre></div>
@@ -448,7 +449,7 @@ frame  src/routes/recipes.ts  scaleHandler</code></pre></div>
     <h2 id="inside-h" class="say">One binary. Nothing next&nbsp;to&nbsp;it.</h2>
     <p class="intro">Davy's gauze kept the flame in and the gas out. The binary works the same way: one process and one data directory, with no database server, queue or cache to run beside it.</p>
     <ol class="key">
-      <li><b>A</b><span>Ingest over HTTP: Sentry envelopes, Logtail, OpenTelemetry logs, heartbeats.</span></li>
+      <li><b>A</b><span>Ingest over HTTP: Sentry envelopes, Logtail, OpenTelemetry logs, Vercel Log Drains, heartbeats.</span></li>
       <li><b>B</b><span>Grouping, and source maps that turn minified stacks back into source.</span></li>
       <li><b>C</b><span>SQLite for issues, events, monitors and alerts. One writer thread.</span></li>
       <li><b>D</b><span>Tantivy for logs, one index per UTC day.</span></li>
