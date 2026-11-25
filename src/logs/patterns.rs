@@ -17,9 +17,11 @@ const SCAN: usize = 4096;
 /// Bytes a masked token keeps. A longer token is cut and ends in `...`.
 const TOKEN_BYTES: usize = 64;
 /// The version of the mask. An id is defined per mask version: the same
-/// template has another id under another version. `patterns_v1.golden` pins
-/// what mask 1 does, so any change to the masking, or to the parsing of times
-/// and addresses it depends on, fails that test until this is bumped.
+/// template has another id under another version. Any change to the masking,
+/// or to the parsing of times and addresses it depends on, bumps this.
+/// `patterns_v1.golden` pins mask 1 with a line for every branch a mutation
+/// run found a message for, so most such changes fail its test, not all: a
+/// change also adds the golden line that shows it.
 pub const MASK: u8 = 1;
 /// Hashed in front of the template: `v1\0` for mask 1, the bytes ids were
 /// made with before the version had a number.
