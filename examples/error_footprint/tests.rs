@@ -57,16 +57,21 @@ fn upgrade_refuses_a_store_outside_a_scratch_directory() {
     assert!(is_copy(Path::new("/home/a/davy/.scratch/copy")));
 }
 
-/// A store one version behind, as the version before `latest_payloads`
-/// left it: one issue of 51 events, the newest one's payload in its events
-/// row behind the mark.
-fn behind(data: &Path) {
+/// A store of one issue of 51 events, written by the real writer.
+fn hot(data: &Path) {
     let mut real = Real::open(data).unwrap();
     let events = (0..51)
         .map(|n| ErrorEvent::parse(json!({"message": "boom", "extra": {"n": n}})).unwrap())
         .collect();
     real.write(events).unwrap();
     drop(real);
+}
+
+/// A store one version behind, as the version before `latest_payloads`
+/// left it: one issue of 51 events, the newest one's payload in its events
+/// row behind the mark.
+fn behind(data: &Path) {
+    hot(data);
     let c = Connection::open(data.join(store::DB_FILE)).unwrap();
     let payload: Vec<u8> = c
         .query_row("SELECT payload FROM latest_payloads", [], |r| r.get(0))
@@ -100,6 +105,17 @@ fn upgrade_migrates_a_copy_under_a_scratch_directory() {
         )
         .unwrap();
     assert_eq!(moved, (51, 0));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn reads_runs_the_payload_queries_of_both_layouts() {
+    let root = scratch("reads");
+    let (old, new) = (root.join("old"), root.join("new"));
+    behind(&old);
+    hot(&new);
+    let (old, new) = (old.to_string_lossy(), new.to_string_lossy());
+    reads::compare(&args(&[&old, &new, "1"])).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
 }
 
