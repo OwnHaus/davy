@@ -336,7 +336,7 @@ PY
 node "$ROOT/e2e/alerts.mjs" "$BIN" "$SCRATCH/alerts"
 # Davy monitors itself. With the server stopped, a panic is saved as a crash
 # file and a stray file in the log root makes the log writer warn at its next
-# start. The restarted server records both in the project davy, and a panic
+# start. The restarted server records both in Davy's own project, and a panic
 # while it runs is recorded within its 5 s scan. Each panic runs from another
 # directory than the build's, so its frames name Davy's files from the crate
 # root wherever Davy runs.
@@ -361,15 +361,18 @@ for i in {1..100}; do
   sleep 0.1
 done
 for i in {1..100}; do
-  "$BIN" issues --data "$SCRATCH/data" --project davy --json > "$SCRATCH/davy-issues.json"
-  "$BIN" logs --data "$SCRATCH/data" --project davy --since 10m --level warn --json > "$SCRATCH/davy-logs.ndjson"
+  OWN=$("$BIN" sql "SELECT slug FROM projects WHERE own=1" --data "$SCRATCH/data" --json 2>/dev/null | python3 -c 'import json,sys; rows=json.load(sys.stdin)["rows"]; print(rows[0][0] if rows else "")' || true)
+  [ -n "$OWN" ] || { sleep 0.1; continue; }
+  "$BIN" issues --data "$SCRATCH/data" --project "$OWN" --json > "$SCRATCH/davy-issues.json"
+  "$BIN" logs --data "$SCRATCH/data" --project "$OWN" --since 10m --level warn --json > "$SCRATCH/davy-logs.ndjson"
   if grep -q 'a test panic' "$SCRATCH/davy-issues.json" && grep -q '2020-01-01' "$SCRATCH/davy-logs.ndjson"; then break; fi
   sleep 0.1
 done
+[ "$OWN" = davy ] || { echo "Davy's own project is \"$OWN\", not davy"; exit 1; }
 [ -z "$(ls -A "$SCRATCH/data/crashes")" ] || { echo 'the crash file was not recorded at start'; exit 1; }
 (cd "$SCRATCH" && "$BIN" crash --data "$SCRATCH/data") 2>>"$SCRATCH/crash.log" || true
 for i in {1..100}; do
-  "$BIN" issues --data "$SCRATCH/data" --project davy --json > "$SCRATCH/davy-issues.json"
+  "$BIN" issues --data "$SCRATCH/data" --project "$OWN" --json > "$SCRATCH/davy-issues.json"
   if grep -q '"count": *2' "$SCRATCH/davy-issues.json"; then break; fi
   sleep 0.1
 done

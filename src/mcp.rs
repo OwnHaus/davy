@@ -54,7 +54,7 @@ To triage, list open issues with `sql` (SELECT id,title,event_count,last_seen FR
 then call `issue_context` on one issue. It returns the stack with source lines, breadcrumbs, releases, the logs around the error and what users wrote about it. \
 Call `schema` before writing other SQL. To see how often a log line happens and since when, call `count_logs` before `search_logs`. To see what fills the logs, call `log_patterns`. To see whether a release crashes more than the one before, call `release_health`. After a fix ships, call `mark_fixed`. \
 `project_status` shows how long a project keeps its logs and errors, and `set_retention` changes it. \
-Davy records its own warnings, errors and crashes in the project `davy`: `project_status` sums up its last 24 hours for any slug, `search_logs` with project davy reads the lines, and a crash is an issue of level fatal there, which `issue_context` opens. \
+Davy records its own warnings, errors and crashes in a project of its own, `davy` unless a person took that slug: `project_status` sums up its last 24 hours for any slug and names it in davy.project, `search_logs` with that project reads the lines, and a crash is an issue of level fatal there, which `issue_context` opens. \
 To see what each project stores, how fast it grows and when the disk fills, call `usage`; its what_if shows what another retention or log volume would do. \
 When a tool was missing, returned the wrong thing or needed a workaround, call `submit_feedback`.";
 
@@ -313,7 +313,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Confirm ingest for a project slug: events kept, time of the last event, issue count and time of the last log line, RFC 3339, and how long the project keeps logs and errors. Times are null before the first record; poll after sending a test event. davy, whatever the slug, is what Davy reported of itself in the project davy over the last 24 hours: warnings_24h, errors_24h (error and fatal), crashes_24h (issue_id, title, last_seen, recorded_at, event_count; the latest 5 recorded, open one with issue_context) and crashes_waiting (crash files davy serve has not recorded yet), or error when it could not be read."
+        description = "Confirm ingest for a project slug: events kept, time of the last event, issue count and time of the last log line, RFC 3339, and how long the project keeps logs and errors. Times are null before the first record; poll after sending a test event. davy, whatever the slug, is what Davy reported of itself over the last 24 hours: project (the slug of Davy's own project, usually davy), warnings_24h, errors_24h (error and fatal), crashes_24h (issue_id, title, last_seen, recorded_at, event_count; the latest 5 recorded, open one with issue_context) and crashes_waiting (crash files davy serve has not recorded yet), or error when it could not be read."
     )]
     async fn project_status(&self, Parameters(req): Parameters<ProjectStatus>) -> Reply {
         let defaults = self.retention;
@@ -391,7 +391,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Search logs from every source (Sentry, OpenTelemetry, Logtail shippers, Vercel Log Drains, and Davy itself: its own warnings and errors are in the project davy, with the part of Davy that wrote them in attributes.component). Returns hits oldest first with level, service, message, trace_id and attributes."
+        description = "Search logs from every source (Sentry, OpenTelemetry, Logtail shippers, Vercel Log Drains, and Davy itself: its own warnings and errors are in its own project, davy unless project_status names another under davy.project, with the part of Davy that wrote them in attributes.component). Returns hits oldest first with level, service, message, trace_id and attributes."
     )]
     async fn search_logs(&self, Parameters(req): Parameters<SearchLogs>) -> Reply {
         self.blocking(move |data| {
@@ -457,7 +457,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Everything needed to start fixing one issue: the issue, its newest event cut to the useful parts (stack with source lines of in-app frames, breadcrumbs, tags, user, request, runtime), the last 10 events, the releases it appeared in, the logs of the same trace or from just before the error, and the newest 10 things users wrote about it through the SDK's feedback. A crash of Davy itself is an issue of the project davy, its stack the Rust backtrace of the panic."
+        description = "Everything needed to start fixing one issue: the issue, its newest event cut to the useful parts (stack with source lines of in-app frames, breadcrumbs, tags, user, request, runtime), the last 10 events, the releases it appeared in, the logs of the same trace or from just before the error, and the newest 10 things users wrote about it through the SDK's feedback. A crash of Davy itself is an issue of Davy's own project, its stack the Rust backtrace of the panic."
     )]
     async fn issue_context(&self, Parameters(Issue { issue_id }): Parameters<Issue>) -> Reply {
         self.blocking(move |data| {

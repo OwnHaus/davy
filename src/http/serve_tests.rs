@@ -105,7 +105,7 @@ const MCP_TOKEN: &str = "a-test-token-that-is-long-enough!";
 async fn a_warning_of_davy_is_found_with_search_logs_in_the_project_davy() {
     let _lock = self_report::install_lock();
     let data = scratch("serve-self-report");
-    let early = Early::install();
+    let early = Early::install(&data);
     self_report::warn("self report test", "a line from before the writers start");
     let log_writer = LogWriter::start(logs::dir(&data), 30, logs::store::no_overrides()).unwrap();
     let (sender, _writes) = crossbeam_channel::bounded(8);
@@ -212,6 +212,7 @@ async fn shows_crash(mcp: Router, issue: i64) {
     );
     assert_eq!(crashed[0]["event_count"], 1);
     assert_eq!(status["davy"]["crashes_waiting"], 0);
+    assert_eq!(status["davy"]["project"], "davy");
 }
 
 /// A crash file of an earlier run becomes an issue an agent opens with
@@ -235,6 +236,7 @@ async fn a_crash_of_davy_is_an_issue_of_the_project_davy() {
         crate::event::EventId::fresh().0,
     );
     crash::write(&crash::dir(&data), &report).unwrap();
+    let early = Early::install(&data);
     let writer = store::Writer::start(store::open(&data).unwrap(), 64);
     let log_writer = LogWriter::start(logs::dir(&data), 30, logs::store::no_overrides()).unwrap();
     let app = App {
@@ -245,7 +247,7 @@ async fn a_crash_of_davy_is_an_issue_of_the_project_davy() {
         budget: body::Budget::new(body::MEMORY),
         usage: Counter::default(),
     };
-    Early::install().start(&data, &app).stop().await;
+    early.start(&data, &app).stop().await;
     assert_eq!(crash::pending(&crash::dir(&data)).unwrap().len(), 0);
 
     let mcp = mcp::router(

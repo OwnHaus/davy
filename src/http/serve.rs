@@ -154,10 +154,10 @@ async fn stop(tasks: Tasks) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Davy's own lines on their way to the project `davy`, and the thread
+/// Davy's own lines on their way to Davy's own project, and the thread
 /// that records them.
 struct SelfReport {
-    installed: self_report::Installed,
+    installed: Option<self_report::Installed>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -168,22 +168,46 @@ struct SelfReport {
 struct Early {
     installed: self_report::Installed,
     lines: std::sync::mpsc::Receiver<self_report::Line>,
+    /// Davy's own project and the forwarder's connection, None when the
+    /// project could not be opened.
+    own: Option<(self_report::own::Own, rusqlite::Connection)>,
 }
 
 impl Early {
-    /// Queues Davy's own lines from now on.
-    fn install() -> Self {
+    /// Queues Davy's own lines from now on, and finds or makes Davy's own
+    /// project in `data`. It runs before the writers start, so the store
+    /// has one writer at a time.
+    fn install(data: &std::path::Path) -> Self {
         let (sink, lines) = self_report::Sink::new(self_report::QUEUE);
         let installed = self_report::install(&sink);
-        Self { installed, lines }
+        let own = self_report::own::open(data);
+        Self {
+            installed,
+            lines,
+            own,
+        }
     }
 
-    /// Sends the lines queued and to come to a new forwarder. A forwarder
-    /// that does not start is reported, and the lines go to stderr only.
+    /// Sends the lines queued and to come to a new forwarder. Without the
+    /// project, or when the forwarder does not start, which is reported,
+    /// the lines go to stderr only.
     fn start(self, data: &std::path::Path, app: &App) -> SelfReport {
-        let Self { installed, lines } = self;
+        let Self {
+            installed,
+            lines,
+            own,
+        } = self;
+        let Some((own, db)) = own else {
+            drop(installed);
+            return SelfReport {
+                installed: None,
+                thread: None,
+            };
+        };
         let forwarder = self_report::Forwarder {
             data: data.to_owned(),
+            own,
+            db: std::sync::Mutex::new(db),
             logs: app.logs.clone(),
             usage: app.usage.clone(),
             policies: app.keys.policies(),
@@ -194,7 +218,10 @@ impl Early {
             .start(lines)
             .inspect_err(|e| self_report::stderr("self report", format_args!("not started: {e}")))
             .ok();
-        SelfReport { installed, thread }
+        SelfReport {
+            installed: Some(installed),
+            thread,
+        }
     }
 }
 
@@ -227,7 +254,7 @@ pub async fn serve(
     smtp: Option<alert::mail::Smtp>,
     self_report: bool,
 ) -> anyhow::Result<()> {
-    let early = self_report.then(Early::install);
+    let early = self_report.then(|| Early::install(data));
     let writer = store::Writer::start(store::open(data)?, 1024);
     let log_writer = log_writer(data, retention, writer.retention.clone().with_dir(data))?;
     let app = App {

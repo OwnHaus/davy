@@ -119,7 +119,11 @@ test("a person signs in, finds the SDK's issue, reads its frame and resolves it"
     await page.getByRole("navigation", { name: "Views" }).getByRole("link", { name: "Logs" }).click();
     await expect(page).toHaveURL(`${URL}/ui/logs`);
     const rows = page.locator(".lrow");
-    await expect(rows).toHaveCount(11);
+    // The 11 logs the senders sent, and the line Davy recorded in its own
+    // project when it made it at start.
+    const shown = 12;
+    await expect(rows).toHaveCount(shown);
+    await expect(rows.filter({ hasText: 'created project "davy"' })).toHaveCount(1);
     await expect(rows.filter({ hasText: "sentry payment provider timed out" })).toHaveCount(1);
     await noAxeViolations(page, "logs");
 
@@ -131,13 +135,13 @@ test("a person signs in, finds the SDK's issue, reads its frame and resolves it"
     await expect(page.locator(".ldet")).toContainText("acme-pay");
 
     await search.fill("");
-    await expect(rows).toHaveCount(11);
+    await expect(rows).toHaveCount(shown);
     await rows.filter({ hasText: "sentry order placed" }).locator(".lhead").click();
     await page.getByRole("button", { name: "Search for order.id ord-1001" }).click();
     await expect(search).toHaveValue('attributes.order\\.id:"ord-1001"');
     await expect(rows).toHaveCount(1);
     await search.fill("");
-    await expect(rows).toHaveCount(11);
+    await expect(rows).toHaveCount(shown);
 
     const box = (await page.locator(".hist svg").boundingBox())!;
     await page.mouse.move(box.x + 1, box.y + box.height / 2);
@@ -146,7 +150,7 @@ test("a person signs in, finds the SDK's issue, reads its frame and resolves it"
     await page.mouse.up();
     await expect(page).toHaveURL(/from=\d+&.*to=\d+|to=\d+&.*from=\d+/);
     await expect(page.getByRole("button", { name: "Zoom out" })).toBeVisible();
-    await expect(rows).toHaveCount(11);
+    await expect(rows).toHaveCount(shown);
     await page.keyboard.press("Escape");
     await expect(page.getByRole("button", { name: "Zoom out" })).toHaveCount(0);
 
@@ -157,7 +161,7 @@ test("a person signs in, finds the SDK's issue, reads its frame and resolves it"
     const sent = await page.request.post(`${URL}/`, { headers: { authorization: `Bearer ${key}` }, data: { message: "live line" } });
     expect(sent.status()).toBe(202);
     await expect(rows.filter({ hasText: "live line" })).toHaveCount(1, { timeout: 6000 });
-    await expect(rows).toHaveCount(12);
+    await expect(rows).toHaveCount(shown + 1);
     await noAxeViolations(page, "logs, live");
     await scheme(page, "dark");
     await noAxeViolations(page, "logs, dark");

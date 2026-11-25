@@ -146,7 +146,7 @@ pub struct Status {
     /// How long the project keeps its logs and errors.
     pub retention: retention::Retention,
     /// Davy's own warnings, errors and crashes of the last 24 hours, kept in
-    /// the project `davy`, whatever project was asked for. A failure to
+    /// Davy's own project, whatever project was asked for. A failure to
     /// read them is an `error` field here and does not fail the status.
     pub davy: crate::self_report::status::Davy,
 }

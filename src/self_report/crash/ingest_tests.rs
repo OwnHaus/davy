@@ -1,7 +1,7 @@
 use super::super::{Frame, dir, write};
 use super::*;
 use crate::{
-    self_report::{Forwarder, forward},
+    self_report::{Forwarder, own},
     test_support::scratch,
 };
 use std::sync::Arc;
@@ -28,7 +28,7 @@ fn report(message: &str) -> Report {
     }
 }
 
-/// A store with the project `davy` and its writer.
+/// A store with Davy's own project and its writer.
 struct Store {
     data: PathBuf,
     project: i64,
@@ -42,12 +42,12 @@ impl Store {
     fn new(name: &str) -> Self {
         let data = scratch(name);
         let mut c = store::open(&data).unwrap();
-        let (project, _) = forward::find_or_create(&mut c).unwrap();
+        let (own, _) = own::find_or_create(&mut c).unwrap();
         let writer = store::Writer::start(c, 16);
         Self {
             db: Mutex::new(store::open(&data).unwrap()),
             data,
-            project,
+            project: own.id,
             writer,
             usage: usage::Counter::default(),
             budget: Budget::new(1 << 20),
@@ -86,7 +86,7 @@ fn a_crash_file_becomes_an_issue_and_one_that_cannot_be_read_is_set_aside() {
     let good = write(&dir, &report("no value for ops@example.com")).unwrap();
     let bad = dir.join("1767225600001-bad.json");
     fs::write(&bad, b"{}").unwrap();
-    let policy = forward::policy();
+    let policy = own::policy();
     let mut told = Told::default();
     let files = [good.clone(), bad.clone()];
     assert_eq!(record(&files, &s.target(&policy, s.project), &mut told), 1);
@@ -122,7 +122,7 @@ fn a_crash_file_becomes_an_issue_and_one_that_cannot_be_read_is_set_aside() {
 fn a_crash_file_the_store_fails_to_take_waits_and_is_recorded_later() {
     let s = Store::new("ingest-failed");
     let path = write(&dir(&s.data), &report("no value")).unwrap();
-    let policy = forward::policy();
+    let policy = own::policy();
     let mut told = Told::default();
     // No project has this id, so the store refuses the event.
     let missing = s.project + 1000;
@@ -144,7 +144,7 @@ fn a_crash_file_the_store_fails_to_take_waits_and_is_recorded_later() {
 fn a_crash_file_waits_while_the_store_writer_is_gone() {
     let s = Store::new("ingest-stopped");
     let path = write(&dir(&s.data), &report("no value")).unwrap();
-    let policy = forward::policy();
+    let policy = own::policy();
     let sender = crossbeam_channel::bounded(1).0;
     let target = Target {
         sender: &sender,
@@ -161,7 +161,7 @@ fn a_crash_file_waits_while_the_store_writer_is_gone() {
 fn a_crash_file_recorded_before_is_deleted_and_not_counted_again() {
     let s = Store::new("ingest-known");
     let dir = dir(&s.data);
-    let policy = forward::policy();
+    let policy = own::policy();
     let mut told = Told::default();
     let first = write(&dir, &report("no value")).unwrap();
     assert_eq!(
@@ -285,8 +285,11 @@ fn the_forwarder_records_waiting_crashes_when_it_starts() {
     let s = Store::new("ingest-forwarder");
     write(&dir(&s.data), &report("no value")).unwrap();
     let (logs, _inbox) = crate::logs::store::LogQueue::bounded(100, 1 << 20);
+    let own = own::find(&s.db.lock().unwrap()).unwrap().unwrap();
     let forwarder = Forwarder {
         data: s.data.clone(),
+        own,
+        db: Mutex::new(store::open(&s.data).unwrap()),
         logs,
         usage: usage::Counter::default(),
         policies: Arc::default(),

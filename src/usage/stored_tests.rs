@@ -286,7 +286,8 @@ fn the_migration_adds_both_tables_to_a_store_of_version_19() {
     let mut c = memory();
     write(&c, &rows(vec![row("2026-11-23", 1, 1, 1)])).unwrap();
     c.execute_batch(&format!(
-        "{UNDO} {} PRAGMA user_version=19;",
+        "{UNDO} {} {} PRAGMA user_version=19;",
+        crate::self_report::own::UNDO,
         crate::vercel::UNDO
     ))
     .unwrap();

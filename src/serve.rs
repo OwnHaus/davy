@@ -37,8 +37,8 @@ pub struct Args {
     /// Defaults to the sender in DATA/setup.json.
     #[arg(long)]
     pub mail_from: Option<String>,
-    /// Do not record Davy's own warnings, errors and crashes in the project
-    /// `davy`. They still go to stderr.
+    /// Do not record Davy's own warnings, errors and crashes in Davy's own
+    /// project. They still go to stderr.
     #[arg(long)]
     pub no_self_report: bool,
 }

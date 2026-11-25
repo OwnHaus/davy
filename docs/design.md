@@ -1612,6 +1612,8 @@ The walk reads only what Davy owns, and only so much of it:
 
 The forecast is a pure function of the sizes above, each project's log and error retention, the error events each project received and SQLite's daily size. Logs of all projects share one index per UTC day, so Davy measures how fast all logs together grow on disk, not one project's share: the counts in `usage_daily` are bytes received, which say nothing about bytes on disk. It gives two answers: the bound, which takes every project's logs as kept the longest log retention and decides `days_left`, `full_on` and `davy doctor`'s failure, and the estimate, which keeps each project's logs as long as that project keeps them.
 
+Davy's own log lines are left out of the forecast, as they are few: measured, 191 raw bytes on a quiet server's first day, the one line that says Davy made its project, and none in the 30 minutes after or across a restart. Counted as logs, that line would take a server that stores only errors off `errors_only` within seconds of its start. So the forecast reads no raw bytes of Davy's own project, a closed day whose raw bytes are all its own is no log day, and its 30 days of logs set neither the bound's longest retention nor a part of the estimate. `davy usage` still counts its lines under it.
+
 - **Growth** is how many bytes of logs reach the disk per day. Davy reads it from raw bytes, which `log_days` counts from the first hour, times how they pack on disk: the ratio of a closed day's size on disk to its raw bytes. A day counts for the ratio when it is whole, no retention cut a project on it, it holds at least 10 MB of raw logs, below which the fixed cost of a day index dominates, and the walk found its directory. Davy takes the newest such days of the last 30 closed ones, so a server quiet at weekends still fills its count, up to `possible`: 7, or the shortest log retention of a project with raw bytes when that is less, as a server keeping logs 3 days never holds more than 3 closed days uncut. Without such a project the shortest of all projects, then the server default, decides. Raw bytes per day are read from the newest 7 whole closed days: the low and high end of their range, and as the middle the larger of their median and their mean, so a server busy on 3 days of 7, or back from days without logs, does not read as quiet. The high end is at least the middle. The growth has a basis, in this order:
   - `measured`: `possible` days counted for the ratio. The growth is the median size on disk of those days, and the ratio is shown for reference. When a whole closed day newer than the oldest of them had under 10 MB of raw logs, the server went quiet since, and the median would keep its busy rate for up to 30 days: the growth is then raw bytes per day times the ratio of those days, the blend below with `n = possible`. Raw bytes per day see the quiet days: one to three quiet days in 7, such as a weekend, leave the middle at the busy rate, from the 4th the middle falls with the mean, and on the 7th quiet day it is the quiet rate.
   - `measured_disk`, for a server upgraded from a version that did not count raw bytes: it never counted, or the closed days the direct method reads include one that ended before counting started and has no row in `log_days`, which only a version that counted writes. A line a counting version stored on an older day, such as one a shipper replays, writes a row, so it does not make a new server look upgraded. The day counting started on is not such a day, as a new server holds it too, and a new server blends from its first whole day. A directory older than the 30 days of rows Davy reads has no row and reads as upgraded. A server that keeps logs 1 day holds only the day counting started on the day after an upgrade, so it cannot be told from a new one and forecasts from its hours for that day. The growth is the median size on disk of the closed days no retention cut, as before raw bytes were counted, until the server's own days catch up. The same holds when no closed day counted for the ratio although whole days exist, such as a server with under 10 MB of logs a day; `why` names the small days once the server has counted `possible` whole days and none of them measured, and that it counted too few whole days before.
@@ -1639,19 +1641,27 @@ Limits: the forecast assumes the rate of the last week holds. SQLite grows by er
 
 ## Self-monitoring
 
-Davy records its own warnings, errors and crashes in a project of its own, `davy`, in its own store. An agent that triages an app over MCP finds the server's problems with the same tools: `search_logs` and `log_patterns` with `project: "davy"` for lines, and `issue_context` for a crash.
+Davy records its own warnings, errors and crashes in a project of its own, usually `davy`, in its own store. An agent that triages an app over MCP finds the server's problems with the same tools: `search_logs` and `log_patterns` with that project for lines, and `issue_context` for a crash. `project_status` names the project under `davy.project`.
 
 ### On by default
 
 Self-reporting is on unless `davy serve --no-self-report` is given. A server that runs as a service is read by an agent, not by a person who tails stderr, and the problems it reports are exactly what that agent needs to explain missing data: a day of logs retention skipped, a commit that failed, a notifier that cannot read its work. The cost is small and bounded, see below, and the project shows in usage, the forecast and `log_patterns` like any project, so it is never hidden disk use. Off by default, nobody would turn it on before the first problem, and then its lines would already be lost.
 
+### Davy's own project
+
+The project is marked, not found by its slug: schema version 22 adds `projects.own`, 1 for Davy's own project and 0 for every project a person made, with a unique index that allows one marked project.
+
+- `davy serve` finds or makes it at start, before the store writer and the log writer start, so no second writer touches SQLite. It is made with 30 days of logs and the default scrub policy plus e-mail and personal data, and an info line says so and names `--no-self-report`.
+- It takes the slug `davy`. When a person made a project `davy` before, that project stays theirs with its own settings and data, and Davy's own project takes the first free slug of `davy-self`, `davy-self-2` up to `davy-self-100`; the info line says why. `project_status` and `davy doctor` name the slug.
+- A store that cannot be opened or a project that cannot be made is said on stderr, and the server runs without recording itself.
+- The project is not counted as a first project or a first error of the setup steps, and the connect page's first log ignores it.
+
 ### Lines
 
 Every line Davy printed to stderr goes through `self_report::{info, warn, error}` with a component, such as `log writer`, `retention`, `scrub`, `sweep`, `ui`, `usage flusher`, `checker` or `notifier`. The helper prints `component: message` to stderr as before, then offers the line to the sink. New code uses the helper, and `clippy::print_stderr` stays denied outside it. A failure that never printed, such as a writer job that fails and becomes a 5xx, makes no line.
 
-- The first line made after a start creates the project `davy` with 30 days of logs and the default scrub policy plus e-mail and personal data, and says so in an info line that names `--no-self-report`. A project `davy` that a person made keeps its own settings.
 - A record has source `davy`, service `davy`, the line's level, its message and the attributes `component` and `davy.version`. It is scrubbed with the project's policy like any log.
-- Records count in usage under the project `davy`, like logs a client sent.
+- Records count in usage under Davy's own project, like logs a client sent. The disk forecast leaves them out, see "Forecast".
 
 ### Bounds
 
@@ -1663,7 +1673,7 @@ Every line Davy printed to stderr goes through `self_report::{info, warn, error}
 
 ### Crashes
 
-A panic of `davy serve` becomes an issue of the project `davy`: a fatal, unhandled exception of type `panic` with the panic message, the thread and the location as tags, a Rust backtrace and the release `davy@` and the version that panicked. It groups like any error, by its innermost frames of the crate `davy`, which are in-app, so a panic that repeats is one issue with a count.
+A panic of `davy serve` becomes an issue of Davy's own project: a fatal, unhandled exception of type `panic` with the panic message, the thread and the location as tags, a Rust backtrace and the release `davy@` and the version that panicked. It groups like any error, by its innermost frames of the crate `davy`, which are in-app, so a panic that repeats is one issue with a count.
 
 - The panic hook writes a crash file before the hook that prints the panic runs, synchronously, so the report survives a panic that ends the process, and one in the log writer or the store writer, which could not record it. The file goes to DATA/crashes, made with mode 0700, as a hidden file of mode 0600 that is renamed into place, so a reader never sees half of one.
 - The file holds the panic message as the panic made it: it is scrubbed when recorded, not when saved. The file is 0600 in a directory of 0700 that the hook checks is the process user's, and stderr gets the same text from the default hook.
@@ -1677,9 +1687,9 @@ A panic of `davy serve` becomes an issue of the project `davy`: a fatal, unhandl
 
 ### Where it shows
 
-- `project_status` carries a `davy` block for any slug: Davy's own warnings and errors of the last 24 hours (error counts fatal too), the latest 5 crash issues recorded in them with their ID, title, last time, the time recorded and count, and the crash files that wait. A crash counts by the time it was recorded, so a panic saved days before the server came back up still shows; the panic time stays for display. An agent that polls one project sees that the server itself has trouble without asking for it. It reads the log index and the issues index of the project `davy` only, so it costs one count over a day of that project's logs. When it cannot be read, the block is `{"error": "..."}` and the rest of `project_status` answers as usual.
-- `davy doctor` has a check `davy`. A crash recorded in the last 24 hours warns, with the latest crash issue and a fix that names `davy context ID --data DATA` and the MCP call `issue_context` with that `issue_id`. A crash file that waits warns, as only a `davy serve` with self-reporting records it. Otherwise the check is ok and counts the errors and warnings, naming `davy logs --data DATA --project davy --level warn`. Warnings and errors alone never warn: they are the server's own report and the other checks judge what they mean.
-- The MCP instructions and the descriptions of `project_status`, `search_logs` and `issue_context` name the project `davy`, so an agent knows where Davy's own problems are without reading these docs.
+- `project_status` carries a `davy` block for any slug: the slug of Davy's own project, its warnings and errors of the last 24 hours (error counts fatal too), the latest 5 crash issues recorded in them with their ID, title, last time, the time recorded and count, and the crash files that wait. A crash counts by the time it was recorded, so a panic saved days before the server came back up still shows; the panic time stays for display. An agent that polls one project sees that the server itself has trouble without asking for it. It reads the log index and the issues index of Davy's own project only, so it costs one count over a day of that project's logs. When it cannot be read, the block is `{"error": "..."}` and the rest of `project_status` answers as usual.
+- `davy doctor` has a check `davy`. A crash recorded in the last 24 hours warns, with the latest crash issue and a fix that names `davy context ID --data DATA` and the MCP call `issue_context` with that `issue_id`. A crash file that waits warns, as only a `davy serve` with self-reporting records it. Otherwise the check is ok and counts the errors and warnings, naming `davy logs --data DATA --project SLUG --level warn` with the project's slug. Warnings and errors alone never warn: they are the server's own report and the other checks judge what they mean.
+- The MCP instructions and the descriptions of `project_status`, `search_logs` and `issue_context` say where Davy's own problems are, so an agent knows without reading these docs.
 
 ### No feedback loop
 
@@ -1687,7 +1697,7 @@ A failure while recording one of Davy's own lines is never recorded in turn.
 
 - The forwarder and every call into the sink hold a thread-local quiet guard. A line made while it is held goes to stderr only, so a line cannot recurse into the sink, and a failure in the forwarder, such as a store it cannot open or a log queue that is full, is printed and not recorded.
 - The log writer prints and does not record a failed write of a batch of Davy's records, and a failed commit that held only Davy's records. Either would write to the index that just failed.
-- The usage flusher prints and does not record counts it could not store when the counts held are those of the project `davy` alone.
+- The usage flusher prints and does not record counts it could not store when the counts held are those of Davy's own project alone.
 - What the guards miss is caught by the rate limit: a loop records at most 10 lines an hour.
 
 A sink, forwarder or project that fails never fails a request or the server: lines go to stderr as before. On shutdown the forwarder records what is queued before the log writer stops; lines from then on go to stderr only.

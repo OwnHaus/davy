@@ -27,6 +27,7 @@ fn nothing_reported_is_ok() {
 #[test]
 fn lines_without_a_crash_are_ok_and_name_the_command_that_lists_them() {
     let h = Health {
+        project: Some("davy-self".to_owned()),
         warnings_24h: 3,
         errors_24h: 1,
         ..Health::waiting(0)
@@ -35,7 +36,7 @@ fn lines_without_a_crash_are_ok_and_name_the_command_that_lists_them() {
         check(&h, D),
         ok(
             "davy",
-            "no crash in the last 24 hours; 1 errors and 3 warnings of Davy's own in the last 24 hours, listed by davy logs --data /var/lib/davy --project davy --level warn"
+            r#"no crash in the last 24 hours; 1 errors and 3 warnings of Davy's own in the last 24 hours, in project "davy-self", listed by davy logs --data /var/lib/davy --project davy-self --level warn"#
         )
     );
 }
@@ -43,6 +44,7 @@ fn lines_without_a_crash_are_ok_and_name_the_command_that_lists_them() {
 #[test]
 fn a_crash_warns_and_names_the_command_and_the_mcp_call() {
     let h = Health {
+        project: Some("davy".to_owned()),
         warnings_24h: 0,
         errors_24h: 2,
         crashes_24h: vec![
@@ -56,7 +58,7 @@ fn a_crash_warns_and_names_the_command_and_the_mcp_call() {
         not_ok(
             "davy",
             Status::Warn,
-            r#"Davy crashed in the last 24 hours: issue 7 "panic: index out of bounds", 2 events, the last at 2026-01-01T00:00:00.000Z, recorded at 2026-01-02T00:00:00.000Z and 1 other crash issues; 2 errors and 0 warnings of Davy's own in the last 24 hours; 1 crash files wait in /var/lib/davy/crashes"#,
+            r#"Davy crashed in the last 24 hours: issue 7 "panic: index out of bounds", 2 events, the last at 2026-01-01T00:00:00.000Z, recorded at 2026-01-02T00:00:00.000Z and 1 other crash issues; 2 errors and 0 warnings of Davy's own in the last 24 hours, in project "davy"; 1 crash files wait in /var/lib/davy/crashes"#,
             "davy context 7 --data /var/lib/davy, or the MCP call issue_context with issue_id 7"
         )
     );
@@ -70,7 +72,7 @@ fn a_waiting_crash_file_warns_and_says_what_records_it() {
             "davy",
             Status::Warn,
             "Davy crashed: 2 crash files wait in /var/lib/davy/crashes to be recorded; 0 errors and 0 warnings of Davy's own in the last 24 hours",
-            "davy serve --data /var/lib/davy records them in the project davy within 5 seconds, unless it runs with --no-self-report"
+            "davy serve --data /var/lib/davy records them in Davy's own project within 5 seconds, unless it runs with --no-self-report"
         )
     );
 }
@@ -95,4 +97,19 @@ fn a_data_directory_without_a_database_counts_crash_files_only() {
     .unwrap();
     assert_eq!(davy(&data, &d, 0).status, Status::Warn);
     std::fs::remove_dir_all(&data).unwrap();
+}
+
+#[test]
+fn a_quiet_project_is_named() {
+    let h = Health {
+        project: Some("davy-self".to_owned()),
+        ..Health::waiting(0)
+    };
+    assert_eq!(
+        check(&h, D),
+        ok(
+            "davy",
+            r#"no crash, error or warning of Davy's own in the last 24 hours, in project "davy-self""#
+        )
+    );
 }

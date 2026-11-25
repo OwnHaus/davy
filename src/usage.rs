@@ -255,7 +255,7 @@ pub async fn flush(
 }
 
 /// Reports counts that were not stored. When the counts held are those of
-/// the project `davy` alone, the line goes to stderr only: it would be
+/// Davy's own project alone, the line goes to stderr only: it would be
 /// counted in turn, and fail to be stored again.
 pub fn warn_held(counter: &Counter, what: &str, e: &Refused) {
     let own = crate::self_report::project_id().is_some_and(|id| counter.only(id));

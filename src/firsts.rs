@@ -62,8 +62,12 @@ impl First {
     /// The query for the first time the tables show, for a step they show.
     fn derived(self) -> Option<&'static str> {
         match self {
-            Self::Project => Some("SELECT min(created_at) FROM projects"),
-            Self::Error => Some("SELECT min(first_seen) FROM issues"),
+            // Davy's own project and its crashes are not a step a person
+            // took.
+            Self::Project => Some("SELECT min(created_at) FROM projects WHERE own=0"),
+            Self::Error => Some(
+                "SELECT min(first_seen) FROM issues WHERE project_id NOT IN (SELECT id FROM projects WHERE own=1)",
+            ),
             Self::Monitor => Some("SELECT min(created_at) FROM monitors"),
             Self::Delivered => Some("SELECT min(sent_at) FROM notifications"),
             Self::Agent | Self::Symbolicated | Self::Log => None,

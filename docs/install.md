@@ -172,7 +172,7 @@ sudo runuser -u davy -- davy doctor --data /var/lib/davy
 
 Every line starts with `ok`. A line that starts with `fail` or `warn` has a `fix:` line under it. Run the fix, then run doctor again until no line fails. `--json` prints the same checks as JSON.
 
-Davy records its own warnings, errors and crashes in a project of its own, `davy`. The `davy` line of doctor warns when Davy crashed in the last 24 hours and names the command that shows the crash. `davy logs --data /var/lib/davy --project davy --level warn` lists Davy's own warnings of the last day. `davy serve --no-self-report` turns this off.
+Davy records its own warnings, errors and crashes in a project of its own, `davy`, or `davy-self` when a project of yours already has the slug `davy`. The `davy` line of doctor names the slug, warns when Davy crashed in the last 24 hours and names the command that shows the crash. `davy logs --data /var/lib/davy --project davy --level warn` lists Davy's own warnings of the last day. `davy serve --no-self-report` turns this off.
 
 Then give the person the web UI, before the steps below, so they can watch them happen. Ask for their e-mail and create their user:
 

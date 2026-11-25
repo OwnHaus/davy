@@ -1,8 +1,8 @@
 //! Davy's own warnings and errors. Every line Davy prints to stderr about
 //! its own work goes through [`warn`], [`error`] or [`info`]: the line goes
 //! to stderr as before, and while `davy serve` runs with self-reporting
-//! on, also into the project `davy` of Davy's own store, so an agent finds
-//! it with `search_logs` like any other log.
+//! on, also into Davy's own project in its store, see [`own`], so an agent
+//! finds it with `search_logs` like any other log.
 //!
 //! Recording a line must never cost a request or Davy itself. The line is
 //! offered to a bounded queue without waiting, a line whose pattern repeats
@@ -26,11 +26,13 @@ use std::{
 pub mod crash;
 mod forward;
 mod limit;
+pub mod own;
 pub mod status;
 pub use forward::Forwarder;
 pub use limit::{Admit, Limiter, MAX_KEYS, OVERFLOW, PER_WINDOW, WINDOW_NS};
 
-/// The project Davy records itself in.
+/// The slug of Davy's own project, unless a project a person made has it,
+/// see [`own::slugs`].
 pub const PROJECT: &str = "davy";
 /// The service of every record Davy makes of itself.
 pub const SERVICE: &str = "davy";
@@ -267,8 +269,8 @@ fn installed() -> Option<Arc<Sink>> {
     SINK.read().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
-/// The id of the project `davy` once the forwarder has made or found it
-/// in this process.
+/// The id of Davy's own project once `davy serve` has found or made it in
+/// this process.
 pub fn project_id() -> Option<i64> {
     let id = PROJECT_ID.load(Ordering::Relaxed);
     (id != 0).then_some(id)

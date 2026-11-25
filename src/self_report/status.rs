@@ -2,13 +2,13 @@
 //! doctor`: its own warnings and errors of the last 24 hours, the crashes
 //! recorded or seen in them, and crash files that wait for `davy serve`.
 
-use super::{PROJECT, crash};
+use super::{crash, own};
 use crate::{
     logs::{
         self, LogLevel,
         store::{LogQuery, histogram},
     },
-    store, time,
+    time,
 };
 use rusqlite::Connection;
 use serde::Serialize;
@@ -42,6 +42,8 @@ impl Davy {
 
 #[derive(Debug, PartialEq, Serialize)]
 pub struct Health {
+    /// The slug of Davy's own project, None until `davy serve` made it.
+    pub project: Option<String>,
     /// Davy's own lines at level warn in the last 24 hours.
     pub warnings_24h: u64,
     /// Davy's own lines at level error or fatal in the last 24 hours.
@@ -69,6 +71,7 @@ impl Health {
     /// Nothing reported, and `crashes_waiting` crash files.
     pub fn waiting(crashes_waiting: usize) -> Self {
         Health {
+            project: None,
             warnings_24h: 0,
             errors_24h: 0,
             crashes_24h: Vec::new(),
@@ -85,13 +88,14 @@ impl Health {
     }
 }
 
-/// What Davy reported of itself in the 24 hours before `now_ms`. Without a
-/// project `davy` nothing was reported.
+/// What Davy reported of itself in the 24 hours before `now_ms`. Without
+/// Davy's own project nothing was reported.
 pub fn health(c: &Connection, data: &Path, now_ms: i64) -> anyhow::Result<Health> {
     let crashes_waiting = crash::pending(&crash::dir(data))?.len();
-    let Some(project) = store::project_id(c, PROJECT)? else {
+    let Some(own) = own::find(c)? else {
         return Ok(Health::waiting(crashes_waiting));
     };
+    let project = own.id;
     let since = now_ms - WINDOW_MS;
     let count = |level| -> anyhow::Result<u64> {
         let q = LogQuery {
@@ -109,6 +113,7 @@ pub fn health(c: &Connection, data: &Path, now_ms: i64) -> anyhow::Result<Health
     let errors_24h = count(LogLevel::Error)?;
     let warnings_24h = count(LogLevel::Warn)?.saturating_sub(errors_24h);
     Ok(Health {
+        project: Some(own.slug),
         warnings_24h,
         errors_24h,
         crashes_24h: crashes(c, project, since)?,

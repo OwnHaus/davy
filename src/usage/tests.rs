@@ -207,11 +207,13 @@ fn the_migration_goes_down_and_up_again() {
     let mut c = memory();
     write(&c, &[row("2026-11-24", 1, Signal::Logs, 1, 1)]).unwrap();
     // usage_daily is 18; the newest payload table, 19, the stored log
-    // counts, 20, and the Vercel drain secret, 21, go down with it.
-    let before = store::SCHEMA_VERSION - 4;
+    // counts, 20, the Vercel drain secret, 21, and the mark of Davy's own
+    // project, 22, go down with it.
+    let before = store::SCHEMA_VERSION - 5;
     c.execute_batch(&format!(
-        "DROP TABLE latest_payloads; {UNDO} {} {} PRAGMA user_version={before};",
+        "DROP TABLE latest_payloads; {UNDO} {} {} {} PRAGMA user_version={before};",
         stored::UNDO,
+        crate::self_report::own::UNDO,
         crate::vercel::UNDO
     ))
     .unwrap();

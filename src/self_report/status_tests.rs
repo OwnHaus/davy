@@ -1,7 +1,8 @@
 use super::*;
 use crate::{
     logs::{LogRecord, LogSource, store::LogWriter},
-    self_report::forward::find_or_create,
+    self_report::own::find_or_create,
+    store,
     test_support::scratch,
 };
 
@@ -37,6 +38,7 @@ fn without_the_project_only_waiting_crashes_count() {
     assert_eq!(
         quiet,
         Health {
+            project: None,
             warnings_24h: 0,
             errors_24h: 0,
             crashes_24h: Vec::new(),
@@ -55,7 +57,8 @@ fn the_last_day_of_davys_lines_and_crashes_is_counted() {
     let data = scratch("self-health");
     let mut c = store::open(&data).unwrap();
     let (other, _) = store::create_project(&c, "api").unwrap();
-    let (davy, created) = find_or_create(&mut c).unwrap();
+    let (own, created) = find_or_create(&mut c).unwrap();
+    let davy = own.id;
     assert!(created);
     let now = time::now_ms();
     let writer = LogWriter::start(logs::dir(&data), 30, logs::store::no_overrides()).unwrap();
@@ -90,6 +93,7 @@ fn the_last_day_of_davys_lines_and_crashes_is_counted() {
     assert_eq!(
         health(&c, &data, now).unwrap(),
         Health {
+            project: Some("davy".into()),
             warnings_24h: 2,
             errors_24h: 2,
             crashes_24h: vec![
@@ -116,6 +120,7 @@ fn the_last_day_of_davys_lines_and_crashes_is_counted() {
 #[test]
 fn health_reads_as_json_with_these_names() {
     let h = Health {
+        project: Some("davy".into()),
         warnings_24h: 1,
         errors_24h: 0,
         crashes_24h: vec![Crash {
@@ -129,7 +134,7 @@ fn health_reads_as_json_with_these_names() {
     };
     assert_eq!(
         serde_json::to_value(&h).unwrap(),
-        serde_json::json!({"warnings_24h":1,"errors_24h":0,"crashes_24h":[{"issue_id":9,"title":"panic: boom","last_seen":"2026-01-01T00:00:00.000Z","recorded_at":"2026-01-03T00:00:00.000Z","event_count":2}],"crashes_waiting":0})
+        serde_json::json!({"project":"davy","warnings_24h":1,"errors_24h":0,"crashes_24h":[{"issue_id":9,"title":"panic: boom","last_seen":"2026-01-01T00:00:00.000Z","recorded_at":"2026-01-03T00:00:00.000Z","event_count":2}],"crashes_waiting":0})
     );
 }
 
@@ -137,7 +142,7 @@ fn health_reads_as_json_with_these_names() {
 fn a_crash_recorded_today_counts_though_it_happened_days_ago() {
     let data = scratch("self-health-late");
     let mut c = store::open(&data).unwrap();
-    let (davy, _) = find_or_create(&mut c).unwrap();
+    let (own, _) = find_or_create(&mut c).unwrap();
     let now = time::now_ms();
     let panicked = now - 3 * WINDOW_MS;
     c.execute_batch(&format!(
@@ -147,7 +152,7 @@ fn a_crash_recorded_today_counts_though_it_happened_days_ago() {
          INSERT INTO events(project_id,issue_id,event_id,timestamp,received_at,level) VALUES
          ({p},1,'{ID}',{panicked},{recorded},'fatal'),
          ({p},2,'fedcba9876543210fedcba9876543210',{panicked},{panicked},'fatal');",
-        p = davy,
+        p = own.id,
         recorded = now - MINUTE_MS,
     ))
     .unwrap();
@@ -181,6 +186,26 @@ fn a_health_that_cannot_be_read_says_why_without_failing() {
         })
         .unwrap(),
         serde_json::json!({"error":"boom"})
+    );
+    drop(c);
+    std::fs::remove_dir_all(&data).unwrap();
+}
+
+#[test]
+fn a_project_a_person_named_davy_is_not_counted() {
+    let data = scratch("self-health-taken");
+    let mut c = store::open(&data).unwrap();
+    store::create_project(&c, "davy").unwrap();
+    let h = health(&c, &data, time::now_ms()).unwrap();
+    assert_eq!(h.project, None);
+    let (own, _) = find_or_create(&mut c).unwrap();
+    assert_eq!(own.slug, "davy-self");
+    assert_eq!(
+        health(&c, &data, time::now_ms())
+            .unwrap()
+            .project
+            .as_deref(),
+        Some("davy-self")
     );
     drop(c);
     std::fs::remove_dir_all(&data).unwrap();

@@ -1,5 +1,5 @@
 //! The doctor check `davy`: what Davy reported of itself in the last 24
-//! hours, from its project `davy`, and crash files that wait for `davy
+//! hours, from Davy's own project, and crash files that wait for `davy
 //! serve`. A crash warns and names how to read it.
 
 use super::{Check, Status, not_ok, ok};
@@ -35,8 +35,14 @@ pub(super) fn davy(data: &Path, d: &str, now_ms: i64) -> Check {
 /// The check for `h`: a warning for a crash in the window or a crash file
 /// that waits, else the counts of Davy's own lines.
 fn check(h: &Health, d: &str) -> Check {
+    let slug = h.project.as_deref().unwrap_or(crate::self_report::PROJECT);
+    let in_project = h
+        .project
+        .as_ref()
+        .map(|slug| format!(", in project {slug:?}"))
+        .unwrap_or_default();
     let lines = format!(
-        "{} errors and {} warnings of Davy's own in the last 24 hours",
+        "{} errors and {} warnings of Davy's own in the last 24 hours{in_project}",
         h.errors_24h, h.warnings_24h
     );
     let waiting = match h.crashes_waiting {
@@ -70,20 +76,20 @@ fn check(h: &Health, d: &str) -> Check {
                 h.crashes_waiting
             ),
             format!(
-                "davy serve --data {d} records them in the project davy within 5 seconds, unless it runs with --no-self-report"
+                "davy serve --data {d} records them in Davy's own project within 5 seconds, unless it runs with --no-self-report"
             ),
         );
     }
     if h.quiet() {
         return ok(
             NAME,
-            "no crash, error or warning of Davy's own in the last 24 hours",
+            format!("no crash, error or warning of Davy's own in the last 24 hours{in_project}"),
         );
     }
     ok(
         NAME,
         format!(
-            "no crash in the last 24 hours; {lines}, listed by davy logs --data {d} --project davy --level warn"
+            "no crash in the last 24 hours; {lines}, listed by davy logs --data {d} --project {slug} --level warn"
         ),
     )
 }

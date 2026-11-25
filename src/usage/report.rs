@@ -75,6 +75,8 @@ pub struct Prepared {
     /// Raw bytes per index day and project of the newest days, see
     /// [`forecast::Input::raw`].
     raw: Vec<forecast::RawDay>,
+    /// The slug of Davy's own project, which the forecast leaves out.
+    own: Option<String>,
     counted_since: Option<i64>,
     now: i64,
     store: Vec<forecast::StoreDay>,
@@ -144,6 +146,7 @@ pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
         default_days: req.defaults.logs.get(),
         projects,
         raw,
+        own: crate::self_report::own::find(c)?.map(|o| o.slug),
         counted_since: super::stored::counted_since(c)?,
         now: now_ns,
         // The sample before the first day of the window starts its pair.
@@ -238,27 +241,77 @@ impl Prepared {
     }
 
     /// What the forecast reads: the closed log days, each project's log
-    /// retention and the raw bytes counted.
+    /// retention and the raw bytes counted, all without Davy's own
+    /// project, see [`Theirs`].
     fn input(&self, disk: &Disk) -> forecast::Input {
+        let projects = self
+            .kept
+            .iter()
+            .map(|(_, k)| (k.project.clone(), k.logs.days.get()));
+        let theirs = Theirs::new(self.own.as_deref(), &self.raw, &disk.closed, projects);
         forecast::Input {
             today: self.today,
-            closed: disk.closed.clone(),
+            closed: theirs.closed,
             davy: disk.davy(),
             fixed: disk.fixed(),
             used: disk.used(),
             total: disk.total,
-            projects: self
-                .kept
-                .iter()
-                .map(|(_, k)| (k.project.clone(), k.logs.days.get()))
-                .collect(),
+            projects: theirs.projects,
             default_days: self.default_days,
-            raw: self.raw.clone(),
+            raw: theirs.raw,
             counted_since: self.counted_since,
             now: self.now,
             store: self.store.clone(),
             errors: self.errors.clone(),
             prior: super::footprint::PRIOR,
+        }
+    }
+}
+
+/// The raw bytes, closed log days and projects of the forecast: those of
+/// every project but Davy's own. Its lines are few, and as logs they
+/// would take a server that stores only errors off its forecast on errors
+/// alone within seconds of its start. Without its raw bytes, a closed day
+/// that holds only its lines is no log day either, and its retention
+/// takes no part in the bound or the estimate. `davy usage` still counts
+/// its lines under it.
+#[derive(Debug, PartialEq, Eq)]
+struct Theirs {
+    raw: Vec<forecast::RawDay>,
+    closed: Vec<(Date, u64)>,
+    projects: Vec<(String, u32)>,
+}
+
+impl Theirs {
+    /// Leaves out the project with the slug `own`.
+    fn new(
+        own: Option<&str>,
+        raw: &[forecast::RawDay],
+        closed: &[(Date, u64)],
+        projects: impl Iterator<Item = (String, u32)>,
+    ) -> Self {
+        let mine = |slug: &str| own == Some(slug);
+        let their_raw: Vec<forecast::RawDay> = raw
+            .iter()
+            .filter_map(|r| {
+                let projects: Vec<_> = r.projects.iter().filter(|p| !mine(&p.0)).cloned().collect();
+                (!projects.is_empty()).then_some(forecast::RawDay {
+                    day: r.day,
+                    projects,
+                })
+            })
+            .collect();
+        // A day without rows was not counted, so it may hold anyone's lines.
+        let counted = |day: &Date, rows: &[forecast::RawDay]| rows.iter().any(|r| r.day == *day);
+        let closed = closed
+            .iter()
+            .filter(|(day, _)| counted(day, &their_raw) || !counted(day, raw))
+            .copied()
+            .collect();
+        Self {
+            raw: their_raw,
+            closed,
+            projects: projects.filter(|(slug, _)| !mine(slug)).collect(),
         }
     }
 }
@@ -576,3 +629,7 @@ mod tests;
 #[cfg(test)]
 #[path = "report_forecast_tests.rs"]
 mod forecast_tests;
+
+#[cfg(test)]
+#[path = "report_own_tests.rs"]
+mod own_tests;

@@ -1,25 +1,26 @@
-//! The thread that turns Davy's own lines into log records of the project
-//! `davy`, and its crash files into issues. It makes the project on its
-//! first line or crash, scrubs with the project's policy and queues like
-//! any other ingest, counted in the project's usage. Every failure here
-//! goes to stderr only.
+//! The thread that turns Davy's own lines into log records of Davy's own
+//! project, and its crash files into issues. `davy serve` finds or makes
+//! the project before its writers start, see [`super::own`]. The thread
+//! scrubs with the project's policy and queues like any other ingest,
+//! counted in the project's usage. Every failure here goes to stderr only.
 
 use super::{
-    LOG_DAYS, Line, PROJECT, SERVICE,
+    Line, SERVICE,
     crash::{self, Told},
-    quiet, set_project_id, stderr,
+    own::{self, Own},
+    quiet, stderr,
 };
 use crate::{
     http::body::Budget,
     logs::{
-        LogLevel, LogRecord, LogSource,
+        LogRecord, LogSource,
         store::{LogQueue, QueueError},
     },
     scrub::{self, Meter, Policy},
     store,
     usage::{self, Count, Signal},
 };
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::Connection;
 use serde_json::{Map, Value};
 use std::{
     path::PathBuf,
@@ -42,18 +43,16 @@ const COMPONENT: &str = "self report";
 /// and the lines they queued are written.
 pub struct Forwarder {
     pub data: PathBuf,
+    /// Davy's own project.
+    pub own: Own,
+    /// A connection to read the project's policy and its events with.
+    pub db: Mutex<Connection>,
     pub logs: LogQueue,
     pub usage: usage::Counter,
     pub policies: Arc<scrub::settings::Cache>,
     /// Where crashes are stored as issues.
     pub sender: store::Sender,
     pub budget: Budget,
-}
-
-/// The project `davy` and a connection to read its policy with.
-struct Project {
-    id: i64,
-    db: Mutex<Connection>,
 }
 
 impl Forwarder {
@@ -68,50 +67,33 @@ impl Forwarder {
     /// files every [`SCAN`], and once more when the last sink is gone.
     fn run(self, lines: &mpsc::Receiver<Line>) {
         let _quiet = quiet();
-        let mut project = None;
         let mut told = Told::default();
         crash::sweep(&crash::dir(&self.data));
-        self.crashes(&mut project, &mut told);
+        self.crashes(&mut told);
         let mut scanned = Instant::now();
         loop {
             match lines.recv_timeout(TICK) {
                 Ok(first) => {
                     let mut batch = vec![first];
                     batch.extend(lines.try_iter().take(MAX_BATCH - 1));
-                    self.forward(&mut project, batch);
+                    self.write(batch);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    self.crashes(&mut project, &mut told);
+                    self.crashes(&mut told);
                     return;
                 }
             }
             if scanned.elapsed() >= SCAN {
-                self.crashes(&mut project, &mut told);
+                self.crashes(&mut told);
                 scanned = Instant::now();
             }
         }
     }
 
-    /// Writes `lines` to the project `davy`, made or found first if this
-    /// process has not yet.
-    fn forward(&self, project: &mut Option<Project>, mut lines: Vec<Line>) {
-        let lost = format!("{} of Davy's own lines were", lines.len());
-        let Some(created) = self.open(project, &lost) else {
-            return;
-        };
-        if created {
-            lines.insert(0, created_line(lines[0].at_ns));
-        }
-        if let Some(project) = project {
-            self.write(project, lines);
-        }
-    }
-
-    /// Records the crash files that wait, as issues of the project `davy`,
-    /// which is made only when there is one. An entry that is not a
-    /// regular file is left alone and named once.
-    fn crashes(&self, project: &mut Option<Project>, told: &mut Told) {
+    /// Records the crash files that wait, as issues of Davy's own project.
+    /// An entry that is not a regular file is left alone and named once.
+    fn crashes(&self, told: &mut Told) {
         let dir = crash::dir(&self.data);
         let listing = match crash::list(&dir) {
             Ok(listing) => listing,
@@ -134,81 +116,33 @@ impl Forwarder {
                 ),
             );
         }
-        let files = listing.files;
-        if files.is_empty() {
+        if listing.files.is_empty() {
             return;
         }
-        let lost = format!("{} crashes in {} were", files.len(), dir.display());
-        let Some(created) = self.open(project, &lost) else {
-            return;
-        };
-        let Some(project) = project.as_ref() else {
-            return;
-        };
-        if created {
-            self.write(project, vec![created_line(crate::time::now_ns())]);
-        }
-        let policy = self.policy(project);
+        let policy = self.policy();
         let target = crash::Target {
-            project: project.id,
+            project: self.own.id,
             policy: &policy,
             sender: &self.sender,
             budget: &self.budget,
             usage: &self.usage,
-            db: &project.db,
+            db: &self.db,
         };
-        crash::record(&files, &target, told);
+        crash::record(&listing.files, &target, told);
     }
 
-    /// Makes or finds the project `davy` unless this process has. Some(true)
-    /// when it was made now. None, with `lost` and why on stderr, when the
-    /// store cannot be opened.
-    fn open(&self, slot: &mut Option<Project>, lost: &str) -> Option<bool> {
-        if slot.is_some() {
-            return Some(false);
-        }
-        match self.project() {
-            Ok((found, created)) => {
-                set_project_id(found.id);
-                *slot = Some(found);
-                Some(created)
-            }
-            Err(e) => {
-                stderr(
-                    COMPONENT,
-                    format!(
-                        "{lost} not recorded, as the project {PROJECT:?} could not be opened: {e:#}"
-                    ),
-                );
-                None
-            }
-        }
-    }
-
-    /// Opens the store and finds the project `davy`, or makes it. True when
-    /// it was made.
-    fn project(&self) -> anyhow::Result<(Project, bool)> {
-        let mut c = store::open(&self.data)?;
-        let (id, created) = find_or_create(&mut c)?;
-        let project = Project {
-            id,
-            db: Mutex::new(c),
-        };
-        Ok((project, created))
-    }
-
-    fn write(&self, project: &Project, lines: Vec<Line>) {
+    fn write(&self, lines: Vec<Line>) {
         let now = crate::time::now_ns();
         let mut records: Vec<LogRecord> = lines
             .into_iter()
-            .map(|line| record(project.id, line, now))
+            .map(|line| record(self.own.id, line, now))
             .collect();
-        let policy = self.policy(project);
+        let policy = self.policy();
         policy.logs(&mut records, &mut Meter::unmetered());
         let count = Count::new(records.len(), records.iter().map(size).sum());
         let n = records.len();
         match self.logs.push(records) {
-            Ok(()) => self.usage.add(project.id, Signal::Logs, count),
+            Ok(()) => self.usage.add(self.own.id, Signal::Logs, count),
             Err(e) => stderr(
                 COMPONENT,
                 format!("{n} of Davy's own lines were not recorded: {}", why(&e)),
@@ -216,47 +150,19 @@ impl Forwarder {
         }
     }
 
-    /// The scrub policy of the project, or [`policy`] when it cannot be
-    /// read.
-    fn policy(&self, project: &Project) -> Arc<Policy> {
-        self.policies
-            .get(&project.db, project.id)
-            .unwrap_or_else(|e| {
-                stderr(
-                    COMPONENT,
-                    format!("the scrub policy of project {PROJECT:?} was not read, so the one Davy sets for it is used: {e:#}"),
-                );
-                Arc::new(policy())
-            })
-    }
-}
-
-/// Finds the project `davy`, or makes it with [`LOG_DAYS`] of logs and
-/// [`policy`]. True when it was made. A project of that name that a person
-/// made keeps its own settings.
-pub fn find_or_create(c: &mut Connection) -> anyhow::Result<(i64, bool)> {
-    let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    if let Some(id) = store::project_id(&tx, PROJECT)? {
-        return Ok((id, false));
-    }
-    let (id, _key) = store::create_project(&tx, PROJECT)?;
-    tx.execute(
-        "UPDATE projects SET log_retention_days=?1 WHERE id=?2",
-        params![LOG_DAYS, id],
-    )?;
-    scrub::settings::set(&tx, id, &policy())?;
-    tx.commit()?;
-    Ok((id, true))
-}
-
-/// The policy of the project `davy`: the default, and also e-mail
-/// addresses and personal data, which an alert or a check may name and no
-/// operator needs from Davy's own lines.
-pub fn policy() -> Policy {
-    Policy {
-        email: true,
-        personal: true,
-        ..Policy::default()
+    /// The scrub policy of the project, or [`own::policy`] when it cannot
+    /// be read.
+    fn policy(&self) -> Arc<Policy> {
+        self.policies.get(&self.db, self.own.id).unwrap_or_else(|e| {
+            stderr(
+                COMPONENT,
+                format!(
+                    "the scrub policy of project {:?} was not read, so the one Davy sets for it is used: {e:#}",
+                    self.own.slug
+                ),
+            );
+            Arc::new(own::policy())
+        })
     }
 }
 
@@ -282,22 +188,6 @@ pub fn record(project: i64, line: Line, now: i64) -> LogRecord {
         trace_id: None,
         span_id: None,
         attributes,
-    }
-}
-
-/// The line that says the project was made, and how to stop it.
-fn created_line(at_ns: i64) -> Line {
-    let message = format!(
-        "created project {PROJECT:?} for Davy's own warnings, errors and crashes, keeping {LOG_DAYS} days of logs; `davy serve --no-self-report` turns this off"
-    );
-    stderr(COMPONENT, &message);
-    Line {
-        at_ns,
-        level: LogLevel::Info,
-        component: COMPONENT,
-        message,
-        suppressed: 0,
-        dropped: 0,
     }
 }
 

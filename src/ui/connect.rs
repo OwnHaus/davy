@@ -136,18 +136,35 @@ async fn setup(State(s): State<Arc<Connect>>, uri: Uri) -> Result<Response, Refu
     })
 }
 
-/// The time of the newest log the server holds, in milliseconds.
+/// The time of the newest log of a project a person made, in milliseconds.
+/// Davy's own lines are not a step a person took.
 async fn any_log(reads: &Arc<Reads>) -> Result<Option<Timestamp>, Refusal> {
-    let query = LogQuery {
-        project: None,
-        since: 0,
-        until: now_ns(),
-        min_level: None,
-        text: None,
-        pattern: None,
-        limit: 1,
-        skip: 0,
-    };
-    let hits = logs::searching(reads, move |dir| search(dir, &query)).await?;
-    Ok(hits.first().map(|h| h.timestamp_ns.div_euclid(1_000_000)))
+    let projects = reads
+        .run(|c| {
+            let mut q = c.prepare("SELECT id FROM projects WHERE own=0")?;
+            let rows = q.query_map([], |r| r.get::<_, i64>(0))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<i64>>>()?)
+        })
+        .await?;
+    let until = now_ns();
+    let newest = logs::searching(reads, move |dir| {
+        let mut newest = None;
+        for project in projects {
+            let query = LogQuery {
+                project: Some(project),
+                since: 0,
+                until,
+                min_level: None,
+                text: None,
+                pattern: None,
+                limit: 1,
+                skip: 0,
+            };
+            let at = search(dir, &query)?.first().map(|h| h.timestamp_ns);
+            newest = newest.max(at);
+        }
+        Ok(newest)
+    })
+    .await?;
+    Ok(newest.map(|ns| ns.div_euclid(1_000_000)))
 }
