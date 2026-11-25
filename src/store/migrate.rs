@@ -29,7 +29,10 @@ pub(super) fn open(path: &Path, wait: Duration) -> Result<Connection> {
         match pending(&c) {
             Ok(false) => return Ok(c),
             Ok(true) => drop(c),
-            Err(e) if busy(&e) && Instant::now() < deadline => thread::sleep(backoff()),
+            Err(e) if busy(&e) && Instant::now() < deadline => {
+                thread::sleep(backoff());
+                continue;
+            }
             Err(e) if busy(&e) => bail!(
                 "{} is locked by another process, most likely a davy that migrates it. Run this again when it is done",
                 path.display()
