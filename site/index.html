@@ -237,7 +237,7 @@ frame  src/routes/recipes.ts  scaleHandler</code></pre></div>
         <div class="code-plate small"><pre><code><span class="dir">→</span> mark_fixed {"issue_id": 1, "release": "pantry-api@2.4.2"}
 <span class="dir">←</span> issue 1 resolved in release pantry-api@2.4.2</code></pre></div>
       </div>
-      <figcaption><span class="fig">Fig. 5.</span> Two of the eleven tools. The replies are cut short here; <code>mark_fixed</code> answers in exactly these words.</figcaption>
+      <figcaption><span class="fig">Fig. 5.</span> Two of the thirteen tools. The replies are cut short here; <code>mark_fixed</code> answers in exactly these words.</figcaption>
     </figure>
 
     <figure class="beat b4">
@@ -378,17 +378,19 @@ frame  src/routes/recipes.ts  scaleHandler</code></pre></div>
     <p class="agents-alt">or <code>--client codex</code>, <code>--client cursor</code></p>
   </div>
   <h2 id="agents-h" class="say">Your coding agent reads the same flame.</h2>
-  <p class="intro wide">An MCP server with eleven tools. The agent searches logs, reads an issue with its stack trace, runs read-only SQL and marks the issue fixed. Every operator step is also a CLI command with <code>--json</code>.</p>
+  <p class="intro wide">An MCP server with thirteen tools. The agent searches logs, reads an issue with its stack trace, runs read-only SQL and marks the issue fixed. Every operator step is also a CLI command with <code>--json</code>.</p>
 
   <dl class="tools">
     <div><dt><code>issue_context</code></dt><dd>The stack with source lines, breadcrumbs, releases, the logs around the error and what users wrote about it, in one call.</dd></div>
     <div><dt><code>search_logs</code></dt><dd>The log search the UI uses. A bare word such as a request ID matches every attribute value.</dd></div>
+    <div><dt><code>log_patterns</code></dt><dd>The shapes of the log lines that take the most bytes, with ids, numbers and quoted values masked, to see what fills the logs.</dd></div>
     <div><dt><code>count_logs</code></dt><dd>How many logs match per time bucket, to see how often something happens and since when.</dd></div>
     <div><dt><code>sql</code> and <code>schema</code></dt><dd>One read-only SQLite query, and the tables to write it against.</dd></div>
     <div><dt><code>mark_fixed</code></dt><dd>Resolves an issue in a release. It reopens if the error comes back in that release or in one Davy first sees after the fix.</dd></div>
     <div><dt><code>release_health</code></dt><dd>Crash-free sessions and users per release, to tell whether a new release crashes more.</dd></div>
     <div><dt><code>connect_project</code></dt><dd>An existing project's DSN, SDK setup and a test-event command.</dd></div>
     <div><dt><code>project_status</code></dt><dd>Event and issue counts and last event times, to confirm ingest.</dd></div>
+    <div><dt><code>usage</code></dt><dd>What each project sent and when the disk fills at the current rate, with the worst case when projects keep logs for different times.</dd></div>
     <div><dt><code>set_retention</code></dt><dd>How many days a project keeps its logs and its errors.</dd></div>
     <div><dt><code>submit_feedback</code></dt><dd>Tells whoever runs Davy that a tool was missing or wrong. Davy sends it nowhere else.</dd></div>
   </dl>
