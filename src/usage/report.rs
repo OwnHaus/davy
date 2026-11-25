@@ -48,8 +48,8 @@ pub struct Project {
     pub logs_days: u32,
     pub errors_days: u32,
     pub counts: [Count; 5],
-    /// Raw bytes of the logs stored on the index days of the window, as
-    /// the pattern counters count them. Never subtracted from what the
+    /// Raw bytes of the logs stored on the index days of the window and
+    /// tomorrow, as the pattern counters count them. Never subtracted from what the
     /// clients sent: the two count different bytes on different days.
     pub stored: Count,
 }
@@ -103,7 +103,8 @@ pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
         None => None,
     };
     let counted = super::between(c, from, today, filter)?;
-    let stored = super::stored::between(c, from, today, filter)?;
+    // A record may be indexed up to a day ahead, see `logs::store::State::settle`.
+    let stored = super::stored::between(c, from, today.tomorrow()?, filter)?;
     let projects = kept
         .iter()
         .filter(|(id, _)| filter.is_none_or(|f| f == *id))

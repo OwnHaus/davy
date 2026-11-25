@@ -279,6 +279,7 @@ fn data_with_counts(name: &str) -> std::path::PathBuf {
     let old = today.checked_sub(30.days()).unwrap();
     let stored_rows = vec![
         stored_row(today, 2, 990, 2_000_000),
+        stored_row(today.tomorrow().unwrap(), 2, 10, 1_000),
         stored_row(old, 2, 9, 9),
     ];
     stored::write(&tx, &stored_flush(stored_rows)).unwrap();
@@ -341,8 +342,11 @@ fn davy_usage_prints_the_counts_of_the_window_as_json() {
     assert_eq!(shop["signals"]["logs"]["records"], 1_000);
     assert_eq!(shop["signals"]["logs"]["bytes"], 2_500_000);
     assert_eq!(shop["signals"]["errors"]["records"], 0);
-    assert_eq!(shop["logs_stored"]["records"], 990);
-    assert_eq!(shop["logs_stored"]["bytes"], 2_000_000);
+    assert_eq!(
+        shop["logs_stored"]["records"], 1_000,
+        "tomorrow's index too"
+    );
+    assert_eq!(shop["logs_stored"]["bytes"], 2_001_000);
     assert!(v["disk"]["total"].as_u64().unwrap() > 0);
     assert_eq!(v["disk"]["days_left"], json!(null));
     std::fs::remove_dir_all(&data).unwrap();
@@ -369,7 +373,7 @@ fn davy_usage_prints_text_by_default_and_refuses_a_long_window() {
     assert!(text.contains(&api_errors), "{text}");
     let shop_stored = format!(
         "{:<20} {:<11} {:>10} {:>10}",
-        "shop", "logs_stored", 990, "2.0 MB"
+        "shop", "logs_stored", 1_000, "2.0 MB"
     );
     assert!(text.contains(&shop_stored), "{text}");
     assert!(
