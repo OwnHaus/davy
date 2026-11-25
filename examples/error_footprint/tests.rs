@@ -57,6 +57,40 @@ fn upgrade_refuses_a_store_outside_a_scratch_directory() {
     assert!(is_copy(Path::new("/home/a/davy/.scratch/copy")));
 }
 
+#[cfg(unix)]
+#[test]
+fn upgrade_refuses_a_copy_that_links_to_a_database_elsewhere() {
+    let root = scratch("upgrade-link");
+    let data = root.join(".scratch").join("copy");
+    std::fs::create_dir_all(&data).unwrap();
+    let db = data.join(store::DB_FILE);
+    // A symbolic link to a file under no .scratch directory, wherever this
+    // checkout lies.
+    std::os::unix::fs::symlink("/dev/null", &db).unwrap();
+    let e = upgrade(&data).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        format!(
+            "upgrade migrates {} in place, and no older Davy opens it after. Copy the data directory under a .scratch directory and pass the copy",
+            data.display()
+        )
+    );
+    std::fs::remove_file(&db).unwrap();
+    let elsewhere = root.join("davy.sqlite");
+    std::fs::write(&elsewhere, b"").unwrap();
+    std::fs::hard_link(&elsewhere, &db).unwrap();
+    let e = upgrade(&data).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        format!(
+            "{} has another hard link, so upgrade would migrate the store it shares. Copy the file, do not link it",
+            db.display()
+        )
+    );
+    assert_eq!(std::fs::metadata(&elsewhere).unwrap().len(), 0);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
 /// A store of one issue of 51 events, written by the real writer.
 fn hot(data: &Path) {
     let mut real = Real::open(data).unwrap();

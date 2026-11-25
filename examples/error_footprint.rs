@@ -21,8 +21,9 @@
 //! the load of a shared machine falls on both. It prints the median of
 //! `ROUNDS` rounds. `upgrade` migrates the store `DATA` in place and times
 //! the migrations that run. No older Davy opens the store after that, so
-//! `upgrade` takes only a copy: a `DATA` under a `.scratch` directory. The
-//! counts must be above 0.
+//! `upgrade` takes only a copy: a `DATA` under a `.scratch` directory, with
+//! no link to a database outside one. That guards against a slip, not a
+//! store that is named so. The counts must be above 0.
 use anyhow::{Context as _, Result, bail, ensure};
 use davy::{envelope::Envelope, event::ErrorEvent, http::body::Budget, retention::Days, store};
 use rusqlite::{Connection, params};
@@ -172,8 +173,24 @@ fn run(design: Option<Design>, args: &[String]) -> Result<()> {
 
 fn upgrade(data: &Path) -> Result<()> {
     ensure!(data.exists(), "{} does not exist", data.display());
+    // SQLite follows a link to the database or its WAL, so each file is
+    // judged where it really lies.
+    let mut real = vec![data.canonicalize()?];
+    for suffix in ["", "-wal", "-shm"] {
+        let mut name = data.join(store::DB_FILE).into_os_string();
+        name.push(suffix);
+        let file = std::path::PathBuf::from(name);
+        if file.symlink_metadata().is_ok() {
+            ensure!(
+                links(&file)? == 1,
+                "{} has another hard link, so upgrade would migrate the store it shares. Copy the file, do not link it",
+                file.display()
+            );
+            real.push(file.canonicalize()?);
+        }
+    }
     ensure!(
-        is_copy(&data.canonicalize()?),
+        real.iter().all(|p| is_copy(p)),
         "upgrade migrates {} in place, and no older Davy opens it after. Copy the data directory under a .scratch directory and pass the copy",
         data.display()
     );
@@ -191,6 +208,20 @@ fn upgrade(data: &Path) -> Result<()> {
 /// a store would be.
 fn is_copy(path: &Path) -> bool {
     path.components().any(|c| c.as_os_str() == ".scratch")
+}
+
+/// The hard links of the file `path`, 1 where the platform does not say.
+fn links(path: &Path) -> Result<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        Ok(std::fs::metadata(path)?.nlink())
+    }
+    #[cfg(not(unix))]
+    {
+        drop(std::fs::metadata(path)?);
+        Ok(1)
+    }
 }
 
 /// The count `name` of the command line, which a run divides by or steps
