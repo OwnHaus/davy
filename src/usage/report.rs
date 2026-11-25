@@ -208,6 +208,13 @@ pub fn human(bytes: u64) -> String {
     format!("{}.{} {}", tenths / 10, tenths % 10, UNITS[unit])
 }
 
+/// `s` with control characters replaced: a directory under the data
+/// directory may be named with bytes that move the cursor or retitle the
+/// terminal. JSON escapes them itself.
+fn safe(s: &str) -> std::borrow::Cow<'_, str> {
+    crate::text::printable(s, char::REPLACEMENT_CHARACTER)
+}
+
 impl Report {
     /// Sizes as [`human`] strings, or with `human` false as bytes.
     pub fn json(&self, human: bool) -> Value {
@@ -333,7 +340,7 @@ impl Report {
         writeln!(out, "{:<9} {window}", "window")?;
         match &self.disk {
             Ok(d) => Self::disk_text(d, out)?,
-            Err(e) => writeln!(out, "{:<9} not measured: {e}", "disk")?,
+            Err(e) => writeln!(out, "{:<9} not measured: {}", "disk", safe(e))?,
         }
         if let Ok(f) = &self.forecast {
             writeln!(
@@ -344,7 +351,7 @@ impl Report {
                 human(f.steady_state)
             )?;
         }
-        writeln!(out, "{:<9} {}", "forecast", self.summary())?;
+        writeln!(out, "{:<9} {}", "forecast", safe(&self.summary()))?;
         if let Some(n) = self.default_log_days {
             writeln!(
                 out,
@@ -387,11 +394,16 @@ impl Report {
                 out,
                 "{:<9} left out {}{more}",
                 "partial",
-                g.skipped.join(", ")
+                safe(&g.skipped.join(", "))
             )?;
         }
         if let Some(why) = &g.stopped {
-            writeln!(out, "{:<9} the walk stopped early, {why}", "partial")?;
+            writeln!(
+                out,
+                "{:<9} the walk stopped early, {}",
+                "partial",
+                safe(why)
+            )?;
         }
         Ok(())
     }

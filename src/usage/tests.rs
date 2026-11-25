@@ -570,3 +570,31 @@ fn a_report_says_which_default_log_retention_it_assumed() {
         (None, &json!(null))
     );
 }
+
+#[test]
+fn the_text_report_prints_control_characters_in_paths_as_replacements() {
+    let mut r = forecast_report((30, 30), None);
+    r.disk = Ok(disk::Disk {
+        gaps: disk::Gaps {
+            skipped: vec!["\u{1b}]0;owned\u{7}: permission denied".into()],
+            skipped_count: 1,
+            stopped: None,
+        },
+        ..disk::Disk::default()
+    });
+    let mut text = Vec::new();
+    r.text(&mut text).unwrap();
+    let text = String::from_utf8(text).unwrap();
+    assert!(
+        text.contains("partial   left out \u{fffd}]0;owned\u{fffd}: permission denied\n"),
+        "{text}"
+    );
+    r.disk = Err("measuring a\u{1b}[2Jb: input/output error".into());
+    let mut text = Vec::new();
+    r.text(&mut text).unwrap();
+    let text = String::from_utf8(text).unwrap();
+    assert!(
+        text.contains("disk      not measured: measuring a\u{fffd}[2Jb: input/output error\n"),
+        "{text}"
+    );
+}
