@@ -196,18 +196,36 @@ pub async fn serve(
         })
         .await;
     stop(tasks).await?;
-    // The log writer goes first: it commits and settles what it holds, and
-    // its last counts go out with the flush below.
+    shut_down(log_writer, &usage, writer).await?;
+    result?;
+    Ok(())
+}
+
+/// Stops the log writer, then the writer, once the tasks and the server
+/// are stopped. The counts go out before the log writer stops, as its stop
+/// commits, settles and waits for merges and can take longer than a
+/// supervisor waits before a kill. They go out once more after it, with
+/// the log writer's last counts and cut marks.
+async fn shut_down(
+    log_writer: LogWriter,
+    usage: &crate::usage::Counter,
+    writer: store::Writer,
+) -> anyhow::Result<()> {
+    let log_days = log_writer.log_days;
+    if let Err(e) = crate::usage::flush(usage, &log_days, &writer.sender).await {
+        crate::usage::warn("the counts since the last flush were not stored", &e);
+    }
     drop(log_writer.queue);
     let logs_stopped = join([("log writer", log_writer.thread)]);
-    // The counts since the last flush, now that nothing adds to them.
-    if let Err(e) = crate::usage::flush(&usage, &log_days, &writer.sender).await {
-        crate::usage::warn("the counts since the last flush were not stored", &e);
+    if let Err(e) = crate::usage::flush(usage, &log_days, &writer.sender).await {
+        crate::usage::warn("the log writer's last counts were not stored", &e);
     }
     drop(writer.sender);
     drop(writer.ui);
     join([("writer", writer.thread)])?;
-    logs_stopped?;
-    result?;
-    Ok(())
+    logs_stopped
 }
+
+#[cfg(test)]
+#[path = "serve_tests.rs"]
+mod tests;
