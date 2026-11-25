@@ -363,3 +363,28 @@ fn a_start_that_finds_no_day_marks_nothing_until_one_comes_back() {
     assert_eq!(stored_rows(&c), [(old, 1, 1, 1), (new, 1, 1, 0)]);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn a_pass_that_deletes_nothing_more_does_not_mark_again() {
+    let dir = scratch("log-days-mark-once");
+    let now = now_ns();
+    let old = now - 5 * DAY;
+    let (mut state, settings) = with_settings(&dir, 30);
+    let batch = vec![record(1, old, old, "api"), record(2, old, old, "shop")];
+    state.add(batch).unwrap();
+    state.commit().unwrap();
+    settings.lock().unwrap().insert(1, 2);
+    state.retention(now, PASS).unwrap();
+    drop(state.log_days.take());
+    // Each log of shop sends the next pass back to the day.
+    for _ in 0..3 {
+        state.add(vec![record(2, old, old, "shop")]).unwrap();
+        state.commit().unwrap();
+        state.retention(now, PASS).unwrap();
+    }
+    let flush = state.log_days.take();
+    let marks: Vec<Mark> = flush.segments.into_iter().flat_map(|s| s.marks).collect();
+    assert_eq!(marks, []);
+    state.close_all().unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -197,6 +197,7 @@ impl State {
         self.strays.retain(|name| strays.contains(name));
         found.sort_unstable();
         self.swept.retain(|day, _| found.contains(day));
+        self.marked.retain(|day, _| found.contains(day));
         self.uncut.retain(|day, _| found.contains(day));
         for day in found {
             if let Err(e) = self.recut(day) {
@@ -266,9 +267,16 @@ impl State {
         let deleted = self.delete(day, &cut);
         // Under the lock and with the cut it deleted by, so a setting read
         // before the lock never marks a pair. A day removed whole is marked
-        // by `trash`.
-        if let Ok(Deleted::Nothing | Deleted::Marked { .. }) = &deleted {
-            self.mark_cut(day, &cut);
+        // by `trash`. A pass that deleted nothing marks only to restore a
+        // mark a crash lost, which once per server and cut does: a log
+        // written to the day since is deleted, and marked, by a later pass.
+        match &deleted {
+            Ok(Deleted::Nothing) if self.marked.get(&day) == Some(&cut) => {}
+            Ok(Deleted::Nothing | Deleted::Marked { .. }) => {
+                self.mark_cut(day, &cut);
+                self.marked.insert(day, cut.clone());
+            }
+            Ok(Deleted::Day) | Err(_) => {}
         }
         // The counters go with the logs, under the same lock and settings,
         // and on every pass until the cut holds, so a crash or a failure

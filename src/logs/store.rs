@@ -184,6 +184,8 @@ pub(super) struct State {
     overrides: Overrides,
     /// What retention last deleted from each day.
     swept: HashMap<Date, retention::Cut>,
+    /// The cut each day was last marked with by this server.
+    marked: HashMap<Date, retention::Cut>,
     /// Cuts of counters that failed after the logs they count were
     /// deleted, tried again on every pass until they hold.
     uncut: HashMap<Date, Vec<retention::Cut>>,
@@ -209,6 +211,7 @@ impl State {
             policy: retention::Policy::new(retention_days, HashMap::new()),
             overrides,
             swept: HashMap::new(),
+            marked: HashMap::new(),
             uncut: HashMap::new(),
             strays: HashSet::new(),
             open: HashMap::new(),
