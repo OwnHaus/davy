@@ -531,7 +531,7 @@ fn a_worst_case_says_so_and_only_warns_until_the_disk_is_past_its_limit() {
         not_ok(
             "disk",
             Status::Warn,
-            "40 GiB free, forecast full on 2026-11-25, in 1 day at the earliest, if every project kept logs 365 days",
+            "40 GiB free, forecast full on 2026-11-25, in 1 day at the earliest at the current rate, if every project kept logs 365 days",
             fix
         )
     );

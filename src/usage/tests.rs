@@ -493,7 +493,7 @@ fn a_worst_case_says_so_in_the_summary_and_the_json() {
     let worst = forecast_report((30, 365), Some(56));
     assert_eq!(
         worst.summary(),
-        "full on 2027-01-19, in 56 days at the earliest, at 10.0 GB of logs a day. This is a worst case: projects keep logs 30 to 365 days and share one index per day, so Davy cannot tell each project's share and takes all logs as kept 365 days. The disk fills on this day or later, or never. Watch free space over a few days before you shorten a retention for this date"
+        "full on 2027-01-19, in 56 days at the earliest, at 10.0 GB of logs a day. This is a worst case: projects keep logs 30 to 365 days and share one index per day, so Davy cannot tell each project's share and takes all logs as kept 365 days. At the current rate of logs, the disk fills on this day or later, or never. Watch free space over a few days before you shorten a retention for this date"
     );
     let v = worst.json(false);
     assert_eq!(

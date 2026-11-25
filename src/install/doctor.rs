@@ -547,7 +547,7 @@ fn by_days(f: &Forecast) -> (Status, String) {
     let on = f.full_on.map(|on| format!("on {on}, ")).unwrap_or_default();
     let earliest = if f.worst_case() && n > 0 {
         format!(
-            " at the earliest, if every project kept logs {} days",
+            " at the earliest at the current rate, if every project kept logs {} days",
             f.longest_days
         )
     } else {

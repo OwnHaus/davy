@@ -5,8 +5,8 @@
 //! one project's bytes on disk. The forecast takes the growth of all logs
 //! together and caps it with the longest log retention of any project, a
 //! bound no split of the growth can exceed. When projects keep logs for
-//! different times, the forecast is therefore a worst case: the disk fills
-//! on its day or later, or never.
+//! different times, the forecast is therefore a worst case: at the current
+//! rate of logs, the disk fills on its day or later, or never.
 
 use jiff::{Span, ToSpan as _, civil::Date};
 use rmcp::schemars::JsonSchema;
@@ -138,8 +138,8 @@ pub struct Forecast {
 impl Forecast {
     /// Whether projects keep logs for different times. The forecast then
     /// takes all logs as kept the longest of them, so `days_left` is the
-    /// fewest days there can be: the disk fills that day or later, or
-    /// never.
+    /// fewest days there can be at the current rate of logs: the disk
+    /// fills that day or later, or never.
     pub fn worst_case(&self) -> bool {
         self.shortest_days < self.longest_days
     }

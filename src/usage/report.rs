@@ -321,7 +321,7 @@ impl Report {
             return format!("full {on}in {n} days, at {rate} of logs a day");
         }
         format!(
-            "full {on}in {n} days at the earliest, at {rate} of logs a day. This is a worst case: projects keep logs {} to {l} days and share one index per day, so Davy cannot tell each project's share and takes all logs as kept {l} days. The disk fills on this day or later, or never. Watch free space over a few days before you shorten a retention for this date",
+            "full {on}in {n} days at the earliest, at {rate} of logs a day. This is a worst case: projects keep logs {} to {l} days and share one index per day, so Davy cannot tell each project's share and takes all logs as kept {l} days. At the current rate of logs, the disk fills on this day or later, or never. Watch free space over a few days before you shorten a retention for this date",
             f.shortest_days,
             l = f.longest_days,
         )
