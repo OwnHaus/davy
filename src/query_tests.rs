@@ -277,8 +277,13 @@ fn reading_a_directory_without_a_database_says_so_and_creates_nothing() {
 fn reading_a_database_of_an_older_davy_asks_for_an_upgrade_and_leaves_it() {
     let data = crate::test_support::scratch("query-old");
     let c = store::open(&data).unwrap();
-    c.execute_batch(crate::usage::UNDO).unwrap();
-    let older = store::SCHEMA_VERSION - 1;
+    // A store as version 17 left it, before usage_daily and latest_payloads.
+    c.execute_batch(&format!(
+        "DROP TABLE latest_payloads; {}",
+        crate::usage::UNDO
+    ))
+    .unwrap();
+    let older = store::SCHEMA_VERSION - 2;
     c.pragma_update(None, "user_version", older).unwrap();
     let err = open(&data).unwrap_err();
     assert_eq!(
@@ -294,7 +299,7 @@ fn reading_a_database_of_an_older_davy_asks_for_an_upgrade_and_leaves_it() {
         .unwrap();
     let tables: i64 = c
         .query_row(
-            "SELECT count(*) FROM sqlite_master WHERE name='usage_daily'",
+            "SELECT count(*) FROM sqlite_master WHERE name IN ('usage_daily', 'latest_payloads')",
             [],
             |r| r.get(0),
         )
