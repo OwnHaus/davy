@@ -13,6 +13,10 @@ use tokio::sync::Mutex;
 
 /// How long a measurement answers before the next caller walks again.
 pub const MAX_AGE: Duration = Duration::from_secs(60);
+/// How long a caller waits for a walk. A walk reads the clock between
+/// entries only, so one read that hangs, as on a stale network mount,
+/// holds it past [`super::MAX_TIME`]; its callers stop waiting here.
+pub const MAX_WAIT: Duration = Duration::from_secs(30);
 
 /// The last measurement, shared by every clone.
 #[derive(Clone, Default)]
@@ -40,8 +44,25 @@ impl Shared {
     /// time: callers that arrive during it wait for it, not for a walk of
     /// their own, and they wait as tasks, holding no thread. The walk runs
     /// on a blocking thread in a task that holds the lock, so a caller that
-    /// gives up does not stop it, and the next caller gets its result.
+    /// gives up, or waits longer than [`MAX_WAIT`], does not stop it, and
+    /// the next caller gets its result.
     pub(crate) async fn get(
+        &self,
+        today: Date,
+        now: Instant,
+        walk: impl FnOnce() -> Result<Disk, String> + Send + 'static,
+    ) -> Result<Disk, String> {
+        tokio::time::timeout(MAX_WAIT, self.last_or_walk(today, now, walk))
+            .await
+            .unwrap_or_else(|_| {
+                Err(format!(
+                    "the disk walk is still running after {} s, ask again later",
+                    MAX_WAIT.as_secs()
+                ))
+            })
+    }
+
+    async fn last_or_walk(
         &self,
         today: Date,
         now: Instant,

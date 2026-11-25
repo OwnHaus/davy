@@ -154,3 +154,52 @@ async fn a_caller_that_gives_up_leaves_its_walk_to_the_next() {
     assert_eq!(next.unwrap().today, 5);
     assert_eq!(walks.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_caller_stops_waiting_for_a_hung_walk_and_the_next_gets_its_result() {
+    let shared = Shared::default();
+    let walks = Arc::new(AtomicU64::new(0));
+    let (release, wait) = mpsc::channel::<()>();
+    let today = day("2026-11-24");
+    let t0 = Instant::now();
+    let counted = Arc::clone(&walks);
+    let first = tokio::spawn({
+        let shared = shared.clone();
+        async move {
+            shared
+                .get(today, t0, move || {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    assert!(wait.recv().is_err());
+                    Ok(Disk {
+                        today: 5,
+                        ..Disk::default()
+                    })
+                })
+                .await
+        }
+    });
+    while walks.load(Ordering::SeqCst) < 1 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::advance(MAX_WAIT + Duration::from_secs(1)).await;
+    for _ in 0..1000 {
+        if first.is_finished() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    // A caller that kept waiting would hold the test forever.
+    let gave_up = first.is_finished();
+    drop(release);
+    assert!(gave_up, "the caller still waits for the walk");
+    assert_eq!(
+        first.await.unwrap(),
+        Err("the disk walk is still running after 30 s, ask again later".to_owned())
+    );
+    while shared.0.try_lock().map_or(true, |last| last.is_none()) {
+        tokio::task::yield_now().await;
+    }
+    let next = shared.get(today, t0, walk(&walks, 9)).await;
+    assert_eq!(next.unwrap().today, 5);
+    assert_eq!(walks.load(Ordering::SeqCst), 1);
+}
