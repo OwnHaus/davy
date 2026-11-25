@@ -447,12 +447,17 @@ fn the_notes_read_the_newest_payload_of_an_issue() {
 fn the_notes_find_the_newest_payload_by_its_key() {
     let (_data, c) = store_with_a_newest_payload();
     let r = run(&c, &format!("EXPLAIN QUERY PLAN {PAYLOADS}")).unwrap();
-    let plan: Vec<&Value> = r.rows.iter().map(|row| &row[3]).collect();
+    let plan: Vec<&str> = r.rows.iter().filter_map(|row| row[3].as_str()).collect();
+    // A lookup of the row by its key, and no scan of either table. The
+    // index SQLite picks for the events is its own affair.
+    let has = |step: &str| plan.iter().any(|d| d.contains(step));
     assert_eq!(
-        plan,
-        [
-            "SEARCH e USING INDEX events_issue_timestamp (issue_id=?)",
-            "SEARCH l USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN"
-        ]
+        (
+            has("SEARCH l USING INTEGER PRIMARY KEY"),
+            has("SCAN l"),
+            has("SCAN e")
+        ),
+        (true, false, false),
+        "{plan:?}"
     );
 }
