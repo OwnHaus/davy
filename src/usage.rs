@@ -283,6 +283,57 @@ async fn send(
     Ok(())
 }
 
+/// A day of error events one project received.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ErrorDay {
+    pub project: i64,
+    /// When the project was made, ns.
+    pub created: i64,
+    /// The first day `usage_daily` holds error events of the project.
+    pub first: Date,
+    pub day: Date,
+    pub count: Count,
+}
+
+/// Error events received and their bytes per project and accept day, from
+/// the day `from` on: the forecast's events per day.
+pub fn errors_since(c: &Connection, from: Date) -> Result<Vec<ErrorDay>> {
+    let mut q = c.prepare(
+        "SELECT u.project_id, p.created_at, f.first, u.day, u.records, u.bytes
+         FROM usage_daily u JOIN projects p ON p.id=u.project_id
+         JOIN (SELECT project_id, min(day) AS first FROM usage_daily
+               WHERE signal='errors' GROUP BY project_id) f
+           ON f.project_id=u.project_id
+         WHERE u.day>=?1 AND u.signal='errors' ORDER BY u.day",
+    )?;
+    let rows = q.query_map([from.to_string()], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, i64>(4)?,
+            r.get::<_, i64>(5)?,
+        ))
+    })?;
+    let wide = |n: i64| u64::try_from(n).unwrap_or(0);
+    let mut out = Vec::new();
+    for row in rows {
+        let (project, created_ms, first, day, records, bytes) = row?;
+        out.push(ErrorDay {
+            project,
+            created: created_ms.saturating_mul(1_000_000),
+            first: first.parse()?,
+            day: day.parse()?,
+            count: Count {
+                records: wide(records),
+                bytes: wide(bytes),
+            },
+        });
+    }
+    Ok(out)
+}
+
 /// Counted records and bytes per project and signal from the day `from`
 /// to the day `to`, both included, of one project or of all.
 pub fn between(

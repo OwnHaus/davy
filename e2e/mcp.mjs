@@ -62,12 +62,17 @@ assert.match(used.disk.total, /^\d+(\.\d)? [KMGTP]?B$/)
 assert.match(used.projects[0].signals.errors.bytes, /^\d+(\.\d)? [KMGTP]?B$/)
 assert.equal(typeof used.projects[0].logs_stored.records, 'number')
 // A server minutes old has counted raw log bytes for under an hour and
-// holds no closed log day, so the forecast waits and has no basis.
+// holds no closed log day, so the forecast waits: no basis, no estimate.
 assert.equal(used.basis, null)
+assert.equal(used.estimate, null)
+assert.equal(used.disk.beyond_10_years, null)
 assert.match(used.no_forecast, /^Davy has counted raw log bytes for \d+ minutes; a first forecast needs an hour of them, or closed log days on disk$/)
 const whatIf = JSON.parse((await call('usage', { what_if: { logs_bytes_per_day: 1000000 } })).text)
 assert.equal(whatIf.growth_per_day, '1.0 MB')
 assert.equal(whatIf.basis, null)
+// A total daily volume cannot be split by project: no estimate.
+assert.equal(whatIf.estimate, null)
+assert.equal(whatIf.disk.beyond_10_years, false)
 console.log(`PASS usage: 1 error counted for e2e-connect, ${used.projects[0].signals.errors.bytes}, forecast: ${whatIf.forecast}`)
 
 const schema = await call('schema', {})

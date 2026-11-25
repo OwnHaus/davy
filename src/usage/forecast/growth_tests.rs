@@ -56,6 +56,8 @@ pub(super) fn server(since: &str, now: &str, days: &[(Date, u64, Option<u64>)]) 
             .collect(),
         counted_since: Some(at(since)),
         now,
+        store: Vec::new(),
+        errors: Vec::new(),
         prior: FIXTURE,
     }
 }

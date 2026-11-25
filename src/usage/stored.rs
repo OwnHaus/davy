@@ -3,7 +3,7 @@
 //! SQLite's size once a day (`docs/design.md`, "What is counted: stored
 //! logs, cut pairs, SQLite size").
 
-use super::{Count, KEEP_DAYS, PRUNE_ROWS};
+use super::{Count, KEEP_DAYS, PRUNE_ROWS, forecast::StoreDay};
 use crate::{
     logs::store::log_days::{Flush, Mark},
     time,
@@ -207,6 +207,48 @@ pub fn since(c: &Connection, from: Date) -> Result<Vec<(Date, i64, u64, bool)>> 
             u64::try_from(bytes).unwrap_or(0),
             cut,
         ));
+    }
+    Ok(out)
+}
+
+/// SQLite's size samples of `store_days` from `from` on, oldest first.
+pub fn store_days(c: &Connection, from: Date) -> Result<Vec<StoreDay>> {
+    let mut q =
+        c.prepare("SELECT day, at, bytes, events FROM store_days WHERE day>=?1 ORDER BY day")?;
+    let rows = q.query_map([from.to_string()], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, i64>(3)?,
+        ))
+    })?;
+    let wide = |n: i64| u64::try_from(n).unwrap_or(0);
+    let mut out = Vec::new();
+    for row in rows {
+        let (day, at_ms, bytes, events) = row?;
+        out.push(StoreDay {
+            day: day.parse()?,
+            at_ms,
+            bytes: wide(bytes),
+            events: wide(events),
+        });
+    }
+    Ok(out)
+}
+
+/// The error events each project keeps now, by its id. The index holds
+/// `event_count` in project order, so the sum reads no row of `issues`.
+pub fn events(c: &Connection) -> Result<HashMap<i64, u64>> {
+    let mut q = c.prepare(
+        "SELECT project_id, coalesce(sum(event_count), 0) FROM issues
+         INDEXED BY issues_project_sorts GROUP BY project_id",
+    )?;
+    let rows = q.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let (project, events) = row?;
+        out.insert(project, u64::try_from(events).unwrap_or(0));
     }
     Ok(out)
 }

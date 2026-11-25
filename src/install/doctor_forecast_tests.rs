@@ -21,6 +21,9 @@ fn full_in(basis: Basis, days: u64) -> Forecast {
         headroom: 10 * GIB,
         days_left: Some(days),
         full_on,
+        errors: None,
+        beyond_10_years: false,
+        estimate: None,
         unseen: None,
         logs: Some(Logs {
             basis,
@@ -87,4 +90,24 @@ fn a_first_day_forecast_only_warns_while_the_disk_has_days_left() {
             "{basis:?} {days}"
         );
     }
+}
+
+#[test]
+fn a_disk_full_beyond_10_years_is_ok() {
+    let data = Path::new("/var/lib/davy");
+    let beyond = Forecast {
+        days_left: None,
+        full_on: None,
+        beyond_10_years: true,
+        full_on_range: [None; 2],
+        ..full_in(Basis::Measured, 20)
+    };
+    let check = disk(data, Some(40 * GIB), Some(Ok(beyond)));
+    assert_eq!(
+        (check.status, check.detail.as_str()),
+        (
+            Status::Ok,
+            "40 GiB free, forecast full beyond 10 years at the current rate"
+        )
+    );
 }

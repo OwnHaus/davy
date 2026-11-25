@@ -4,7 +4,7 @@ use crate::{
     store,
     usage::{
         footprint::{Band, FIXTURE, PRIOR},
-        forecast::{Basis, Logs, Spread},
+        forecast::{Basis, ErrorBasis, Errors, Estimate, Fill, Logs, Spread},
         stored,
     },
 };
@@ -63,6 +63,9 @@ fn report(logs: Option<Logs>, range: [Option<Date>; 2]) -> Report {
             headroom: 50 * GB,
             days_left: Some(12),
             full_on: Some(day("2026-12-06")),
+            errors: None,
+            beyond_10_years: false,
+            estimate: None,
             unseen: None,
             logs,
             full_on_range: range,
@@ -83,6 +86,7 @@ fn the_basis_states_its_confidence_and_range_in_json_and_text() {
         r.json(true)["basis"],
         json!({
             "confidence": "medium",
+            "errors": null,
             "full_on_range": ["2026-12-06", "2026-12-12"],
             "logs": {
                 "basis": "blended",
@@ -113,6 +117,128 @@ fn the_basis_states_its_confidence_and_range_in_json_and_text() {
     }
 }
 
+/// Two projects' errors on 3 measured days, and an estimate a week later
+/// than the bound.
+fn with_errors(r: &mut Report, steady: u64, fill: Fill) {
+    if let Ok(f) = &mut r.forecast {
+        f.errors = Some(Errors {
+            projects: 2,
+            events_per_day: 100_000,
+            bytes_per_event: 1_542,
+            own_days: 3,
+            basis: ErrorBasis::Blended,
+            growth: 210 * MB,
+            estimate_growth: 154_200_000,
+            share_ppm: 60_000,
+        });
+        f.estimate = Some(Estimate {
+            steady_state: steady,
+            fill,
+            clamped: false,
+        });
+    }
+}
+
+fn text(r: &Report) -> String {
+    let mut out = Vec::new();
+    r.text(&mut out).unwrap();
+    String::from_utf8(out).unwrap()
+}
+
+#[test]
+fn the_estimate_and_errors_show_in_json_and_text() {
+    let mut r = report(
+        Some(blended()),
+        [Some(day("2026-12-06")), Some(day("2026-12-12"))],
+    );
+    let fill = Fill {
+        days_left: Some(19),
+        full_on: Some(day("2026-12-13")),
+        beyond_10_years: false,
+    };
+    with_errors(&mut r, 24 * GB, fill);
+    let v = r.json(true);
+    assert_eq!(
+        v["estimate"],
+        json!({"full_on": "2026-12-13", "days_left": 19, "steady_state": "24.0 GB", "beyond_10_years": false, "clamped": false})
+    );
+    assert_eq!(
+        v["basis"]["errors"],
+        json!({
+            "projects": 2,
+            "events_per_day": 100_000,
+            "bytes_per_event": 1_542,
+            "own_days": 3,
+            "basis": "blended",
+            "growth_per_day": "210.0 MB",
+            "estimate_growth_per_day": "154.2 MB",
+        })
+    );
+    assert_eq!(v["disk"]["beyond_10_years"], json!(false));
+    let text = text(&r);
+    for line in [
+        "growth    up to 873.8 MB of logs and 210.0 MB of errors a day, steady state 28.1 GB\n",
+        "forecast  full on 2026-12-06, in 12 days, at up to 873.8 MB of logs and 210.0 MB of errors a day\n",
+        // One project keeps its logs as long as the other: the estimate
+        // differs by the middle growth only.
+        "estimate  full on 2026-12-13, in 19 days, steady state 24.0 GB, at the middle growth of logs\n",
+        "errors    100000 events a day from 2 projects at 1542 B each in SQLite, blended: bytes per event measured on 3 of 7 days of SQLite growth here; the bound takes 2100 B each, 210.0 MB a day\n",
+    ] {
+        assert!(text.contains(line), "{line} in {text}");
+    }
+}
+
+#[test]
+fn a_date_past_ten_years_reads_beyond_in_json_and_text() {
+    let mut r = report(Some(blended()), [None, None]);
+    let beyond = Fill {
+        days_left: None,
+        full_on: None,
+        beyond_10_years: true,
+    };
+    with_errors(&mut r, 1_400 * GB, beyond);
+    if let Ok(f) = &mut r.forecast {
+        f.steady_state = 1_460 * GB;
+        f.days_left = None;
+        f.full_on = None;
+        f.beyond_10_years = true;
+    }
+    let v = r.json(true);
+    assert_eq!(
+        (
+            &v["disk"]["full_on"],
+            &v["disk"]["days_left"],
+            &v["disk"]["beyond_10_years"]
+        ),
+        (&Value::Null, &Value::Null, &json!(true))
+    );
+    assert_eq!(v["estimate"]["beyond_10_years"], json!(true));
+    assert_eq!(
+        r.summary(),
+        "full beyond 10 years at up to 873.8 MB of logs and 210.0 MB of errors a day, as Davy grows toward 1.5 TB once every retention is full"
+    );
+    assert!(text(&r).contains("estimate  full beyond 10 years, steady state 1.4 TB,"));
+}
+
+#[test]
+fn never_with_errors_names_both() {
+    let mut r = report(Some(blended()), [None, None]);
+    if let Ok(f) = &mut r.forecast {
+        f.days_left = None;
+        f.full_on = None;
+    }
+    assert_eq!(
+        r.summary(),
+        "logs never fill the disk at the current rate: even the longest log retention, 30 days, holds Davy at 28.1 GB"
+    );
+    with_errors(&mut r, 20 * GB, Fill::new(day("2026-11-24"), None));
+    assert_eq!(
+        r.summary(),
+        "logs and errors never fill the disk at the current rate: even the longest log retention, 30 days, and each project's error retention hold Davy at 28.1 GB"
+    );
+    assert!(text(&r).contains("estimate  never full at the current rate, steady state 20.0 GB,"));
+}
+
 #[test]
 fn a_range_without_a_latest_day_says_never_and_a_flat_one_says_nothing() {
     let mut out = Vec::new();
@@ -121,7 +247,7 @@ fn a_range_without_a_latest_day_says_never_and_a_flat_one_says_nothing() {
         .unwrap();
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains(
-        "range     full on 2026-12-06 at the earliest, never at the low end, at 873.8 MB to 579.2 MB of logs a day\n"
+        "range     full on 2026-12-06 at the earliest, not within 10 years at the low end, at 873.8 MB to 579.2 MB of logs a day\n"
     ));
     let mut out = Vec::new();
     report(Some(blended()), [Some(day("2026-12-06")); 2])
@@ -280,10 +406,116 @@ fn raw_days_reach_30_days_back() {
     let now = at("2026-11-24T12:00:00Z");
     let kept = retention::all_by_id(&c, retention::Defaults::default(), now / 1_000_000).unwrap();
     assert_eq!(
-        raw_days(&c, day("2026-11-24"), &kept).unwrap(),
+        raw_days(&c, day("2026-11-24"), &kept, 30).unwrap(),
         [forecast::RawDay {
             day: day("2026-10-25"),
             projects: vec![("api".to_owned(), GB, false)],
         }]
+    );
+}
+
+#[test]
+fn one_day_reads_singular_and_a_clamped_estimate_says_so() {
+    let mut r = report(Some(blended()), [Some(day("2026-11-25")); 2]);
+    with_errors(&mut r, 20 * GB, Fill::new(day("2026-11-24"), Some(1)));
+    if let Ok(f) = &mut r.forecast {
+        f.shortest_days = 7;
+        f.days_left = Some(1);
+        f.full_on = Some(day("2026-11-25"));
+        if let Some(e) = &mut f.estimate {
+            e.clamped = true;
+        }
+    }
+    assert!(
+        r.summary()
+            .starts_with("full on 2026-11-25, in 1 day at the earliest, at ")
+    );
+    assert_eq!(r.json(false)["estimate"]["clamped"], json!(true));
+    let text = text(&r);
+    let line = "estimate  full on 2026-11-25, in 1 day, the bound's day: its own sums put the disk full earlier, as its ratio puts less on disk than the walk found, steady state 20.0 GB, with each project's logs kept as long as it keeps them and packing alike\n";
+    assert!(text.contains(line), "{text}");
+}
+
+/// What `prepare` reads for the error forecast: each project's error days
+/// of the newest 7 closed ones and today, from its first errors on, the
+/// events it keeps, its error retention, and SQLite's samples from 31 days
+/// back, the one before the first of the newest 30.
+#[test]
+fn prepare_reads_error_days_events_and_store_samples() {
+    let mut c = Connection::open_in_memory().unwrap();
+    store::init(&mut c).unwrap();
+    store::create_project(&c, "api").unwrap();
+    store::create_project(&c, "shop").unwrap();
+    let created_ms = at("2026-09-02T10:16:40Z") / 1_000_000;
+    c.execute(
+        "UPDATE projects SET created_at=?1, log_retention_days=14, error_retention_days=90 WHERE id=1",
+        [created_ms],
+    )
+    .unwrap();
+    c.execute_batch(
+        "INSERT INTO usage_daily(day, project_id, signal, records, bytes) VALUES
+         ('2026-09-05', 1, 'logs', 1, 10),
+         ('2026-09-10', 1, 'errors', 5, 500),
+         ('2026-11-16', 1, 'errors', 7, 700),
+         ('2026-11-17', 1, 'errors', 3000, 9000000),
+         ('2026-11-20', 1, 'logs', 40, 4000),
+         ('2026-11-23', 1, 'errors', 100, 300000),
+         ('2026-11-16', 2, 'errors', 9, 900),
+         ('2026-11-20', 2, 'logs', 60, 6000);
+         INSERT INTO issues(id,project_id,grouping_version,fingerprint,title,level,status,first_seen,last_seen,event_count) VALUES
+         (1,1,1,'a','A','error','unresolved',0,0,1000),
+         (2,1,1,'b','B','error','unresolved',0,0,200),
+         (3,2,1,'c','C','error','unresolved',0,0,50);
+         INSERT INTO store_days(day, at, bytes, events) VALUES
+         ('2026-10-23', 1, 100, 10),
+         ('2026-10-24', 2, 200, 20),
+         ('2026-11-23', 3, 300, 30);",
+    )
+    .unwrap();
+    let req = Request {
+        project: None,
+        since: None,
+        what_if: WhatIf::default(),
+        defaults: retention::Defaults::default(),
+    };
+    let p = prepare(&c, &req, at("2026-11-24T12:00:00Z")).unwrap();
+    assert_eq!(
+        p.errors,
+        [forecast::ProjectErrors {
+            slug: "api".into(),
+            created: 1_788_344_200_000_000_000,
+            first: day("2026-09-10"),
+            daily: vec![
+                (
+                    day("2026-11-17"),
+                    Count {
+                        records: 3_000,
+                        bytes: 9_000_000,
+                    },
+                ),
+                (
+                    day("2026-11-23"),
+                    Count {
+                        records: 100,
+                        bytes: 300_000,
+                    },
+                ),
+            ],
+            stored: 1_200,
+            days: 90,
+        }]
+    );
+    let sample = |d: &str, at_ms, bytes, events| forecast::StoreDay {
+        day: day(d),
+        at_ms,
+        bytes,
+        events,
+    };
+    assert_eq!(
+        p.store,
+        [
+            sample("2026-10-24", 2, 200, 20),
+            sample("2026-11-23", 3, 300, 30),
+        ]
     );
 }

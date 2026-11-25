@@ -546,10 +546,12 @@ fn first_day(f: &Forecast) -> Option<f64> {
 /// the one may never fill on its day, the other rests on hours of logs.
 fn by_days(f: &Forecast) -> (Status, String) {
     let Some(n) = f.days_left else {
-        return (
-            Status::Ok,
-            ", logs never fill it at the current rate".to_owned(),
-        );
+        let said = match f.errors {
+            _ if f.beyond_10_years => ", forecast full beyond 10 years at the current rate",
+            Some(_) => ", logs and errors never fill it at the current rate",
+            None => ", logs never fill it at the current rate",
+        };
+        return (Status::Ok, said.to_owned());
     };
     let unit = if n == 1 { "day" } else { "days" };
     let status = match n {

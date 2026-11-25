@@ -290,12 +290,10 @@ fn closed(input: &Input) -> Vec<Day> {
 /// with raw bytes: a server keeping logs 3 days never holds more than 3
 /// closed days uncut.
 fn possible(input: &Input) -> usize {
-    let counted = input.projects.iter().filter(|(slug, _)| {
-        input
-            .raw
-            .iter()
-            .any(|r| r.projects.iter().any(|(s, _, _)| s == slug))
-    });
+    let counted = input
+        .projects
+        .iter()
+        .filter(|(slug, _)| recent(input).any(|r| r.projects.iter().any(|(s, _, _)| s == slug)));
     let shortest = counted
         .map(|(_, n)| *n)
         .min()
@@ -305,7 +303,7 @@ fn possible(input: &Input) -> usize {
 }
 
 /// Whether Davy counted all of `day`: it started at or after counting did.
-fn whole(input: &Input, day: Date) -> bool {
+pub(super) fn whole(input: &Input, day: Date) -> bool {
     input
         .counted_since
         .is_some_and(|c| time::midnight(day) >= c)
@@ -325,13 +323,22 @@ fn upgraded(input: &Input, d: &Direct) -> bool {
     })
 }
 
-/// Every raw byte counted.
+/// Every raw byte counted on the index days of the newest [`LOOK_BACK`]
+/// and on.
 fn counted_bytes(input: &Input) -> u128 {
-    input
-        .raw
-        .iter()
+    recent(input)
         .flat_map(|r| &r.projects)
         .fold(0, |sum, (_, b, _)| sum + u128::from(*b))
+}
+
+/// The rows of `log_days` from [`LOOK_BACK`] days before today on: the
+/// estimate reads older ones too, of logs a project keeps longer.
+fn recent(input: &Input) -> impl Iterator<Item = &RawDay> {
+    let first = input
+        .today
+        .checked_sub(LOOK_BACK.days())
+        .unwrap_or(Date::MIN);
+    input.raw.iter().filter(move |r| r.day >= first)
 }
 
 fn disk_only(base: &Logs, d: Direct, why: &str) -> Logs {
@@ -474,7 +481,7 @@ fn blend(ratios: &[u64], possible: usize, prior: Band) -> Band {
 /// of their median and their mean, so a server busy on 3 days of 7, or
 /// back from days without logs, does not read as quiet, and the high end
 /// is at least the middle.
-fn raw_per_day(raws: &[u64]) -> Option<Spread> {
+pub(super) fn raw_per_day(raws: &[u64]) -> Option<Spread> {
     let sum = raws.iter().fold(0_u128, |sum, r| sum + u128::from(*r));
     let mean = clamp(sum / u128::try_from(raws.len()).ok()?.max(1));
     spread(raws).map(|s| {
@@ -490,7 +497,7 @@ fn raw_per_day(raws: &[u64]) -> Option<Spread> {
 /// The median, and the range of the window: with 5 or more values the
 /// second lowest and second highest, so one odd day at each end does not
 /// set it; with fewer the minimum and the maximum.
-fn spread(values: &[u64]) -> Option<Spread> {
+pub(super) fn spread(values: &[u64]) -> Option<Spread> {
     let mut sorted = values.to_vec();
     sorted.sort_unstable();
     let skip = usize::from(sorted.len() >= 5);

@@ -3,7 +3,23 @@
 use super::*;
 
 /// The keys of the usage tool's `disk`.
-const DISK_KEYS: [&str; 10] = [
+const KEYS: [&str; 12] = [
+    "basis",
+    "davy",
+    "default_log_days",
+    "disk",
+    "estimate",
+    "forecast",
+    "growth_per_day",
+    "longest_log_days",
+    "projects",
+    "shortest_log_days",
+    "what_if",
+    "window",
+];
+
+const DISK_KEYS: [&str; 11] = [
+    "beyond_10_years",
     "days_left",
     "free",
     "full_on",
@@ -85,27 +101,15 @@ async fn usage_shows_the_counts_and_the_forecast_with_human_sizes() {
     assert!(!error, "{text}");
     let v: Value = serde_json::from_str(&text).unwrap();
     let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
-    assert_eq!(
-        keys(&v),
-        [
-            "basis",
-            "davy",
-            "default_log_days",
-            "disk",
-            "forecast",
-            "growth_per_day",
-            "longest_log_days",
-            "projects",
-            "shortest_log_days",
-            "what_if",
-            "window"
-        ]
-    );
+    assert_eq!(keys(&v), KEYS);
     assert_eq!(keys(&v["disk"]), DISK_KEYS);
     assert_eq!(v["disk"]["partial"], Value::Null);
     assert_eq!(v["growth_per_day"], "1.0 MB");
-    // A what-if of the bytes per day states the growth: it rests on nothing.
+    // A what-if of the bytes per day states the growth: it rests on
+    // nothing, and gives no raw bytes per project to estimate from.
     assert_eq!(v["basis"], Value::Null);
+    assert_eq!(v["estimate"], Value::Null);
+    assert_eq!(v["disk"]["beyond_10_years"], false);
     assert!(v["disk"]["total"].as_str().unwrap().ends_with('B'), "{v}");
     let api = &v["projects"][0];
     // The test server's project keeps the default retention.

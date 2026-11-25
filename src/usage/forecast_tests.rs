@@ -37,6 +37,8 @@ fn filling() -> Input {
         raw: Vec::new(),
         counted_since: None,
         now: 0,
+        store: Vec::new(),
+        errors: Vec::new(),
         prior: FIXTURE,
     }
 }
@@ -57,6 +59,19 @@ fn a_disk_that_fills_says_when() {
             // 150 GB to the limit at 8 GB a day.
             days_left: Some(19),
             full_on: Some(day("2026-12-13")),
+            errors: None,
+            beyond_10_years: false,
+            // Without raw bytes per project, the estimate keeps all logs
+            // as long as the bound does.
+            estimate: Some(Estimate {
+                steady_state: 258 * GB,
+                fill: Fill {
+                    days_left: Some(19),
+                    full_on: Some(day("2026-12-13")),
+                    beyond_10_years: false,
+                },
+                clamped: false,
+            }),
             unseen: None,
             logs: Some(Logs {
                 basis: Basis::MeasuredDisk,
@@ -228,7 +243,7 @@ fn a_shorter_retention_lowers_the_forecast_only_when_it_lowers_the_longest() {
     assert_eq!(
         f.unseen.as_deref(),
         Some(
-            "the forecast cannot show this what-if: it takes the logs of every project as kept 30 days, as long as api keeps them, and logs of all projects share one index per day, so Davy cannot tell how much of the growth is shop's. The worst case stays as it is, though shop's own logs would take less disk with a shorter retention and more with a longer one"
+            "the worst case cannot show this what-if: it takes the logs of every project as kept 30 days, as long as api keeps them, and logs of all projects share one index per day, so Davy cannot tell how much of the disk is shop's. Nor can the estimate: it splits the growth by each project's raw bytes, and Davy has counted none"
         )
     );
     let same = WhatIf {
@@ -280,7 +295,7 @@ fn a_what_if_the_worst_case_cannot_show_says_why() {
     assert_eq!(
         f.unseen.as_deref(),
         Some(
-            "the forecast cannot show this what-if: it takes the logs of every project as kept 365 days, as long as audit keeps them, and logs of all projects share one index per day, so Davy cannot tell how much of the growth is api's. The worst case stays as it is, though api's own logs would take less disk with a shorter retention and more with a longer one"
+            "the worst case cannot show this what-if: it takes the logs of every project as kept 365 days, as long as audit keeps them, and logs of all projects share one index per day, so Davy cannot tell how much of the disk is api's. Nor can the estimate: it splits the growth by each project's raw bytes, and Davy has counted none"
         )
     );
     // Cutting the project that holds the longest retention moves it, and
@@ -470,4 +485,36 @@ fn davy_already_past_its_steady_state_never_fills_the_disk() {
     };
     let f = forecast(&near, &WhatIf::default()).unwrap();
     assert_eq!((f.days_left, f.full_on), (None, None));
+}
+
+#[test]
+fn a_date_past_ten_years_is_beyond_for_the_bound_and_the_estimate() {
+    // 40 MB of logs a day kept 100 years: the 150 GB to the limit take
+    // 3,750 days, past 3,650.
+    let input = Input {
+        closed: closed(&[41, 39, 40, 40, 42, 38, 40].map(|n| n * MB)),
+        projects: projects(&[("api", 36_500), ("shop", 36_500)]),
+        ..filling()
+    };
+    let f = forecast(&input, &WhatIf::default()).unwrap();
+    let beyond = Fill {
+        days_left: None,
+        full_on: None,
+        beyond_10_years: true,
+    };
+    assert_eq!(
+        (f.days_left, f.full_on, f.beyond_10_years, f.full_on_range),
+        (None, None, true, [None, None])
+    );
+    assert_eq!(f.estimate.unwrap().fill, beyond);
+    // 3,650 days is a date.
+    let input = Input {
+        used: 304 * GB,
+        ..input
+    };
+    let f = forecast(&input, &WhatIf::default()).unwrap();
+    assert_eq!(
+        (f.days_left, f.full_on, f.beyond_10_years),
+        (Some(3_650), Some(day("2036-11-21")), false)
+    );
 }

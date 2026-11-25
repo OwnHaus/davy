@@ -2,26 +2,41 @@
 //! case has a test with fixed numbers.
 //!
 //! Logs of all projects share one index per day, so Davy cannot measure
-//! one project's bytes on disk. The forecast takes the growth of all logs
+//! one project's bytes on disk. The bound takes the growth of all logs
 //! together and caps it with the longest log retention of any project, a
 //! bound no split of the growth can exceed. When projects keep logs for
-//! different times, the forecast is therefore a worst case: at the current
-//! rate of logs, the disk fills on its day or later, or never.
+//! different times, the bound is therefore a worst case: at the current
+//! rate, the disk fills on its day or later, or never. The estimate splits
+//! the growth by each project's raw bytes and keeps each part as long as
+//! its project does, which assumes every project's logs pack alike.
 //!
-//! The growth itself comes from [`growth`]: raw bytes per day times how
-//! they pack, or the disk sizes of the closed days.
+//! The log growth comes from [`growth`]: raw bytes per day times how they
+//! pack, or the disk sizes of the closed days. Error events add to SQLite
+//! per project until each project's error retention balances, see
+//! [`errors`]. Both run through [`fill`].
 
+mod errors;
+mod estimate;
+mod fill;
 mod growth;
 
+pub use errors::{ErrorBasis, Errors, MIN_EVENTS, ProjectErrors, StoreDay};
+pub use fill::{Fill, HORIZON_DAYS};
 pub use growth::{Basis, Confidence, LOOK_BACK, Logs, RawDay, Spread, hours};
 
 use crate::usage::footprint::Prior;
-use jiff::{Span, ToSpan as _, civil::Date};
+use fill::Part;
+use jiff::{ToSpan as _, civil::Date};
 use rmcp::schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Closed log days the growth is the median of.
 pub const DAYS: usize = 7;
+/// Errors that add more than this of what the bound adds, or of the room
+/// left to the limit where it never fills, in parts per million, lower a
+/// high confidence while their bytes per event are not measured on 7
+/// days: 5%.
+const MEDIUM_SHARE_PPM: u64 = 50_000;
 /// The share of the filesystem the forecast keeps free.
 pub const HEADROOM_PERCENT: u64 = 10;
 pub const HEADROOM_REASON: &str = "10% of the filesystem stays free: filesystems reserve blocks, and index merges and SQLite checkpoints need room for a copy of what they rewrite";
@@ -33,8 +48,8 @@ pub struct Input {
     pub closed: Vec<(Date, u64)>,
     /// What Davy's files take now.
     pub davy: u64,
-    /// What SQLite, uploads and other files take now. They are taken as
-    /// they are.
+    /// What SQLite, uploads and other files take now. SQLite grows from
+    /// here by what `errors` add.
     pub fixed: u64,
     /// Used and total bytes of the filesystem.
     pub used: u64,
@@ -51,7 +66,12 @@ pub struct Input {
     pub counted_since: Option<i64>,
     /// Now, ns, for the hours counted on a new server.
     pub now: i64,
-    /// How logs pack where the server has not measured it.
+    /// SQLite's size once a day from `store_days`, the newest
+    /// [`LOOK_BACK`] days and the sample before, oldest first.
+    pub store: Vec<StoreDay>,
+    /// What each project received and keeps of errors.
+    pub errors: Vec<ProjectErrors>,
+    /// How logs and events pack where the server has not measured it.
     pub prior: Prior,
 }
 
@@ -135,29 +155,50 @@ pub struct Forecast {
     /// Bytes of logs on disk per day, all projects together: the growth
     /// the bound decides on, see [`Logs::bound`].
     pub growth: u64,
+    /// What error events add to SQLite, `None` when no project received
+    /// any.
+    pub errors: Option<Errors>,
     /// The longest log retention of any project, which caps the growth.
     pub longest_days: u32,
     /// The shortest log retention of any project. Below `longest_days`,
     /// the forecast is a worst case: see [`Forecast::worst_case`].
     pub shortest_days: u32,
     /// The most Davy takes once retention deletes as much as arrives: the
-    /// longest retention's closed days and today, each a day's growth.
+    /// longest log retention's closed days and today, each a day's growth,
+    /// SQLite with each project's error retention full, and uploads.
     pub steady_state: u64,
     pub headroom: u64,
-    /// `None` when logs never fill the disk at this rate.
+    /// `None` when the disk never fills at this rate, or fills beyond
+    /// [`HORIZON_DAYS`].
     pub days_left: Option<u64>,
-    /// The UTC day of `days_left`. `days_left` is at most the longest
-    /// retention and a day, so the day is always a date.
+    /// The UTC day of `days_left`.
     pub full_on: Option<Date>,
+    /// Whether the disk fills, but beyond [`HORIZON_DAYS`].
+    pub beyond_10_years: bool,
     /// Why the forecast cannot show what a what-if for one project does,
     /// when it cannot.
     pub unseen: Option<String>,
     /// Where the growth comes from. `None` for a what-if of the bytes per
     /// day, which states the growth.
     pub logs: Option<Logs>,
-    /// `full_on` at the high growth and at the low growth of the window,
-    /// `None` for never: the earliest and the latest day.
+    /// `full_on` at the high growth and at the low growth of logs in the
+    /// window, `None` for never or beyond 10 years: the earliest and the
+    /// latest day.
     pub full_on_range: [Option<Date>; 2],
+    /// Each project's logs kept as long as it keeps them, at the middle
+    /// growth. `None` for a what-if of the bytes per day, which Davy
+    /// cannot split by project.
+    pub estimate: Option<Estimate>,
+}
+
+/// When the disk fills by the estimate: never earlier than the bound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Estimate {
+    pub steady_state: u64,
+    pub fill: Fill,
+    /// Whether its sums put the day earlier than the bound's, so it took
+    /// the bound's day: its ratio puts less on disk than the walk found.
+    pub clamped: bool,
 }
 
 impl Forecast {
@@ -167,6 +208,52 @@ impl Forecast {
     /// fills that day or later, or never.
     pub fn worst_case(&self) -> bool {
         self.shortest_days < self.longest_days
+    }
+
+    /// What the estimate takes that the bound does not, in a phrase: each
+    /// project's own retention where they differ, else only the middle
+    /// growth.
+    pub fn estimate_takes(&self) -> &'static str {
+        if self.worst_case() {
+            "with each project's logs kept as long as it keeps them and packing alike"
+        } else {
+            "at the middle growth of logs"
+        }
+    }
+
+    /// How far the answer can be trusted, with `partial` when the disk
+    /// walk left something out. `None` where a what-if states the growth.
+    pub fn confidence(&self, partial: bool) -> Option<Confidence> {
+        let logs = self.logs.as_ref()?.confidence(partial);
+        Some(match logs {
+            Confidence::High if self.errors_unmeasured() => Confidence::Medium,
+            c => c,
+        })
+    }
+
+    /// One sentence on the basis, ending with why the confidence is lower
+    /// than the logs alone make it.
+    pub fn explain(&self, partial: bool) -> Option<String> {
+        let logs = self.logs.as_ref()?;
+        let why = logs.explain(partial);
+        let errors = self
+            .errors
+            .filter(|_| logs.confidence(partial) == Confidence::High && self.errors_unmeasured());
+        Some(match errors {
+            Some(e) => format!(
+                "{why}; confidence is medium as errors add over 5% of what the bound adds until the disk fills, or of the room left to the limit within 10 years where it never fills, and SQLite growth measured their bytes per event on {} of 7 days",
+                e.own_days
+            ),
+            None => why,
+        })
+    }
+
+    /// Errors add over 5% of what the bound adds, see
+    /// [`Errors::share_ppm`], and fewer than 7 days measured their bytes
+    /// per event.
+    fn errors_unmeasured(&self) -> bool {
+        self.errors
+            .is_some_and(|e| e.own_days < DAYS && e.share_ppm > MEDIUM_SHARE_PPM)
     }
 }
 
@@ -190,44 +277,155 @@ pub fn forecast(input: &Input, what_if: &WhatIf) -> Result<Forecast, NoForecast>
         (None, bytes) => (bytes.unwrap_or(0), Spread::flat(bytes.unwrap_or(0))),
     };
     let headroom = input.total / 100 * HEADROOM_PERCENT;
-    let run = |growth| run(input, growth, longest, headroom);
-    let (steady_state, days_left, full_on) = run(growth);
+    let limit = input.total.saturating_sub(headroom);
+    let found = errors::errors(
+        &input.errors,
+        &input.store,
+        input.prior,
+        input.today,
+        input.now,
+    );
+    let none = Vec::new();
+    let (bound_errors, estimate_errors) = found
+        .as_ref()
+        .map_or((&none, &none), |f| (&f.bound, &f.estimate));
+    let freed = freed(input, longest);
+    let run = |growth| bound(input, growth, longest, freed, bound_errors, limit);
+    let b = run(growth);
+    let fill = Fill::new(input.today, b.days);
+    let at = |growth| Fill::new(input.today, run(growth).days).full_on;
+    let split = logs
+        .as_ref()
+        .map(|l| estimate::logs(input, l, &after, longest));
+    let by_project = split.as_ref().is_some_and(|s| s.by_project);
+    let estimate = split.map(|s| estimate(input, s, estimate_errors, limit, b.days));
+    let errors = found.as_ref().map(|f| Errors {
+        share_ppm: share_ppm(&b.parts, b.days, b.left),
+        ..f.errors
+    });
     Ok(Forecast {
         growth,
+        errors,
         longest_days: longest,
         shortest_days: after.iter().map(|(_, n)| *n).min().unwrap_or(longest),
-        steady_state,
+        steady_state: b.steady_state,
         headroom,
-        days_left,
-        full_on,
-        unseen: unseen(input, what_if, &after, longest),
+        days_left: fill.days_left,
+        full_on: fill.full_on,
+        beyond_10_years: fill.beyond_10_years,
+        unseen: unseen(input, what_if, &after, longest, by_project),
         logs,
-        full_on_range: [run(range.high).2, run(range.low).2],
+        full_on_range: [at(range.high), at(range.low)],
+        estimate,
     })
 }
 
-/// The steady state, the days left and the day the disk fills at `growth`
-/// with logs kept `longest` days.
-fn run(
+/// The bound: its steady state, its days left, `None` for never, its
+/// parts, logs first, and the room left to the limit.
+struct Bound {
+    steady_state: u64,
+    days: Option<u64>,
+    parts: Vec<Part>,
+    left: u64,
+}
+
+/// The bound at `growth` of logs kept `longest` days, with the errors'
+/// parts `errors`, once a what-if's shorter retention deleted the closed
+/// days that take `freed`.
+fn bound(
     input: &Input,
     growth: u64,
     longest: u32,
-    headroom: u64,
-) -> (u64, Option<u64>, Option<Date>) {
+    freed: u64,
+    errors: &[Part],
+    limit: u64,
+) -> Bound {
     // Retention of N days deletes a day once it is more than N days old,
     // so the disk holds N closed days and today.
-    let steady_state = growth
-        .saturating_mul(u64::from(longest) + 1)
-        .saturating_add(input.fixed);
-    let days_left = days_left(input, growth, steady_state, headroom);
-    let full_on = days_left.map(|n| {
-        let span = i64::try_from(n)
-            .ok()
-            .and_then(|n| Span::new().try_days(n).ok());
-        span.and_then(|s| input.today.checked_add(s).ok())
-            .unwrap_or(Date::MAX)
-    });
-    (steady_state, days_left, full_on)
+    let logs = growth.saturating_mul(u64::from(longest) + 1);
+    let now = input.davy.saturating_sub(input.fixed).saturating_sub(freed);
+    let mut parts = vec![Part {
+        growth,
+        room: logs.saturating_sub(now),
+    }];
+    parts.extend_from_slice(errors);
+    let steady_state = errors
+        .iter()
+        .fold(logs.saturating_add(input.fixed), |sum, p| {
+            sum.saturating_add(p.room)
+        });
+    let used = input.used.saturating_sub(freed);
+    Bound {
+        steady_state,
+        days: fill::days_left(used, limit, &parts),
+        parts,
+        left: limit.saturating_sub(used),
+    }
+}
+
+/// What the closed days take that a what-if lowering the longest log
+/// retention to `longest` deletes at the next sweep, by their sizes on
+/// disk: those older than `longest` days. Without such a what-if, none.
+fn freed(input: &Input, longest: u32) -> u64 {
+    let before = input.projects.iter().map(|(_, n)| *n).max();
+    if longest >= before.unwrap_or(input.default_days) {
+        return 0;
+    }
+    let first = input
+        .today
+        .checked_sub(i64::from(longest).days())
+        .unwrap_or(Date::MIN);
+    input
+        .closed
+        .iter()
+        .filter(|(day, _)| *day < first)
+        .fold(0, |sum, (_, bytes)| sum.saturating_add(*bytes))
+}
+
+/// What the error parts, all of `parts` but the first, add, in parts per
+/// million, rounded up, each part at most its room: until day `days`, of
+/// what all parts add by then. Where the disk never fills, within
+/// [`HORIZON_DAYS`], of `left`, the room to the limit, as logs that hold
+/// their retention add nothing and would make any errors all of it.
+fn share_ppm(parts: &[Part], days: Option<u64>, left: u64) -> u64 {
+    let t = days.unwrap_or(HORIZON_DAYS);
+    let add = |p: &Part| u128::from(p.growth.saturating_mul(t).min(p.room));
+    let errors: u128 = parts.iter().skip(1).map(add).sum();
+    let all = days.map_or(u128::from(left), |_| parts.iter().map(add).sum());
+    u64::try_from((errors * 1_000_000).div_ceil(all.max(1))).unwrap_or(u64::MAX)
+}
+
+/// The estimate from the log parts `split` and the errors' parts
+/// `errors`, never earlier than the bound's `bound` days, `None` for
+/// never. Where its sums put the day earlier, as when its ratio puts less
+/// on disk now than the walk found, it takes the bound's day.
+fn estimate(
+    input: &Input,
+    split: estimate::Split,
+    errors: &[Part],
+    limit: u64,
+    bound: Option<u64>,
+) -> Estimate {
+    let steady_state = errors
+        .iter()
+        .fold(split.steady.saturating_add(input.fixed), |sum, p| {
+            sum.saturating_add(p.room)
+        });
+    let mut parts = split.parts;
+    parts.extend_from_slice(errors);
+    // A shorter retention deletes its older days at the next sweep.
+    let used = input.used.saturating_sub(split.freed);
+    let sums = fill::days_left(used, limit, &parts);
+    let (days, clamped) = match (sums, bound) {
+        (Some(e), Some(b)) => (Some(e.max(b)), e < b),
+        (Some(_), None) => (None, true),
+        (None, _) => (None, false),
+    };
+    Estimate {
+        steady_state,
+        fill: Fill::new(input.today, days),
+        clamped,
+    }
 }
 
 /// Each project's slug and the days of logs it keeps with the what-if.
@@ -244,11 +442,19 @@ fn kept_after<'a>(input: &'a Input, what_if: &WhatIf) -> Vec<(&'a str, u32)> {
         .collect()
 }
 
-/// Why the what-if for one project leaves the forecast as it is, when it
+/// Why the what-if for one project leaves the bound as it is, when it
 /// does: another project keeps logs `longest` days with it and without
 /// it. The bound already takes the project's logs as kept that long, and
-/// Davy cannot tell the project's share of the growth.
-fn unseen(input: &Input, what_if: &WhatIf, after: &[(&str, u32)], longest: u32) -> Option<String> {
+/// Davy cannot tell the project's share of the growth on disk. The
+/// estimate shows it `by_project`, where Davy counted raw bytes per
+/// project.
+fn unseen(
+    input: &Input,
+    what_if: &WhatIf,
+    after: &[(&str, u32)],
+    longest: u32,
+    by_project: bool,
+) -> Option<String> {
     let project = what_if.project.as_deref()?;
     let now = input.projects.iter().find(|(s, _)| s == project)?.1;
     if what_if.logs_days == Some(now) {
@@ -258,9 +464,14 @@ fn unseen(input: &Input, what_if: &WhatIf, after: &[(&str, u32)], longest: u32) 
     let (holder, _) = after
         .iter()
         .find(|(slug, n)| *slug != project && *n == longest)?;
+    let estimate = if by_project {
+        "The estimate shows it: it splits the growth by each project's raw bytes and assumes every project's logs pack alike"
+    } else {
+        "Nor can the estimate: it splits the growth by each project's raw bytes, and Davy has counted none"
+    };
     (before == longest).then(|| {
         format!(
-            "the forecast cannot show this what-if: it takes the logs of every project as kept {longest} days, as long as {holder} keeps them, and logs of all projects share one index per day, so Davy cannot tell how much of the growth is {project}'s. The worst case stays as it is, though {project}'s own logs would take less disk with a shorter retention and more with a longer one"
+            "the worst case cannot show this what-if: it takes the logs of every project as kept {longest} days, as long as {holder} keeps them, and logs of all projects share one index per day, so Davy cannot tell how much of the disk is {project}'s. {estimate}"
         )
     })
 }
@@ -306,25 +517,6 @@ fn measured(input: &Input, shortest: u32) -> Result<Direct, NoForecast> {
             sizes.len()
         ))),
     }
-}
-
-/// Days until used space reaches total minus headroom, while Davy grows by
-/// `growth` a day until it reaches `steady`. `None` when it never does,
-/// which includes a disk already past the limit while Davy no longer
-/// grows: other files filled it, and logs add nothing more.
-fn days_left(input: &Input, growth: u64, steady: u64, headroom: u64) -> Option<u64> {
-    let limit = input.total.saturating_sub(headroom);
-    let room = steady.saturating_sub(input.davy);
-    if growth == 0 || room == 0 {
-        return None;
-    }
-    if input.used >= limit {
-        return Some(0);
-    }
-    if input.used.saturating_add(room) < limit {
-        return None;
-    }
-    Some((limit - input.used).div_ceil(growth))
 }
 
 /// The middle value, or the mean of the two middle ones.

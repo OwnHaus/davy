@@ -4,7 +4,7 @@
 use super::{
     Count, Signal,
     disk::{self, Disk},
-    forecast::{self, Forecast, HEADROOM_REASON, NoForecast, WhatIf},
+    forecast::{self, Confidence, Forecast, HEADROOM_REASON, NoForecast, WhatIf},
 };
 use crate::{retention, time};
 use anyhow::{Result, anyhow, bail};
@@ -77,6 +77,8 @@ pub struct Prepared {
     raw: Vec<forecast::RawDay>,
     counted_since: Option<i64>,
     now: i64,
+    store: Vec<forecast::StoreDay>,
+    errors: Vec<forecast::ProjectErrors>,
 }
 
 /// Checks `req` and reads the counts and retentions it asks for.
@@ -120,7 +122,17 @@ pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
             stored: stored.get(id).copied().unwrap_or_default(),
         })
         .collect();
-    let raw = raw_days(c, today, &kept)?;
+    // The estimate counts a project's logs on disk as far back as it, or
+    // the what-if, keeps them.
+    let longest = kept
+        .iter()
+        .map(|(_, k)| k.logs.days.get())
+        .chain(req.what_if.logs_days)
+        .max()
+        .unwrap_or(0);
+    let raw = raw_days(c, today, &kept, longest)?;
+    let back = |days: i64| today.checked_sub(jiff::Span::new().days(days));
+    let errors = errors(c, back(7)?, &kept)?;
     // Midnight UTC of the first day.
     let start = since.div_euclid(time::DAY_NS) * time::DAY_NS;
     Ok(Prepared {
@@ -134,17 +146,52 @@ pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
         raw,
         counted_since: super::stored::counted_since(c)?,
         now: now_ns,
+        // The sample before the first day of the window starts its pair.
+        store: super::stored::store_days(c, back(forecast::LOOK_BACK + 1)?)?,
+        errors,
     })
 }
 
+/// What each project received and keeps of errors, error events received
+/// from `from` on.
+fn errors(
+    c: &Connection,
+    from: Date,
+    kept: &[(i64, retention::Retention)],
+) -> Result<Vec<forecast::ProjectErrors>> {
+    let daily = super::errors_since(c, from)?;
+    let stored = super::stored::events(c)?;
+    Ok(kept
+        .iter()
+        .filter_map(|(id, k)| {
+            let rows: Vec<_> = daily.iter().filter(|d| d.project == *id).collect();
+            let row = rows.first()?;
+            Some(forecast::ProjectErrors {
+                slug: k.project.clone(),
+                created: row.created,
+                first: row.first,
+                daily: rows.iter().map(|d| (d.day, d.count)).collect(),
+                stored: stored.get(id).copied().unwrap_or(0),
+                days: k.errors.days.get(),
+            })
+        })
+        .collect())
+}
+
 /// Raw bytes per index day of every project, from [`forecast::LOOK_BACK`]
-/// days before `today` on, oldest first.
+/// days or `longest` days before `today` on, the more, oldest first.
 fn raw_days(
     c: &Connection,
     today: Date,
     kept: &[(i64, retention::Retention)],
+    longest: u32,
 ) -> Result<Vec<forecast::RawDay>> {
-    let from = today.checked_sub(jiff::Span::new().days(forecast::LOOK_BACK))?;
+    let back = forecast::LOOK_BACK.max(i64::from(longest));
+    let from = jiff::Span::new()
+        .try_days(back)
+        .ok()
+        .and_then(|span| today.checked_sub(span).ok())
+        .unwrap_or(Date::MIN);
     let mut out: Vec<forecast::RawDay> = Vec::new();
     for (day, id, bytes, cut) in super::stored::since(c, from)? {
         let Some((_, k)) = kept.iter().find(|(i, _)| *i == id) else {
@@ -209,6 +256,8 @@ impl Prepared {
             raw: self.raw.clone(),
             counted_since: self.counted_since,
             now: self.now,
+            store: self.store.clone(),
+            errors: self.errors.clone(),
             prior: super::footprint::PRIOR,
         }
     }
@@ -292,6 +341,13 @@ impl Report {
             Err(e) => out["disk_error"] = json!(e),
         }
         out["basis"] = self.basis_json(&size);
+        out["estimate"] = json!(f.and_then(|f| f.estimate).map(|e| json!({
+            "full_on": e.fill.full_on.map(|d| d.to_string()),
+            "days_left": e.fill.days_left,
+            "steady_state": size(e.steady_state),
+            "beyond_10_years": e.fill.beyond_10_years,
+            "clamped": e.clamped,
+        })));
         if let Err(reason) = &self.forecast {
             out["no_forecast"] = json!(reason.to_string());
         }
@@ -323,8 +379,9 @@ impl Report {
             json!((r * 10_000.0).round() / 10_000.0)
         };
         let date = |d: Option<Date>| d.map(|d| d.to_string());
+        let partial = self.partial();
         json!({
-            "confidence": l.confidence(self.partial()).name(),
+            "confidence": f.confidence(partial).map(Confidence::name),
             "full_on_range": f.full_on_range.map(date),
             "logs": {
                 "basis": l.basis.name(),
@@ -344,7 +401,16 @@ impl Report {
                 "footprint_ratio": ratio(l.prior.ratio.mid),
                 "footprint": l.prior.source,
             },
-            "why": l.explain(self.partial()),
+            "errors": f.errors.map(|e| json!({
+                "projects": e.projects,
+                "events_per_day": e.events_per_day,
+                "bytes_per_event": e.bytes_per_event,
+                "own_days": e.own_days,
+                "basis": e.basis.name(),
+                "growth_per_day": size(e.growth),
+                "estimate_growth_per_day": size(e.estimate_growth),
+            })),
+            "why": f.explain(partial),
         })
     }
 
@@ -366,6 +432,7 @@ impl Report {
             "days_left": f.and_then(|f| f.days_left),
             "worst_case": f.map(Forecast::worst_case),
             "full_on": f.and_then(|f| f.full_on).map(|d| d.to_string()),
+            "beyond_10_years": f.map(|f| f.beyond_10_years),
             "partial": (!g.is_empty()).then(|| json!({
                 "skipped": g.skipped,
                 "skipped_count": g.skipped_count,
@@ -404,6 +471,13 @@ impl Report {
             Err(reason) => return format!("no forecast: {reason}"),
             Ok(f) => f,
         };
+        let rates = rates(f);
+        if f.beyond_10_years {
+            return format!(
+                "full beyond 10 years at {rates}, as Davy grows toward {} once every retention is full",
+                human(f.steady_state)
+            );
+        }
         let Some(n) = f.days_left else {
             let past = self
                 .disk
@@ -414,8 +488,16 @@ impl Report {
             } else {
                 ""
             };
+            let (what, errors, holds) = match f.errors {
+                Some(_) => (
+                    "logs and errors",
+                    " and each project's error retention",
+                    "hold",
+                ),
+                None => ("logs", "", "holds"),
+            };
             return format!(
-                "logs never fill the disk at the current rate: even the longest log retention, {} days, holds Davy at {}{past}",
+                "{what} never fill the disk at the current rate: even the longest log retention, {} days,{errors} {holds} Davy at {}{past}",
                 f.longest_days,
                 human(f.steady_state)
             );
@@ -424,152 +506,24 @@ impl Report {
             return "the disk is past total minus headroom now".to_owned();
         }
         let on = f.full_on.map(|on| format!("on {on}, ")).unwrap_or_default();
-        let rate = rate(f);
+        let n = in_days(n);
         if !f.worst_case() {
-            return format!("full {on}in {n} days, at {rate} of logs a day");
+            return format!("full {on}{n}, at {rates}");
         }
         format!(
-            "full {on}in {n} days at the earliest, at {rate} of logs a day. This is a worst case: projects keep logs {} to {l} days and share one index per day, so Davy cannot tell each project's share and takes all logs as kept {l} days. At the current rate of logs, the disk fills on this day or later, or never. Watch free space over a few days before you shorten a retention for this date",
+            "full {on}{n} at the earliest, at {rates}. This is a worst case: projects keep logs {} to {l} days and share one index per day, so Davy cannot tell each project's share and takes all logs as kept {l} days. At the current rate of logs, the disk fills on this day or later, or never; the estimate keeps each project's logs as long as it keeps them. Watch free space over a few days before you shorten a retention for this date",
             f.shortest_days,
             l = f.longest_days,
         )
     }
+}
 
-    /// The report for a terminal.
-    pub fn text(&self, out: &mut impl std::io::Write) -> std::io::Result<()> {
-        let window = format!("since {} ({:.1} days)", self.since, self.days);
-        writeln!(out, "{:<9} {window}", "window")?;
-        match &self.disk {
-            Ok(d) => Self::disk_text(d, out)?,
-            Err(e) => writeln!(out, "{:<9} not measured: {}", "disk", safe(e))?,
-        }
-        if let Ok(f) = &self.forecast {
-            writeln!(
-                out,
-                "{:<9} {} of logs a day, steady state {}",
-                "growth",
-                rate(f),
-                human(f.steady_state)
-            )?;
-        }
-        writeln!(out, "{:<9} {}", "forecast", safe(&self.summary()))?;
-        self.basis_text(out)?;
-        if let Some(n) = self.default_log_days {
-            writeln!(
-                out,
-                "{:<9} {n} days of logs for projects without their own; give --log-retention-days as davy serve has it",
-                "assuming"
-            )?;
-        }
-        self.table(out)
-    }
-
-    /// The basis and its confidence, and the range of days when the low
-    /// and the high growth differ.
-    fn basis_text(&self, out: &mut impl std::io::Write) -> std::io::Result<()> {
-        let Some((f, l)) = self.logs() else {
-            return Ok(());
-        };
-        writeln!(
-            out,
-            "{:<9} {}, {} confidence: {}",
-            "basis",
-            l.basis.name(),
-            l.confidence(self.partial()).name(),
-            safe(&l.explain(self.partial()))
-        )?;
-        let earliest = if f.worst_case() {
-            " at the earliest"
-        } else {
-            ""
-        };
-        let range = match f.full_on_range {
-            [early, late] if early == late => return Ok(()),
-            [Some(early), Some(late)] => format!("full{earliest} between {early} and {late}"),
-            [Some(early), None] => format!("full on {early} at the earliest, never at the low end"),
-            [None, _] => return Ok(()),
-        };
-        writeln!(
-            out,
-            "{:<9} {range}, at {} to {} of logs a day",
-            "range",
-            human(l.growth.high),
-            human(l.growth.low)
-        )
-    }
-
-    fn disk_text(d: &Disk, out: &mut impl std::io::Write) -> std::io::Result<()> {
-        writeln!(
-            out,
-            "{:<9} {} used of {}, {} free",
-            "disk",
-            human(d.used()),
-            human(d.total),
-            human(d.free)
-        )?;
-        writeln!(
-            out,
-            "{:<9} logs {} (today {}), sqlite {}, uploads {}, other {}",
-            "davy",
-            human(d.logs()),
-            human(d.today),
-            human(d.sqlite),
-            human(d.uploads),
-            human(d.other)
-        )?;
-        let g = &d.gaps;
-        if !g.skipped.is_empty() {
-            let named = u64::try_from(g.skipped.len()).unwrap_or(u64::MAX);
-            let more = g.skipped_count.saturating_sub(named);
-            let more = if more > 0 {
-                format!(" and {more} more")
-            } else {
-                String::new()
-            };
-            writeln!(
-                out,
-                "{:<9} left out {}{more}",
-                "partial",
-                safe(&g.skipped.join(", "))
-            )?;
-        }
-        if let Some(why) = &g.stopped {
-            writeln!(
-                out,
-                "{:<9} the walk stopped early, {}",
-                "partial",
-                safe(why)
-            )?;
-        }
-        Ok(())
-    }
-
-    fn table(&self, out: &mut impl std::io::Write) -> std::io::Result<()> {
-        writeln!(
-            out,
-            "\n{:<20} {:<11} {:>10} {:>10} {:>12} {:>10}",
-            "project", "signal", "records", "bytes", "records/day", "bytes/day"
-        )?;
-        for p in &self.projects {
-            let names = Signal::ALL.iter().map(|s| s.name()).chain(["logs_stored"]);
-            for (name, n) in names.zip(p.counts.iter().chain([&p.stored])) {
-                writeln!(
-                    out,
-                    "{:<20} {name:<11} {:>10} {:>10} {:>12} {:>10}",
-                    p.slug,
-                    n.records,
-                    human(n.bytes),
-                    per_day(n.records, self.days),
-                    human(bytes_per_day(n.bytes, self.days)),
-                )?;
-            }
-            writeln!(
-                out,
-                "{:<20} keeps logs {} days, errors {} days",
-                p.slug, p.logs_days, p.errors_days
-            )?;
-        }
-        Ok(())
+/// "in `n` days", or "in 1 day".
+fn in_days(n: u64) -> String {
+    if n == 1 {
+        "in 1 day".to_owned()
+    } else {
+        format!("in {n} days")
     }
 }
 
@@ -579,6 +533,21 @@ fn rate(f: &Forecast) -> String {
     let high = f.logs.as_ref().is_some_and(|l| l.growth.mid != f.growth);
     let up_to = if high { "up to " } else { "" };
     format!("{up_to}{}", human(f.growth))
+}
+
+mod text;
+
+/// What grows a day: the logs, and the errors where projects receive
+/// them.
+fn rates(f: &Forecast) -> String {
+    match f.errors {
+        Some(e) => format!(
+            "{} of logs and {} of errors a day",
+            rate(f),
+            human(e.growth)
+        ),
+        None => format!("{} of logs a day", rate(f)),
+    }
 }
 
 #[cfg(test)]

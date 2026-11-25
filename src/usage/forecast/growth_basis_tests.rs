@@ -118,6 +118,24 @@ fn possible_reads_the_retention_of_projects_with_raw_bytes_then_the_default() {
 }
 
 #[test]
+fn possible_reads_raw_bytes_of_the_newest_30_days_only() {
+    // audit keeps logs 3 days and sent its last raw bytes on one day:
+    // 30 days before today it still counts, 31 days before it does not.
+    for (on, possible) in [("2026-10-25", 3), ("2026-10-24", 7)] {
+        let mut input = three_days();
+        input.projects.push(("audit".to_owned(), 3));
+        input.raw.insert(
+            0,
+            RawDay {
+                day: day(on),
+                projects: vec![("audit".to_owned(), GB, false)],
+            },
+        );
+        assert_eq!(logs_of(&input).unwrap().possible_days, possible, "{on}");
+    }
+}
+
+#[test]
 fn only_the_newest_possible_days_count_for_the_ratio() {
     // Right after a retention was shortened to 3, 5 days still qualify.
     let five: Vec<(u64, Option<u64>)> = (1..=5).map(|n| (10 * GB, Some(n * GB))).collect();
