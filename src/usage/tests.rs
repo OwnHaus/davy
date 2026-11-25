@@ -91,17 +91,24 @@ fn counts_from_one_flush_that_found_the_queue_full_wait_for_the_next() {
     assert_eq!(counter.take(), []);
 }
 
-/// The next job the flush puts in `inbox`.
+/// The next job the flush puts in `inbox`, within 10 s, so a flush that
+/// never sends it fails the test instead of hanging it.
 async fn next(inbox: &crossbeam_channel::Receiver<store::Write>) -> (Vec<Row>, store::Write) {
-    loop {
-        if let Ok(mut write) = inbox.try_recv() {
-            let Job::Usage(rows) = std::mem::replace(&mut write.job, Job::Usage(Vec::new())) else {
-                panic!("a usage job");
-            };
-            return (rows, write);
+    let wait = async {
+        loop {
+            if let Ok(write) = inbox.try_recv() {
+                return write;
+            }
+            tokio::task::yield_now().await;
         }
-        tokio::task::yield_now().await;
-    }
+    };
+    let mut write = tokio::time::timeout(Duration::from_secs(10), wait)
+        .await
+        .expect("the flush sends the next job within 10 s");
+    let Job::Usage(rows) = std::mem::replace(&mut write.job, Job::Usage(Vec::new())) else {
+        panic!("a usage job");
+    };
+    (rows, write)
 }
 
 #[tokio::test]

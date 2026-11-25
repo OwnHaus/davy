@@ -1,7 +1,7 @@
 use super::{LogDays, Mark, Row, Segment};
 use crate::logs::{
     LogLevel, LogRecord, LogSource,
-    store::{Overrides, State, no_overrides, schema},
+    store::{Overrides, State, day_dirs::Entry, no_overrides, schema},
 };
 use crate::retention::Lock;
 use crate::test_support::scratch;
@@ -387,4 +387,104 @@ fn a_pass_that_deletes_nothing_more_does_not_mark_again() {
     assert_eq!(marks, []);
     state.close_all().unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A store of logs on the day two days ago and today, written to `c`,
+/// with the older day's directory gone from `dir`.
+fn without_the_older_day(dir: &Path, c: &Connection) -> (Date, Date) {
+    let now = now_ns();
+    let (old, new) = (now - 2 * DAY, now);
+    let (mut state, _) = with_settings(dir, 30);
+    state
+        .add(vec![record(1, old, old, "old"), record(1, new, new, "new")])
+        .unwrap();
+    state.commit().unwrap();
+    state.close_all().unwrap();
+    stored::write(c, &state.log_days.take()).unwrap();
+    std::fs::remove_dir_all(dir.join(day_of(old).to_string())).unwrap();
+    (day_of(old), day_of(new))
+}
+
+#[test]
+fn a_listing_with_an_entry_it_could_not_read_marks_nothing() {
+    let dir = scratch("log-days-unread");
+    let c = memory();
+    let (old, new) = without_the_older_day(&dir, &c);
+    let (mut state, _) = with_settings(&dir, 30);
+    let unread = std::io::Error::other("Input/output error");
+    state.list([Ok(Entry::Day(new)), Err(unread)]);
+    stored::write(&c, &state.log_days.take()).unwrap();
+    let (old, new) = (old.to_string(), new.to_string());
+    let want = [(old.clone(), 1, 1, 0), (new.clone(), 1, 1, 0)];
+    assert_eq!(stored_rows(&c), want, "the entry may be the older day");
+    // The same listing read in full marks the older day.
+    let (mut state, _) = with_settings(&dir, 30);
+    state.list([Ok(Entry::Day(new.parse().unwrap()))]);
+    stored::write(&c, &state.log_days.take()).unwrap();
+    assert_eq!(stored_rows(&c), [(old, 1, 1, 1), (new, 1, 1, 0)]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_stray_in_a_days_place_keeps_that_day_uncut() {
+    let dir = scratch("log-days-stray");
+    let c = memory();
+    let (old, new) = without_the_older_day(&dir, &c);
+    // A file where the day's directory was: its logs may be in it.
+    std::fs::write(dir.join(old.to_string()), "").unwrap();
+    let (mut state, _) = with_settings(&dir, 30);
+    state.retention(now_ns(), PASS).unwrap();
+    stored::write(&c, &state.log_days.take()).unwrap();
+    let (old, new) = (old.to_string(), new.to_string());
+    assert_eq!(stored_rows(&c), [(old, 1, 1, 0), (new, 1, 1, 0)]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_day_that_could_not_be_moved_to_the_trash_is_not_marked() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = scratch("log-days-trash-refused");
+    let now = now_ns();
+    let old = now - 5 * DAY;
+    let c = memory();
+    let (mut state, _) = with_settings(&dir, 2);
+    state.add(vec![record(1, old, old, "api")]).unwrap();
+    state.commit().unwrap();
+    stored::write(&c, &state.log_days.take()).unwrap();
+    let trash = dir.join(".trash");
+    std::fs::create_dir(&trash).unwrap();
+    let mode = |m| std::fs::set_permissions(&trash, std::fs::Permissions::from_mode(m));
+    mode(0o555).unwrap();
+    let pass = state.retention(now, PASS);
+    mode(0o755).unwrap();
+    pass.unwrap();
+    let day = day_of(old).to_string();
+    assert!(dir.join(&day).is_dir(), "the rename failed");
+    stored::write(&c, &state.log_days.take()).unwrap();
+    assert_eq!(stored_rows(&c), [(day.clone(), 1, 1, 0)]);
+    // The next pass moves it and marks it.
+    state.retention(now, PASS).unwrap();
+    stored::write(&c, &state.log_days.take()).unwrap();
+    assert_eq!(stored_rows(&c), [(day, 1, 1, 1)]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_job_of_two_segments_goes_back_in_order() {
+    let d: Date = "2026-11-20".parse().unwrap();
+    let log_days = LogDays::default();
+    log_days.add(d, HashMap::from([(1, Count::new(1, 10))]));
+    log_days.mark(Mark::AllBut(d, Vec::new()));
+    log_days.add(d, HashMap::from([(2, Count::new(1, 20))]));
+    let job = log_days.take();
+    assert_eq!(job.segments.len(), 2);
+    log_days.put_back(job);
+    let c = memory();
+    stored::write(&c, &log_days.take()).unwrap();
+    let day = d.to_string();
+    assert_eq!(
+        stored_rows(&c),
+        [(day.clone(), 1, 1, 1), (day, 2, 1, 0)],
+        "the counts after the mark stay uncut on the retry"
+    );
 }

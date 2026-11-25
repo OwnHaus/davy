@@ -166,11 +166,39 @@ impl State {
         let deadline = Instant::now().checked_add(budget);
         self.refresh()?;
         self.empty_trash();
+        // A symlink is not a day, so a deletion never leaves the root.
+        let entries = std::fs::read_dir(&self.root)?.map(|e| e.map(|e| day_dirs::entry(&e)));
+        let mut found = self.list(entries);
+        found.sort_unstable();
+        self.swept.retain(|day, _| found.contains(day));
+        self.marked.retain(|day, _| found.contains(day));
+        self.uncut.retain(|day, _| found.contains(day));
+        for day in found {
+            if let Err(e) = self.recut(day) {
+                report(day, &e);
+            }
+            match self.sweep_day(day, now)? {
+                Ok(wrote) => {
+                    if wrote && deadline.is_some_and(|d| Instant::now() >= d) {
+                        return Ok(());
+                    }
+                }
+                Err(e) => report(day, &e),
+            }
+        }
+        Ok(())
+    }
+
+    /// The days in the listing `entries` of the root. Reports what is not
+    /// a day and marks the counts of a day the listing lacks.
+    pub(super) fn list(
+        &mut self,
+        entries: impl IntoIterator<Item = std::io::Result<Entry>>,
+    ) -> Vec<Date> {
         let (mut found, mut strays) = (Vec::new(), HashSet::new());
         let (mut present, mut unread) = (BTreeSet::new(), false);
-        for entry in std::fs::read_dir(&self.root)? {
-            // A symlink is not a day, so a deletion never leaves the root.
-            match entry.map(|e| day_dirs::entry(&e)) {
+        for entry in entries {
+            match entry {
                 Ok(Entry::Day(day)) => found.push(day),
                 Ok(Entry::Stray(stray)) => {
                     if self.strays.insert(stray.name.clone()) {
@@ -195,24 +223,7 @@ impl State {
         }
         // A stray that was moved away and comes back is reported again.
         self.strays.retain(|name| strays.contains(name));
-        found.sort_unstable();
-        self.swept.retain(|day, _| found.contains(day));
-        self.marked.retain(|day, _| found.contains(day));
-        self.uncut.retain(|day, _| found.contains(day));
-        for day in found {
-            if let Err(e) = self.recut(day) {
-                report(day, &e);
-            }
-            match self.sweep_day(day, now)? {
-                Ok(wrote) => {
-                    if wrote && deadline.is_some_and(|d| Instant::now() >= d) {
-                        return Ok(());
-                    }
-                }
-                Err(e) => report(day, &e),
-            }
-        }
-        Ok(())
+        found
     }
 
     /// Whether `cut` would delete from `day` what was not deleted before.

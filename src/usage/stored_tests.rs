@@ -296,14 +296,20 @@ fn the_migration_adds_both_tables_to_a_store_of_version_19() {
     assert_eq!(store::SCHEMA_VERSION, 20);
 }
 
-/// The next job the flush puts in `inbox`.
+/// The next job the flush puts in `inbox`, within 10 s, so a flush that
+/// never sends it fails the test instead of hanging it.
 async fn next(inbox: &crossbeam_channel::Receiver<store::Write>) -> store::Write {
-    loop {
-        if let Ok(write) = inbox.try_recv() {
-            return write;
+    let wait = async {
+        loop {
+            if let Ok(write) = inbox.try_recv() {
+                return write;
+            }
+            tokio::task::yield_now().await;
         }
-        tokio::task::yield_now().await;
-    }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), wait)
+        .await
+        .expect("the flush sends the next job within 10 s")
 }
 
 #[tokio::test]
