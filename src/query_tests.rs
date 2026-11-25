@@ -371,7 +371,7 @@ fn a_stopped_servers_directory_on_a_read_only_mount_is_refused_with_why() {
         data.display()
     );
     assert!(why.starts_with(&want), "{why}");
-    assert_eq!(after, ["davy.sqlite"]);
+    assert_eq!(after, ["davy.sqlite", "davy.sqlite.lock"]);
     std::fs::remove_dir_all(&data).unwrap();
 }
 

@@ -8,6 +8,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+const MIGRATING: &str = "is locked by another process, most likely a davy that migrates it. Run this again when it is done";
+
 const REFUSED: &str = "is open in another process, and this Davy must migrate it while no other process has it open. If that process is an older Davy server, stop it or restart it on this version. Otherwise close the program that holds the file, then run this again";
 
 /// The version of a database that lacks only the newest migration.
@@ -174,10 +176,18 @@ fn a_store_another_davy_is_migrating_names_that_as_the_reason() {
         .unwrap();
     migrating.execute_batch("BEGIN EXCLUSIVE; COMMIT;").unwrap();
     let err = open_once(&data).unwrap_err().to_string();
-    assert!(
-        err.ends_with("is locked by another process, most likely a davy that migrates it. Run this again when it is done"),
-        "{err}"
-    );
+    assert!(err.ends_with(MIGRATING), "{err}");
+}
+
+#[test]
+fn a_davy_waits_for_the_one_that_holds_the_migration_lock() {
+    let data = behind();
+    let peer = std::fs::File::create(data.join("davy.sqlite.lock")).unwrap();
+    peer.lock().unwrap();
+    let err = open_once(&data).unwrap_err().to_string();
+    assert!(err.ends_with(MIGRATING), "{err}");
+    drop(peer);
+    assert_eq!(version(&open_once(&data).unwrap()), MIGRATIONS.len());
 }
 
 #[test]
