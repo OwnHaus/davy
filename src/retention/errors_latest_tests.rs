@@ -159,3 +159,17 @@ fn a_batch_counts_only_its_own_issues_newest_payload() {
     let rows = s.rows("SELECT issue_id || ':' || event FROM latest_payloads");
     assert_eq!(rows, ["2:55"]);
 }
+
+#[test]
+fn a_sampled_event_the_same_batch_expires_leaves_the_newest_payload_before_it() {
+    let s = Server::new("errors-same-batch-sampled", &["api"]);
+    // Events 1 to 99 stay, the newest outside the sample.
+    let timeouts = (0..99).map(|n| error("timeout", day(15) + n, "prod", "v1"));
+    s.ingest(1, timeouts.collect());
+    // The 100th, in the sample, arrives with a clock 19 days behind.
+    let late = vec![error("timeout", day(1), "prod", "v1")];
+    assert_eq!(ingest_and_sweep(&s, late), [Ok(()), Ok(())]);
+    assert_eq!(s.number("SELECT count(*) FROM events"), 99);
+    let row = s.rows("SELECT issue_id || ':' || event FROM latest_payloads");
+    assert_eq!(row, ["1:99"]);
+}

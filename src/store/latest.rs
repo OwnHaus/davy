@@ -27,16 +27,16 @@ pub fn sampled(n: i64) -> bool {
     n < 50 || (n + 1) % 100 == 0
 }
 
-/// The newest event of each issue one transaction wrote, by issue id, when
-/// it is outside the sample.
+/// The newest event of each issue one transaction wrote, by issue id: its
+/// row, and the event itself when it is outside the sample.
 #[derive(Default)]
-pub struct Latest<'a>(HashMap<i64, Option<(i64, &'a ErrorEvent)>>);
+pub struct Latest<'a>(HashMap<i64, (i64, Option<&'a ErrorEvent>)>);
 
 impl<'a> Latest<'a> {
     /// Notes that `e` was written as row `event` of `issue`, with its
     /// payload when `kept`.
     pub fn after(&mut self, issue: i64, event: i64, e: &'a ErrorEvent, kept: bool) {
-        self.0.insert(issue, (!kept).then_some((event, e)));
+        self.0.insert(issue, (event, (!kept).then_some(e)));
     }
 
     /// Keeps the payload of each issue's newest event, or drops the one
@@ -44,18 +44,23 @@ impl<'a> Latest<'a> {
     /// transaction commits. A sweep in the same transaction may have
     /// deleted the event, and its issue too, when the clock moved on by the
     /// whole retention between taking the event in and queueing the sweep,
-    /// so the row is written only while its event is there.
+    /// so the row is written or dropped only while its event is there.
+    /// Else the newest event left may be one outside the sample, whose row
+    /// stays for the sweep to judge.
     pub fn keep(self, c: &Connection) -> Result<()> {
         let mut upsert = c.prepare_cached(
             "INSERT INTO latest_payloads(issue_id, event, payload) SELECT ?1, ?2, ?3
              WHERE EXISTS(SELECT 1 FROM events WHERE id=?2 AND issue_id=?1)
              ON CONFLICT(issue_id) DO UPDATE SET event=excluded.event, payload=excluded.payload",
         )?;
-        let mut delete = c.prepare_cached("DELETE FROM latest_payloads WHERE issue_id=?1")?;
-        for (issue, newest) in self.0 {
+        let mut delete = c.prepare_cached(
+            "DELETE FROM latest_payloads WHERE issue_id=?1
+             AND EXISTS(SELECT 1 FROM events WHERE id=?2 AND issue_id=?1)",
+        )?;
+        for (issue, (event, newest)) in self.0 {
             match newest {
-                Some((event, e)) => drop(upsert.execute(params![issue, event, compress(e)?])?),
-                None => drop(delete.execute([issue])?),
+                Some(e) => drop(upsert.execute(params![issue, event, compress(e)?])?),
+                None => drop(delete.execute([issue, event])?),
             }
         }
         Ok(())
