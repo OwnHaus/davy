@@ -101,3 +101,61 @@ fn a_batch_counts_the_newest_payload_in_its_work() {
     assert_eq!(s.number("SELECT count(*) FROM events"), 1);
     assert_eq!(s.number("SELECT count(*) FROM latest_payloads"), 1);
 }
+
+#[test]
+fn an_id_given_again_in_the_same_batch_keeps_the_newest_payload() {
+    let s = Server::new("errors-same-batch-reuse", &["api"]);
+    let timeouts = (0..51).map(|n| error("timeout", day(15) + n, "prod", "v1"));
+    s.ingest(1, timeouts.collect());
+    let write = |job| Write {
+        job,
+        done: tokio::sync::oneshot::channel().0,
+    };
+    let hold = || crate::http::body::Budget::new(0).hold();
+    // Event 52 of timeout expires in the sweep, and hang, a new issue,
+    // gets its id back in the same batch.
+    let batch = [
+        write(Job::Ingest {
+            project: 1,
+            events: vec![error("timeout", day(1), "prod", "v1")],
+            held: hold(),
+        }),
+        write(Job::Sweep {
+            at: day(20),
+            error_days: Days::new(10).unwrap(),
+        }),
+        write(Job::Ingest {
+            project: 1,
+            events: vec![error("hang", day(19), "prod", "v1")],
+            held: hold(),
+        }),
+    ];
+    let outcomes = store::write_batch(&mut store::open(&s.root).unwrap(), &batch);
+    assert_eq!(outcomes, [Ok(()), Ok(()), Ok(())]);
+    let event = s.rows("SELECT issue_id || ':' || id FROM events WHERE id=52");
+    assert_eq!(event, ["2:52"]);
+    let row = s.rows("SELECT issue_id || ':' || event FROM latest_payloads");
+    assert_eq!(row, ["1:51"]);
+}
+
+#[test]
+fn a_batch_counts_only_its_own_issues_newest_payload() {
+    let s = Server::new("errors-newest-work-pin", &["api"]);
+    let timeouts = (0..60).map(|n| error("timeout", day(1) + n, "prod", "v1"));
+    s.ingest(1, timeouts.collect());
+    s.ingest(1, vec![error("hang", day(15), "prod", "v1")]);
+    // A row of hang that names event 55 of timeout, outside the sample,
+    // with 6 MiB of payload. Counted for event 55 it would cost 1,537
+    // and end the batch there.
+    let unsampled = s.number("SELECT payload IS NULL FROM events WHERE id=55");
+    assert_eq!(unsampled, 1);
+    s.c.execute(
+        "INSERT INTO latest_payloads(issue_id, event, payload) VALUES (2, 55, zeroblob(6291456))",
+        [],
+    )
+    .unwrap();
+    sweep(&s.c, day(20), Days::new(10).unwrap(), Duration::ZERO).unwrap();
+    assert_eq!(s.rows("SELECT title FROM issues"), ["hang"]);
+    let rows = s.rows("SELECT issue_id || ':' || event FROM latest_payloads");
+    assert_eq!(rows, ["2:55"]);
+}
