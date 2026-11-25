@@ -1639,7 +1639,7 @@ Limits: the forecast assumes the rate of the last week holds. SQLite grows by er
 
 ## Self-monitoring
 
-Davy records its own warnings and errors in a project of its own, `davy`, in its own store. An agent that triages an app over MCP finds the server's problems with the same tools: `search_logs` and `log_patterns` with `project: "davy"`.
+Davy records its own warnings, errors and crashes in a project of its own, `davy`, in its own store. An agent that triages an app over MCP finds the server's problems with the same tools: `search_logs` and `log_patterns` with `project: "davy"` for lines, and `issue_context` for a crash.
 
 ### On by default
 
@@ -1660,6 +1660,20 @@ Every line Davy printed to stderr goes through `self_report::{info, warn, error}
 - When the forwarder is gone, such as after a panic of its thread, the first line offered uninstalls the sink and says once on stderr that Davy's own lines are no longer recorded.
 - `davy serve` installs the sink before it starts the store and log writers, so what their first pass reports, such as a stray day of logs found by the first retention pass, waits in the channel until the forwarder starts once they run.
 - One thread, the forwarder, makes the records and queues them on the log queue in batches of at most 256. It shares the log queue's bounds with ingest, and a full log queue drops Davy's lines rather than wait.
+
+### Crashes
+
+A panic of `davy serve` becomes an issue of the project `davy`: a fatal, unhandled exception of type `panic` with the panic message, the thread and the location as tags, a Rust backtrace and the release `davy@` and the version that panicked. It groups like any error, by its innermost frames of the crate `davy`, which are in-app, so a panic that repeats is one issue with a count.
+
+- The panic hook writes a crash file before the hook that prints the panic runs, synchronously, so the report survives a panic that ends the process, and one in the log writer or the store writer, which could not record it. The file goes to DATA/crashes, made with mode 0700, as a hidden file of mode 0600 that is renamed into place, so a reader never sees half of one.
+- The file holds the panic message as the panic made it: it is scrubbed when recorded, not when saved. The file is 0600 in a directory of 0700 that the hook checks is the process user's, and stderr gets the same text from the default hook.
+- The forwarder records the crash files when it starts, every 5 s while the process lives, and once more when it stops. It scrubs each one with the project's policy as an event, queues it to the store writer, counts it in usage like an error a client sent, and deletes the file only once the store confirms it has the event. A store that does not take it, whether busy, stopped or failing, leaves the file for the next scan, said once on stderr. A file whose event the store has already, as when a delete failed, is deleted and not counted again.
+- Only regular files of the process user named like a crash file are read, opened without following a symbolic link and without waiting, so a FIFO or a link in DATA/crashes cannot stop the scan or the shutdown. Other entries are named once on stderr and left alone. A file that cannot be read or parsed is set aside in DATA/crashes/refused for a person, and deleted once 20 wait there. A scan reads at most 1,024 entries of the directory. A hidden file of a write a kill interrupted is removed once it is a minute old.
+- At most 20 crash files wait. A panic past them is printed and not saved, so a panic that repeats cannot fill the disk. A file holds at most 64 KiB, the innermost 100 frames that fit, and a message of 8 KiB; a larger file, another format or a file with more frames is set aside. Each scan records at most 10.
+- The backtrace keeps the frames between the code that starts the panic (`core::panicking`, `std::panicking`, `rust_begin_unwind`) and the start of the thread (`__rust_begin_short_backtrace`).
+- A Linux release binary carries the line tables of the crate `davy` (`debug = "line-tables-only"` in `Cargo.toml`, with `debug = false` for std and every dependency), compressed with zlib by the linker, so Davy's own frames have a file and a line. They add about 7 MB; the tables of every crate would add 29 MB compressed and 158 MB not. A macOS release binary has none and its frames name the function only: Apple's linker leaves line tables in the object files, which a download does not have, so they would add 4 MB to the binary and give nothing. A build from source with plain `cargo build --release` has them on both.
+- `scripts/build-release` remaps the build directory to `.` and the cargo home to `/cargo`, so no path of the build machine is in a released binary or in a crash it records. Every file of the crate `davy` is named from the crate root, such as `src/logs/store.rs`, wherever Davy was built and wherever it runs: the frame of the panic hook in `self_report/crash.rs` shows what comes before `src/`, and that is stripped from every file, as is a leading `./`. A frame is in the app when its function's path starts with `davy::`, or, for a frame inlined without a path, such as `test_panic`, when its file is under `src/`.
+- The hook is set by `davy serve` unless `--no-self-report` is given, and chains to the hook before it. It holds the quiet guard and reports its own failure on stderr only; it never panics, as a panic in a panic hook aborts the process. With `--no-self-report`, crash files an earlier run saved wait. The hidden command `davy crash --data DATA` saves a test panic the same way, for the end-to-end test, and says on stderr that it is a test.
 
 ### No feedback loop
 

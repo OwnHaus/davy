@@ -108,6 +108,13 @@ enum Command {
         #[arg(long)]
         data: PathBuf,
     },
+    /// Saves a test panic in DATA/crashes, as a panic of `davy serve` would
+    /// be, and exits with 101. `davy serve` records it in Davy's own project.
+    #[command(hide = true)]
+    Crash {
+        #[arg(long)]
+        data: PathBuf,
+    },
     /// Marks an issue fixed. Without --release it stays fixed until an event
     /// arrives from a release first seen after now.
     Resolve {
@@ -304,6 +311,7 @@ async fn main() -> anyhow::Result<()> {
             writeln!(out, "{}", serde_json::to_string_pretty(&payload)?)?;
         }
         Command::Logs(args) => logs(&mut out.lock(), args)?,
+        Command::Crash { data } => davy::self_report::crash::test_panic(&data),
         Command::Usage(args) => davy::usage::run(&mut out.lock(), &args)?,
         Command::Sql { query, data, json } => {
             let c = query::open(&data)?;

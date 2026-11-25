@@ -17,6 +17,8 @@ fn forwarder(name: &str) -> (Forwarder, LogInbox, usage::Counter) {
         logs,
         usage: usage.clone(),
         policies: Arc::default(),
+        sender: crossbeam_channel::bounded(1).0,
+        budget: Budget::new(1 << 20),
     };
     (forwarder, inbox, usage)
 }

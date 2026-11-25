@@ -181,6 +181,13 @@ impl Queued {
             .map_err(|_closed| Refused::Stopped)?
             .map_err(Refused::Failed)
     }
+    /// Like [`Queued::applied`], for a thread outside the async runtime.
+    pub fn applied_blocking(self) -> std::result::Result<(), Refused> {
+        self.0
+            .blocking_recv()
+            .map_err(|_closed| Refused::Stopped)?
+            .map_err(Refused::Failed)
+    }
 }
 /// Queues `job` and waits until the writer has applied it. A full queue is
 /// tried again every 50 ms. Returns without waiting when the writer is gone.

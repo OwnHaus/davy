@@ -86,3 +86,52 @@ fn the_secret_files_default_to_the_data_directory_unless_a_variable_is_set() {
     assert_eq!(set("DAVY_TOKEN_FILE"), None);
     assert_eq!(set("DAVY_SMTP_URL_FILE").as_deref(), Some("/run/s"));
 }
+
+/// Set in the child process of
+/// [`no_self_report_installs_no_panic_hook`] to its data directory.
+const CHILD_DATA: &str = "DAVY_TEST_SERVE_DATA";
+/// Set in the child to `1` for `--no-self-report`.
+const CHILD_NO_SELF_REPORT: &str = "DAVY_TEST_SERVE_NO_SELF_REPORT";
+const THIS_TEST: &str = "serve::tests::no_self_report_installs_no_panic_hook";
+
+/// A panic hook is the process's for good, so each case runs `davy serve`
+/// in a process of its own: this test binary run again for this test. The
+/// child's `run` stops at the missing setup, after the hook would be set,
+/// and the child panics. With `--no-self-report` the panic is printed and
+/// no crash file is saved; without it, the hook saves one.
+#[test]
+fn no_self_report_installs_no_panic_hook() {
+    if let Some(data) = std::env::var_os(CHILD_DATA) {
+        let mut flags = args(Path::new(&data), None, None);
+        flags.no_self_report = std::env::var_os(CHILD_NO_SELF_REPORT).is_some();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let stopped = runtime.block_on(run(flags)).unwrap_err();
+        assert!(
+            format!("{stopped:#}").starts_with("cannot read "),
+            "{stopped:#}"
+        );
+        panic!("a panic of the child of {THIS_TEST}");
+    }
+    let saved = |no_self_report: bool| {
+        let data = dir();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args(["--exact", THIS_TEST, "--test-threads=1", "--nocapture"])
+            .env(CHILD_DATA, &data)
+            .env_remove(CHILD_NO_SELF_REPORT);
+        if no_self_report {
+            child.env(CHILD_NO_SELF_REPORT, "1");
+        }
+        let out = child.output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            !out.status.success() && stderr.contains("a panic of the child of"),
+            "{stderr}"
+        );
+        let files = std::fs::read_dir(crate::self_report::crash::dir(&data));
+        files.map_or(0, Iterator::count)
+    };
+    assert_eq!((saved(true), saved(false)), (0, 1));
+}

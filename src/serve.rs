@@ -100,6 +100,9 @@ pub fn env(data: &Path, var: impl Fn(&str) -> Option<String>) -> impl Fn(&str) -
 }
 
 pub async fn run(args: Args) -> anyhow::Result<()> {
+    if !args.no_self_report {
+        crate::self_report::crash::install_hook(&args.data);
+    }
     let settings = resolve(&args)?;
     let days =
         |flag: &str, n| retention::Days::new(n).map_err(|e| anyhow::anyhow!("--{flag}: {e}"));

@@ -5,6 +5,13 @@
 # static with musl in rust:alpine and needs Docker on a machine of that
 # architecture. A macOS target builds with the host's cargo and needs
 # cargo-auditable. Both need cargo-cyclonedx.
+#
+# A Linux binary keeps the line tables of the davy crate, compressed, so a
+# crash Davy records of itself names file and line. A macOS binary leaves
+# them out: its linker keeps them only in the object files, which a
+# download does not have. Every path of the build machine is remapped, the
+# source directory to `.` and the cargo home to `/cargo`, so no binary or
+# crash record names it. See "Self-monitoring" in docs/design.md.
 # Usage: scripts/build-release TARGET
 set -eu
 cd "$(dirname "$0")/.."
@@ -23,7 +30,9 @@ case $target in
 x86_64-unknown-linux-musl | aarch64-unknown-linux-musl)
     arch=$(docker info --format '{{.Architecture}}')
     [ "$arch" = "${target%%-*}" ] || die "$target needs a $(printf '%s' "$target" | cut -d- -f1) machine, Docker runs on $arch"
-    docker run --rm -v "$PWD":/src:ro -v "$PWD/dist":/dist -e CARGO_TARGET_DIR=/build -w /src "$ALPINE" sh -euc '
+    docker run --rm -v "$PWD":/src:ro -v "$PWD/dist":/dist -e CARGO_TARGET_DIR=/build \
+        -e RUSTFLAGS="--remap-path-prefix=/src=. --remap-path-prefix=/usr/local/cargo=/cargo -C link-arg=-Wl,--compress-debug-sections=zlib" \
+        -w /src "$ALPINE" sh -euc '
         apk add --no-cache musl-dev >/dev/null
         cargo install --quiet --locked "cargo-auditable@$1"
         cargo auditable build --release --locked --target "$2"
@@ -32,7 +41,10 @@ x86_64-unknown-linux-musl | aarch64-unknown-linux-musl)
     ;;
 aarch64-apple-darwin | x86_64-apple-darwin)
     rustup target add "$target"
-    cargo auditable build --release --locked --target "$target"
+    # Separated by the unit separator, so a path with a space stays whole.
+    CARGO_PROFILE_RELEASE_DEBUG=false \
+        CARGO_ENCODED_RUSTFLAGS=$(printf '%s\037%s' "--remap-path-prefix=$PWD=." "--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo") \
+        cargo auditable build --release --locked --target "$target"
     cp "target/$target/release/davy" "dist/davy-$target"
     ;;
 *)

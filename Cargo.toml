@@ -64,6 +64,15 @@ test = true
 opt-level = 3
 [profile.dev.package.blake2]
 opt-level = 3
+# File and line for Davy's own frames in the backtrace of a crash Davy
+# records of itself, see "Self-monitoring" in docs/design.md. Line tables
+# only, not types, and of the davy crate only: those of std and the
+# dependencies made the Linux binary 192 MB. scripts/build-release
+# compresses them on Linux and leaves them out on macOS.
+[profile.release]
+debug = "line-tables-only"
+[profile.release.package."*"]
+debug = false
 
 [lints.rust]
 unsafe_code = "forbid"

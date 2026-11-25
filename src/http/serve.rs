@@ -187,6 +187,8 @@ impl Early {
             logs: app.logs.clone(),
             usage: app.usage.clone(),
             policies: app.keys.policies(),
+            sender: app.sender.clone(),
+            budget: app.budget.clone(),
         };
         let thread = forwarder
             .start(lines)

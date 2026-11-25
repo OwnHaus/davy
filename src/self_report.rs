@@ -23,6 +23,7 @@ use std::{
     },
 };
 
+pub mod crash;
 mod forward;
 mod limit;
 pub use forward::Forwarder;
