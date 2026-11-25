@@ -16,9 +16,17 @@ pub const TOKENS: usize = 12;
 const SCAN: usize = 4096;
 /// Bytes a masked token keeps. A longer token is cut and ends in `...`.
 const TOKEN_BYTES: usize = 64;
-/// Hashed in front of the template. A change to the masking changes the
-/// templates, so it bumps this and gives them new ids.
-const VERSION: &[u8] = b"v1\0";
+/// The version of the mask. An id is defined per mask version: the same
+/// template has another id under another version. `patterns_v1.golden` pins
+/// what mask 1 does, so any change to the masking, or to the parsing of times
+/// and addresses it depends on, fails that test until this is bumped.
+pub const MASK: u8 = 1;
+/// Hashed in front of the template: `v1\0` for mask 1, the bytes ids were
+/// made with before the version had a number.
+const PREFIX: [u8; 3] = {
+    assert!(MASK < 10, "the prefix holds one decimal digit");
+    [b'v', b'0' + MASK, 0]
+};
 /// String values of these JSON keys are prose and keep their words.
 const PROSE_KEYS: [&str; 5] = ["msg", "message", "error", "err", "event"];
 const METHODS: [&str; 9] = [
@@ -68,7 +76,7 @@ pub fn template(message: &str) -> String {
 
 pub fn id(template: &str) -> u64 {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(VERSION);
+    hasher.update(&PREFIX);
     hasher.update(template.as_bytes());
     let mut bytes = [0; 8];
     bytes[2..].copy_from_slice(&hasher.finalize().as_bytes()[..6]);

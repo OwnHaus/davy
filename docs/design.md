@@ -1219,9 +1219,25 @@ An agent asks what fills a project's logs and what it could drop. Patterns answe
 - An e-mail address, an IPv6 address and a time are masked only when they are the whole token, so `from=<alice@example.com>` and `token=hunterTwoSecret` stay. A template is log text, as free of personal data as the scrubbed logs and no more, and the `log_patterns` description says so and calls templates and examples data, not instructions.
 - Two kinds of quoted string keep their words, masked one by one: the value of the JSON key `msg`, `message`, `error`, `err` or `event`, which is the prose of a JSON line, and an HTTP request line such as `"GET /api/users/123 HTTP/1.1"`, which names the route.
 - A quote opens a string only after a byte that is not a letter, a digit or a backslash, and only when it closes, so `user's` and `can't` stay words.
-- The id is the first 48 bits of blake3 over a version and the template, printed as 12 hex digits. The version is part of the hash, so a change to the mask bumps it and its ids cannot mix with the old ones. 0 is never a pattern's id: it is `other`, below.
+- The id is the first 48 bits of blake3 over the mask version and the template, printed as 12 hex digits. 0 is never a pattern's id: it is `other`, below.
 
 `patterns_tests.rs` has lines in the shape of nginx access logs, JSON and key=value app logs, syslog, Java, Spark and HDFS, written for the test, and the template each must give.
+
+### Mask versions
+
+- **Pattern ids are defined per mask version.** `patterns::MASK` is 1, and the hash prefix is built from it: the bytes `v1` and a zero byte, the bytes ids were made with before the version had a number, so no id changed when it got one.
+- **The golden file pins mask 1.** `src/logs/patterns_v1.golden` holds one JSON line per case, `{"kind", "message", "template", "id"}`: every mask kind (numbers, units, hex, UUIDs, e-mails, IPv4, IPv6, times, quoted values, JSON keys, prose keys, request lines, scrubber markers), the cuts at 12 tokens, 64 bytes and 4 KiB, and the edges that depend on jiff's time parsing and on `Ipv6Addr`: offsets, fractions, bare dates, zone ids, `::`, IPv4-mapped and scoped addresses, plus Unicode, control characters and long lines. `mask_v1_matches_its_golden_file` fails on any difference and says to add a mask version. A line may be added when the current code produces it. A line is never edited, so a dependency update that changes a parse fails CI there.
+- **Any change to the masker bumps the version.** Its ids are then new: an id an agent noted finds only lines of the old mask. The new version gets a golden file of its own, and the old one stays as long as its mask is in the binary.
+
+#### When mask v2 is planned
+
+Nothing names a pattern by its id across a change today, so a bump costs only the ids agents noted. Drop rules, planned next, name lines by pattern id and template under the mask they were made with. Once they exist, no masker change ships without this plan, or at least a forecast that adds back what rules of the old mask no longer drop, a `davy doctor` failure on enforced rules of the old mask, and upgrade notes that say so:
+
+1. Mask 1 stays in the binary as a frozen module beside mask 2. The log writer runs it only for projects that have rules of mask 1, so enforced rules keep dropping exactly what was approved.
+2. Rule listings and `davy doctor` show such rules as "runs on mask 1", a warning.
+3. For each mask 1 rule, the writer records the mask 2 ids and templates of the lines it matched: the top 8 with counts.
+4. A rebase creates shadow rules for them, never enforced ones, because a mask 2 template can cover lines the mask 1 one did not. A mask 2 rule in shadow next to the rule it replaces reads about 0 when the two match the same lines.
+5. Mask 1 leaves the binary some releases later. Before that release `davy doctor` fails on rules still on mask 1. In it, they are turned off by the server with an audit row.
 
 ### Counters
 
