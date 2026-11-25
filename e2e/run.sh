@@ -412,6 +412,7 @@ assert (set_['project'],set_['errors_days'])==('-x',None) and set_['logs_days']<
 assert json.loads((p/'fit.json').read_text())['savings']==[],(p/'fit.json').read_text()
 print(f'retention command: davy project retention -- -x set logs to {set_["logs_days"]} days; the view suggests nothing more')
 PY
+node "$ROOT/e2e/drops.mjs" "$BIN" "$SCRATCH/data" "$URL" "$TOKEN"
 "$BIN" feedback --data "$SCRATCH/data" | grep -qx '  tried: e2e tried' || { echo 'davy feedback does not list the MCP report'; exit 1; }
 "$BIN" usage --data "$SCRATCH/data" --project e2e-connect --json > "$SCRATCH/usage.json"
 python3 - "$SCRATCH/usage.json" <<'PY'
