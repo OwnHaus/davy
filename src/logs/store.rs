@@ -627,8 +627,8 @@ pub use log_days::LogDays;
 #[path = "pattern_report.rs"]
 mod pattern_report;
 pub use pattern_report::{
-    MAX_MERGED, MAX_PATTERN_ROWS, MAX_REPORT_DAYS, PatternQuery, PatternReport, PatternRow,
-    top_patterns,
+    Examples, MAX_EXAMPLES, MAX_MERGED, MAX_PATTERN_ROWS, MAX_REPORT_DAYS, PatternQuery,
+    PatternReport, PatternRow, top_patterns,
 };
 
 #[cfg(test)]

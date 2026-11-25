@@ -1,9 +1,15 @@
 //! `davy usage`: the `usage` tool's answer in a terminal. It opens the
 //! database read-only, so it runs next to `davy serve`.
 
-use super::{Request, forecast::WhatIf, report};
+use super::{
+    Request,
+    forecast::WhatIf,
+    report,
+    savings::{self, View},
+};
 use crate::{query, retention, time};
 use anyhow::Result;
+use clap::builder::TypedValueParser;
 use std::{io::Write, path::PathBuf};
 
 #[derive(clap::Args)]
@@ -30,6 +36,17 @@ pub struct Args {
     /// this command cannot read from a running server.
     #[arg(long, default_value_t = retention::DEFAULT_LOG_DAYS)]
     pub log_retention_days: u32,
+    /// summary: counts, disk and forecast. savings: where logs and errors
+    /// could take less, with the command to try.
+    #[arg(long, value_enum, default_value_t)]
+    pub view: View,
+    /// Entries of each kind in the savings view, 1 to 20.
+    #[arg(
+        long,
+        default_value_t = savings::DEFAULT_TOP,
+        value_parser = TypedValueParser::map(clap::value_parser!(u16).range(1..=20), usize::from),
+    )]
+    pub top: usize,
     /// Print JSON with sizes in bytes.
     #[arg(long)]
     pub json: bool,
@@ -50,11 +67,30 @@ pub fn run(out: &mut impl Write, args: &Args) -> Result<()> {
             ..retention::Defaults::default()
         },
     };
-    let report = report(&c, &args.data, &request, time::now_ns())?;
+    let now = time::now_ns();
+    let report = report(&c, &args.data, &request, now)?;
+    if args.view == View::Savings {
+        let ask = savings::Request {
+            project: args.project.clone(),
+            top: args.top,
+            defaults: request.defaults,
+        };
+        let found = savings::savings(&c, &args.data, &report, &ask, now)?;
+        if args.json {
+            writeln!(out, "{}", crate::text::json(&found.json(false), false)?)?;
+        } else {
+            found.text(out)?;
+        }
+        return Ok(());
+    }
     if args.json {
-        writeln!(out, "{}", report.json(false))?;
+        writeln!(out, "{}", crate::text::json(&report.json(false), false)?)?;
     } else {
         report.text(out)?;
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "cli_tests.rs"]
+mod tests;

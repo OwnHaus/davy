@@ -356,6 +356,37 @@ fn project_retention_prints_and_changes_a_projects_own_settings() {
 }
 
 #[test]
+fn project_retention_takes_a_slug_that_starts_with_a_dash_after_the_options() {
+    let data = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("test-cli-dash-slug-{}", uuid::Uuid::new_v4()));
+    store::create_project(&store::open(&data).unwrap(), "-x").unwrap();
+    let d = data.to_str().unwrap().to_owned();
+    // As the savings view prints it.
+    let args = [
+        "davy",
+        "project",
+        "retention",
+        "--logs",
+        "7",
+        "--data",
+        &d,
+        "--",
+        "-x",
+    ];
+    let Command::Project { command } = Cli::try_parse_from(args).unwrap().command else {
+        panic!("not the project command");
+    };
+    let mut out = vec![];
+    run_project(&mut out, command).unwrap();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "{\"errors_days\":null,\"logs_days\":7,\"project\":\"-x\"}\n"
+    );
+    std::fs::remove_dir_all(&data).unwrap();
+}
+
+#[test]
 fn logs_patterns_prints_a_summary_and_a_line_per_pattern() {
     use davy::logs::{LogRecord, LogSource, store::LogWriter};
     let data = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -417,6 +448,7 @@ fn logs_patterns_names_the_days_it_left_out_and_why() {
         to: "2026-11-02".into(),
         records: 0,
         bytes: "0 B".into(),
+        raw_bytes: 0,
         patterns: 0,
         top: vec![],
         unread: vec!["2026-11-02".into(), "2026-11-01".into()],

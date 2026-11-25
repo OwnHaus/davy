@@ -337,7 +337,7 @@ fn per_day(n: u64, days: f64) -> f64 {
 }
 
 /// `bytes` over `days`, in whole bytes.
-fn bytes_per_day(bytes: u64, days: f64) -> u64 {
+pub(super) fn bytes_per_day(bytes: u64, days: f64) -> u64 {
     time::whole(per_day(bytes, days).round())
         .and_then(|n| u64::try_from(n).ok())
         .unwrap_or(u64::MAX)

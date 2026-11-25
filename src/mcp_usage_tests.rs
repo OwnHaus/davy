@@ -212,3 +212,38 @@ async fn search_logs_and_count_logs_record_the_search_for_the_savings_view() {
     );
     assert_eq!(searches[0].until - searches[0].since, 86_400_000_000_000);
 }
+
+#[tokio::test]
+async fn usage_view_savings_shows_a_noisy_issue_with_the_command_a_person_runs() {
+    let s = server();
+    let c = store::open(&s.data).unwrap();
+    let now = time::now_ms();
+    let mut e = crate::event::ErrorEvent::parse(json!({
+        "event_id": "a0000000000000000000000000000001",
+        "message": "payment declined",
+    }))
+    .unwrap();
+    (e.received_at, e.timestamp) = (now, now);
+    store::insert(&c, 1, &e).unwrap();
+    c.execute("UPDATE issue_hourly SET count=150", []).unwrap();
+    // top 0 shows one entry of each kind.
+    let ask = json!({"view": "savings", "top": 0});
+    let (text, is_error) = tool(&s.app, "usage", ask).await;
+    assert!(!is_error, "{text}");
+    let v: Value = serde_json::from_str(&text).unwrap();
+    let data = crate::install::sh(&s.data.display().to_string());
+    assert_eq!(
+        v["savings"],
+        json!([{
+            "kind": "issue", "id": 1, "project": "api", "title": "payment declined",
+            "events": 150, "share": 1.0,
+            "suggest": format!("fix it, or a person can discard it, which also stops storing its real events: davy issue discard 1 --data {data}"),
+            "try": "issue_context 1",
+        }])
+    );
+    assert_eq!(v["note"], usage::savings::NOTE);
+    let keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(keys, ["note", "savings", "window"]);
+    let (text, is_error) = tool(&s.app, "usage", json!({"view": "bills"})).await;
+    assert!(is_error, "{text}");
+}

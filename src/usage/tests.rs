@@ -250,7 +250,7 @@ fn sizes_read_in_powers_of_1000() {
     }
 }
 
-fn data_with_counts(name: &str) -> std::path::PathBuf {
+pub(super) fn data_with_counts(name: &str) -> std::path::PathBuf {
     let data = scratch(name);
     let mut c = store::open(&data).unwrap();
     store::create_project(&c, "api").unwrap();
@@ -317,92 +317,11 @@ fn stored_flush(rows: Vec<log_days::Row>) -> log_days::Flush {
 
 /// Why [`data_with_counts`] answers from api's errors alone: shop keeps
 /// logs 7 days, and its logs of today give no log basis.
-fn logs_pending() -> String {
+pub(super) fn logs_pending() -> String {
     let first = time::day_of(time::now_ns()).checked_sub(7.days()).unwrap();
     format!(
         "logs are not in this forecast yet, so it rests on errors alone and counts logs as 0: closed log days since {first}, the first day no retention has cut: the disk has 0, a forecast needs 2; confidence is low while logs are left out"
     )
-}
-
-#[test]
-fn davy_usage_prints_the_counts_of_the_window_as_json() {
-    let data = data_with_counts("usage-cli");
-    let mut out = Vec::new();
-    let args = Args {
-        data: data.clone(),
-        project: Some("shop".into()),
-        since: "7d".into(),
-        logs_days: Some(3),
-        logs_bytes_per_day: None,
-        log_retention_days: 30,
-        json: true,
-    };
-    run(&mut out, &args).unwrap();
-    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
-    let b = &v["basis"];
-    assert_eq!(v["no_forecast"], json!(null));
-    assert_eq!(b["logs"]["basis"], "errors_only");
-    assert_eq!(b["confidence"], "low");
-    assert_eq!(b["why"], logs_pending());
-    assert_eq!(
-        v["what_if"],
-        json!({"project":"shop","logs_days":3,"logs_bytes_per_day":null})
-    );
-    assert_eq!(
-        v["what_if_note"],
-        "this forecast counts logs as 0, as it rests on errors alone, so a log retention changes it only by the log days on disk it deletes"
-    );
-    assert_eq!(v["projects"].as_array().unwrap().len(), 1);
-    let shop = &v["projects"][0];
-    assert_eq!(
-        (&shop["project"], &shop["logs_days"], &shop["errors_days"]),
-        (&json!("shop"), &json!(7), &json!(36_500))
-    );
-    assert_eq!(shop["signals"]["logs"]["records"], 1_000);
-    assert_eq!(shop["signals"]["logs"]["bytes"], 2_500_000);
-    assert_eq!(shop["signals"]["errors"]["records"], 0);
-    assert_eq!(
-        shop["logs_stored"]["records"], 1_000,
-        "tomorrow's index too"
-    );
-    assert_eq!(shop["logs_stored"]["bytes"], 2_001_000);
-    assert!(v["disk"]["total"].as_u64().unwrap() > 0);
-    std::fs::remove_dir_all(&data).unwrap();
-}
-
-#[test]
-fn davy_usage_prints_text_by_default_and_refuses_a_long_window() {
-    let data = data_with_counts("usage-text");
-    let mut args = Args {
-        data: data.clone(),
-        project: None,
-        since: "7d".into(),
-        logs_days: None,
-        logs_bytes_per_day: None,
-        log_retention_days: 30,
-        json: false,
-    };
-    let mut out = Vec::new();
-    run(&mut out, &args).unwrap();
-    let text = String::from_utf8(out).unwrap();
-    let why = logs_pending();
-    let line = format!("basis     errors_only, low confidence: {why}\n");
-    assert!(text.contains(&line), "{text}");
-    let api_errors = format!("{:<20} {:<11} {:>10} {:>10}", "api", "errors", 3, "3.0 KB");
-    assert!(text.contains(&api_errors), "{text}");
-    let shop_stored = format!(
-        "{:<20} {:<11} {:>10} {:>10}",
-        "shop", "logs_stored", 1_000, "2.0 MB"
-    );
-    assert!(text.contains(&shop_stored), "{text}");
-    assert!(
-        text.contains("shop                 keeps logs 7 days, errors 36500 days\n"),
-        "{text}"
-    );
-    args.since = "91d".into();
-    let err = run(&mut Vec::new(), &args).unwrap_err();
-    assert_eq!(err.to_string(), "since reaches back at most 90d");
-    std::fs::remove_dir_all(&data).unwrap();
 }
 
 #[test]

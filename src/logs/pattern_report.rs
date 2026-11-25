@@ -49,6 +49,9 @@ pub struct PatternReport {
     pub to: String,
     pub records: u64,
     pub bytes: String,
+    /// [`Self::bytes`] in bytes, for the savings view.
+    #[serde(skip)]
+    pub raw_bytes: u64,
     /// Patterns in the window, shown or not.
     pub patterns: usize,
     /// The patterns with the most bytes first.
@@ -75,6 +78,9 @@ pub struct PatternRow {
     pub example: String,
     pub records: u64,
     pub bytes: String,
+    /// [`Self::bytes`] in bytes, for the savings view.
+    #[serde(skip)]
+    pub raw_bytes: u64,
     /// Of the bytes of the window, in percent.
     pub share: String,
     /// Records by level, the levels with none left out.
@@ -219,6 +225,7 @@ fn report(sums: HashMap<u64, Sum>, first: Date, last: Date, limit: usize) -> Pat
         to: last.to_string(),
         records,
         bytes: size(bytes),
+        raw_bytes: bytes,
         patterns,
         top: rows.into_iter().map(|(id, s)| row(id, s, bytes)).collect(),
         unread: Vec::new(),
@@ -260,6 +267,7 @@ fn row(id: u64, s: Sum, total: u64) -> PatternRow {
         example: s.example,
         records: s.records,
         bytes: size(s.bytes),
+        raw_bytes: s.bytes,
         share: format!("{share:.1}%"),
         levels,
         services: services(s.services),
@@ -285,6 +293,10 @@ fn services(by_name: HashMap<Box<str>, u64>) -> Vec<(Option<String>, u64)> {
     }
     shown
 }
+
+#[path = "pattern_examples.rs"]
+mod examples;
+pub use examples::{Examples, MAX_EXAMPLES};
 
 #[cfg(test)]
 #[path = "pattern_report_tests.rs"]
