@@ -2,18 +2,23 @@ use crate::{event::ErrorEvent, store};
 use rusqlite::Connection;
 use serde_json::json;
 
-/// The version this migration leaves. The fixtures below take a store of
-/// this version back to the one before by dropping `latest_payloads`, which
-/// holds only while the migration is the last.
-const AFTER: usize = store::migrations::MIGRATIONS.len();
+/// The version this migration leaves and the one before. The fixtures
+/// below take a store back to `BEFORE` by dropping `latest_payloads` and
+/// what the migrations after it made, with `LATER`.
+const AFTER: usize = 19;
 const BEFORE: usize = AFTER - 1;
+/// The version every migration leaves.
+const LAST: usize = store::migrations::MIGRATIONS.len();
+const LATER: &str = crate::usage::stored::UNDO;
 
 #[test]
-fn the_newest_payload_migration_is_the_last() {
+fn the_fixtures_undo_every_migration_after_the_newest_payload_one() {
+    let later = &store::migrations::MIGRATIONS[AFTER..];
+    assert_eq!(store::migrations::MIGRATIONS[BEFORE], super::MIGRATION);
     assert_eq!(
-        store::migrations::MIGRATIONS[BEFORE],
-        super::MIGRATION,
-        "a later migration needs fixtures here built up to this one"
+        later,
+        [crate::usage::stored::MIGRATION],
+        "a later migration needs its undo in LATER"
     );
 }
 
@@ -104,11 +109,11 @@ fn the_migration_moves_a_marked_newest_payload_out_of_events() {
     )
     .unwrap();
     c.execute_batch(&format!(
-        "DROP TABLE latest_payloads; PRAGMA user_version={BEFORE};"
+        "DROP TABLE latest_payloads; {LATER} PRAGMA user_version={BEFORE};"
     ))
     .unwrap();
     store::init(&mut c).unwrap();
-    assert_eq!(number(&c, "PRAGMA user_version"), version(AFTER));
+    assert_eq!(number(&c, "PRAGMA user_version"), version(LAST));
     assert_eq!(number(&c, "SELECT count(payload) FROM events"), 51);
     let (issue, event, mark): (i64, i64, Vec<u8>) = c
         .query_row(
@@ -185,7 +190,7 @@ fn behind() -> Connection {
         .unwrap();
     mark(&c, 51, &payload);
     c.execute_batch(&format!(
-        "DROP TABLE latest_payloads; PRAGMA user_version={BEFORE};"
+        "DROP TABLE latest_payloads; {LATER} PRAGMA user_version={BEFORE};"
     ))
     .unwrap();
     c
@@ -209,7 +214,7 @@ fn a_migration_that_fails_moves_nothing_and_runs_again() {
     assert_eq!(number(&c, marked), 1);
     c.execute_batch("DROP TRIGGER refuse").unwrap();
     store::init(&mut c).unwrap();
-    assert_eq!(number(&c, "PRAGMA user_version"), version(AFTER));
+    assert_eq!(number(&c, "PRAGMA user_version"), version(LAST));
     assert_eq!(number(&c, marked), 0);
     assert_eq!(number(&c, "SELECT event FROM latest_payloads"), 51);
     assert_eq!(store::payload(&c, 1).unwrap().unwrap()["extra"]["n"], 50);
@@ -262,7 +267,7 @@ fn the_migration_moves_the_newest_payload_of_each_project_and_passes_an_empty_is
         mark(&c, *event, payload);
     }
     c.execute_batch(&format!(
-        "DROP TABLE latest_payloads; PRAGMA user_version={BEFORE};"
+        "DROP TABLE latest_payloads; {LATER} PRAGMA user_version={BEFORE};"
     ))
     .unwrap();
     store::init(&mut c).unwrap();

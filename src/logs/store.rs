@@ -192,6 +192,11 @@ pub(super) struct State {
     open: HashMap<Date, OpenDay>,
     uncommitted: usize,
     tallies: Arc<Mutex<tally::Days>>,
+    /// Counts of `log_days` per day and project until their commit holds.
+    pending: HashMap<Date, HashMap<i64, crate::usage::Count>>,
+    log_days: LogDays,
+    /// Whether the log directory was listed for [`log_days::Mark::Absent`].
+    listed: bool,
 }
 
 impl State {
@@ -208,6 +213,9 @@ impl State {
             strays: HashSet::new(),
             open: HashMap::new(),
             uncommitted: 0,
+            pending: HashMap::new(),
+            log_days: LogDays::new(crate::time::now_ms()),
+            listed: false,
         }
     }
 
@@ -270,8 +278,8 @@ impl State {
             // loses its own logs, not those of the other days. Counted once
             // the day is open, so a day that fails to open counts nothing. A
             // day index created before patterns has no field to stamp, so
-            // its records are not counted either: a report would list ids
-            // that find none of them.
+            // its records are not counted by pattern: a report would list
+            // ids that find none of them. `log_days` counts them all.
             let stamp = match self.writer(day) {
                 Ok(open) => open.pattern,
                 Err(e) => {
@@ -280,7 +288,9 @@ impl State {
                     continue;
                 }
             };
-            let id = stamp.map(|field| (field, self.tally(day, &r)));
+            let bytes = tally::raw_bytes(&r);
+            self.count_stored(day, r.project_id, bytes);
+            let id = stamp.map(|field| (field, self.tally(day, &r, bytes)));
             let open = self.writer(day)?;
             if let Err(e) = open
                 .writer
@@ -311,7 +321,7 @@ impl State {
             }
         }
         for day in committed {
-            self.settle_tally(day);
+            self.settled(day);
         }
         self.uncommitted = 0;
         let mut first = None;
@@ -326,7 +336,7 @@ impl State {
     // next add_document would block forever. Drop it and reopen on the next write.
     fn discard(&mut self, day: Date) {
         self.open.remove(&day);
-        self.discard_tally(day);
+        self.lost(day);
     }
 
     fn close(&mut self, day: Date) -> Result<()> {
@@ -336,9 +346,9 @@ impl State {
         };
         let committed = open.writer.commit();
         if committed.is_ok() {
-            self.settle_tally(day);
+            self.settled(day);
         } else {
-            self.discard_tally(day);
+            self.lost(day);
         }
         self.close_tally(day);
         committed?;
@@ -389,6 +399,8 @@ impl State {
 pub struct LogWriter {
     pub queue: LogQueue,
     pub thread: thread::JoinHandle<()>,
+    /// What the writer stored and retention cut, for the usage flusher.
+    pub log_days: LogDays,
 }
 
 impl LogWriter {
@@ -402,6 +414,7 @@ impl LogWriter {
         std::fs::create_dir_all(&root)?;
         let (queue, inbox) = LogQueue::bounded(QUEUE_ROWS, QUEUE_BYTES);
         let mut state = State::new(root, retention_days, overrides);
+        let log_days = state.log_days.clone();
         let thread = thread::spawn(move || {
             #[expect(
                 clippy::print_stderr,
@@ -451,7 +464,11 @@ impl LogWriter {
             }
             report("shutdown", state.close_all());
         });
-        Ok(Self { queue, thread })
+        Ok(Self {
+            queue,
+            thread,
+            log_days,
+        })
     }
 }
 
@@ -661,6 +678,10 @@ pub use queue::{Held, LogInbox, LogQueue, QueueError};
 
 #[path = "tally.rs"]
 mod tally;
+
+#[path = "log_days.rs"]
+pub mod log_days;
+pub use log_days::LogDays;
 
 #[path = "pattern_report.rs"]
 mod pattern_report;

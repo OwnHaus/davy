@@ -307,6 +307,9 @@ pub enum Job {
     },
     /// Records and bytes ingest accepted, see src/usage.rs.
     Usage(Vec<crate::usage::Row>),
+    /// Logs the log writer stored and retention cut, see
+    /// src/usage/stored.rs.
+    LogDays(crate::logs::store::log_days::Flush),
 }
 pub type Outcome = std::result::Result<(), String>;
 pub struct Write {
@@ -346,10 +349,16 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
             crate::items::client_report::prune(c, *at)?;
             crate::items::session::prune(c, *at)?;
             crate::usage::prune(c, *at)?;
+            crate::usage::stored::prune(c, *at)?;
+            crate::usage::stored::sample(c, *at)?;
             Ok(Ok(()))
         }
         Job::Usage(rows) => {
             crate::usage::write(c, rows)?;
+            Ok(Ok(()))
+        }
+        Job::LogDays(flush) => {
+            crate::usage::stored::write(c, flush)?;
             Ok(Ok(()))
         }
         Job::Check {

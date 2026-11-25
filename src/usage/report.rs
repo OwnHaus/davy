@@ -48,6 +48,10 @@ pub struct Project {
     pub logs_days: u32,
     pub errors_days: u32,
     pub counts: [Count; 5],
+    /// Raw bytes of the logs stored on the index days of the window, as
+    /// the pattern counters count them. Never subtracted from what the
+    /// clients sent: the two count different bytes on different days.
+    pub stored: Count,
 }
 
 /// The report on `data`, which walks the disk now.
@@ -99,6 +103,7 @@ pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
         None => None,
     };
     let counted = super::between(c, from, today, filter)?;
+    let stored = super::stored::between(c, from, today, filter)?;
     let projects = kept
         .iter()
         .filter(|(id, _)| filter.is_none_or(|f| f == *id))
@@ -107,6 +112,7 @@ pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
             logs_days: k.logs.days.get(),
             errors_days: k.errors.days.get(),
             counts: Signal::ALL.map(|s| counted.get(&(*id, s)).copied().unwrap_or_default()),
+            stored: stored.get(id).copied().unwrap_or_default(),
         })
         .collect();
     // Midnight UTC of the first day.
@@ -284,24 +290,25 @@ impl Report {
     }
 
     fn project(&self, p: &Project, size: &impl Fn(u64) -> Value) -> Value {
+        let count = |n: Count| {
+            json!({
+                "records": n.records,
+                "bytes": size(n.bytes),
+                "records_per_day": per_day(n.records, self.days),
+                "bytes_per_day": size(bytes_per_day(n.bytes, self.days)),
+            })
+        };
         let signals: Map<String, Value> = Signal::ALL
             .iter()
             .zip(p.counts)
-            .map(|(s, n)| {
-                let v = json!({
-                    "records": n.records,
-                    "bytes": size(n.bytes),
-                    "records_per_day": per_day(n.records, self.days),
-                    "bytes_per_day": size(bytes_per_day(n.bytes, self.days)),
-                });
-                (s.name().to_owned(), v)
-            })
+            .map(|(s, n)| (s.name().to_owned(), count(n)))
             .collect();
         json!({
             "project": p.slug,
             "logs_days": p.logs_days,
             "errors_days": p.errors_days,
             "signals": signals,
+            "logs_stored": count(p.stored),
         })
     }
 
@@ -420,16 +427,16 @@ impl Report {
     fn table(&self, out: &mut impl std::io::Write) -> std::io::Result<()> {
         writeln!(
             out,
-            "\n{:<20} {:<9} {:>10} {:>10} {:>12} {:>10}",
+            "\n{:<20} {:<11} {:>10} {:>10} {:>12} {:>10}",
             "project", "signal", "records", "bytes", "records/day", "bytes/day"
         )?;
         for p in &self.projects {
-            for (s, n) in Signal::ALL.iter().zip(p.counts) {
+            let names = Signal::ALL.iter().map(|s| s.name()).chain(["logs_stored"]);
+            for (name, n) in names.zip(p.counts.iter().chain([&p.stored])) {
                 writeln!(
                     out,
-                    "{:<20} {:<9} {:>10} {:>10} {:>12} {:>10}",
+                    "{:<20} {name:<11} {:>10} {:>10} {:>12} {:>10}",
                     p.slug,
-                    s.name(),
                     n.records,
                     human(n.bytes),
                     per_day(n.records, self.days),

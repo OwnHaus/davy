@@ -434,10 +434,10 @@ impl State {
         self.tallies.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Counts `r` in `day` and returns the pattern to stamp on it.
-    pub(super) fn tally(&mut self, day: Date, r: &LogRecord) -> u64 {
+    /// Counts `r`, which weighs `bytes`, in `day` and returns the pattern
+    /// to stamp on it.
+    pub(super) fn tally(&mut self, day: Date, r: &LogRecord, bytes: u64) -> u64 {
         let pattern = patterns::of(&r.message);
-        let bytes = raw_bytes(r);
         let dir = self.root.join(day.to_string());
         let mut tallies = self.tallies();
         let tally = tallies.entry(day).or_insert_with(|| open(day, &dir));

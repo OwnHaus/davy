@@ -4,6 +4,7 @@
 //! every few seconds.
 
 use crate::{
+    logs::store::LogDays,
     store::{self, Job, Refused},
     time,
 };
@@ -20,6 +21,7 @@ mod cli;
 pub mod disk;
 pub mod forecast;
 mod report;
+pub mod stored;
 pub use cli::{Args, run};
 pub use report::{Prepared, Report, Request, prepare, report};
 
@@ -87,7 +89,7 @@ impl Count {
             bytes: wide(bytes),
         }
     }
-    fn add(&mut self, other: Self) {
+    pub(crate) fn add(&mut self, other: Self) {
         self.records = self.records.saturating_add(other.records);
         self.bytes = self.bytes.saturating_add(other.bytes);
     }
@@ -202,15 +204,21 @@ pub fn prune(c: &Connection, at_ms: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Sends the counts to the writer every `period`. Counts the writer did
-/// not commit, because its queue was full or the write failed, wait for
-/// the next tick. The task ends when the writer stops.
-pub async fn flush_every(counter: Counter, sender: store::Sender, period: Duration) {
+/// Sends the counts and what the log writer stored and cut to the writer
+/// every `period`. What the writer did not commit, because its queue was
+/// full or the write failed, waits for the next tick. The task ends when
+/// the writer stops.
+pub async fn flush_every(
+    counter: Counter,
+    log_days: LogDays,
+    sender: store::Sender,
+    period: Duration,
+) {
     let mut ticks = tokio::time::interval(period);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         ticks.tick().await;
-        match send(&counter, &sender).await {
+        match send(&counter, &log_days, &sender).await {
             Ok(()) | Err(Refused::Full) => {}
             Err(Refused::Stopped) => return,
             Err(e @ Refused::Failed(_)) => warn("counts not stored, kept for the next try", &e),
@@ -220,9 +228,13 @@ pub async fn flush_every(counter: Counter, sender: store::Sender, period: Durati
 
 /// Sends what is left and waits until the writer committed it, for
 /// shutdown. A full queue is tried again every 50 ms.
-pub async fn flush(counter: &Counter, sender: &store::Sender) -> Result<(), Refused> {
+pub async fn flush(
+    counter: &Counter,
+    log_days: &LogDays,
+    sender: &store::Sender,
+) -> Result<(), Refused> {
     loop {
-        match send(counter, sender).await {
+        match send(counter, log_days, sender).await {
             Err(Refused::Full) => tokio::time::sleep(QUEUE_FULL_WAIT).await,
             done => return done,
         }
@@ -237,20 +249,32 @@ pub fn warn(what: &str, e: &Refused) {
     eprintln!("usage flusher: {what}: {e}");
 }
 
-/// Hands the counts to the writer, at most [`MAX_ROWS`] in one job, and
-/// waits until each job is committed. A job the writer did not commit goes
-/// back into `counter`, with the counts not sent yet.
-async fn send(counter: &Counter, sender: &store::Sender) -> Result<(), Refused> {
+/// Hands the counts, then what the log writer stored and cut, to the
+/// writer, at most [`MAX_ROWS`] in one job, and waits until each job is
+/// committed. A job the writer did not commit goes back where it came
+/// from, before what was not sent yet.
+async fn send(
+    counter: &Counter,
+    log_days: &LogDays,
+    sender: &store::Sender,
+) -> Result<(), Refused> {
     loop {
         let rows = counter.take_up_to(MAX_ROWS);
         if rows.is_empty() {
-            return Ok(());
+            break;
         }
         if let Err(e) = store::submit(sender, Job::Usage(rows.clone())).await {
             counter.put_back(rows);
             return Err(e);
         }
     }
+    while let Some(flush) = log_days.take_up_to(MAX_ROWS) {
+        if let Err(e) = store::submit(sender, Job::LogDays(flush.clone())).await {
+            log_days.put_back(flush);
+            return Err(e);
+        }
+    }
+    Ok(())
 }
 
 /// Counted records and bytes per project and signal from the day `from`

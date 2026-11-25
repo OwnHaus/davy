@@ -119,9 +119,11 @@ fn behind(data: &Path) {
     let version: i64 = c
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
+    // latest_payloads came in the migration before the newest, which adds
+    // log_days and store_days, so the store goes back two versions.
     c.execute_batch(&format!(
-        "DROP TABLE latest_payloads; PRAGMA user_version={};",
-        version - 1
+        "DROP TABLE latest_payloads; DROP TABLE log_days; DROP TABLE store_days; PRAGMA user_version={};",
+        version - 2
     ))
     .unwrap();
 }

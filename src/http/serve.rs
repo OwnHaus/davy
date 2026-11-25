@@ -87,6 +87,7 @@ fn tasks(
     smtp: Option<alert::mail::Smtp>,
     public_url: &url::Url,
     usage: &crate::usage::Counter,
+    log_days: &logs::store::LogDays,
 ) -> anyhow::Result<Tasks> {
     let sweeper = store::sweep_every(sender.clone(), SWEEP_EVERY, retention.errors);
     let checker = monitor::check::run(
@@ -102,8 +103,12 @@ fn tasks(
         NOTIFY_EVERY,
         public_url.clone(),
     );
-    let flusher =
-        crate::usage::flush_every(usage.clone(), sender.clone(), crate::usage::FLUSH_EVERY);
+    let flusher = crate::usage::flush_every(
+        usage.clone(),
+        log_days.clone(),
+        sender.clone(),
+        crate::usage::FLUSH_EVERY,
+    );
     Ok([
         ("sweeper", tokio::spawn(sweeper)),
         ("checker", tokio::spawn(checker)),
@@ -168,7 +173,16 @@ pub async fn serve(
     let routes = router(app, admin.merge(ui));
     let listener = tokio::net::TcpListener::bind(listen).await?;
     crate::ready::notify()?;
-    let tasks = tasks(data, &writer.sender, retention, smtp, public_url, &usage)?;
+    let log_days = log_writer.log_days.clone();
+    let tasks = tasks(
+        data,
+        &writer.sender,
+        retention,
+        smtp,
+        public_url,
+        &usage,
+        &log_days,
+    )?;
     #[cfg(unix)]
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = axum::serve(listener, routes)
@@ -182,14 +196,18 @@ pub async fn serve(
         })
         .await;
     stop(tasks).await?;
-    // The counts since the last flush, now that no request adds to them.
-    if let Err(e) = crate::usage::flush(&usage, &writer.sender).await {
+    // The log writer goes first: it commits and settles what it holds, and
+    // its last counts go out with the flush below.
+    drop(log_writer.queue);
+    let logs_stopped = join([("log writer", log_writer.thread)]);
+    // The counts since the last flush, now that nothing adds to them.
+    if let Err(e) = crate::usage::flush(&usage, &log_days, &writer.sender).await {
         crate::usage::warn("the counts since the last flush were not stored", &e);
     }
     drop(writer.sender);
     drop(writer.ui);
-    drop(log_writer.queue);
-    join([("writer", writer.thread), ("log writer", log_writer.thread)])?;
+    join([("writer", writer.thread)])?;
+    logs_stopped?;
     result?;
     Ok(())
 }

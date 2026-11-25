@@ -16,6 +16,41 @@ const DISK_KEYS: [&str; 10] = [
     "worst_case",
 ];
 
+/// Stored logs by index day: those of `yesterday` are in a 2-day window,
+/// those of three days ago are not.
+fn write_stored(c: &rusqlite::Connection, yesterday: jiff::civil::Date) {
+    let stored = |day, records, bytes| logs::store::log_days::Row {
+        day,
+        project: 1,
+        count: usage::Count { records, bytes },
+    };
+    let earlier = yesterday.checked_sub(jiff::ToSpan::days(2)).unwrap();
+    let flush = logs::store::log_days::Flush {
+        start: None,
+        segments: vec![logs::store::log_days::Segment {
+            rows: vec![
+                stored(earlier, 1, 1),
+                stored(yesterday, 19_000, 3_900_000_000),
+            ],
+            marks: Vec::new(),
+        }],
+    };
+    usage::stored::write(c, &flush).unwrap();
+}
+
+/// What [`write_stored`] wrote for `yesterday`, as `usage` shows it.
+fn assert_stored(stored: &Value) {
+    let keys: Vec<_> = stored.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(
+        keys,
+        ["bytes", "bytes_per_day", "records", "records_per_day"]
+    );
+    assert_eq!(
+        (&stored["records"], &stored["bytes"]),
+        (&json!(19_000), &json!("3.9 GB"))
+    );
+}
+
 #[tokio::test]
 async fn usage_shows_the_counts_and_the_forecast_with_human_sizes() {
     let s = server();
@@ -37,6 +72,7 @@ async fn usage_shows_the_counts_and_the_forecast_with_human_sizes() {
         ],
     )
     .unwrap();
+    write_stored(&c, yesterday);
     let day = s.data.join("logs").join(yesterday.to_string());
     std::fs::create_dir_all(&day).unwrap();
     std::fs::write(day.join("segment"), [1_u8; 4096]).unwrap();
@@ -74,8 +110,15 @@ async fn usage_shows_the_counts_and_the_forecast_with_human_sizes() {
     assert_eq!(days, (&json!(30), &json!(30)));
     assert_eq!(
         keys(api),
-        ["errors_days", "logs_days", "project", "signals"]
+        [
+            "errors_days",
+            "logs_days",
+            "logs_stored",
+            "project",
+            "signals"
+        ]
     );
+    assert_stored(&api["logs_stored"]);
     assert_eq!(
         (&api["project"], &api["logs_days"]),
         (&json!("api"), &json!(30))

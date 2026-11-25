@@ -167,6 +167,7 @@ impl State {
         self.refresh()?;
         self.empty_trash();
         let (mut found, mut strays) = (Vec::new(), HashSet::new());
+        let (mut present, mut unread) = (BTreeSet::new(), false);
         for entry in std::fs::read_dir(&self.root)? {
             // A symlink is not a day, so a deletion never leaves the root.
             match entry.map(|e| day_dirs::entry(&e)) {
@@ -175,11 +176,22 @@ impl State {
                     if self.strays.insert(stray.name.clone()) {
                         report_stray(&self.root, &stray);
                     }
+                    present.extend(parse_day(&stray.name));
                     strays.insert(stray.name);
                 }
                 Ok(Entry::Other) => {}
-                Err(e) => report_entry(&e.into()),
+                Err(e) => {
+                    unread = true;
+                    report_entry(&e.into());
+                }
             }
+        }
+        // A day with neither a directory nor a stray in its place lost its
+        // logs, whatever the settings say. An entry that could not be read
+        // may be such a day, so its listing marks nothing.
+        if !unread {
+            present.extend(found.iter().copied());
+            self.mark_absent(present);
         }
         // A stray that was moved away and comes back is reported again.
         self.strays.retain(|name| strays.contains(name));
@@ -252,6 +264,12 @@ impl State {
             return Ok(Ok(false));
         }
         let deleted = self.delete(day, &cut);
+        // Under the lock and with the cut it deleted by, so a setting read
+        // before the lock never marks a pair. A day removed whole is marked
+        // by `trash`.
+        if let Ok(Deleted::Nothing | Deleted::Marked { .. }) = &deleted {
+            self.mark_cut(day, &cut);
+        }
         // The counters go with the logs, under the same lock and settings,
         // and on every pass until the cut holds, so a crash or a failure
         // between the deletion and this point leaves no count of a deleted
@@ -396,6 +414,8 @@ impl State {
         anyhow::ensure!(real_dir(&dir)?, "{} is gone", dir.display());
         let target = trash.join(format!("{day}-{}", now_ns()));
         std::fs::rename(&dir, &target)?;
+        // Searches no longer see the day, so its logs are gone.
+        self.mark_gone(day);
         std::fs::remove_dir_all(&target)?;
         Ok(())
     }

@@ -137,3 +137,47 @@ fn a_usage_write_that_fails_leaves_the_rest_of_its_batch_stored() {
         .unwrap();
     assert_eq!(firsts, 1);
 }
+
+#[test]
+fn a_log_days_write_that_fails_leaves_the_rest_of_its_batch_stored() {
+    let mut c = Connection::open_in_memory().unwrap();
+    super::super::init(&mut c).unwrap();
+    create_project(&c, "api").unwrap();
+    c.execute_batch(crate::usage::stored::UNDO).unwrap();
+    let first = Job::First {
+        what: crate::firsts::First::Log,
+        at: 1_795_392_000_000,
+    };
+    let stored = Job::LogDays(crate::logs::store::log_days::Flush {
+        start: Some(1_795_392_000_000),
+        segments: vec![crate::logs::store::log_days::Segment {
+            rows: vec![crate::logs::store::log_days::Row {
+                day: "2026-11-23".parse().unwrap(),
+                project: 1,
+                count: crate::usage::Count::new(1, 10),
+            }],
+            marks: Vec::new(),
+        }],
+    });
+    let batch: Vec<Write> = [first, stored]
+        .into_iter()
+        .map(|job| Write {
+            job,
+            done: oneshot::channel().0,
+        })
+        .collect();
+    let outcomes = write_batch(&mut c, &batch);
+    assert_eq!(
+        outcomes,
+        [Ok(()), Err("no such table: log_days".to_owned())]
+    );
+    let firsts: Vec<String> = c
+        .prepare("SELECT what FROM firsts")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    // The start of counting went back with its job.
+    assert_eq!(firsts, ["log"]);
+}

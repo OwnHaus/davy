@@ -492,7 +492,8 @@ fn chmod(path: &Path, mode: u32) {
 fn count_with(state: &mut State, path: &Path, mode: u32) -> bool {
     let now = now_ns();
     chmod(path, mode);
-    state.tally(day_of(now), &line_at(now, now));
+    let line = line_at(now, now);
+    state.tally(day_of(now), &line, raw_bytes(&line));
     chmod(path, 0o700);
     let mut tallies = state.tallies();
     let tally = tallies.get_mut(&day_of(now)).unwrap();

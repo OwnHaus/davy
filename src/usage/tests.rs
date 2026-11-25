@@ -1,5 +1,5 @@
 use super::*;
-use crate::{store, test_support::scratch};
+use crate::{logs::store::log_days, store, test_support::scratch};
 use serde_json::json;
 
 fn memory() -> Connection {
@@ -111,6 +111,7 @@ async fn the_flush_task_hands_the_counts_to_the_writer_and_stops_with_it() {
     counter.put(day("2026-11-24"), 2, Signal::Feedback, Count::new(1, 60));
     let task = tokio::spawn(flush_every(
         counter.clone(),
+        LogDays::default(),
         sender,
         Duration::from_millis(1),
     ));
@@ -129,6 +130,7 @@ async fn counts_the_writer_failed_to_store_go_out_again_on_the_next_tick() {
     counter.put(day("2026-11-24"), 1, Signal::Logs, Count::new(3, 300));
     let task = tokio::spawn(flush_every(
         counter.clone(),
+        LogDays::default(),
         sender,
         Duration::from_millis(1),
     ));
@@ -157,7 +159,7 @@ async fn a_flush_of_1001_counts_writes_500_500_and_1() {
     }
     let flush = tokio::spawn({
         let counter = counter.clone();
-        async move { flush(&counter, &sender).await }
+        async move { flush(&counter, &LogDays::default(), &sender).await }
     });
     let mut sizes = Vec::new();
     for _ in 0..3 {
@@ -177,7 +179,7 @@ async fn a_shutdown_flush_the_writer_failed_says_why_and_keeps_the_counts() {
     counter.put(day("2026-11-24"), 2, Signal::Sessions, Count::new(4, 400));
     let flush = tokio::spawn({
         let counter = counter.clone();
-        async move { flush(&counter, &sender).await }
+        async move { flush(&counter, &LogDays::default(), &sender).await }
     });
     let (_, write) = next(&inbox).await;
     write.done.send(Err("disk I/O error".into())).unwrap();
@@ -193,10 +195,12 @@ async fn a_shutdown_flush_the_writer_failed_says_why_and_keeps_the_counts() {
 fn the_migration_goes_down_and_up_again() {
     let mut c = memory();
     write(&c, &[row("2026-11-24", 1, Signal::Logs, 1, 1)]).unwrap();
-    // usage_daily is 18; the newest payload table, 19, goes down with it.
-    let before = store::SCHEMA_VERSION - 2;
+    // usage_daily is 18; the newest payload table, 19, and the stored log
+    // counts, 20, go down with it.
+    let before = store::SCHEMA_VERSION - 3;
     c.execute_batch(&format!(
-        "DROP TABLE latest_payloads; {UNDO} PRAGMA user_version={before};"
+        "DROP TABLE latest_payloads; {UNDO} {} PRAGMA user_version={before};",
+        stored::UNDO
     ))
     .unwrap();
     let tables = |c: &Connection| -> i64 {
@@ -268,8 +272,32 @@ fn data_with_counts(name: &str) -> std::path::PathBuf {
         ],
     )
     .unwrap();
+    let old = today.checked_sub(30.days()).unwrap();
+    let stored_rows = vec![
+        stored_row(today, 2, 990, 2_000_000),
+        stored_row(old, 2, 9, 9),
+    ];
+    stored::write(&tx, &stored_flush(stored_rows)).unwrap();
     tx.commit().unwrap();
     data
+}
+
+fn stored_row(day: Date, project: i64, records: u64, bytes: u64) -> log_days::Row {
+    log_days::Row {
+        day,
+        project,
+        count: Count { records, bytes },
+    }
+}
+
+fn stored_flush(rows: Vec<log_days::Row>) -> log_days::Flush {
+    log_days::Flush {
+        start: None,
+        segments: vec![log_days::Segment {
+            rows,
+            marks: Vec::new(),
+        }],
+    }
 }
 
 /// Why [`data_with_counts`] has no forecast: shop keeps logs 7 days.
@@ -309,6 +337,8 @@ fn davy_usage_prints_the_counts_of_the_window_as_json() {
     assert_eq!(shop["signals"]["logs"]["records"], 1_000);
     assert_eq!(shop["signals"]["logs"]["bytes"], 2_500_000);
     assert_eq!(shop["signals"]["errors"]["records"], 0);
+    assert_eq!(shop["logs_stored"]["records"], 990);
+    assert_eq!(shop["logs_stored"]["bytes"], 2_000_000);
     assert!(v["disk"]["total"].as_u64().unwrap() > 0);
     assert_eq!(v["disk"]["days_left"], json!(null));
     std::fs::remove_dir_all(&data).unwrap();
@@ -331,8 +361,13 @@ fn davy_usage_prints_text_by_default_and_refuses_a_long_window() {
     let text = String::from_utf8(out).unwrap();
     let line = format!("forecast  no forecast: {}\n", no_closed_days());
     assert!(text.contains(&line), "{text}");
-    let api_errors = format!("{:<20} {:<9} {:>10} {:>10}", "api", "errors", 3, "3.0 KB");
+    let api_errors = format!("{:<20} {:<11} {:>10} {:>10}", "api", "errors", 3, "3.0 KB");
     assert!(text.contains(&api_errors), "{text}");
+    let shop_stored = format!(
+        "{:<20} {:<11} {:>10} {:>10}",
+        "shop", "logs_stored", 990, "2.0 MB"
+    );
+    assert!(text.contains(&shop_stored), "{text}");
     assert!(
         text.contains("shop                 keeps logs 7 days, errors 36500 days\n"),
         "{text}"
