@@ -279,6 +279,118 @@ assert json.loads((p/'gzip-response.json').read_text())=={'id':'1111111111111111
 assert json.loads((p/'store-response.json').read_text())=={'id':'22222222222222222222222222222222'}
 print('gzip envelope and /store/: verified 2 issues, count 1 each')
 PY
+# Savings and discard: 120 events of one issue make it noisy; a person
+# discards it at the CLI, and its next events are counted, not stored.
+DSN=$("$BIN" project create noisy --data "$SCRATCH/data" --public-url "$URL")
+KEY="${DSN#*://}"; KEY="${KEY%%@*}"
+PROJECT="${DSN##*/}"
+noisy() {
+  python3 - "$URL/api/$PROJECT/store/" "$KEY" "$1" "$2" <<'PY'
+import json,sys,urllib.request
+url,key,n,batch=sys.argv[1],sys.argv[2],int(sys.argv[3]),int(sys.argv[4])
+for i in range(n):
+  # A payload field named discarded_at is payload: ingest never sets the mark.
+  body=json.dumps({'event_id':f'{batch:02x}{i:030x}','message':'noisy checkout timeout','discarded_at':'2026-01-01T00:00:00Z'}).encode()
+  req=urllib.request.Request(url,body,{'Content-Type':'application/json','X-Sentry-Auth':f'Sentry sentry_key={key}, sentry_version=7'})
+  urllib.request.urlopen(req).read()
+PY
+}
+noisy_count() { "$BIN" issues --data "$SCRATCH/data" --project noisy --json | python3 -c 'import json,sys; print(sum(i["count"] for i in json.load(sys.stdin)))'; }
+until_count() {
+  for i in {1..100}; do [ "$(noisy_count)" = "$1" ] && return 0; sleep 0.1; done
+  echo "noisy holds $(noisy_count) events, not $1"; exit 1
+}
+noisy 120 1
+until_count 120
+NOISY=$("$BIN" sql --data "$SCRATCH/data" "SELECT i.id FROM issues i JOIN projects p ON p.id = i.project_id WHERE p.slug = 'noisy'" | tail -n 1)
+"$BIN" usage --data "$SCRATCH/data" --project noisy --view savings --json > "$SCRATCH/savings.json"
+"$BIN" usage --data "$SCRATCH/data" --project noisy --view savings > "$SCRATCH/savings.txt"
+"$BIN" sql --data "$SCRATCH/data" --json "SELECT discarded_at FROM issues WHERE id = $NOISY" > "$SCRATCH/mark.json"
+python3 - "$SCRATCH" "$NOISY" <<'PY'
+import json,pathlib,shlex,sys
+p,issue=pathlib.Path(sys.argv[1]),int(sys.argv[2])
+data=shlex.quote(str(p/'data'))
+u=json.loads((p/'savings.json').read_text())
+# No logs, no pattern; searches recorded for minutes suggest no retention.
+assert u['savings']==[{'kind':'issue','id':issue,'project':'noisy','title':'noisy checkout timeout','events':120,'share':1.0,'suggest':f'fix it, or a person can discard it, which also stops storing its real events: davy issue discard {issue} --data {data}','try':f'issue_context {issue}'}],u
+assert u['note'].startswith('last_queried is approximate: '),u['note']
+text=(p/'savings.txt').read_text()
+assert f'issue     {issue} in noisy: 120 events, 100% of its error events\n          noisy checkout timeout\n          fix it, or a person can discard it, which also stops storing its real events: davy issue discard {issue} --data {data}\n          try: issue_context {issue}\n' in text,text
+assert json.loads((p/'mark.json').read_text())['rows']==[[None]],(p/'mark.json').read_text()
+print(f'savings CLI: issue {issue} sends 120 of 120 error events in noisy, with the discard command; a payload field did not discard it')
+PY
+"$BIN" issue discard "$NOISY" --data "$SCRATCH/data" > "$SCRATCH/discard.json"
+noisy 5 2
+discarded() { "$BIN" usage --data "$SCRATCH/data" --project noisy --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["projects"][0]["errors_discarded"])'; }
+for i in {1..100}; do [ "$(discarded)" = 5 ] && break; sleep 0.1; done
+DISCARDED=$(discarded)
+STORED=$(noisy_count)
+"$BIN" usage --data "$SCRATCH/data" --project noisy --view savings --json > "$SCRATCH/savings.json"
+"$BIN" issue discard "$NOISY" --undo --data "$SCRATCH/data" > "$SCRATCH/undo.json"
+noisy 1 3
+until_count 121
+python3 - "$SCRATCH" "$NOISY" "$DISCARDED" "$STORED" <<'PY'
+import json,pathlib,sys
+p,issue=pathlib.Path(sys.argv[1]),int(sys.argv[2])
+d=json.loads((p/'discard.json').read_text())
+assert [d[k] for k in ('issue','project','title','discarded')]==[issue,'noisy','noisy checkout timeout',True],d
+assert (sys.argv[3],sys.argv[4])==('5','120'),sys.argv[3:]
+# A discarded issue is no longer suggested.
+assert json.loads((p/'savings.json').read_text())['savings']==[],(p/'savings.json').read_text()
+undo=json.loads((p/'undo.json').read_text())
+assert (undo['discarded'],undo['discarded_at'])==(False,None),undo
+print(f'discard CLI: 5 events of discarded issue {issue} counted, not stored; after --undo the next is stored (121)')
+PY
+# Discarded again, the issue says so in every list, and mcp.mjs reads the
+# mark through issue_context.
+"$BIN" issue discard "$NOISY" --data "$SCRATCH/data" > /dev/null
+"$BIN" issues --data "$SCRATCH/data" --project noisy --json > "$SCRATCH/issues.json"
+"$BIN" issues --data "$SCRATCH/data" --discarded --json > "$SCRATCH/discarded.json"
+"$BIN" issues --data "$SCRATCH/data" --project noisy > "$SCRATCH/issues.txt"
+"$BIN" context "$NOISY" --data "$SCRATCH/data" > "$SCRATCH/context.json"
+python3 - "$SCRATCH" "$NOISY" <<'PY'
+import json,pathlib,re,sys
+p,issue=pathlib.Path(sys.argv[1]),int(sys.argv[2])
+[i]=json.loads((p/'issues.json').read_text())
+assert i['id']==issue and re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z',i['discarded_at'] or ''),i
+assert [d['id'] for d in json.loads((p/'discarded.json').read_text())]==[issue],(p/'discarded.json').read_text()
+text=(p/'issues.txt').read_text()
+assert text.startswith(f'{issue}\tunresolved (discarded)\t121\tnoisy checkout timeout'),text
+c=json.loads((p/'context.json').read_text())
+assert c['issue']['discarded_at']==i['discarded_at'],c['issue']
+print(f'discard mark: issue {issue} shows discarded_at {i["discarded_at"]} in davy issues, --discarded and davy context')
+PY
+# Retention fit: project -x has 8 days of recorded searches that read a day
+# back and 2 MB of logs 20 days old, which a shorter retention deletes.
+"$BIN" project create --data "$SCRATCH/data" --public-url "$URL" -- -x > /dev/null
+python3 - "$SCRATCH/data/davy.sqlite" <<'PY'
+import datetime,sqlite3,sys
+c=sqlite3.connect(sys.argv[1],timeout=10)
+[(pid,)]=c.execute("SELECT id FROM projects WHERE slug='-x'").fetchall()
+today=datetime.datetime.now(datetime.timezone.utc).date()
+day=lambda n:(today-datetime.timedelta(days=n)).isoformat()
+with c:
+  c.executemany("INSERT INTO search_days(day,project_id,searches,oldest_read_days) VALUES (?,?,1,1)",[(day(n),pid) for n in range(1,9)])
+  c.execute("INSERT INTO log_days(day,project_id,records,bytes,cut) VALUES (?,?,1,2000000,0)",(day(20),pid))
+c.close()
+PY
+"$BIN" usage --data "$SCRATCH/data" --project=-x --view savings --json > "$SCRATCH/fit.json"
+"$BIN" usage --data "$SCRATCH/data" --project=-x --view savings > "$SCRATCH/fit.txt"
+python3 - "$SCRATCH" "$BIN" <<'PY'
+import json,pathlib,re,shlex,sys
+p,binary=pathlib.Path(sys.argv[1]),sys.argv[2]
+data=shlex.quote(str(p/'data'))
+[r]=json.loads((p/'fit.json').read_text())['savings']
+n,days=r['logs_days'],int(r['suggest'].split()[1])
+assert (r['kind'],r['project'],r['history_days'],days<n,r['saves']>0)==('retention','-x',7,True,True),r
+assert r['suggest']==f'keep {days} days; a person can run: davy project retention --logs {days} --data {data} -- -x',r
+# try reads: it counts the logs the cut would delete.
+assert r['try']==f'count_logs project="-x" since={n}d until={days}d',r
+text=(p/'fit.txt').read_text()
+assert f'          a person can run: davy project retention --logs {days} --data {data} -- -x\n          try: count_logs project="-x" since={n}d until={days}d\n' in text,text
+(p/'retention-x.sh').write_text(shlex.quote(binary)+r['suggest'].split('a person can run: davy',1)[1]+'\n')
+print(f'retention fit CLI: -x keeps {n} days, suggests {days} with a read-only try and the command for a person')
+PY
 SDK_ISSUE=$("$BIN" sql --data "$SCRATCH/data" "SELECT i.id FROM issues i JOIN projects p ON p.id = i.project_id WHERE p.slug = 'sentry-node-7' AND i.title LIKE 'TypeError%'" | tail -n 1)
 "$BIN" event "$SDK_ISSUE" --data "$SCRATCH/data" > "$SCRATCH/payload.json"
 python3 - "$SCRATCH/payload.json" <<'PY'
@@ -288,7 +400,18 @@ print('event CLI: verified stored JSON payload')
 PY
 STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' --data '{}' "$URL/mcp")
 [ "$STATUS" = 401 ] || { echo "MCP without token gave $STATUS"; exit 1; }
-node "$ROOT/e2e/mcp.mjs" "$URL" "$TOKEN"
+node "$ROOT/e2e/mcp.mjs" "$URL" "$TOKEN" "$NOISY"
+# The command the view printed for -x works as printed, slug and all.
+sh "$SCRATCH/retention-x.sh" > "$SCRATCH/retention-x.json"
+"$BIN" usage --data "$SCRATCH/data" --project=-x --view savings --json > "$SCRATCH/fit.json"
+python3 - "$SCRATCH" <<'PY'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])
+set_=json.loads((p/'retention-x.json').read_text())
+assert (set_['project'],set_['errors_days'])==('-x',None) and set_['logs_days']<30,set_
+assert json.loads((p/'fit.json').read_text())['savings']==[],(p/'fit.json').read_text()
+print(f'retention command: davy project retention -- -x set logs to {set_["logs_days"]} days; the view suggests nothing more')
+PY
 "$BIN" feedback --data "$SCRATCH/data" | grep -qx '  tried: e2e tried' || { echo 'davy feedback does not list the MCP report'; exit 1; }
 "$BIN" usage --data "$SCRATCH/data" --project e2e-connect --json > "$SCRATCH/usage.json"
 python3 - "$SCRATCH/usage.json" <<'PY'

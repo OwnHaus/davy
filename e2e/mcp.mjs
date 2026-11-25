@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
-const [url, token] = process.argv.slice(2)
+const [url, token, noisy] = process.argv.slice(2)
 const transport = new StreamableHTTPClientTransport(new URL('/mcp', url), {
   requestInit: { headers: { Authorization: `Bearer ${token}` } },
 })
@@ -10,6 +10,8 @@ const client = new Client({ name: 'davy-e2e', version: '1.0.0' })
 await client.connect(transport)
 
 const { tools } = await client.listTools()
+// No tool discards an issue or shortens a retention: the savings view only
+// shows the command for a person to run.
 assert.deepEqual(tools.map(t => t.name).sort(), ['connect_project', 'count_logs', 'issue_context', 'log_patterns', 'mark_fixed', 'project_status', 'release_health', 'schema', 'search_logs', 'set_retention', 'sql', 'submit_feedback', 'usage'])
 
 async function call(name, args) {
@@ -107,6 +109,40 @@ const otlpJson = patterns.top.find(p => p.example === '{"error":"otlp json db ti
 assert.deepEqual([otlpJson.template, otlpJson.records, otlpJson.levels], ['{"error":"otlp json db timeout", "ms":<NUM>}', 1, { error: 1 }])
 const byPattern = JSON.parse((await call('search_logs', { project: 'logs', since: '10m', pattern: otlpJson.id })).text)
 assert.deepEqual(byPattern.map(l => [l.message, l.pattern]), [['{"error":"otlp json db timeout","ms":5000}', otlpJson.id]])
+// The searches above are recorded fire and forget, so the savings view
+// sees them once the writer took them.
+let savings, entry
+for (let i = 0; i < 100; i++) {
+  savings = JSON.parse((await call('usage', { view: 'savings', project: 'logs', top: 20 })).text)
+  entry = savings.savings.find(e => e.kind === 'pattern' && e.id === otlpJson.id)
+  if (entry?.last_queried) break
+  await new Promise(resolve => setTimeout(resolve, 100))
+}
+assert.deepEqual([entry.project, entry.level, entry.example, entry.try], ['logs', 'error', otlpJson.example, `search_logs pattern=${otlpJson.id}`])
+assert.match(entry.bytes, /^\d+(\.\d)? [KMGTP]?B$/)
+assert.match(entry.last_queried, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/)
+// Searches recorded for minutes suggest no retention, and logs has no issue.
+assert.deepEqual(savings.savings.filter(e => e.kind !== 'pattern'), [])
+assert.match(savings.note, /^last_queried is approximate: /)
+assert.equal((await call('usage', { view: 'bills' })).isError, true)
+console.log(`PASS savings: pattern ${entry.id}, ${entry.bytes}, last queried ${entry.last_queried}`)
+// run.sh discarded issue noisy: issue_context shows the mark, and the sql
+// view of issues has it too.
+const discarded = JSON.parse((await call('issue_context', { issue_id: Number(noisy) })).text)
+assert.match(discarded.issue.discarded_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/)
+const marked = JSON.parse((await call('sql', { query: `SELECT id FROM issues WHERE discarded_at IS NOT NULL` })).text)
+assert.deepEqual(marked.rows, [[Number(noisy)]])
+// run.sh gave project -x a retention entry: its try is a count_logs call
+// an agent can make, and the command that cuts is for a person.
+const fit = JSON.parse((await call('usage', { view: 'savings', project: '-x' })).text)
+const [cut] = fit.savings
+const asked = cut.try.match(/^count_logs project=(".*") since=(\d+d) until=(\d+d)$/)
+assert.ok(asked, cut.try)
+const counted = await call('count_logs', { project: JSON.parse(asked[1]), since: asked[2], until: asked[3] })
+assert.ok(!counted.isError, counted.text)
+assert.match(cut.suggest, /^keep \d+ days; a person can run: davy project retention --logs \d+ --data \S+ -- -x$/)
+assert.match(cut.saves, /^\d+(\.\d)? [KMGTP]?B$/)
+console.log(`PASS discard mark and retention try: issue ${noisy} discarded_at ${discarded.issue.discarded_at}; ${cut.try} ran read-only`)
 
 const health = JSON.parse((await call('release_health', { project: 'health', since: '1d' })).text)
 assert.deepEqual(health.map(r => [r.release, r.sessions, r.crashed, r.crash_free_sessions, r.users, r.crash_free_users]), [['e2e@2', 6, 1, 83.33, 2, 50]])
@@ -124,4 +160,4 @@ assert.deepEqual(feedback.rows[0].slice(1), ['e2e tried', 'e2e happened', null])
 assert.ok(feedback.rows[0][0], 'the client name comes from _meta or User-Agent')
 
 await client.close()
-console.log(`mcp: verified 13 tools, set_retention, usage, sql, issue_context, search_logs, count_logs, log_patterns, release_health, mark_fixed on issue ${issue} and submit_feedback from client ${feedback.rows[0][0]}`)
+console.log(`mcp: verified 13 tools, set_retention, usage, the savings view, sql, issue_context, search_logs, count_logs, log_patterns, release_health, mark_fixed on issue ${issue} and submit_feedback from client ${feedback.rows[0][0]}`)
