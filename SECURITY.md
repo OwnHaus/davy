@@ -69,7 +69,7 @@ What runs when. Items marked planned have a milestone in `docs/design.md`.
 **Before the cloud takes outside users (planned).**
 
 - Every item under "Before the cloud launch" in `docs/design.md` is closed, and tests show that no key, token or agent tool of one tenant reaches another tenant's data.
-- An external penetration test of the cloud by an independent firm, grey box with source access. Its critical and high findings are fixed before the beta opens. It repeats every year and after a change to the tenant model.
+- An internal penetration test of the cloud, grey box with source access, by a review agent that did not write the code, against OWASP ASVS 5.0 level 2 and the OWASP API Security Top 10. It covers the router, the control plane, sign-in and tenant isolation, and ends in a written report like the ones in `docs/security/`. Its critical and high findings are fixed before the beta opens. It repeats every year and after a change to the tenant model.
 
 **After the public release (planned).**
 
