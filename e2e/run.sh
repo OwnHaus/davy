@@ -334,6 +334,97 @@ assert ctx['issue']['title'].startswith('TypeError: Cannot read properties of un
 print('source maps: sentry-cli upload, symbolicated top frame parseOrder at ../src/app.js:5')
 PY
 node "$ROOT/e2e/alerts.mjs" "$BIN" "$SCRATCH/alerts"
+# Davy monitors itself. With the server stopped, a panic is saved as a crash
+# file and a stray file in the log root makes the log writer warn at its next
+# start. The restarted server records both in the project davy, and a panic
+# while it runs is recorded within its 5 s scan. Each panic runs from another
+# directory than the build's, so its frames name Davy's files from the crate
+# root wherever Davy runs.
+kill "$PID"; wait "$PID" || true; PID=''
+CRASH_STATUS=0; (cd "$SCRATCH" && "$BIN" crash --data "$SCRATCH/data") 2>"$SCRATCH/crash.log" || CRASH_STATUS=$?
+[ "$CRASH_STATUS" = 101 ] || { echo "davy crash exited with $CRASH_STATUS"; cat "$SCRATCH/crash.log"; exit 1; }
+grep -q 'the panic is saved in' "$SCRATCH/crash.log" || { echo 'davy crash did not save the panic'; cat "$SCRATCH/crash.log"; exit 1; }
+grep -q 'this panic is a test' "$SCRATCH/crash.log" || { echo 'davy crash did not say the panic is a test'; cat "$SCRATCH/crash.log"; exit 1; }
+python3 - "$SCRATCH/data/crashes" <<'PY'
+import os,stat,sys
+d=sys.argv[1]; [f]=os.listdir(d)
+modes=(oct(stat.S_IMODE(os.stat(d).st_mode)),oct(stat.S_IMODE(os.stat(os.path.join(d,f)).st_mode)))
+assert modes==('0o700','0o600'),modes
+assert f.endswith('.json') and not f.startswith('.'),f
+print('self report: davy crash saved one crash file, mode 0600 in a directory of mode 0700')
+PY
+(umask 077; : > "$SCRATCH/data/logs/2020-01-01")
+DAVY_TOKEN="$TOKEN" "$BIN" serve --data "$SCRATCH/data" --listen "127.0.0.1:$PORT" --public-url "$URL" >>"$SCRATCH/server.log" 2>&1 &
+PID=$!
+for i in {1..100}; do
+  if curl -s -o /dev/null "$URL/"; then break; fi
+  sleep 0.1
+done
+for i in {1..100}; do
+  "$BIN" issues --data "$SCRATCH/data" --project davy --json > "$SCRATCH/davy-issues.json"
+  "$BIN" logs --data "$SCRATCH/data" --project davy --since 10m --level warn --json > "$SCRATCH/davy-logs.ndjson"
+  if grep -q 'a test panic' "$SCRATCH/davy-issues.json" && grep -q '2020-01-01' "$SCRATCH/davy-logs.ndjson"; then break; fi
+  sleep 0.1
+done
+[ -z "$(ls -A "$SCRATCH/data/crashes")" ] || { echo 'the crash file was not recorded at start'; exit 1; }
+(cd "$SCRATCH" && "$BIN" crash --data "$SCRATCH/data") 2>>"$SCRATCH/crash.log" || true
+for i in {1..100}; do
+  "$BIN" issues --data "$SCRATCH/data" --project davy --json > "$SCRATCH/davy-issues.json"
+  if grep -q '"count": *2' "$SCRATCH/davy-issues.json"; then break; fi
+  sleep 0.1
+done
+DAVY_ISSUE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[0]["id"])' "$SCRATCH/davy-issues.json")
+"$BIN" context "$DAVY_ISSUE" --data "$SCRATCH/data" > "$SCRATCH/davy-context.json"
+# Doctor may fail a check of the machine that runs the suite, such as a
+# nearly full disk, so it may exit 1, but never because of its davy check.
+DOCTOR_STATUS=0; "$BIN" doctor --data "$SCRATCH/data" --json > "$SCRATCH/doctor.json" 2>"$SCRATCH/doctor.log" || DOCTOR_STATUS=$?
+case $DOCTOR_STATUS in 0 | 1) ;; *) echo "doctor exited with $DOCTOR_STATUS"; cat "$SCRATCH/doctor.log"; exit 1 ;; esac
+python3 - "$SCRATCH" "$DAVY_ISSUE" "$DOCTOR_STATUS" <<'PY'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1]); issue=int(sys.argv[2]); doctor_status=int(sys.argv[3])
+issues=json.loads((p/'davy-issues.json').read_text())
+assert [(i['title'],i['count']) for i in issues]==[('panic: a test panic, asked for with `davy crash`',2)],issues
+lines=[json.loads(l) for l in (p/'davy-logs.ndjson').read_text().splitlines()]
+stray=[l for l in lines if '2020-01-01' in l['message']]
+assert stray and stray[0]['level']=='warn' and stray[0]['service']=='davy',lines
+assert stray[0]['attributes']['component']=='log writer',stray[0]
+ctx=json.loads((p/'davy-context.json').read_text())
+event=ctx['latest_event']
+assert (event['level'],event['platform'])==('fatal','rust'),event
+assert event['release'].startswith('davy@'),event['release']
+exc=event['exceptions'][-1]
+assert (exc['type'],exc['handled'])==('panic',False),exc
+top=[f for f in exc['frames'] if f['in_app']][-1]
+assert top['function'].split('::')[-1]=='test_panic' and top['filename']=='src/self_report/crash.rs',top
+assert isinstance(top['lineno'],int),top
+checks=json.loads((p/'doctor.json').read_text())['checks']
+failing=[c['name'] for c in checks if c['status']=='fail']
+assert (doctor_status==1)==bool(failing),(doctor_status,failing)
+assert 'davy' not in failing,checks
+[check]=[c for c in checks if c['name']=='davy']
+assert check['status']=='warn' and f'issue {issue} ' in check['detail'],check
+assert check['fix'].startswith(f'davy context {issue} --data '),check
+print(f"self report: a warning of the log writer and a crash recorded at start and live, issue {issue} with 2 events, top frame test_panic at {top['filename']}:{top['lineno']}, and doctor names davy context {issue}")
+PY
+# With --no-self-report Davy records nothing of itself: a crash file of an
+# earlier run stays where it is, the log writer's warning about a stray file
+# goes to stderr only, and the store holds no project and no log line.
+kill "$PID"; wait "$PID" || true; PID=''
+QUIET="$SCRATCH/quiet"
+(cd "$SCRATCH" && "$BIN" crash --data "$QUIET") 2>/dev/null || true
+(umask 077; mkdir -p "$QUIET/logs"; : > "$QUIET/logs/2020-01-01")
+"$BIN" serve --data "$QUIET" --listen "127.0.0.1:$PORT" --public-url "$URL" --no-self-report >"$SCRATCH/quiet.log" 2>&1 &
+PID=$!
+for i in {1..100}; do
+  if grep -q '2020-01-01' "$SCRATCH/quiet.log" && curl -s -o /dev/null "$URL/"; then break; fi
+  sleep 0.1
+done
+grep -q '2020-01-01' "$SCRATCH/quiet.log" || { echo 'the log writer did not warn about the stray file'; cat "$SCRATCH/quiet.log"; exit 1; }
+QUIET_ROWS=$("$BIN" sql "SELECT (SELECT count(*) FROM projects), (SELECT count(*) FROM log_days), (SELECT count(*) FROM issues)" --data "$QUIET" --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["rows"])')
+[ "$QUIET_ROWS" = '[[0, 0, 0]]' ] || { echo "with --no-self-report the store holds projects, log days and issues $QUIET_ROWS"; exit 1; }
+[ "$(ls "$QUIET/crashes" | wc -l | tr -d ' ')" = 1 ] || { echo 'with --no-self-report the crash file was taken'; ls -la "$QUIET/crashes"; exit 1; }
+kill "$PID"; wait "$PID" || true; PID=''
+echo 'self report: with --no-self-report a crash file and a warning of the log writer are not recorded, and no project is made'
 OPEN=$(find "$SCRATCH/data" \( -perm -004 -o -perm -040 \) -print)
 [ -z "$OPEN" ] || { echo "readable by other users: $OPEN"; exit 1; }
 echo 'data directory: no file is readable by other users'
