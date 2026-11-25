@@ -5,6 +5,7 @@ use crate::{
     items::user_feedback::{self, IssueFeedback},
     logs::store::{LogHit, LogQuery, search},
     store,
+    time::HOUR_NS,
 };
 use anyhow::Result;
 use rusqlite::Connection;
@@ -12,7 +13,6 @@ use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
 
-const HOUR_NS: i64 = 3_600_000_000_000;
 const SECOND_NS: i64 = 1_000_000_000;
 
 #[derive(Debug, Serialize)]

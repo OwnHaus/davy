@@ -15,7 +15,6 @@ use std::path::Path;
 
 /// How far back `since` may reach.
 pub const MAX_SINCE_DAYS: i64 = 90;
-const DAY_NS: i64 = 86_400_000_000_000;
 
 pub struct Request {
     pub project: Option<String>,
@@ -82,7 +81,7 @@ pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
     if since > now_ns {
         bail!("since is in the future");
     }
-    if since < now_ns.saturating_sub(MAX_SINCE_DAYS * DAY_NS) {
+    if since < now_ns.saturating_sub(MAX_SINCE_DAYS * time::DAY_NS) {
         bail!("since reaches back at most {MAX_SINCE_DAYS}d");
     }
     let from = time::day_of(since);
@@ -117,7 +116,7 @@ pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
         })
         .collect();
     // Midnight UTC of the first day.
-    let start = since.div_euclid(DAY_NS) * DAY_NS;
+    let start = since.div_euclid(time::DAY_NS) * time::DAY_NS;
     Ok(Prepared {
         since: from,
         days: days(now_ns.saturating_sub(start)),

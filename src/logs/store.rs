@@ -1,5 +1,5 @@
 use super::{LogLevel, LogRecord, LogSource, ORIGINAL_TIMESTAMP, patterns};
-use crate::time::{day_of, now_ns, rfc3339};
+use crate::time::{DAY_NS, day_of, now_ns, rfc3339};
 use anyhow::{Result, anyhow};
 use jiff::civil::Date;
 use serde::Serialize;
@@ -21,7 +21,6 @@ use tantivy::{
     tokenizer::TokenizerManager,
 };
 
-const DAY_NS: i64 = 86_400_000_000_000;
 const MAX_OPEN_DAYS: usize = 3;
 const COMMIT_EVERY: Duration = Duration::from_secs(1);
 const COMMIT_AT_DOCS: usize = 100_000;

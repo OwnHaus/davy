@@ -4,6 +4,11 @@
 use jiff::{Timestamp, civil, tz::TimeZone};
 use std::time::Duration;
 
+/// A day in nanoseconds.
+pub const DAY_NS: i64 = 86_400_000_000_000;
+/// An hour in nanoseconds.
+pub const HOUR_NS: i64 = 3_600_000_000_000;
+
 pub fn now_ms() -> i64 {
     Timestamp::now().as_millisecond()
 }
