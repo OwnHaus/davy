@@ -19,6 +19,7 @@ use std::{
 
 mod cli;
 pub mod disk;
+pub mod footprint;
 pub mod forecast;
 mod report;
 pub mod stored;
