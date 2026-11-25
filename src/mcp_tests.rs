@@ -34,7 +34,7 @@ fn server() -> Server {
 fn next_job(writes: &crossbeam_channel::Receiver<store::Write>) -> store::Write {
     loop {
         let w = writes.recv().unwrap();
-        if !matches!(w.job, Job::First { .. }) {
+        if !matches!(w.job, Job::First { .. } | Job::Search { .. }) {
             return w;
         }
     }

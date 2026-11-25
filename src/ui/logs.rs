@@ -15,6 +15,7 @@ use crate::{
         store::{self as log_store, LogHit, LogQuery},
     },
     time::now_ns,
+    usage::savings::searches,
 };
 use axum::{
     Router,
@@ -162,13 +163,15 @@ async fn list(State(reads): State<Arc<Reads>>, uri: Uri) -> Result<Response, Ref
                 query.until = before.ts;
                 query.skip = before.seen;
             }
-            read_page(&reads, query, slug, Some(before)).await
+            read_page(&reads, query, slug, Some(before), false).await
         }
         (None, after) => {
             if let Some(after) = after {
                 query.since = query.since.max(after.saturating_add(1));
             }
-            read_page(&reads, query, slug, None).await
+            // The first page is the search a person ran. The pages before
+            // it and the live tail's polls after it are not searches.
+            read_page(&reads, query, slug, None, after.is_none()).await
         }
     }
 }
@@ -178,10 +181,17 @@ async fn read_page(
     mut query: LogQuery,
     slug: Option<String>,
     before: Option<Before>,
+    asked: bool,
 ) -> Result<Response, Refusal> {
     let (slugs, project) = projects(reads, slug).await?;
     query.project = project;
+    // Recorded once the search holds its permit, so a search turned away
+    // as busy is not counted.
+    let writes = asked.then(|| reads.writes().clone());
     let page = searching(reads, move |dir| {
+        if let Some(writes) = &writes {
+            searches::record(writes, searches::By::Ui, &query);
+        }
         if query.since > query.until {
             return Ok(Vec::new());
         }

@@ -1715,3 +1715,18 @@ A failure while recording one of Davy's own lines is never recorded in turn.
 - What the guards miss is caught by the rate limit: a loop records at most 10 lines an hour.
 
 A sink, forwarder or project that fails never fails a request or the server: lines go to stderr as before. On shutdown the forwarder records what is queued before the log writer stops; lines from then on go to stderr only.
+
+## Savings
+
+Where logs and errors could take less: the patterns with the most bytes and when a search last asked for each, the log retention each project's searches need, and the issues that send most of a project's error events. The `usage` tool and `davy usage` show it as a view of their own.
+
+### Search history
+
+The savings view needs to know what people and agents read. Davy records each log search in `searches(id, at, by, project_id, since, until, level, pattern, query)` and adds it to its day in `search_days(day, project_id, searches, oldest_read_days)`, both added by migration 23:
+
+- `search_logs` and `count_logs` over MCP record `by` `agent`. The logs page of the web UI records `by` `ui` for the first page of a search, once the search holds its permit, so a search turned away as busy is not recorded; the pages before it, the live tail's polls after it and the histogram are not searches of their own. `davy logs` opens the store read-only and records nothing, and neither does `issue_context`.
+- A row holds the filters as the search ran them: the project's id or null for every project, the window in unix nanoseconds, the minimum level as a number from 1 (trace) to 6 (fatal), the pattern id as the signed bits of its 64 bits, and the query text, trimmed, or null. `at` is when it ran, in unix milliseconds.
+- A search is queued fire and forget: a full writer queue drops it, so reading logs never waits on the writer and a burst of searches cannot hold ingest. The writer stores a search in a transaction of its own, so a search that fails rolls back no ingest. A query text over 1,000 bytes of UTF-8 is recorded as null, with the window and the other filters. The web UI takes a query of up to 1,000 characters, so a query of other scripts can pass it and still be over 1,000 bytes.
+- Each insert deletes the rows 10,000 ids or more behind it, a range of the primary key, so the table holds at most the newest 10,000 searches whatever the rate. The sweep deletes searches run more than 90 days ago.
+- `search_days` keeps, per UTC day of `at` and per project, or for every project with `project_id` 0 (a search over every project), the number of searches and `oldest_read_days`, the most whole days, rounded up, that a search of that day read back from when it ran. Each search adds one, the count stopping at the largest 64-bit integer, and keeps the larger oldest read. No trim of `searches` removes a day, so a busy day of short reads cannot hide a long read from earlier, and the days the rows cover tell how long Davy has recorded searches. The sweep deletes the days before the 90 days, at most 10,000 rows a sweep.
+- The rows say what was asked, not who asked it: a query text an agent sends can hold anything, so the savings view reads it as data, and the table is in the `sql` tool's schema like any other.

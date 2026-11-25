@@ -314,6 +314,12 @@ pub enum Job {
     /// Logs the log writer stored and retention cut, see
     /// src/usage/stored.rs.
     LogDays(crate::logs::store::log_days::Flush),
+    /// A log search a person or an agent ran at `at`, which the savings
+    /// view reads, see src/usage/savings/searches.rs.
+    Search {
+        at: Timestamp,
+        search: crate::usage::savings::searches::Search,
+    },
 }
 pub type Outcome = std::result::Result<(), String>;
 pub struct Write {
@@ -354,17 +360,13 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
             crate::items::session::prune(c, *at)?;
             crate::usage::prune(c, *at)?;
             crate::discard::prune(c, *at)?;
+            crate::usage::savings::searches::prune(c, *at)?;
             crate::usage::stored::sweep(c, *at)?;
             Ok(Ok(()))
         }
-        Job::Usage(rows) => {
-            crate::usage::write(c, rows)?;
-            Ok(Ok(()))
-        }
-        Job::LogDays(flush) => {
-            crate::usage::stored::write(c, flush)?;
-            Ok(Ok(()))
-        }
+        Job::Usage(rows) => Ok(Ok(crate::usage::write(c, rows)?)),
+        Job::LogDays(flush) => Ok(Ok(crate::usage::stored::write(c, flush)?)),
+        Job::Search { at, search } => Ok(Ok(crate::usage::savings::searches::add(c, *at, search)?)),
         Job::Check {
             monitor,
             at,

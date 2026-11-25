@@ -34,6 +34,7 @@ Out of scope:
 - Denial of service by a sender with a valid key that stays under the caps. Rate limits per key are planned for the cloud service.
 - Limits per client address. The login backoff counts per e-mail. Davy does not trust `X-Forwarded-For`, so a limit per address belongs in the reverse proxy, on `/ui/api/login` and `/ui/api/welcome` above all.
 - Access inside the team. Every person with a login sees every project with its DSN and log key, and every event, log, monitor and channel. Davy has no roles yet, so add only people who may read all of it.
+- Search text kept as history. Davy keeps the log searches run on the web UI's logs page and with the MCP tools `search_logs` and `count_logs` for up to 90 days, query text included, and any agent with the admin token on `/mcp` can read them through `sql`. A person who pastes a secret into a log search leaves it there until the history drops it.
 - Keeping a person out by guessing for them. Anyone who knows a person's e-mail can keep them from logging in, for up to 15 minutes at a time. A session already open keeps working.
 - Other servers on the same host. A browser sends a cookie to every port of a host, so a server on another port of Davy's host receives the session cookie. Give Davy a host name of its own.
 - Secrets outside the configured scrub classes that the sending app puts into events. The SDK's `beforeSend` remains an additional defense for application-specific data.

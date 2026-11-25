@@ -181,3 +181,49 @@ fn a_log_days_write_that_fails_leaves_the_rest_of_its_batch_stored() {
     // The start of counting went back with its job.
     assert_eq!(firsts, ["log"]);
 }
+
+#[test]
+fn a_search_write_that_fails_leaves_the_rest_of_its_batch_stored() {
+    use crate::usage::savings::searches::{By, Search};
+    let mut c = Connection::open_in_memory().unwrap();
+    super::super::init(&mut c).unwrap();
+    create_project(&c, "api").unwrap();
+    c.execute_batch("DROP TABLE search_days").unwrap();
+    let first = Job::First {
+        what: crate::firsts::First::Log,
+        at: 1_795_392_000_000,
+    };
+    let search = Job::Search {
+        at: 1_795_392_000_000,
+        search: Search {
+            by: By::Agent,
+            project: Some(1),
+            since: 0,
+            until: 1,
+            level: None,
+            pattern: None,
+            query: None,
+        },
+    };
+    let batch: Vec<Write> = [first, search]
+        .into_iter()
+        .map(|job| Write {
+            job,
+            done: oneshot::channel().0,
+        })
+        .collect();
+    let outcomes = write_batch(&mut c, &batch);
+    assert_eq!(
+        outcomes,
+        [Ok(()), Err("no such table: search_days".to_owned())]
+    );
+    let rows: (i64, i64) = c
+        .query_row(
+            "SELECT (SELECT count(*) FROM firsts WHERE what='log'), (SELECT count(*) FROM searches)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    // The first log stays, and the search went back with its own job.
+    assert_eq!(rows, (1, 0));
+}

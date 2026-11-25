@@ -181,3 +181,34 @@ async fn usage_refuses_a_what_if_or_since_it_cannot_answer() {
     let future = tool(&s.app, "usage", json!({ "since": since })).await;
     assert_eq!(future, ("since is in the future".to_owned(), true));
 }
+
+#[tokio::test]
+async fn search_logs_and_count_logs_record_the_search_for_the_savings_view() {
+    use crate::usage::savings::searches::By;
+    let s = server();
+    let filter = json!({"query": "card declined", "project": "api", "level": "warn"});
+    let (text, is_error) = tool(&s.app, "search_logs", filter.clone()).await;
+    assert!(!is_error, "{text}");
+    let (text, is_error) = tool(&s.app, "count_logs", json!({"pattern": "other"})).await;
+    assert!(!is_error, "{text}");
+    let searches: Vec<_> = s
+        .writes
+        .try_iter()
+        .filter_map(|w| match w.job {
+            Job::Search { search, .. } => Some(search),
+            _ => None,
+        })
+        .collect();
+    let shape: Vec<_> = searches
+        .iter()
+        .map(|s| (s.by, s.project, s.level, s.pattern, s.query.as_deref()))
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            (By::Agent, Some(1), Some(4), None, Some("card declined")),
+            (By::Agent, None, None, Some(patterns::OTHER), None),
+        ]
+    );
+    assert_eq!(searches[0].until - searches[0].since, 86_400_000_000_000);
+}

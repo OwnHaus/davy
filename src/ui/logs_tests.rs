@@ -298,6 +298,17 @@ async fn a_ninth_log_search_or_histogram_at_once_waits() {
         let r = read(&s, &cookie, uri).await;
         assert_eq!((r.status, r.header("retry-after")), (429, "1"), "{uri}");
     }
+    // A search turned away is not recorded: the writer applies a batch
+    // whole before it answers, so the search would be stored by now.
+    let barrier = store::Job::First {
+        what: crate::firsts::First::Log,
+        at: 1,
+    };
+    store::submit(&s.writer.ui, barrier).await.unwrap();
+    let recorded: i64 =
+        s.db.query_row("SELECT count(*) FROM searches", [], |r| r.get(0))
+            .unwrap();
+    assert_eq!(recorded, 0);
     drop(busy);
     for uri in ["/ui/api/logs", "/ui/api/logs/histogram"] {
         assert_eq!(read(&s, &cookie, uri).await.status, 200, "{uri}");
@@ -342,4 +353,50 @@ async fn the_attribute_searches_the_logs_page_builds_find_their_log() {
         assert_eq!(r.status, 200, "{q}: {}", r.body["error"]);
         assert_eq!(messages(&r.body), expected, "{q}");
     }
+}
+
+#[tokio::test]
+async fn the_first_page_is_recorded_as_a_search_and_later_pages_are_not() {
+    let (s, cookie) = shop();
+    let window = format!("from={}&to={AT}", AT - 1_000_000);
+    for uri in [
+        format!("/ui/api/logs?{window}&q=card&project=shop&level=warn"),
+        format!("/ui/api/logs?{window}&after={}", AT - 10),
+        format!("/ui/api/logs?{window}&before={AT}.0"),
+        format!("/ui/api/logs/histogram?{window}"),
+    ] {
+        let r = read(&s, &cookie, &uri).await;
+        assert_eq!(r.status, 200, "{uri}: {}", r.body);
+    }
+    // The writer applies jobs in order, so once this one is done the
+    // search queued before it is stored.
+    store::submit(
+        &s.writer.ui,
+        store::Job::First {
+            what: crate::firsts::First::Log,
+            at: 1,
+        },
+    )
+    .await
+    .unwrap();
+    let rows: Vec<(String, i64, i64, i64, i64, String)> =
+        s.db.prepare("SELECT by, project_id, since, until, level, query FROM searches")
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+    assert_eq!(
+        rows,
+        [("ui".into(), 1, AT - 1_000_000, AT, 4, "card".into())]
+    );
 }

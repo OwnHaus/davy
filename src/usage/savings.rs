@@ -3,6 +3,8 @@
 //! the log retention each project's searches need, and the issues that
 //! send most of a project's error events.
 
+pub mod searches;
+
 /// The discard mark of an issue, the events discarded per day, the log
 /// searches people and agents ran, and per day the searches and the
 /// oldest read, of a project or of every project (`project_id` 0). One

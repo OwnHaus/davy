@@ -18,7 +18,7 @@ use crate::{
     store::{self, IssueStatus, Job},
     time,
     token::{self, Token},
-    usage,
+    usage::{self, savings::searches},
 };
 use axum::{
     Router,
@@ -394,9 +394,12 @@ impl Tools {
         description = "Search logs from every source (Sentry, OpenTelemetry, Logtail shippers, Vercel Log Drains, and Davy itself: its own warnings and errors are in its own project, davy unless project_status names another under davy.project, with the part of Davy that wrote them in attributes.component). Returns hits oldest first with level, service, message, trace_id and attributes."
     )]
     async fn search_logs(&self, Parameters(req): Parameters<SearchLogs>) -> Reply {
+        let writes = self.writes.clone();
         self.blocking(move |data| {
             let limit = req.limit.unwrap_or(100).min(MAX_LOGS);
-            json(&search(&logs::dir(data), &req.filter.query(data, limit)?)?)
+            let q = req.filter.query(data, limit)?;
+            searches::record(&writes, searches::By::Agent, &q);
+            json(&search(&logs::dir(data), &q)?)
         })
         .await
     }
@@ -405,8 +408,10 @@ impl Tools {
         description = "Count the logs that match, per time bucket, with the filters of search_logs. Returns the total, the bucket width and each bucket that has logs as [start, count], oldest first, at most 200 buckets. Use it to see how often something happens and since when, then read examples with search_logs."
     )]
     async fn count_logs(&self, Parameters(filter): Parameters<LogFilter>) -> Reply {
+        let writes = self.writes.clone();
         self.blocking(move |data| {
             let q = filter.query(data, 0)?;
+            searches::record(&writes, searches::By::Agent, &q);
             json(&LogCounts::from(histogram(&logs::dir(data), &q)?))
         })
         .await

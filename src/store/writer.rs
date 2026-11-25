@@ -12,15 +12,16 @@ use tokio::sync::oneshot;
 const QUEUE_FULL_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
 const BATCH: usize = 64;
 
-/// Runs `batch`: every job in one transaction, but each [`Job::Usage`]
-/// and [`Job::LogDays`] in one of its own, so counting can neither roll
-/// back ingest nor be rolled back with it. A database failure fails every job of its transaction, a
-/// problem with one job only that job.
+/// Runs `batch`: every job in one transaction, but each [`Job::Usage`],
+/// [`Job::LogDays`] and [`Job::Search`] in one of its own, so counting and
+/// search history can neither roll back ingest nor be rolled back with it.
+/// A database failure fails every job of its transaction, a problem with
+/// one job only that job.
 pub(crate) fn write_batch(c: &mut Connection, batch: &[Write]) -> Vec<Outcome> {
     let (alone, shared): (Vec<_>, Vec<_>) = batch
         .iter()
         .enumerate()
-        .partition(|(_, w)| matches!(w.job, Job::Usage(_) | Job::LogDays(_)));
+        .partition(|(_, w)| matches!(w.job, Job::Usage(_) | Job::LogDays(_) | Job::Search { .. }));
     let mut outcomes = vec![Ok(()); batch.len()];
     let jobs: Vec<&Job> = shared.iter().map(|(_, w)| &w.job).collect();
     for ((i, _), outcome) in shared.iter().zip(transaction(c, &jobs)) {
