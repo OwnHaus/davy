@@ -39,6 +39,19 @@ fn footprint_constants_match_the_bench_report() {
             .as_u64()
             .unwrap()
     );
+    let errors = &r["coefficients"]["errors"];
+    let row = errors["event_with_payload"]["row_bytes"].as_f64().unwrap();
+    let hourly = errors["bytes_per_hourly_row"]["max"].as_f64().unwrap();
+    assert_eq!(
+        PRIOR.event_bytes,
+        format!("{:.0}", (row + hourly).ceil())
+            .parse::<u64>()
+            .unwrap()
+    );
+    assert_eq!(
+        PRIOR.payload_ppm,
+        ppm(&errors["event_with_payload"]["payload_per_raw_event_json"])
+    );
     let m = &r["machine"];
     let source = format!(
         "bench/footprint.json, measured {} at {} on {} ({})",
@@ -54,6 +67,8 @@ fn footprint_constants_match_the_bench_report() {
         ("mid", mid),
         ("high", high),
         ("day_index", PRIOR.day_index),
+        ("event_bytes", PRIOR.event_bytes),
+        ("payload_ppm", PRIOR.payload_ppm),
     ] {
         assert_ne!(n, 0, "{name} is 0: fill it from the report");
     }
