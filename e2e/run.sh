@@ -46,6 +46,27 @@ assert {i['title']:i['count'] for i in issues}=={'TypeError: SDK test failure':2
 print(sys.argv[2]+': verified 2 issues, counts 2 and 1')
 PY
 done
+# No log has arrived yet, so logs add nothing and the forecast rests on
+# the errors. Ingest counts reach usage_daily on the next flush, every 5 s.
+three() { python3 -c 'import json,sys; b=json.load(open(sys.argv[1]))["basis"]; sys.exit(not (b and b["errors"] and b["errors"]["projects"]==3))' "$SCRATCH/errors-only.json"; }
+for i in {1..100}; do
+  "$BIN" usage --data "$SCRATCH/data" --json > "$SCRATCH/errors-only.json"
+  three && break
+  sleep 0.2
+done
+three || { echo "davy usage held no errors of 3 projects after 100 tries: $(cat "$SCRATCH/errors-only.json")"; exit 1; }
+python3 - "$SCRATCH/errors-only.json" <<'PY'
+import json,sys
+u=json.load(open(sys.argv[1]))
+b=u['basis']
+assert b is not None and u.get('no_forecast') is None,u.get('no_forecast')
+assert (b['logs']['basis'],b['confidence'],u['growth_per_day'])==('errors_only','low',0),b
+assert b['why'].startswith('Davy counted no raw log bytes in the last 30 days and the disk holds no closed log day since '),b['why']
+assert b['why'].endswith("; confidence is low as errors that began less than a whole day ago add over 5% of the errors' growth, so it rests on hours"),b['why']
+assert b['errors']['projects']==3 and b['errors']['growth_per_day']>0,b['errors']
+assert u['estimate'] is not None and u['disk']['steady_state']>0,(u['estimate'],u['disk'])
+print(f"usage CLI: errors alone forecast a server without logs, {b['errors']['events_per_day']} events a day")
+PY
 DSN=$("$BIN" project create feedback --data "$SCRATCH/data" --public-url "$URL")
 node "$ROOT/e2e/send-feedback.mjs" "$DSN"
 for i in {1..50}; do
@@ -139,6 +160,14 @@ for i in {1..50}; do
   if [ "$(wc -l < "$SCRATCH/logs.ndjson")" -ge 10 ]; then break; fi
   sleep 0.2
 done
+# The log writer counts raw bytes in log_days once their commit holds; until
+# then the server reads as one without logs.
+counted() { [ "$("$BIN" sql --data "$SCRATCH/data" "SELECT count(*) FROM log_days WHERE bytes > 0" | tail -n 1)" != 0 ]; }
+for i in {1..50}; do
+  counted && break
+  sleep 0.2
+done
+counted || { echo 'the log writer counted no raw log bytes in log_days after 50 tries'; exit 1; }
 "$BIN" logs --data "$SCRATCH/data" --project logs --since 10m --level error --json 'timeout OR exception OR attributes.provider:acme' > "$SCRATCH/errors.ndjson"
 python3 - "$SCRATCH" <<'PY'
 import json,pathlib,sys
@@ -268,8 +297,14 @@ u=json.load(open(sys.argv[1]))
 [p]=u['projects']
 assert (p['project'],p['logs_days'],p['signals']['errors']['records'])==('e2e-connect',90,1),p
 assert isinstance(u['disk']['total'],int) and u['disk']['total']>u['disk']['free']>0,u['disk']
-assert u['basis'] is None and u['no_forecast'].startswith('Davy has counted raw log bytes for '),(u['basis'],u.get('no_forecast'))
-assert u['estimate'] is None and u['disk']['beyond_10_years'] is None,(u['estimate'],u['disk'])
+# Logs counted for minutes have no log basis yet: they count as 0 and the
+# forecast rests on the errors, at low confidence.
+b=u['basis']
+assert b is not None and u.get('no_forecast') is None,u.get('no_forecast')
+assert (b['logs']['basis'],b['confidence'],u['growth_per_day'])==('errors_only','low',0),b
+assert b['why'].startswith('logs are not in this forecast yet, so it rests on errors alone and counts logs as 0: Davy has counted raw log bytes for '),b['why']
+assert b['why'].endswith('; confidence is low while logs are left out'),b['why']
+assert u['estimate'] is not None and u['disk']['beyond_10_years'] is False,(u['estimate'],u['disk'])
 print(f"usage CLI: next to davy serve, 1 error of {p['signals']['errors']['bytes']} bytes for e2e-connect")
 PY
 ISSUE=$("$BIN" sql --data "$SCRATCH/data" "SELECT i.id FROM issues i JOIN projects p ON p.id = i.project_id WHERE p.slug = 'sentry-node-7' AND i.title LIKE 'RangeError%'" | tail -n 1)

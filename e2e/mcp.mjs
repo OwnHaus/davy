@@ -62,11 +62,12 @@ assert.match(used.disk.total, /^\d+(\.\d)? [KMGTP]?B$/)
 assert.match(used.projects[0].signals.errors.bytes, /^\d+(\.\d)? [KMGTP]?B$/)
 assert.equal(typeof used.projects[0].logs_stored.records, 'number')
 // A server minutes old has counted raw log bytes for under an hour and
-// holds no closed log day, so the forecast waits: no basis, no estimate.
-assert.equal(used.basis, null)
-assert.equal(used.estimate, null)
-assert.equal(used.disk.beyond_10_years, null)
-assert.match(used.no_forecast, /^Davy has counted raw log bytes for \d+ minutes; a first forecast needs an hour of them, or closed log days on disk$/)
+// holds no closed log day, so its logs have no basis yet: they count as 0
+// and the forecast rests on the errors, at low confidence.
+assert.deepEqual([used.basis.logs.basis, used.basis.confidence, used.no_forecast ?? null], ['errors_only', 'low', null])
+assert.match(used.basis.why, /^logs are not in this forecast yet, so it rests on errors alone and counts logs as 0: Davy has counted raw log bytes for \d+ minutes; a first forecast needs an hour of them, or closed log days on disk; confidence is low while logs are left out$/)
+assert.notEqual(used.estimate, null)
+assert.equal(used.disk.beyond_10_years, false)
 const whatIf = JSON.parse((await call('usage', { what_if: { logs_bytes_per_day: 1000000 } })).text)
 assert.equal(whatIf.growth_per_day, '1.0 MB')
 assert.equal(whatIf.basis, null)
