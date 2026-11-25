@@ -578,7 +578,7 @@ fn the_text_report_prints_control_characters_in_paths_as_replacements() {
         gaps: disk::Gaps {
             skipped: vec!["\u{1b}]0;owned\u{7}: permission denied".into()],
             skipped_count: 1,
-            stopped: None,
+            stopped: Some("at \u{1b}[31mred: over 1000000 entries".into()),
         },
         ..disk::Disk::default()
     });
@@ -589,7 +589,17 @@ fn the_text_report_prints_control_characters_in_paths_as_replacements() {
         text.contains("partial   left out \u{fffd}]0;owned\u{fffd}: permission denied\n"),
         "{text}"
     );
-    r.disk = Err("measuring a\u{1b}[2Jb: input/output error".into());
+    assert!(
+        text.contains(
+            "partial   the walk stopped early, at \u{fffd}[31mred: over 1000000 entries\n"
+        ),
+        "{text}"
+    );
+    let failed = "measuring a\u{1b}[2Jb: input/output error";
+    r.disk = Err(failed.into());
+    r.forecast = Err(forecast::NoForecast::Failed(format!(
+        "the disk was not measured: {failed}"
+    )));
     let mut text = Vec::new();
     r.text(&mut text).unwrap();
     let text = String::from_utf8(text).unwrap();
@@ -597,4 +607,9 @@ fn the_text_report_prints_control_characters_in_paths_as_replacements() {
         text.contains("disk      not measured: measuring a\u{fffd}[2Jb: input/output error\n"),
         "{text}"
     );
+    assert!(
+        text.contains("forecast  no forecast: the disk was not measured: measuring a\u{fffd}[2Jb: input/output error\n"),
+        "{text}"
+    );
+    assert!(!text.contains('\u{1b}'), "{text}");
 }

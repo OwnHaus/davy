@@ -387,4 +387,12 @@ fn davy_already_past_its_steady_state_never_fills_the_disk() {
         (f.growth, f.steady_state, f.days_left, f.full_on),
         (8 * GB, 258 * GB, None, None)
     );
+    // 5 GB under the 450 GB limit: the 12 GB Davy is past its steady state
+    // is no room to grow, so the disk still never fills.
+    let near = Input {
+        used: 445 * GB,
+        ..input
+    };
+    let f = forecast(&near, &WhatIf::default()).unwrap();
+    assert_eq!((f.days_left, f.full_on), (None, None));
 }
