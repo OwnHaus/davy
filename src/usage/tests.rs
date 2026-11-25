@@ -539,6 +539,8 @@ fn forecast_report(kept: (u32, u32), days_left: Option<u64>) -> Report {
             days_left,
             full_on: days_left.map(|_| day("2027-01-19")),
             unseen: Some("the forecast cannot show this what-if".into()),
+            logs: None,
+            full_on_range: [days_left.map(|_| day("2027-01-19")); 2],
         }),
         what_if: forecast::WhatIf::default(),
         projects: Vec::new(),

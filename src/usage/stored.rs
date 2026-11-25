@@ -184,6 +184,45 @@ pub fn between(
     Ok(out)
 }
 
+/// Raw bytes per index day and project from `from` on, oldest first: the
+/// day, the project's id, the bytes and whether retention cut the pair.
+pub fn since(c: &Connection, from: Date) -> Result<Vec<(Date, i64, u64, bool)>> {
+    let mut q = c.prepare(
+        "SELECT day, project_id, bytes, cut FROM log_days WHERE day>=?1 ORDER BY day, project_id",
+    )?;
+    let rows = q.query_map([from.to_string()], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, bool>(3)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (day, project, bytes, cut) = row?;
+        out.push((
+            day.parse()?,
+            project,
+            u64::try_from(bytes).unwrap_or(0),
+            cut,
+        ));
+    }
+    Ok(out)
+}
+
+/// When this server started counting raw bytes, ns.
+pub fn counted_since(c: &Connection) -> Result<Option<i64>> {
+    let at: Option<i64> = c
+        .query_row(
+            "SELECT at FROM firsts WHERE what=?1",
+            [COUNTING_START],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(at.map(|ms| ms.saturating_mul(1_000_000)))
+}
+
 #[cfg(test)]
 #[path = "stored_tests.rs"]
 mod tests;

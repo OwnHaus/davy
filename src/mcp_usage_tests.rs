@@ -88,6 +88,7 @@ async fn usage_shows_the_counts_and_the_forecast_with_human_sizes() {
     assert_eq!(
         keys(&v),
         [
+            "basis",
             "davy",
             "default_log_days",
             "disk",
@@ -103,6 +104,8 @@ async fn usage_shows_the_counts_and_the_forecast_with_human_sizes() {
     assert_eq!(keys(&v["disk"]), DISK_KEYS);
     assert_eq!(v["disk"]["partial"], Value::Null);
     assert_eq!(v["growth_per_day"], "1.0 MB");
+    // A what-if of the bytes per day states the growth: it rests on nothing.
+    assert_eq!(v["basis"], Value::Null);
     assert!(v["disk"]["total"].as_str().unwrap().ends_with('B'), "{v}");
     let api = &v["projects"][0];
     // The test server's project keeps the default retention.

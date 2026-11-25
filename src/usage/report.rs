@@ -72,6 +72,11 @@ pub struct Prepared {
     what_if: WhatIf,
     default_days: u32,
     projects: Vec<Project>,
+    /// Raw bytes per index day and project of the newest days, see
+    /// [`forecast::Input::raw`].
+    raw: Vec<forecast::RawDay>,
+    counted_since: Option<i64>,
+    now: i64,
 }
 
 /// Checks `req` and reads the counts and retentions it asks for.
@@ -115,6 +120,7 @@ pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
             stored: stored.get(id).copied().unwrap_or_default(),
         })
         .collect();
+    let raw = raw_days(c, today, &kept)?;
     // Midnight UTC of the first day.
     let start = since.div_euclid(time::DAY_NS) * time::DAY_NS;
     Ok(Prepared {
@@ -125,7 +131,35 @@ pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
         what_if: req.what_if.clone(),
         default_days: req.defaults.logs.get(),
         projects,
+        raw,
+        counted_since: super::stored::counted_since(c)?,
+        now: now_ns,
     })
+}
+
+/// Raw bytes per index day of every project, from [`forecast::LOOK_BACK`]
+/// days before `today` on, oldest first.
+fn raw_days(
+    c: &Connection,
+    today: Date,
+    kept: &[(i64, retention::Retention)],
+) -> Result<Vec<forecast::RawDay>> {
+    let from = today.checked_sub(jiff::Span::new().days(forecast::LOOK_BACK))?;
+    let mut out: Vec<forecast::RawDay> = Vec::new();
+    for (day, id, bytes, cut) in super::stored::since(c, from)? {
+        let Some((_, k)) = kept.iter().find(|(i, _)| *i == id) else {
+            continue;
+        };
+        let row = (k.project.clone(), bytes, cut);
+        match out.last_mut() {
+            Some(last) if last.day == day => last.projects.push(row),
+            _ => out.push(forecast::RawDay {
+                day,
+                projects: vec![row],
+            }),
+        }
+    }
+    Ok(out)
 }
 
 impl Prepared {
@@ -156,8 +190,8 @@ impl Prepared {
         }
     }
 
-    /// What the forecast reads: the closed log days and each project's log
-    /// retention.
+    /// What the forecast reads: the closed log days, each project's log
+    /// retention and the raw bytes counted.
     fn input(&self, disk: &Disk) -> forecast::Input {
         forecast::Input {
             today: self.today,
@@ -172,6 +206,10 @@ impl Prepared {
                 .map(|(_, k)| (k.project.clone(), k.logs.days.get()))
                 .collect(),
             default_days: self.default_days,
+            raw: self.raw.clone(),
+            counted_since: self.counted_since,
+            now: self.now,
+            prior: super::footprint::PRIOR,
         }
     }
 }
@@ -253,6 +291,7 @@ impl Report {
             }
             Err(e) => out["disk_error"] = json!(e),
         }
+        out["basis"] = self.basis_json(&size);
         if let Err(reason) = &self.forecast {
             out["no_forecast"] = json!(reason.to_string());
         }
@@ -266,6 +305,52 @@ impl Report {
             out["what_if_note"] = json!(note);
         }
         out
+    }
+
+    /// Whether the disk walk left something out.
+    fn partial(&self) -> bool {
+        self.disk.as_ref().is_ok_and(|d| !d.gaps.is_empty())
+    }
+
+    /// What the growth rests on and how far to trust it, or null where
+    /// a what-if states the growth or there is no forecast.
+    fn basis_json(&self, size: &impl Fn(u64) -> Value) -> Value {
+        let Some((f, l)) = self.logs() else {
+            return Value::Null;
+        };
+        let ratio = |ppm: u64| {
+            let r = f64::from(u32::try_from(ppm).unwrap_or(u32::MAX)) / 1_000_000.0;
+            json!((r * 10_000.0).round() / 10_000.0)
+        };
+        let date = |d: Option<Date>| d.map(|d| d.to_string());
+        json!({
+            "confidence": l.confidence(self.partial()).name(),
+            "full_on_range": f.full_on_range.map(date),
+            "logs": {
+                "basis": l.basis.name(),
+                "growth_per_day": {
+                    "low": size(l.growth.low),
+                    "mid": size(l.growth.mid),
+                    "high": size(l.growth.high),
+                },
+                "own_days": l.own_days,
+                "possible_days": l.possible_days,
+                "raw_per_day": l.raw.map(|r| size(r.mid)),
+                "raw_days": l.raw_days,
+                "counted_hours": l.counted_ns.map(|ns| (forecast::hours(ns) * 10.0).round() / 10.0),
+                "ratio": l.ratio.map(|r| ratio(r.mid)),
+                "ratio_range": l.ratio.map(|r| [ratio(r.low), ratio(r.high)]),
+                "own_ratio": l.own_ratio.map(ratio),
+                "footprint_ratio": ratio(l.prior.ratio.mid),
+                "footprint": l.prior.source,
+            },
+            "why": l.explain(self.partial()),
+        })
+    }
+
+    fn logs(&self) -> Option<(&Forecast, &forecast::Logs)> {
+        let f = self.forecast.as_ref().ok()?;
+        Some((f, f.logs.as_ref()?))
     }
 
     fn disk_json(&self, d: &Disk, size: &impl Fn(u64) -> Value) -> Value {
@@ -339,7 +424,7 @@ impl Report {
             return "the disk is past total minus headroom now".to_owned();
         }
         let on = f.full_on.map(|on| format!("on {on}, ")).unwrap_or_default();
-        let rate = human(f.growth);
+        let rate = rate(f);
         if !f.worst_case() {
             return format!("full {on}in {n} days, at {rate} of logs a day");
         }
@@ -363,11 +448,12 @@ impl Report {
                 out,
                 "{:<9} {} of logs a day, steady state {}",
                 "growth",
-                human(f.growth),
+                rate(f),
                 human(f.steady_state)
             )?;
         }
         writeln!(out, "{:<9} {}", "forecast", safe(&self.summary()))?;
+        self.basis_text(out)?;
         if let Some(n) = self.default_log_days {
             writeln!(
                 out,
@@ -376,6 +462,40 @@ impl Report {
             )?;
         }
         self.table(out)
+    }
+
+    /// The basis and its confidence, and the range of days when the low
+    /// and the high growth differ.
+    fn basis_text(&self, out: &mut impl std::io::Write) -> std::io::Result<()> {
+        let Some((f, l)) = self.logs() else {
+            return Ok(());
+        };
+        writeln!(
+            out,
+            "{:<9} {}, {} confidence: {}",
+            "basis",
+            l.basis.name(),
+            l.confidence(self.partial()).name(),
+            safe(&l.explain(self.partial()))
+        )?;
+        let earliest = if f.worst_case() {
+            " at the earliest"
+        } else {
+            ""
+        };
+        let range = match f.full_on_range {
+            [early, late] if early == late => return Ok(()),
+            [Some(early), Some(late)] => format!("full{earliest} between {early} and {late}"),
+            [Some(early), None] => format!("full on {early} at the earliest, never at the low end"),
+            [None, _] => return Ok(()),
+        };
+        writeln!(
+            out,
+            "{:<9} {range}, at {} to {} of logs a day",
+            "range",
+            human(l.growth.high),
+            human(l.growth.low)
+        )
     }
 
     fn disk_text(d: &Disk, out: &mut impl std::io::Write) -> std::io::Result<()> {
@@ -452,3 +572,15 @@ impl Report {
         Ok(())
     }
 }
+
+/// The growth the forecast decides on, as "up to" when that is the high
+/// end of a range.
+fn rate(f: &Forecast) -> String {
+    let high = f.logs.as_ref().is_some_and(|l| l.growth.mid != f.growth);
+    let up_to = if high { "up to " } else { "" };
+    format!("{up_to}{}", human(f.growth))
+}
+
+#[cfg(test)]
+#[path = "report_tests.rs"]
+mod tests;

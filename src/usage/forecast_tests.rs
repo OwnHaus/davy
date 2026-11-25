@@ -1,4 +1,5 @@
 use super::*;
+use crate::usage::footprint::FIXTURE;
 
 const GB: u64 = 1_000_000_000;
 const MB: u64 = 1_000_000;
@@ -33,6 +34,10 @@ fn filling() -> Input {
         total: 500 * GB,
         projects: projects(&[("api", 30), ("shop", 30)]),
         default_days: 30,
+        raw: Vec::new(),
+        counted_since: None,
+        now: 0,
+        prior: FIXTURE,
     }
 }
 
@@ -53,9 +58,58 @@ fn a_disk_that_fills_says_when() {
             days_left: Some(19),
             full_on: Some(day("2026-12-13")),
             unseen: None,
+            logs: Some(Logs {
+                basis: Basis::MeasuredDisk,
+                growth: Spread::flat(8 * GB),
+                own_days: 0,
+                possible_days: 7,
+                raw: None,
+                raw_days: 0,
+                counted_ns: None,
+                recent: false,
+                ratio: None,
+                own_ratio: None,
+                prior: FIXTURE,
+                why: "the growth is the median size on disk of 7 closed log days: this server has not counted raw log bytes yet".to_owned(),
+            }),
+            full_on_range: [Some(day("2026-12-13")); 2],
         }
     );
     assert!(!f.worst_case());
+}
+
+/// Without raw bytes the growth is the median closed day as before, its
+/// range is that day and its basis `measured_disk`.
+#[test]
+fn inputs_without_raw_keep_the_direct_forecast() {
+    for (input, growth, on) in [
+        (filling(), 8 * GB, day("2026-12-13")),
+        (mixed(), 10 * GB, day("2027-01-19")),
+    ] {
+        let f = forecast(&input, &WhatIf::default()).unwrap();
+        let l = f.logs.clone().unwrap();
+        assert_eq!(
+            (f.growth, l.basis, l.growth, l.confidence(false)),
+            (
+                growth,
+                Basis::MeasuredDisk,
+                Spread::flat(growth),
+                Confidence::Medium
+            )
+        );
+        assert_eq!(f.full_on_range, [Some(on); 2]);
+    }
+    // A what-if of the bytes per day states the growth: no basis.
+    let what_if = WhatIf {
+        logs_bytes_per_day: Some(GB),
+        ..WhatIf::default()
+    };
+    let f = forecast(&filling(), &what_if).unwrap();
+    // 1 GB a day kept 30 days stays below the 50 GB Davy takes now.
+    assert_eq!(
+        (f.growth, f.logs, f.full_on, f.full_on_range),
+        (GB, None, None, [None, None])
+    );
 }
 
 #[test]

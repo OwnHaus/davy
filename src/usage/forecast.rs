@@ -7,7 +7,15 @@
 //! bound no split of the growth can exceed. When projects keep logs for
 //! different times, the forecast is therefore a worst case: at the current
 //! rate of logs, the disk fills on its day or later, or never.
+//!
+//! The growth itself comes from [`growth`]: raw bytes per day times how
+//! they pack, or the disk sizes of the closed days.
 
+mod growth;
+
+pub use growth::{Basis, Confidence, LOOK_BACK, Logs, RawDay, Spread, hours};
+
+use crate::usage::footprint::Prior;
 use jiff::{Span, ToSpan as _, civil::Date};
 use rmcp::schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -35,6 +43,16 @@ pub struct Input {
     pub projects: Vec<(String, u32)>,
     /// The server's log retention, which a server without projects keeps.
     pub default_days: u32,
+    /// Raw bytes per index day and project from `log_days`, the newest
+    /// [`LOOK_BACK`] days and on, oldest first.
+    pub raw: Vec<RawDay>,
+    /// When Davy started counting raw bytes, ns. `None` on a server whose
+    /// writer never counted.
+    pub counted_since: Option<i64>,
+    /// Now, ns, for the hours counted on a new server.
+    pub now: i64,
+    /// How logs pack where the server has not measured it.
+    pub prior: Prior,
 }
 
 /// One input changed, to see what it would do.
@@ -114,7 +132,8 @@ impl std::fmt::Display for NoForecast {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Forecast {
-    /// Bytes of logs on disk per day, all projects together.
+    /// Bytes of logs on disk per day, all projects together: the growth
+    /// the bound decides on, see [`Logs::bound`].
     pub growth: u64,
     /// The longest log retention of any project, which caps the growth.
     pub longest_days: u32,
@@ -133,6 +152,12 @@ pub struct Forecast {
     /// Why the forecast cannot show what a what-if for one project does,
     /// when it cannot.
     pub unseen: Option<String>,
+    /// Where the growth comes from. `None` for a what-if of the bytes per
+    /// day, which states the growth.
+    pub logs: Option<Logs>,
+    /// `full_on` at the high growth and at the low growth of the window,
+    /// `None` for never: the earliest and the latest day.
+    pub full_on_range: [Option<Date>; 2],
 }
 
 impl Forecast {
@@ -153,24 +178,20 @@ pub fn forecast(input: &Input, what_if: &WhatIf) -> Result<Forecast, NoForecast>
     let after = kept_after(input, what_if);
     let longest = after.iter().map(|(_, n)| *n).max();
     let longest = longest.unwrap_or(what_if.logs_days.unwrap_or(input.default_days));
-    let growth = match what_if.logs_bytes_per_day {
-        Some(bytes) => bytes,
-        None => measured(input, shortest.unwrap_or(input.default_days))?,
+    let logs = match what_if.logs_bytes_per_day {
+        Some(_) => None,
+        None => Some(growth::logs(
+            input,
+            measured(input, shortest.unwrap_or(input.default_days)),
+        )?),
     };
-    // Retention of N days deletes a day once it is more than N days old,
-    // so the disk holds N closed days and today.
-    let steady_state = growth
-        .saturating_mul(u64::from(longest) + 1)
-        .saturating_add(input.fixed);
+    let (growth, range) = match (&logs, what_if.logs_bytes_per_day) {
+        (Some(l), _) => (l.bound(), l.growth),
+        (None, bytes) => (bytes.unwrap_or(0), Spread::flat(bytes.unwrap_or(0))),
+    };
     let headroom = input.total / 100 * HEADROOM_PERCENT;
-    let days_left = days_left(input, growth, steady_state, headroom);
-    let full_on = days_left.map(|n| {
-        let span = i64::try_from(n)
-            .ok()
-            .and_then(|n| Span::new().try_days(n).ok());
-        span.and_then(|s| input.today.checked_add(s).ok())
-            .unwrap_or(Date::MAX)
-    });
+    let run = |growth| run(input, growth, longest, headroom);
+    let (steady_state, days_left, full_on) = run(growth);
     Ok(Forecast {
         growth,
         longest_days: longest,
@@ -180,7 +201,33 @@ pub fn forecast(input: &Input, what_if: &WhatIf) -> Result<Forecast, NoForecast>
         days_left,
         full_on,
         unseen: unseen(input, what_if, &after, longest),
+        logs,
+        full_on_range: [run(range.high).2, run(range.low).2],
     })
+}
+
+/// The steady state, the days left and the day the disk fills at `growth`
+/// with logs kept `longest` days.
+fn run(
+    input: &Input,
+    growth: u64,
+    longest: u32,
+    headroom: u64,
+) -> (u64, Option<u64>, Option<Date>) {
+    // Retention of N days deletes a day once it is more than N days old,
+    // so the disk holds N closed days and today.
+    let steady_state = growth
+        .saturating_mul(u64::from(longest) + 1)
+        .saturating_add(input.fixed);
+    let days_left = days_left(input, growth, steady_state, headroom);
+    let full_on = days_left.map(|n| {
+        let span = i64::try_from(n)
+            .ok()
+            .and_then(|n| Span::new().try_days(n).ok());
+        span.and_then(|s| input.today.checked_add(s).ok())
+            .unwrap_or(Date::MAX)
+    });
+    (steady_state, days_left, full_on)
 }
 
 /// Each project's slug and the days of logs it keeps with the what-if.
@@ -218,27 +265,42 @@ fn unseen(input: &Input, what_if: &WhatIf, after: &[(&str, u32)], longest: u32) 
     })
 }
 
+/// What the disk sizes of the closed days measured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Direct {
+    /// Their median size.
+    pub growth: u64,
+    /// How many closed days the median is of.
+    pub days: usize,
+    /// The oldest of them.
+    pub oldest: Date,
+}
+
 /// The median size of the newest closed days, at most [`DAYS`], that no
 /// retention has cut yet: those within the `shortest` retention of any
 /// project. An older day lost the logs of the projects that keep fewer
 /// days, and would make the growth look smaller than it is.
-fn measured(input: &Input, shortest: u32) -> Result<u64, NoForecast> {
+fn measured(input: &Input, shortest: u32) -> Result<Direct, NoForecast> {
     let first = input
         .today
         .checked_sub(i64::from(shortest).days())
         .unwrap_or(Date::MIN);
-    let sizes: Vec<u64> = input
+    let days: Vec<&(Date, u64)> = input
         .closed
         .iter()
         .rev()
         .filter(|(day, _)| *day >= first && *day < input.today)
         .take(DAYS)
-        .map(|(_, bytes)| *bytes)
         .collect();
+    let sizes: Vec<u64> = days.iter().map(|(_, bytes)| *bytes).collect();
     // With 1 day of retention, yesterday is the only day not cut.
     let need = if shortest >= 2 { 2 } else { 1 };
-    match median(&sizes) {
-        Some(m) if sizes.len() >= need => Ok(m),
+    match (median(&sizes), days.last()) {
+        (Some(m), Some((oldest, _))) if sizes.len() >= need => Ok(Direct {
+            growth: m,
+            days: sizes.len(),
+            oldest: *oldest,
+        }),
         _ => Err(NoForecast::History(format!(
             "closed log days since {first}, the first day no retention has cut: the disk has {}, a forecast needs {need}",
             sizes.len()

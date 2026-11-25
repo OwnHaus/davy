@@ -363,3 +363,21 @@ async fn a_stopped_flusher_waits_for_the_job_it_sent_and_puts_a_failed_one_back(
     task.await.unwrap();
     assert_eq!(stored.take(), sent, "put back for the last flush");
 }
+
+#[test]
+fn since_reads_from_its_first_day_on() {
+    let c = memory();
+    let flush = rows(vec![
+        row("2026-11-20", 1, 1, 10),
+        row("2026-11-21", 2, 1, 20),
+        row("2026-11-22", 1, 1, 30),
+    ]);
+    write(&c, &flush).unwrap();
+    assert_eq!(
+        since(&c, day("2026-11-21")).unwrap(),
+        [
+            (day("2026-11-21"), 2, 20, false),
+            (day("2026-11-22"), 1, 30, false),
+        ]
+    );
+}

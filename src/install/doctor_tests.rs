@@ -442,6 +442,8 @@ fn full_in(days: Option<u64>) -> Forecast {
         days_left: days,
         full_on,
         unseen: None,
+        logs: None,
+        full_on_range: [full_on; 2],
     }
 }
 

@@ -38,6 +38,14 @@ pub fn day_of(ns: i64) -> civil::Date {
     TimeZone::UTC.to_datetime(from_nanos(ns)).date()
 }
 
+/// Midnight UTC at the start of `day`, saturated to what `i64` nanoseconds hold.
+pub fn midnight(day: civil::Date) -> i64 {
+    let days = day
+        .since(civil::Date::constant(1970, 1, 1))
+        .map_or(0, |s| i64::from(s.get_days()));
+    days.saturating_mul(DAY_NS)
+}
+
 /// RFC 3339 in UTC, with as many fraction digits as the value needs.
 pub fn rfc3339(ns: i64) -> String {
     from_nanos(ns).to_string()
@@ -93,6 +101,15 @@ mod tests {
         for bad in ["", "h", "1w", "-", "99999999999d"] {
             assert!(instant(bad, now).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn midnight_is_the_start_of_the_day_in_utc() {
+        let day: civil::Date = "2026-11-20".parse().unwrap();
+        assert_eq!(midnight(day), 1_795_132_800_000_000_000);
+        assert_eq!(day_of(midnight(day)), day);
+        assert_eq!(day_of(midnight(day) - 1), "2026-11-19".parse().unwrap());
+        assert_eq!(midnight(civil::Date::constant(1970, 1, 1)), 0);
     }
 
     #[test]
