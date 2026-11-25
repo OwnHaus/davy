@@ -2,6 +2,25 @@ use crate::{event::ErrorEvent, store};
 use rusqlite::Connection;
 use serde_json::json;
 
+/// The version this migration leaves. The fixtures below take a store of
+/// this version back to the one before by dropping `latest_payloads`, which
+/// holds only while the migration is the last.
+const AFTER: usize = store::migrations::MIGRATIONS.len();
+const BEFORE: usize = AFTER - 1;
+
+#[test]
+fn the_newest_payload_migration_is_the_last() {
+    assert_eq!(
+        store::migrations::MIGRATIONS[BEFORE],
+        super::MIGRATION,
+        "a later migration needs fixtures here built up to this one"
+    );
+}
+
+fn version(n: usize) -> i64 {
+    i64::try_from(n).unwrap()
+}
+
 fn memory() -> Connection {
     let mut c = Connection::open_in_memory().unwrap();
     store::init(&mut c).unwrap();
@@ -71,7 +90,7 @@ fn the_migration_moves_a_marked_newest_payload_out_of_events() {
     // A second issue whose newest event is in the sample.
     let other = ErrorEvent::parse(json!({"message":"other"})).unwrap();
     store::insert(&c, 1, &other).unwrap();
-    // Put the store back as version 18 left it: the newest payload outside
+    // Put the store back as the version before left it: the newest payload outside
     // the sample in its events row, behind an empty zstd skippable frame.
     let (event, payload): (i64, Vec<u8>) = c
         .query_row("SELECT event, payload FROM latest_payloads", [], |r| {
@@ -84,10 +103,12 @@ fn the_migration_moves_a_marked_newest_payload_out_of_events() {
         rusqlite::params![event, marked],
     )
     .unwrap();
-    c.execute_batch("DROP TABLE latest_payloads; PRAGMA user_version=18;")
-        .unwrap();
+    c.execute_batch(&format!(
+        "DROP TABLE latest_payloads; PRAGMA user_version={BEFORE};"
+    ))
+    .unwrap();
     store::init(&mut c).unwrap();
-    assert_eq!(number(&c, "PRAGMA user_version"), 19);
+    assert_eq!(number(&c, "PRAGMA user_version"), version(AFTER));
     assert_eq!(number(&c, "SELECT count(payload) FROM events"), 51);
     let (issue, event, mark): (i64, i64, Vec<u8>) = c
         .query_row(
@@ -141,7 +162,7 @@ fn a_transaction_that_ends_on_a_sampled_event_leaves_no_row() {
     assert_eq!(store::payload(&c, 1).unwrap().unwrap()["extra"]["n"], 99);
 }
 
-/// Puts the empty zstd skippable frame of version 18 in front of the payload
+/// Puts the empty zstd skippable frame of the version before in front of the payload
 /// of event `id`.
 fn mark(c: &Connection, id: i64, payload: &[u8]) {
     let marked = [&[0x5D, 0x2A, 0x4D, 0x18, 0, 0, 0, 0], payload].concat();
@@ -152,9 +173,9 @@ fn mark(c: &Connection, id: i64, payload: &[u8]) {
     .unwrap();
 }
 
-/// A store as version 18 left it: issue 1 of 51 events, the newest one's
+/// A store as the version before left it: issue 1 of 51 events, the newest one's
 /// payload in its events row behind the mark.
-fn version_18() -> Connection {
+fn behind() -> Connection {
     let c = memory();
     for n in 0..51 {
         store::insert(&c, 1, &event("boom", n)).unwrap();
@@ -163,14 +184,16 @@ fn version_18() -> Connection {
         .query_row("SELECT payload FROM latest_payloads", [], |r| r.get(0))
         .unwrap();
     mark(&c, 51, &payload);
-    c.execute_batch("DROP TABLE latest_payloads; PRAGMA user_version=18;")
-        .unwrap();
+    c.execute_batch(&format!(
+        "DROP TABLE latest_payloads; PRAGMA user_version={BEFORE};"
+    ))
+    .unwrap();
     c
 }
 
 #[test]
 fn a_migration_that_fails_moves_nothing_and_runs_again() {
-    let mut c = version_18();
+    let mut c = behind();
     c.execute_batch(
         "CREATE TRIGGER refuse BEFORE UPDATE OF payload ON events
          BEGIN SELECT RAISE(ABORT, 'refused'); END;",
@@ -179,14 +202,14 @@ fn a_migration_that_fails_moves_nothing_and_runs_again() {
     // The last statement fails, after the table and its row were written.
     let e = store::init(&mut c).unwrap_err();
     assert_eq!(e.to_string(), "refused");
-    assert_eq!(number(&c, "PRAGMA user_version"), 18);
+    assert_eq!(number(&c, "PRAGMA user_version"), version(BEFORE));
     let tables = "SELECT count(*) FROM sqlite_schema WHERE name='latest_payloads'";
     assert_eq!(number(&c, tables), 0);
     let marked = "SELECT count(*) FROM events WHERE substr(payload, 1, 8)=x'5D2A4D1800000000'";
     assert_eq!(number(&c, marked), 1);
     c.execute_batch("DROP TRIGGER refuse").unwrap();
     store::init(&mut c).unwrap();
-    assert_eq!(number(&c, "PRAGMA user_version"), 19);
+    assert_eq!(number(&c, "PRAGMA user_version"), version(AFTER));
     assert_eq!(number(&c, marked), 0);
     assert_eq!(number(&c, "SELECT event FROM latest_payloads"), 51);
     assert_eq!(store::payload(&c, 1).unwrap().unwrap()["extra"]["n"], 50);
@@ -194,7 +217,7 @@ fn a_migration_that_fails_moves_nothing_and_runs_again() {
 
 #[test]
 fn the_migration_leaves_a_marked_payload_of_an_older_event() {
-    let mut c = version_18();
+    let mut c = behind();
     let payload: Vec<u8> = c
         .query_row("SELECT payload FROM events WHERE id=1", [], |r| r.get(0))
         .unwrap();
