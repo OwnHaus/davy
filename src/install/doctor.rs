@@ -9,7 +9,7 @@ use crate::{
     text,
     usage::{
         self,
-        forecast::{Forecast, NoForecast},
+        forecast::{Basis, Forecast, NoForecast},
     },
 };
 use serde::Serialize;
@@ -458,8 +458,9 @@ fn assuming(mut disk: Check, days: Option<u32>) -> Check {
 /// Free space, and when the forecast puts the disk full: a warning under
 /// 14 days, a failure under 2. A worst case, which mixed log retentions
 /// give, only warns until the disk is past its limit: the disk may never
-/// fill on its day. Only low free space or few days left advise a shorter
-/// retention; a forecast missing for another reason has a fix of its own.
+/// fill on its day. So does a first day, which rests on hours of logs.
+/// Only low free space or few days left advise a shorter retention; a
+/// forecast missing for another reason has a fix of its own.
 fn disk(data: &Path, free: Option<u64>, forecast: Option<Result<Forecast, NoForecast>>) -> Check {
     let d = sh(&data.to_string_lossy());
     let retention = format!("davy project retention SLUG --data {d} --logs N");
@@ -478,7 +479,11 @@ fn disk(data: &Path, free: Option<u64>, forecast: Option<Result<Forecast, NoFore
             missing(data, &why),
         ),
         Some(Ok(f)) => {
-            if f.worst_case() {
+            if let Some(hours) = first_day(&f) {
+                space_fix = format!(
+                    "the day rests on {hours:.1} hours of logs and the footprint benchmark; run doctor again once a whole day has closed before you shorten a retention with {retention}, or add disk"
+                );
+            } else if f.worst_case() {
                 space_fix = format!(
                     "the day takes the logs of every project as kept {} days; watch free space over a few days before you shorten a retention with {retention}, or add disk",
                     f.longest_days
@@ -529,7 +534,16 @@ fn missing(data: &Path, why: &NoForecast) -> (Status, Option<String>) {
     }
 }
 
-/// What the forecast's days left say, which alone decide its status.
+/// The hours of logs counted, when the forecast rests on them alone: a
+/// new server without a whole closed day.
+fn first_day(f: &Forecast) -> Option<f64> {
+    let logs = f.logs.as_ref().filter(|l| l.basis == Basis::FirstDay)?;
+    Some(usage::forecast::hours(logs.counted_ns.unwrap_or(0)))
+}
+
+/// What the forecast's days left say, which alone decide its status. A
+/// worst case or a first day only warns until the disk is past its limit:
+/// the one may never fill on its day, the other rests on hours of logs.
 fn by_days(f: &Forecast) -> (Status, String) {
     let Some(n) = f.days_left else {
         return (
@@ -539,7 +553,7 @@ fn by_days(f: &Forecast) -> (Status, String) {
     };
     let unit = if n == 1 { "day" } else { "days" };
     let status = match n {
-        0..2 if n > 0 && f.worst_case() => Status::Warn,
+        0..2 if n > 0 && (f.worst_case() || first_day(f).is_some()) => Status::Warn,
         0..2 => Status::Fail,
         2..14 => Status::Warn,
         _ => Status::Ok,
@@ -553,9 +567,13 @@ fn by_days(f: &Forecast) -> (Status, String) {
     } else {
         String::new()
     };
+    let thin = first_day(f)
+        .filter(|_| n > 0)
+        .map(|h| format!(", a first day forecast from {h:.1} hours of logs, low confidence"))
+        .unwrap_or_default();
     (
         status,
-        format!(", forecast full {on}in {n} {unit}{earliest}"),
+        format!(", forecast full {on}in {n} {unit}{earliest}{thin}"),
     )
 }
 
@@ -607,3 +625,7 @@ fn open_mode(_path: &Path) -> Option<u32> {
 #[cfg(test)]
 #[path = "doctor_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "doctor_forecast_tests.rs"]
+mod forecast_tests;
