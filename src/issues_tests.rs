@@ -320,3 +320,19 @@ fn events_page_newest_first_and_the_newest_stored_one_has_a_payload() {
     );
     assert_eq!(stored_payload(&c, 2, None).unwrap(), None);
 }
+
+#[test]
+fn an_events_page_reads_when_the_newest_event_is_in_the_sample() {
+    let c = memory();
+    // Event 99 is in the sample, so no newest payload is kept apart, and
+    // events 50 to 98 have none.
+    for n in 0..100 {
+        add(&c, 1, "boom", NOW - H + n, json!({}));
+    }
+    let page = events(&c, 1, None).unwrap();
+    let stored: Vec<bool> = page.events[..3].iter().map(|e| e.stored).collect();
+    assert_eq!(stored, [true, false, false]);
+    assert!(!page.events[49].stored);
+    let (newest, _) = stored_payload(&c, 1, None).unwrap().unwrap();
+    assert_eq!(newest, page.events[0].event_id);
+}

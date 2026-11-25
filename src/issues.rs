@@ -356,7 +356,7 @@ pub struct EventPage {
 /// cursor of the page before.
 pub fn events(c: &Connection, issue: i64, after: Option<i64>) -> Result<EventPage> {
     let mut q = c.prepare(
-        "SELECT id,event_id,timestamp,release,environment,payload IS NOT NULL FROM events WHERE issue_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
+        "SELECT id,event_id,timestamp,release,environment,payload IS NOT NULL OR id IS (SELECT event FROM latest_payloads WHERE issue_id=?1) FROM events WHERE issue_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
     )?;
     let limit = i64::try_from(EVENT_PAGE + 1)?;
     let mut ids = Vec::new();
@@ -387,7 +387,7 @@ pub fn stored_payload(
     event_id: Option<&str>,
 ) -> Result<Option<(String, Vec<u8>)>> {
     Ok(c.query_row(
-        "SELECT event_id,payload FROM events WHERE issue_id=?1 AND payload IS NOT NULL AND (?2 IS NULL OR event_id=?2) ORDER BY id DESC LIMIT 1",
+        "SELECT e.event_id,coalesce(e.payload,l.payload) FROM events e LEFT JOIN latest_payloads l ON l.issue_id=?1 AND l.event=e.id WHERE e.issue_id=?1 AND (e.payload IS NOT NULL OR l.event IS NOT NULL) AND (?2 IS NULL OR e.event_id=?2) ORDER BY e.id DESC LIMIT 1",
         params![issue, event_id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )
@@ -444,7 +444,7 @@ pub struct Moment {
 /// stored event.
 pub fn moment(c: &Connection, issue: i64, event_id: Option<&str>) -> Result<Option<Moment>> {
     Ok(c.query_row(
-        "SELECT project_id,timestamp,trace_id FROM events WHERE issue_id=?1 AND (?2 IS NULL AND payload IS NOT NULL OR event_id=?2) ORDER BY id DESC LIMIT 1",
+        "SELECT project_id,timestamp,trace_id FROM events WHERE issue_id=?1 AND (?2 IS NULL AND (payload IS NOT NULL OR id IS (SELECT event FROM latest_payloads WHERE issue_id=?1)) OR event_id=?2) ORDER BY id DESC LIMIT 1",
         params![issue, event_id],
         |r| {
             Ok(Moment {

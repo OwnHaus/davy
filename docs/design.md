@@ -130,6 +130,7 @@ issues(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, grouping_version INT
 events(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, issue_id INTEGER NOT NULL, event_id TEXT NOT NULL,
        timestamp INTEGER NOT NULL, received_at INTEGER NOT NULL, level TEXT NOT NULL, release TEXT, environment TEXT,
        trace_id TEXT, user_id TEXT, payload BLOB, UNIQUE(project_id, event_id))
+latest_payloads(issue_id INTEGER PRIMARY KEY REFERENCES issues(id), event INTEGER NOT NULL, payload BLOB NOT NULL)
 issue_hourly(issue_id INTEGER NOT NULL, hour INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(issue_id, hour))
 issue_tags(key TEXT NOT NULL, value TEXT NOT NULL, issue_id INTEGER NOT NULL, PRIMARY KEY(key, value, issue_id)) WITHOUT ROWID
 issues_text USING fts5(title, culprit, content='issues', tokenize='trigram')
@@ -138,7 +139,7 @@ issues_text USING fts5(title, culprit, content='issues', tokenize='trigram')
 `issue_tags` and `issues_text` serve the filters of the web UI's issue list. Triggers keep both in step. Milestone 9's "Load check" says why.
 
 - Timestamps are unix milliseconds.
-- `payload` is the zstd-compressed event JSON. Keep it for the first 50 events of an issue, then for every 100th, and for the newest, so an issue always shows its latest event. The newest drops its payload when a newer event arrives, unless the sample keeps it. A payload kept only for being the newest starts with an empty zstd skippable frame, `5D 2A 4D 18 00 00 00 00`, which zstd decoders skip, and only a payload with that mark is dropped. The sample cannot be worked out from `event_count` afterwards, because expired events lower it. Payloads stored before the mark keep theirs, at most one per issue. The writer compresses the newest event of each issue once per transaction, not every event, so a burst costs no more than before. Always write the `events` row and bump the counters, so counts stay exact while disk stays bounded under a burst.
+- `payload` is the zstd-compressed event JSON. `events.payload` keeps it for the first 50 events of an issue, then for every 100th. The newest event keeps it too, so an issue always shows its latest event, but outside the sample its payload goes into `latest_payloads`, one row per issue that the next event replaces, and a newest event in the sample deletes the row. A payload written into the `events` row and cleared by the next event left a hole in a page SQLite had filled and moved past, so a hot issue took as much disk as if it kept every payload, see "Payloads of hot issues" below. The writer compresses the newest event of each issue once per transaction, not every event, so a burst costs no more than before. Always write the `events` row and bump the counters, so counts stay exact while disk stays bounded under a burst.
 - A duplicate `event_id` in the same project is ignored (SDKs retry).
 - The writer drains the queue in batches and commits each batch in one transaction. The transaction begins IMMEDIATE, taking the write lock before its first read: a CLI that writes from its own process, such as `davy resolve`, then makes the batch wait out the 5 s busy timeout. A deferred transaction that read first cannot wait for a lock it takes later, so SQLite failed the whole batch with `database is locked`.
 
@@ -155,6 +156,40 @@ Every command that opens the store runs the pending migrations first, `davy serv
 - The locks are POSIX locks, which belong to the process and the file. Closing any descriptor of `davy.sqlite` drops every lock the process holds on it, so Davy never opens the database file outside SQLite: no `File::open`, `fs::copy` or hash of it. Copy it with SQLite's backup, or stop the server first.
 - `SCHEMA` in `store.rs` runs on every open, outside the lock, so it stays the schema of the first release. A new table or index is a migration.
 - A connection that was opened but has not read yet holds no lock, so it does not stop a migration. Its first read waits for the migration as long as the busy timeout allows, then fails. The server opens its writer with `store::open`, which reads `user_version`, so a running server always holds a shared lock.
+
+### Payloads of hot issues
+
+SQLite appends new rows at the right edge of the `events` table and fills each page before it moves on. Until migration 19 the newest event of an issue kept its payload in its own row, marked with an empty zstd skippable frame, and the next event cleared it. The space cleared sat in a page that was already full and left behind, and SQLite reuses such space only when a row of that page grows again, which an event row never does. `auto_vacuum` returns only whole free pages. So an issue that keeps 150 payloads per 10,000 events took the disk of 10,000 payloads.
+
+Three designs were measured with `examples/error_footprint.rs` on an M2 Max (Mac14,5, 32 GB, macOS 26), a release build, the Sentry Node 10 event in `e2e/fixtures/sentry-node-10/4.body` with a fresh event id and message per issue, and 10 issues of 10,000 events each, interleaved. A run ingests 14 days, then twice expires the oldest 7 and ingests 7 more, so the bytes per event are those of a store past its retention: the file's size over the events left. "Compacted" is the size after `VACUUM`. The shared dev machine had a load average of 15 to 25, so writer times differ by 10% or more between runs of one design.
+
+| Design (`sim`, bare SQL) | Bytes per event, 1 event per transaction | Writer, µs per event | Bytes per event, 64 per transaction | Writer, µs per event |
+|---|---|---|---|---|
+| `current`: the newest payload in its `events` row, cleared | 2,168 | 162 | 570 | 19.4 |
+| `table` (a): every kept payload in a `payloads` table keyed by event | 272 | 169 | 272 | 18.0 |
+| `side` (b): the sample in `events`, the newest in `latest_payloads`, one row per issue | 270 | 97 | 270 | 16.0 |
+| `autovacuum` (c): `current` with `auto_vacuum=INCREMENTAL` and `incremental_vacuum` after expiry | 2,171 | 169 | not run | not run |
+
+Compacted, every design took 240 bytes per event, so (a) and (b) stay within 13% of the compacted size and `current` took 9 times it (derived from the table). (c) does not help, because the holes are inside pages that still hold rows. With 64 events per transaction `current` wastes less, because the writer compresses the newest payload of an issue once per transaction, so only one event in 64 per issue left a hole. Cold issues, 5,000 issues of 20 events at 64 per transaction, every payload kept: `current` 2,177 bytes per event, (a) 2,306, (b) 2,177. (a) costs a second row and an index entry for every kept payload, 130 bytes per event here (measured). (b) adds nothing per event and writes one row per issue per transaction.
+
+(b) is what Davy does. The same harness through the real writer (`store`), before and after, 10 issues of 10,000 events:
+
+| Run | Bytes per event | Writer, µs per event |
+|---|---|---|
+| before, 1 event per transaction | 2,169 | 365 |
+| after, 1 event per transaction | 271 | 350 |
+| before, 64 per transaction | 573 | 64.0 |
+| after, 64 per transaction | 271 | 59.9 |
+
+After the change the store compacts to 241 bytes per event. At 1 event per transaction the writer time is mostly the commit's fsync, and another run after the change took 182 to 197 µs. Cold issues, 5,000 issues of 26 events at 64 per transaction: 2,228 bytes per event before and after, 104 and 97 µs (measured).
+
+Reads pay for the second table. `reads` times each query 50 times per round, in turns over the store written before and the one written after, and prints the median of 15 rounds: the newest stored payload of an issue (`issues::stored_payload`, used by the issue page, `davy event` and `issue_context`) went from 5.4 to 8.1 µs, and a page of 50 events with their `stored` flags from 25.1 to 28.3 µs. Over 5,000 issues of 26 events, where no issue has a row in `latest_payloads`, the payload went from 6.1 to 8.4 µs and the page from 32.9 to 35.6 µs. About 3 µs per call, on calls made once per page view or tool call. Part of it is the layout: the old query on the new store takes 6.8 to 7.1 µs, because the newest event in `events` no longer has a payload and the query walks back to the last sampled one. `prepare_cached` and a `UNION` of the two tables were slower.
+
+The `sql` tool sees the same tables: `events.payload` holds the sample, `latest_payloads.payload` an issue's newest, and the tool's description and `NOTES` say how to read both.
+
+Retention deletes an issue's `latest_payloads` row when its event expires. The work bound of a sweep does not count that row's payload, at most one per issue a batch touches.
+
+Migration 19 creates `latest_payloads` and moves into it each payload with the mark, found with one index lookup per issue on the issue's newest event, then clears it in `events`. `error_footprint upgrade` timed it on a store from `store` with 100,000 issues added by SQL, each with two events and a marked 2 KB payload on the newest. Over the 100,010 issues it took 3.3 to 4.0 s in two runs, and the file grew from 465 MB to 670 MB, because the payloads are written again and the space they leave in `events` is the same kind of hole as before. Space an existing store lost stays lost until retention empties those old pages, or until an offline `VACUUM`, which needs the server stopped and free disk the size of the store. Going back to an older Davy means restoring the backup taken before the upgrade.
 
 ### CLI
 
@@ -1156,7 +1191,7 @@ The SQLite writer runs `Job::Sweep` every 10 s, and the errors take their turn i
 - **An issue id is never used twice.** SQLite gives a new row the highest id plus one, so deleting the newest issue would hand its id to the next one, and a link in an old alert or an agent's notes would lead to an unrelated issue. The new table `id_floor(name, id)` keeps the highest issue id ever deleted, and a new issue takes one more than the larger of that and the highest id in `issues`. AUTOINCREMENT would do the same but needs the table rebuilt.
 - A row of another table that still points at an issue keeps it with an `event_count` of 0, rather than fail the writer's batch, which holds ingest too.
 - `releases` stays: it says when a release was first seen, which decides whether a resolved issue reopens. Release health counts sessions, not events, and keeps its own 90 days.
-- A lower `event_count` moves which later events the payload sample keeps, so the sample still keeps about one in 100. It does not clear a payload that is in the sample: a new event clears only a payload marked as kept for being the newest.
+- A lower `event_count` moves which later events the payload sample keeps, so the sample still keeps about one in 100. It does not clear a payload that is in the sample: a new event replaces only the row in `latest_payloads`. An issue's row there goes when its event expires, which can happen before older events go when the server clock stepped back.
 - Measured on an M2 Max, release build, SQLite's default 2 MiB page cache, 300,000 events over 100 days and a retention of 10 days, so 270,000 expire: with every event in one issue a sweep deleted about 18,000 events in its 100 ms and all were gone after 15 sweeps. With the events spread round robin over 1,000 issues, the worst case, a sweep deleted about 870 events, the longest sweep took 142 ms and its commit 50 ms more, and the backlog took 311 sweeps. Each issue a batch touches costs about 0.3 ms of page reads. With a 128 MiB page cache the spread case ran three times as fast. These runs used batches of 200 events, before the work bound, which has not been measured again. The migration's backfill took 360 ms over the 300,000 events.
 
 ### Logs

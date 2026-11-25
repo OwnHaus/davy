@@ -276,7 +276,7 @@ fn migration_backfills_releases_from_old_events() {
     let e = event(json!({"message":"boom","release":"v1"}));
     store::insert(&c, 1, &e).unwrap();
     c.execute_batch(&format!(
-        "{} {} DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE releases; DROP TABLE checkin_starts; DROP TABLE checks; DROP TABLE incidents; DROP TABLE monitors; DROP TABLE notifications; DROP TABLE channels; DROP TABLE feedback; DROP TABLE sessions; DROP TABLE invites; DROP TABLE users; DROP TABLE firsts; DROP TABLE client_reports; DROP TABLE user_feedback; DROP TABLE release_sessions; DROP TABLE release_users; DROP TABLE session_seen; ALTER TABLE projects DROP COLUMN scrub; PRAGMA user_version=0;",
+        "{} {} DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE releases; DROP TABLE checkin_starts; DROP TABLE checks; DROP TABLE incidents; DROP TABLE monitors; DROP TABLE notifications; DROP TABLE channels; DROP TABLE feedback; DROP TABLE sessions; DROP TABLE invites; DROP TABLE users; DROP TABLE firsts; DROP TABLE client_reports; DROP TABLE user_feedback; DROP TABLE release_sessions; DROP TABLE release_users; DROP TABLE session_seen; ALTER TABLE projects DROP COLUMN scrub; DROP TABLE latest_payloads; PRAGMA user_version=0;",
         crate::usage::UNDO,
         crate::retention::UNDO
     ))
@@ -317,7 +317,7 @@ fn migration_indexes_the_text_and_tags_of_old_issues() {
     )
     .unwrap();
     c.execute_batch(&format!(
-        "{} {} DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE firsts; DROP TABLE client_reports; DROP TABLE user_feedback; DROP TABLE release_sessions; DROP TABLE release_users; DROP TABLE session_seen; ALTER TABLE notifications DROP COLUMN issue; ALTER TABLE channels DROP COLUMN sdk_dropped; {} ALTER TABLE projects DROP COLUMN scrub; PRAGMA user_version=6;",
+        "{} {} DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE firsts; DROP TABLE client_reports; DROP TABLE user_feedback; DROP TABLE release_sessions; DROP TABLE release_users; DROP TABLE session_seen; ALTER TABLE notifications DROP COLUMN issue; ALTER TABLE channels DROP COLUMN sdk_dropped; {} ALTER TABLE projects DROP COLUMN scrub; DROP TABLE latest_payloads; PRAGMA user_version=6;",
         crate::usage::UNDO,
         crate::retention::UNDO,
         crate::monitor::checkin_store::UNDO
@@ -411,9 +411,11 @@ fn storage_regression_duplicates_sampling_and_ignored() {
         101
     );
     let payloads = |c: &rusqlite::Connection| {
-        c.query_row("SELECT count(payload) FROM events", [], |r| {
-            r.get::<_, i64>(0)
-        })
+        c.query_row(
+            "SELECT (SELECT count(payload) FROM events) + (SELECT count(*) FROM latest_payloads)",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
         .unwrap()
     };
     assert_eq!(payloads(&c), 52);
@@ -506,7 +508,7 @@ fn the_writer_keeps_the_payload_of_the_newest_event_of_each_batch() {
         outcome.blocking_recv().unwrap().unwrap();
     };
     let kept = || -> Vec<i64> {
-        c.prepare("SELECT id FROM events WHERE payload IS NOT NULL ORDER BY id")
+        c.prepare("SELECT id FROM events WHERE payload IS NOT NULL OR id IN (SELECT event FROM latest_payloads) ORDER BY id")
             .unwrap()
             .query_map([], |r| r.get(0))
             .unwrap()

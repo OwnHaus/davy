@@ -21,10 +21,15 @@ fn a_store_that_a_newer_davy_migrated_is_refused_unchanged() {
 #[test]
 fn an_upgrade_builds_the_issue_timestamp_index_in_its_migration() {
     let root = crate::test_support::scratch("store-issue-timestamp");
-    let c = open(&root).unwrap();
-    c.execute_batch("DROP INDEX events_issue_timestamp; PRAGMA user_version=15;")
-        .unwrap();
-    c.execute_batch(crate::usage::UNDO).unwrap();
+    // A store as version 15 left it, built from the migrations before, so
+    // the migrations after 16 find what they expect.
+    std::fs::create_dir_all(&root).unwrap();
+    let c = Connection::open(root.join(DB_FILE)).unwrap();
+    c.execute_batch(SCHEMA).unwrap();
+    for sql in &MIGRATIONS[..15] {
+        c.execute_batch(sql).unwrap();
+    }
+    c.execute_batch("PRAGMA user_version=15;").unwrap();
     drop(c);
     let c = open(&root).unwrap();
     let built: i64 = c

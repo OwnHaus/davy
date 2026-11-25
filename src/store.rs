@@ -214,7 +214,7 @@ fn add<'a>(c: &Connection, project: i64, e: &'a ErrorEvent, latest: &mut Latest<
     };
     let regressed = status.on_event(seen, e.received_at);
     let status = status.as_str();
-    let kept = latest.before(c, id, count)?;
+    let kept = latest::sampled(count);
     let payload = kept.then(|| latest::compress(e)).transpose()?;
     c.execute("INSERT INTO events(project_id,issue_id,event_id,timestamp,received_at,level,release,environment,trace_id,user_id,payload) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",params![project,id,e.event_id.0,e.timestamp,e.received_at,e.level.as_str(),e.release,e.environment,e.trace_id,e.user_id,payload])?;
     latest.after(id, c.last_insert_rowid(), e, kept);
@@ -413,14 +413,7 @@ pub fn issues(c: &Connection, project: Option<&str>) -> Result<Vec<Issue>> {
 }
 /// The newest event of an issue. It always keeps its payload, older ones only in the sample.
 pub fn payload(c: &Connection, issue: i64) -> Result<Option<serde_json::Value>> {
-    let Some(b) = c
-        .query_row(
-            "SELECT payload FROM events WHERE issue_id=?1 AND payload IS NOT NULL ORDER BY id DESC LIMIT 1",
-            [issue],
-            |r| r.get::<_, Vec<u8>>(0),
-        )
-        .optional()?
-    else {
+    let Some((_, b)) = crate::issues::stored_payload(c, issue, None)? else {
         return Ok(None);
     };
     Ok(Some(serde_json::from_slice(&zstd::stream::decode_all(

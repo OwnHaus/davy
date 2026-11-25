@@ -347,7 +347,7 @@ fn the_migration_backfills_when_each_tag_was_last_seen() {
         store::insert(&c, 1, &e).unwrap();
     }
     c.execute_batch(&format!(
-        "{} {UNDO} ALTER TABLE projects DROP COLUMN scrub; PRAGMA user_version=13;",
+        "{} {UNDO} ALTER TABLE projects DROP COLUMN scrub; DROP TABLE latest_payloads; PRAGMA user_version=13;",
         crate::usage::UNDO
     ))
     .unwrap();

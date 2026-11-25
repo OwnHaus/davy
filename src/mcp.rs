@@ -382,7 +382,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Run one read-only SQLite query over issues and events. Returns columns, rows and whether rows were cut at 500. events.payload holds the full event; read it with json_extract(payload_json(payload), '$.path')."
+        description = "Run one read-only SQLite query over issues and events. Returns columns, rows and whether rows were cut at 500. events.payload holds the full event for a sample of each issue's events, latest_payloads.payload for an issue's newest; read either with json_extract(payload_json(payload), '$.path')."
     )]
     async fn sql(&self, Parameters(Sql { query }): Parameters<Sql>) -> Reply {
         self.blocking(move |data| json(&query::run(&query::open(data)?, &query)?))

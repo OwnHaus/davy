@@ -222,6 +222,14 @@ fn recount(c: &Connection, issue: i64, taken: &Taken) -> Result<()> {
     }
     c.prepare_cached("DELETE FROM issue_hourly WHERE issue_id=?1 AND count<=0")?
         .execute([issue])?;
+    // The newest event's payload goes with it. Events expire by
+    // received_at, so after the server clock stepped back the newest can go
+    // while older ones stay.
+    c.prepare_cached(
+        "DELETE FROM latest_payloads WHERE issue_id=?1
+         AND NOT EXISTS(SELECT 1 FROM events WHERE id=latest_payloads.event)",
+    )?
+    .execute([issue])?;
     let seen: Option<(i64, i64)> = c
         .prepare_cached(SEEN)?
         .query_row([issue], |r| Ok(r.get::<_, Option<i64>>(0)?.zip(r.get(1)?)))?;

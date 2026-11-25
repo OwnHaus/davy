@@ -96,7 +96,7 @@ fn an_expired_event_leaves_the_payload_sample_alone() {
     );
     let kept = |n: i64| {
         let sql = format!(
-            "SELECT payload IS NOT NULL FROM events WHERE received_at={}",
+            "SELECT payload IS NOT NULL OR id IN (SELECT event FROM latest_payloads) FROM events WHERE received_at={}",
             at(n)
         );
         s.number(&sql) == 1
@@ -111,8 +111,8 @@ fn an_expired_event_leaves_the_payload_sample_alone() {
     assert_eq!(s.number("SELECT event_count FROM issues"), 99);
     s.ingest(1, vec![error("timeout", at(100), "prod", "v1")]);
     assert!(kept(99), "a payload in the sample was cleared");
-    // Event 101 is outside the sample, so it keeps its payload, marked,
-    // only while it is the newest. The decoders skip the mark.
+    // Event 101 is outside the sample, so it keeps its payload only while
+    // it is the newest.
     s.ingest(1, vec![error("timeout", at(101), "prod", "v1")]);
     let issue = s.number("SELECT id FROM issues");
     let raw = store::payload(&s.c, issue).unwrap().unwrap();
@@ -121,6 +121,31 @@ fn an_expired_event_leaves_the_payload_sample_alone() {
     s.ingest(1, vec![error("timeout", at(102), "prod", "v1")]);
     let left = (kept(99), kept(100), kept(101), kept(102));
     assert_eq!(left, (true, true, false, true));
+}
+
+#[test]
+fn the_newest_payload_goes_with_its_event_and_its_issue() {
+    let s = Server::new("errors-latest", &["api"]);
+    // Each issue has 51 events, so the newest is outside the sample and its
+    // payload is in latest_payloads.
+    let timeouts = (0..51).map(|n| error("timeout", day(1) + n, "prod", "v1"));
+    s.ingest(1, timeouts.collect());
+    // The server clock stepped back before the newest hang arrived, so it
+    // expires while the 50 before it stay.
+    let at = |n| if n < 50 { day(5) + n } else { day(1) };
+    let hangs = (0..51).map(|n| error("hang", at(n), "prod", "v1"));
+    s.ingest(1, hangs.collect());
+    assert_eq!(s.number("SELECT count(*) FROM latest_payloads"), 2);
+    s.sweep(day(12), 10);
+    assert_eq!(s.rows("SELECT title FROM issues"), ["hang"]);
+    assert_eq!(s.number("SELECT count(*) FROM latest_payloads"), 0);
+    assert_eq!(s.number("SELECT count(payload) FROM events"), 50);
+    let issue = s.number("SELECT id FROM issues");
+    let (event_id, _) = crate::issues::stored_payload(&s.c, issue, None)
+        .unwrap()
+        .unwrap();
+    let newest = s.rows("SELECT event_id FROM events ORDER BY id DESC LIMIT 1");
+    assert_eq!([event_id], *newest);
 }
 
 #[test]
