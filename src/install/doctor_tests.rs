@@ -565,17 +565,70 @@ fn the_disk_line_says_which_default_retention_it_assumed() {
 }
 
 #[test]
-fn a_forecast_missing_for_a_reason_other_than_history_warns() {
+fn a_forecast_missing_for_a_reason_other_than_history_warns_with_its_own_fix() {
     let data = Path::new("/var/lib/davy");
-    let fix = "shorten retention with davy project retention SLUG --data /var/lib/davy --logs N, or add disk";
-    let walk = NoForecast::Other("the disk walk stopped early, it read 1000000 entries, its limit, so not every log day is measured".into());
+    let stopped = "the disk walk stopped early, it read 1000000 entries, its limit, so not every log day is measured";
+    let left_out = "part of logs is left out of the disk walk (disk.partial says what), so the growth of logs is unknown";
+    let newer =
+        "the database in /var/lib/davy is from a newer Davy: read it with that Davy or a newer one";
+    let warn = |why: NoForecast| disk(data, Some(40 * GIB), Some(Err(why)));
     assert_eq!(
-        disk(data, Some(40 * GIB), Some(Err(walk))),
+        warn(NoForecast::Stopped(stopped.into())),
         not_ok(
             "disk",
             Status::Warn,
-            "40 GiB free, no forecast: the disk walk stopped early, it read 1000000 entries, its limit, so not every log day is measured",
-            fix
+            format!("40 GiB free, no forecast: {stopped}"),
+            "watch free space yourself: the forecast reads at most 1000000 entries in 20 s, files in /var/lib/davy that are not Davy's included"
+        )
+    );
+    assert_eq!(
+        warn(NoForecast::LogsLeftOut(left_out.into())),
+        not_ok(
+            "disk",
+            Status::Warn,
+            format!("40 GiB free, no forecast: {left_out}"),
+            "a forecast needs /var/lib/davy/logs to be a directory on the filesystem of the data directory, not a link or a mount, that the user running doctor may read in full"
+        )
+    );
+    assert_eq!(
+        warn(NoForecast::Failed(newer.into())),
+        Check {
+            name: "disk",
+            status: Status::Warn,
+            detail: format!("40 GiB free, no forecast: {newer}"),
+            fix: None,
+        }
+    );
+}
+
+#[test]
+fn low_free_space_and_a_missing_forecast_give_both_fixes() {
+    let data = Path::new("/var/lib/davy");
+    let stopped = "the disk walk stopped early, it read 1000000 entries, its limit, so not every log day is measured";
+    assert_eq!(
+        disk(
+            data,
+            Some(3 * GIB),
+            Some(Err(NoForecast::Stopped(stopped.into())))
+        ),
+        not_ok(
+            "disk",
+            Status::Warn,
+            format!("3 GiB free, no forecast: {stopped}"),
+            "shorten retention with davy project retention SLUG --data /var/lib/davy --logs N, or add disk; watch free space yourself: the forecast reads at most 1000000 entries in 20 s, files in /var/lib/davy that are not Davy's included"
+        )
+    );
+    assert_eq!(
+        disk(
+            data,
+            Some(GIB / 2),
+            Some(Err(NoForecast::Failed("x".into())))
+        ),
+        not_ok(
+            "disk",
+            Status::Fail,
+            "512 MiB free, no forecast: x",
+            "shorten retention with davy project retention SLUG --data /var/lib/davy --logs N, or add disk"
         )
     );
 }

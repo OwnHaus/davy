@@ -91,15 +91,23 @@ const ONE_PROJECTS_BYTES: &str = "logs_bytes_per_day is for all projects togethe
 pub enum NoForecast {
     /// Too few closed log days, as on a new server: nothing is wrong.
     History(String),
-    /// Anything else, such as a disk Davy could not measure in full. The
-    /// report finds these, [`forecast`] never returns one.
-    Other(String),
+    /// The disk walk stopped at its entry or time limit. The report finds
+    /// this and the two below, [`forecast`] never returns one.
+    Stopped(String),
+    /// Part of `logs` is left out of the walk, such as a link, a mount or
+    /// a directory Davy may not read.
+    LogsLeftOut(String),
+    /// The disk or the database could not be read at all.
+    Failed(String),
 }
 
 impl std::fmt::Display for NoForecast {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::History(why) | Self::Other(why) => f.write_str(why),
+            Self::History(why)
+            | Self::Stopped(why)
+            | Self::LogsLeftOut(why)
+            | Self::Failed(why) => f.write_str(why),
         }
     }
 }

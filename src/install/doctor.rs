@@ -441,7 +441,7 @@ fn forecast(
     let report = crate::query::open(data).and_then(|c| usage::report(&c, data, &request, now_ns));
     Some(match report {
         Ok(r) => (r.forecast, r.default_log_days),
-        Err(e) => (Err(NoForecast::Other(format!("{e:#}"))), None),
+        Err(e) => (Err(NoForecast::Failed(format!("{e:#}"))), None),
     })
 }
 
@@ -458,38 +458,74 @@ fn assuming(mut disk: Check, days: Option<u32>) -> Check {
 /// Free space, and when the forecast puts the disk full: a warning under
 /// 14 days, a failure under 2. A worst case, which mixed log retentions
 /// give, only warns until the disk is past its limit: the disk may never
-/// fill on its day.
+/// fill on its day. Only low free space or few days left advise a shorter
+/// retention; a forecast missing for another reason has a fix of its own.
 fn disk(data: &Path, free: Option<u64>, forecast: Option<Result<Forecast, NoForecast>>) -> Check {
     let d = sh(&data.to_string_lossy());
     let retention = format!("davy project retention SLUG --data {d} --logs N");
-    let (status, free) = match free {
+    let (by_free, free) = match free {
         None => (Status::Warn, "free space is unknown".to_owned()),
         Some(b) if b < GIB => (Status::Fail, format!("{} MiB free", b >> 20)),
         Some(b) if b < 5 * GIB => (Status::Warn, format!("{} GiB free", b / GIB)),
         Some(b) => (Status::Ok, format!("{} GiB free", b / GIB)),
     };
-    let mut fix = format!("shorten retention with {retention}, or add disk");
-    let (by_forecast, said) = match forecast {
-        None => (Status::Ok, String::new()),
-        // Too little history is a new server. Anything else hides a
-        // forecast that may say the disk fills.
-        Some(Err(NoForecast::History(reason))) => (Status::Ok, format!(", no forecast: {reason}")),
-        Some(Err(NoForecast::Other(reason))) => (Status::Warn, format!(", no forecast: {reason}")),
+    let mut space_fix = format!("shorten retention with {retention}, or add disk");
+    let (days, said, missing) = match forecast {
+        None => (Status::Ok, String::new(), (Status::Ok, None)),
+        Some(Err(why)) => (
+            Status::Ok,
+            format!(", no forecast: {why}"),
+            missing(data, &why),
+        ),
         Some(Ok(f)) => {
             if f.worst_case() {
-                fix = format!(
+                space_fix = format!(
                     "the day takes the logs of every project as kept {} days; watch free space over a few days before you shorten a retention with {retention}, or add disk",
                     f.longest_days
                 );
             }
-            by_days(&f)
+            let (status, said) = by_days(&f);
+            (status, said, (Status::Ok, None))
         }
     };
-    let status = worse(status, by_forecast);
-    let detail = free + &said;
-    match status {
-        Status::Ok => ok("disk", detail),
-        _ => not_ok("disk", status, detail, fix),
+    let space = worse(by_free, days);
+    let fixes: Vec<String> = [(space != Status::Ok).then_some(space_fix), missing.1]
+        .into_iter()
+        .flatten()
+        .collect();
+    Check {
+        name: "disk",
+        status: worse(space, missing.0),
+        detail: printable(free + &said),
+        fix: (!fixes.is_empty()).then(|| printable(fixes.join("; "))),
+    }
+}
+
+/// What a forecast missing for `why` says about the data directory
+/// `data`, and what to do. Too little history is a new server. Anything
+/// else hides a forecast that may say the disk fills, but a shorter
+/// retention would not bring it back. A database or disk that cannot be
+/// read has no fix beyond what its error says.
+fn missing(data: &Path, why: &NoForecast) -> (Status, Option<String>) {
+    let logs = sh(&data.join(crate::logs::DIR).to_string_lossy());
+    match why {
+        NoForecast::History(_) => (Status::Ok, None),
+        NoForecast::Stopped(_) => (
+            Status::Warn,
+            Some(format!(
+                "watch free space yourself: the forecast reads at most {} entries in {} s, files in {} that are not Davy's included",
+                usage::disk::MAX_ENTRIES,
+                usage::disk::MAX_TIME.as_secs(),
+                sh(&data.to_string_lossy())
+            )),
+        ),
+        NoForecast::LogsLeftOut(_) => (
+            Status::Warn,
+            Some(format!(
+                "a forecast needs {logs} to be a directory on the filesystem of the data directory, not a link or a mount, that the user running doctor may read in full"
+            )),
+        ),
+        NoForecast::Failed(_) => (Status::Warn, None),
     }
 }
 

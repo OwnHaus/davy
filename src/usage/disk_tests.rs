@@ -55,10 +55,10 @@ fn a_logs_link_to_another_directory_is_not_walked() {
     assert!(disk.other < 8_192, "{disk:?}");
     assert_eq!(disk.gaps.skipped, ["logs: a link or not a directory"]);
     assert_eq!(
-        disk.logs_unmeasured().as_deref(),
-        Some(
-            "part of logs is left out of the disk walk (disk.partial says what), so the growth of logs is unknown"
-        )
+        disk.logs_unmeasured(),
+        Some(NoForecast::LogsLeftOut(
+            "part of logs is left out of the disk walk (disk.partial says what), so the growth of logs is unknown".into()
+        ))
     );
     fs::remove_dir_all(&data).unwrap();
     fs::remove_dir_all(&outside).unwrap();
@@ -92,10 +92,10 @@ fn a_walk_stops_after_its_entry_limit_and_says_the_logs_are_not_all_measured() {
         Some("it read 4 entries, its limit")
     );
     assert_eq!(
-        disk.logs_unmeasured().as_deref(),
-        Some(
-            "the disk walk stopped early, it read 4 entries, its limit, so not every log day is measured"
-        )
+        disk.logs_unmeasured(),
+        Some(NoForecast::Stopped(
+            "the disk walk stopped early, it read 4 entries, its limit, so not every log day is measured".into()
+        ))
     );
     let whole = measure_within(&data, day("2026-11-24"), limits(5)).unwrap();
     assert_eq!((whole.logs_unmeasured(), whole.gaps.stopped), (None, None));

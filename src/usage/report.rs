@@ -126,9 +126,11 @@ impl Prepared {
     /// The report with `disk`, what the walk measured or why it failed.
     pub fn finish(self, disk: Result<Disk, String>) -> Report {
         let forecast = match &disk {
-            Err(e) => Err(NoForecast::Other(format!("the disk was not measured: {e}"))),
+            Err(e) => Err(NoForecast::Failed(format!(
+                "the disk was not measured: {e}"
+            ))),
             Ok(d) => match d.logs_unmeasured() {
-                Some(why) => Err(NoForecast::Other(why)),
+                Some(why) => Err(why),
                 None => forecast::forecast(&self.input(d), &self.what_if),
             },
         };

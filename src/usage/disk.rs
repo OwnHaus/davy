@@ -10,6 +10,7 @@ mod walk;
 
 pub use shared::Shared;
 
+use super::forecast::NoForecast;
 use crate::{logs, store};
 use anyhow::{Context as _, Result};
 use jiff::civil::Date;
@@ -108,14 +109,14 @@ impl Disk {
     /// Why the log days are not all measured, if they are not. A gap
     /// outside `logs` leaves the forecast alone: it takes what is not logs
     /// as constant, and `used` comes from the filesystem.
-    pub fn logs_unmeasured(&self) -> Option<String> {
+    pub fn logs_unmeasured(&self) -> Option<NoForecast> {
         if let Some(why) = &self.gaps.stopped {
-            return Some(format!(
+            return Some(NoForecast::Stopped(format!(
                 "the disk walk stopped early, {why}, so not every log day is measured"
-            ));
+            )));
         }
         self.logs_gap.then(|| {
-            "part of logs is left out of the disk walk (disk.partial says what), so the growth of logs is unknown".to_owned()
+            NoForecast::LogsLeftOut("part of logs is left out of the disk walk (disk.partial says what), so the growth of logs is unknown".to_owned())
         })
     }
 }
