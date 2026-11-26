@@ -279,6 +279,51 @@ assert json.loads((p/'gzip-response.json').read_text())=={'id':'1111111111111111
 assert json.loads((p/'store-response.json').read_text())=={'id':'22222222222222222222222222222222'}
 print('gzip envelope and /store/: verified 2 issues, count 1 each')
 PY
+# Quotas: a project past its daily quota of 2 error events gets 429 with an
+# SDK rate limit entry until midnight UTC, the refusal is counted as
+# davy_quota in davy usage, and another project is still accepted. The
+# server reads the setting within 5 s and writes refusals on its 5 s flush,
+# so both are polled with a deadline. The quota and its count start again
+# at midnight UTC, and davy doctor checks the quota later in this run, so a
+# run with less than 10 minutes of the UTC day left waits for the next day.
+LEFT=$(( 86400 - $(date -u +%s) % 86400 ))
+if [ "$LEFT" -lt 600 ]; then echo "quota: waiting $((LEFT + 5)) s for the next UTC day"; sleep $((LEFT + 5)); fi
+DSN=$("$BIN" project create capped --data "$SCRATCH/data" --public-url "$URL")
+CAPPED="${DSN##*/}"; CAPPED_KEY="${DSN#*://}"; CAPPED_KEY="${CAPPED_KEY%%@*}"
+DSN=$("$BIN" project create uncapped --data "$SCRATCH/data" --public-url "$URL")
+FREE="${DSN##*/}"; FREE_KEY="${DSN#*://}"; FREE_KEY="${FREE_KEY%%@*}"
+"$BIN" project quota capped --errors 2 --data "$SCRATCH/data" > "$SCRATCH/quota.json"
+python3 - "$URL" "$CAPPED" "$CAPPED_KEY" "$FREE" "$FREE_KEY" <<'PY'
+import json,re,sys,time,urllib.error,urllib.request
+url,capped,capped_key,free,free_key=sys.argv[1:]
+def store(project,key,i):
+  body=json.dumps({'event_id':f'{i:032x}','message':'quota e2e'}).encode()
+  req=urllib.request.Request(f'{url}/api/{project}/store/',body,{'Content-Type':'application/json','X-Sentry-Auth':f'Sentry sentry_key={key}, sentry_version=7'})
+  try:
+    with urllib.request.urlopen(req) as r: return r.status,r.headers
+  except urllib.error.HTTPError as e: return e.code,e.headers
+deadline=time.monotonic()+30
+i=0
+while True:
+  i+=1
+  status,headers=store(capped,capped_key,i)
+  if status==429: break
+  assert status==200,status
+  assert time.monotonic()<deadline,f'no 429 after {i} events in 30 s'
+  time.sleep(0.2)
+retry=headers['Retry-After']
+assert retry.isdigit() and 1<=int(retry)<=300,retry
+limits=headers['X-Sentry-Rate-Limits'].split(', ')
+assert f'{retry}:error:project:davy_quota' in limits and len(limits)==2,limits
+status,_=store(free,free_key,1)
+assert status==200,status
+print(f'quota: verified 429 with Retry-After {retry} and a davy_quota entry after {i} events, another project still 200')
+PY
+refused() { "$BIN" usage --data "$SCRATCH/data" --project capped --json | python3 -c 'import json,sys; l=json.load(sys.stdin)["projects"][0]["limits"]; print(l["refused_today"]["davy_quota"], l["errors"]["quota"])'; }
+for i in {1..300}; do read -r N Q <<< "$(refused)"; [ "$N" -ge 1 ] && break; sleep 0.1; done
+[ "$N" -ge 1 ] || { echo "davy usage counted no davy_quota refusal of capped after 30 s"; exit 1; }
+[ "$Q" = 2 ] || { echo "davy usage shows an errors quota of $Q for capped, not 2"; exit 1; }
+echo "quota: verified $N davy_quota refusals and the quota of 2 in davy usage --json"
 # Savings and discard: 120 events of one issue make it noisy; a person
 # discards it at the CLI, and its next events are counted, not stored.
 DSN=$("$BIN" project create noisy --data "$SCRATCH/data" --public-url "$URL")
@@ -536,7 +581,10 @@ assert 'davy' not in failing,checks
 [check]=[c for c in checks if c['name']=='davy']
 assert check['status']=='warn' and f'issue {issue} ' in check['detail'],check
 assert check['fix'].startswith(f'davy context {issue} --data '),check
-print(f"self report: a warning of the log writer and a crash recorded at start and live, issue {issue} with 2 events, top frame test_panic at {top['filename']}:{top['lineno']}, and doctor names davy context {issue}")
+[quota]=[c for c in checks if c['name']=='quotas']
+assert quota['status']=='warn' and quota['detail'].startswith('capped used ') and 'of its 2 errors quota today' in quota['detail'],quota
+assert quota['fix'].startswith('davy project quota capped --data '),quota
+print(f"self report: a warning of the log writer and a crash recorded at start and live, issue {issue} with 2 events, top frame test_panic at {top['filename']}:{top['lineno']}, and doctor names davy context {issue} and the quota capped reached")
 PY
 # With --no-self-report Davy records nothing of itself: a crash file of an
 # earlier run stays where it is, the log writer's warning about a stray file
