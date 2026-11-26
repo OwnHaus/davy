@@ -1,6 +1,6 @@
 # Connect a coding agent
 
-Davy serves MCP at `/mcp` of the public URL. Claude Code, Codex and Cursor connect with the admin token and get thirteen tools: `schema`, `sql`, `search_logs`, `count_logs`, `log_patterns`, `release_health`, `issue_context`, `mark_fixed`, `submit_feedback`, `connect_project`, `project_status`, `set_retention` and `usage`.
+Davy serves MCP at `/mcp` of the public URL. Claude Code, Codex and Cursor connect with the admin token and get sixteen tools: `schema`, `sql`, `search_logs`, `count_logs`, `log_patterns`, `release_health`, `issue_context`, `mark_fixed`, `submit_feedback`, `connect_project`, `project_status`, `set_retention`, `usage`, `drop_rules`, `drop_rule_shadow` and `drop_rule_remove`.
 
 The token gives full read access to errors and logs. It goes into a file only the person can read and reaches the client through the `DAVY_TOKEN` environment variable, never into a config file or a command line.
 
