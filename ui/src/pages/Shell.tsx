@@ -60,6 +60,9 @@ export function Shell({ crumb, keys, note, rail, inspector, children }: ShellPro
           <Link to="/projects" data-text="Projects">
             Projects
           </Link>
+          <Link to="/usage" data-text="Usage">
+            Usage
+          </Link>
           <SetupLink />
         </nav>
         {crumb ? (

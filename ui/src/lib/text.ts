@@ -29,3 +29,17 @@ export function webUrl(text: string): string | null {
 export function plural(n: number, one: string, many = `${one}s`): string {
   return n === 1 ? one : many;
 }
+
+const UNITS = ["B", "KB", "MB", "GB", "TB", "PB"];
+
+/** A size as `davy usage` prints it: `512 B`, `2.3 KB`, powers of 1000. */
+export function bytes(n: number): string {
+  let unit = 0;
+  let scale = 1;
+  while (unit + 1 < UNITS.length && n >= scale * 1000) {
+    unit += 1;
+    scale *= 1000;
+  }
+  if (unit === 0) return `${n} B`;
+  return `${(Math.round((n * 10) / scale) / 10).toFixed(1)} ${UNITS[unit]}`;
+}

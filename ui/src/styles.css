@@ -26,6 +26,9 @@
   --tip-bg: #1d1e1a; --tip-ink: #f4f4ee;
   --down-soft: #f3dcd8;
   --shadow: 0 1px 2px rgba(29, 30, 26, .22);
+  /* Series hues in fixed order, a project keeps its own. --s0 is Other. */
+  --s1: #2a78d6; --s2: #cb5e23; --s3: #159a6a; --s4: #b97a22; --s5: #e16b89; --s6: #008300; --s7: #6250d6; --s8: #e34948;
+  --s0: #878880;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -53,6 +56,8 @@
     --tip-bg: #e8e7de; --tip-ink: #1a1b17;
     --down-soft: #4a2a27;
     --shadow: 0 1px 2px rgba(0, 0, 0, .5);
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+    --s0: #6f7066;
   }
 }
 
@@ -466,6 +471,86 @@ table.iss th.lead, table.iss td.lead { padding-left: 14px; }
 .who[aria-current="page"] { color: var(--ink); font-weight: 600; }
 .crumb { overflow: hidden; white-space: nowrap; }
 .crumb b { overflow: hidden; text-overflow: ellipsis; }
+
+/* The usage page. */
+.page .col.wide { max-width: 1040px; }
+.ph .of { font-weight: 400; color: var(--muted); }
+.ukv { grid-template-columns: 116px minmax(0, 1fr); }
+.usub { color: var(--muted); }
+.why { margin: 8px 0 0; max-width: 680px; line-height: 1.5; color: var(--muted); }
+.chead { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin-bottom: 10px; }
+.chead > :first-child { flex: 1 1 320px; }
+.ctl { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.slegend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.slegend li { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.slegend i, .srow i { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.seg { display: flex; gap: 2px; }
+.seg button { display: inline-grid; align-content: center; height: 28px; padding: 0 10px; border-radius: 4px; color: var(--muted); font-weight: 500; }
+.seg button::after { content: attr(data-text); font-weight: 600; height: 0; visibility: hidden; overflow: hidden; }
+.seg button:hover { color: var(--ink); background: var(--hover); }
+.seg button[aria-pressed="true"] { background: var(--cursor); color: var(--ink); font-weight: 600; }
+.stack { position: relative; height: 220px; }
+.stack svg { touch-action: none; cursor: crosshair; user-select: none; }
+.stack svg:focus-visible { outline-offset: 4px; }
+.stack text { font-size: 11px; fill: var(--faint); }
+.stack .gl { fill: var(--btn); }
+.stack .base { fill: var(--btn-hover); }
+.stack .band { fill-opacity: .12; }
+.stack .gap { fill: none; stroke: var(--bg); stroke-width: 4; stroke-linejoin: round; stroke-linecap: round; }
+.stack .edge { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.stack .cross { fill: var(--muted); }
+.stack .dot { stroke: var(--bg); stroke-width: 2; }
+.stack .band.part { fill-opacity: .05; }
+.stack .edge.part { stroke-dasharray: 3 4; }
+.stack text.today { fill: var(--muted); }
+.sread { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; min-height: 40px; margin: 8px 0 0; font-size: 12px; line-height: 1.6; }
+.sread.idle { color: var(--faint); }
+.sread b { font-weight: 650; }
+.srow { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.sparts { color: var(--muted); }
+/* A shadow on the bottom edge while rows lie below it: the cover scrolls with
+   the rows and hides the shadow once the last one is in view. */
+.sbox {
+  max-height: 380px;
+  background:
+    linear-gradient(transparent, var(--bg) 60%) 0 100% / 100% 28px no-repeat local,
+    radial-gradient(farthest-side at 50% 100%, color-mix(in srgb, var(--ink) 16%, transparent), transparent) 0 100% / 100% 12px no-repeat scroll;
+}
+/* A row's header cell stays in its row: only the column headers stick. */
+table.iss tbody th { position: static; z-index: auto; height: 30px; background: none; box-shadow: none; font-weight: 500; text-align: left; font-size: 12.5px; border-bottom: 1px solid var(--line); padding: 0 6px; white-space: nowrap; }
+table.utable td, table.utable tbody th { height: auto; padding-top: 5px; padding-bottom: 5px; vertical-align: top; }
+.utable .usub { display: block; font-size: 11.5px; }
+.page .tscroll table.utable { min-width: 1000px; }
+.utable thead th { height: auto; padding-top: 4px; padding-bottom: 4px; white-space: normal; line-height: 1.3; vertical-align: bottom; }
+table.iss td.z { color: var(--faint); }
+.w-day { width: 92px; } .w-keep { width: 108px; }
+.svgroup { margin-top: 16px; }
+.svgroup h4 { margin: 0 0 6px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.svlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.sv { padding: 10px 14px; border-radius: 6px; background: var(--panel); }
+.sv p { margin: 0 0 6px; line-height: 1.5; }
+.sv .snip { margin: 8px 0 6px; background: var(--bg); }
+.svhead { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-bottom: 8px; color: var(--muted); }
+.svhead b { margin-right: -8px; color: var(--ink); font-weight: 650; }
+.share { width: 88px; height: 6px; border-radius: 3px; background: var(--btn-hover); overflow: hidden; }
+.share i { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+.example { margin: 0 0 6px; padding: 6px 10px; border-radius: 5px; background: var(--bg); white-space: pre-wrap; overflow-wrap: anywhere; }
+.svmeta { display: flex; flex-wrap: wrap; gap: 2px 14px; color: var(--muted); font-size: 12px; }
+.sv p.try { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 2px 0 0; color: var(--faint); font-size: 12px; }
+.try code { color: var(--muted); overflow-wrap: anywhere; }
+.ilink { font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
+.snote { margin: 0; padding: 0 10px 8px; color: var(--faint); font-size: 12px; }
+.svlead { margin: 0 0 6px; color: var(--muted); }
+.svnote { margin-top: 8px; color: var(--faint); font-size: 12px; }
+.svnote summary { cursor: pointer; width: max-content; }
+.svnote summary:hover { color: var(--ink); }
+.svnote p { margin: 6px 0 0; max-width: 760px; line-height: 1.5; }
+table.otable thead th { height: 24px; }
+table.otable thead tr:first-child th[rowspan] { vertical-align: bottom; padding-bottom: 4px; }
+table.otable th.grp { text-align: center; box-shadow: inset 0 -1px 0 var(--line), 0 1px 0 var(--line); }
+table.otable thead tr:nth-child(2) th { top: 24px; }
+.otable .usub { display: block; font-size: 11.5px; white-space: normal; }
+table.otable td, table.otable tbody th { height: auto; padding-top: 5px; padding-bottom: 5px; vertical-align: top; }
 
 @media (max-width: 1240px) { .body { grid-template-columns: 172px minmax(0, 1fr) 280px; } .body.wide { grid-template-columns: 172px minmax(0, 1fr); } .evgrid, .sumrow { grid-template-columns: minmax(0, 1fr); } }
 /* Narrow windows: the list drops its least read columns, the inspector goes

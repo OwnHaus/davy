@@ -93,6 +93,16 @@ fn a_shadow_rule_shows_what_it_would_drop_and_the_command_to_make_it_live() {
             "command": format!("davy drop live --data {d} {id}"),
         })
     );
+    let fields = crate::test_support::assert_usage_ts_fields;
+    fields("Savings", &view);
+    for (at, ty) in [
+        (0, "PatternEntry"),
+        (2, "ShadowEntry"),
+        (3, "RetentionEntry"),
+        (4, "IssueEntry"),
+    ] {
+        fields(ty, &view["savings"][at]);
+    }
     let human = found.json(true);
     assert_eq!(
         [

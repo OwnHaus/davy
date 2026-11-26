@@ -1,4 +1,4 @@
-import { Outlet, createRootRoute, createRoute, createRouter, redirect } from "@tanstack/react-router";
+import { Outlet, createRootRoute, createRoute, createRouter, lazyRouteComponent, redirect } from "@tanstack/react-router";
 import { queries } from "./api/client";
 import { AccountPage } from "./pages/Account";
 import { Alerts } from "./pages/Alerts";
@@ -22,6 +22,7 @@ import {
   parseSearch,
   projectsSearch,
   stringifySearch,
+  usageSearch,
 } from "./search";
 
 const root = createRootRoute({ component: Outlet, notFoundComponent: NotFound });
@@ -46,6 +47,13 @@ const routes = [
   createRoute({ getParentRoute: () => root, path: "/monitors/$id", component: Monitor }),
   createRoute({ getParentRoute: () => root, path: "/alerts", validateSearch: alertsSearch, component: Alerts }),
   createRoute({ getParentRoute: () => root, path: "/projects", validateSearch: projectsSearch, component: Projects }),
+  // The usage page draws its own charts and loads only when opened.
+  createRoute({
+    getParentRoute: () => root,
+    path: "/usage",
+    validateSearch: usageSearch,
+    component: lazyRouteComponent(() => import("./pages/Usage"), "Usage"),
+  }),
   createRoute({ getParentRoute: () => root, path: "/setup", component: SetupPage }),
   createRoute({ getParentRoute: () => root, path: "/account", component: AccountPage }),
 ];

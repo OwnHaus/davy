@@ -75,6 +75,13 @@ async fn the_summary_is_what_davy_usage_json_prints() {
     )
     .unwrap();
     let cli: serde_json::Value = serde_json::from_slice(&cli).unwrap();
+    let fields = crate::test_support::assert_usage_ts_fields;
+    fields("UsageReport", &r.body);
+    fields("UsageProject", shop);
+    fields("Count", &shop["signals"]["errors"]);
+    if r.body["disk_error"].is_null() {
+        fields("Disk", &r.body["disk"]);
+    }
     assert_eq!(timeless(r.body), timeless(cli));
 }
 
@@ -202,4 +209,15 @@ async fn days_lists_each_project_per_day_of_the_window() {
     );
     let r = s.get("/ui/api/usage/days", &[("cookie", &cookie)]).await;
     assert_eq!(r.body["days"].as_array().unwrap().len(), 31);
+}
+
+#[test]
+fn the_usage_ts_fields_are_read_from_the_type() {
+    assert_eq!(
+        crate::test_support::usage_ts_fields("Count"),
+        ["records", "bytes", "records_per_day", "bytes_per_day"]
+    );
+    let report = crate::test_support::usage_ts_fields("UsageReport");
+    assert_eq!(&report[..3], ["window", "growth_per_day", "forecast"]);
+    assert!(report.contains(&"disk?".to_owned()), "{report:?}");
 }

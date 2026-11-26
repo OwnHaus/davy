@@ -90,6 +90,13 @@ export const projectsSearch = (s: Record<string, unknown>): ProjectsSearch => ({
   sdk: oneOf(s.sdk, SDKS),
 });
 
+/** The usage page: one project or all, and the days its charts reach back. */
+export type UsageSearch = { project?: string | undefined; days?: "90" | undefined };
+export const usageSearch = (s: Record<string, unknown>): UsageSearch => ({
+  project: text(s.project),
+  days: s.days === "90" ? "90" : undefined,
+});
+
 export const loginSearch = (s: Record<string, unknown>) => ({ next: text(s.next) });
 
 // The sort a person picked last, kept on this device.
