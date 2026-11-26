@@ -81,7 +81,7 @@ fn admin_routes(
     Ok(admin)
 }
 
-type Tasks = [(&'static str, tokio::task::JoinHandle<()>); 4];
+type Tasks = [(&'static str, tokio::task::JoinHandle<()>); 5];
 
 /// The usage flusher, stopped between two sends rather than aborted, so a
 /// job it sent is never left without an answer.
@@ -128,6 +128,11 @@ fn tasks(
         log_writer.drops.clone(),
         crate::drops::RELOAD_EVERY,
     );
+    let quotas = crate::quota::reload_every(
+        store::open(data)?,
+        Arc::clone(usage.gate()),
+        crate::quota::RELOAD_EVERY,
+    );
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let flusher = crate::usage::flush_every(
         usage.clone(),
@@ -142,6 +147,7 @@ fn tasks(
             ("checker", tokio::spawn(checker)),
             ("notifier", tokio::spawn(notifier)),
             ("drop rules", tokio::spawn(drops)),
+            ("quotas", tokio::spawn(quotas)),
         ],
         Flusher {
             stop,
@@ -277,6 +283,7 @@ pub async fn serve(
         usage: crate::usage::Counter::default(),
     };
     let usage = app.usage.clone();
+    crate::quota::start(&store::open(data)?, usage.gate(), crate::time::now_ns())?;
     let reporter = early.map(|early| early.start(data, &app));
     // One disk walk a minute and one limit on usage reads, for the MCP
     // tool and the web UI together.

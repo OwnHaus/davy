@@ -124,9 +124,13 @@ pub struct Row {
 }
 
 /// Counts in memory until the next flush. Keys are a day, a project a key
-/// authenticated and a signal, so the map stays small.
+/// authenticated and a signal, so the map stays small. The quota gate
+/// counts each addition too, as today's use against each quota.
 #[derive(Clone, Default)]
-pub struct Counter(Arc<Mutex<HashMap<Key, Count>>>);
+pub struct Counter {
+    counts: Arc<Mutex<HashMap<Key, Count>>>,
+    gate: Arc<crate::quota::Gate>,
+}
 
 /// A day, a project and a signal.
 type Key = (Date, i64, Signal);
@@ -135,17 +139,22 @@ impl Counter {
     /// Adds what was accepted now, on today's UTC day.
     pub fn add(&self, project: i64, signal: Signal, count: Count) {
         if count.records > 0 {
-            let day = time::day_of(time::now_ns());
-            self.put(day, project, signal, count);
+            let now = time::now_ns();
+            self.gate.used(project, signal, count, now);
+            self.put(time::day_of(now), project, signal, count);
         }
     }
+    /// The quota gate ingest asks before it parses a request.
+    pub fn gate(&self) -> &Arc<crate::quota::Gate> {
+        &self.gate
+    }
     fn put(&self, day: Date, project: i64, signal: Signal, count: Count) {
-        let mut map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut map = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
         map.entry((day, project, signal)).or_default().add(count);
     }
     /// Whether every count held is of `project`, and one is.
     pub fn only(&self, project: i64) -> bool {
-        let map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let map = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
         !map.is_empty() && map.keys().all(|(_, p, _)| *p == project)
     }
     /// Takes every count out, sorted so tests can compare.
@@ -154,7 +163,7 @@ impl Counter {
     }
     /// Takes the first `n` counts out, sorted, and leaves the rest.
     fn take_up_to(&self, n: usize) -> Vec<Row> {
-        let mut map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut map = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
         let mut rows: Vec<Row> = map
             .drain()
             .map(|((day, project, signal), count)| Row {
@@ -272,8 +281,8 @@ pub fn warn(what: &str, e: &Refused) {
     crate::self_report::warn("usage flusher", format_args!("{what}: {e}"));
 }
 
-/// Hands the counts, then what the log writer stored and cut, to the
-/// writer, at most [`MAX_ROWS`] in one job, and waits until each job is
+/// Hands the counts, then what the log writer stored and cut, then what
+/// the quota gate refused, to the writer, at most [`MAX_ROWS`] in one job, and waits until each job is
 /// committed. A job the writer did not commit goes back where it came
 /// from, before what was not sent yet.
 async fn send(
@@ -297,7 +306,7 @@ async fn send(
             return Err(e);
         }
     }
-    Ok(())
+    crate::quota::send(&counter.gate, sender).await
 }
 
 /// A day of error events one project received.

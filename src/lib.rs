@@ -22,6 +22,7 @@ pub mod net;
 #[cfg(test)]
 mod net_tests;
 pub mod query;
+pub mod quota;
 pub mod ready;
 pub mod retention;
 pub mod scrub;

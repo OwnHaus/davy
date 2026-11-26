@@ -41,9 +41,11 @@ struct Status {
     message: String,
 }
 
-pub fn status(encoding: Encoding, message: &str) -> Vec<u8> {
+/// The body of a refused request: `INVALID_ARGUMENT`, or for a `429`
+/// `RESOURCE_EXHAUSTED`, as the OTLP specification asks.
+pub fn status(encoding: Encoding, exhausted: bool, message: &str) -> Vec<u8> {
     let s = Status {
-        code: 3,
+        code: if exhausted { 8 } else { 3 },
         message: message.into(),
     };
     match encoding {

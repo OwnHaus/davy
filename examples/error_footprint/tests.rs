@@ -119,17 +119,18 @@ fn behind(data: &Path) {
     let version: i64 = c
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    // latest_payloads came six migrations before the newest: then come
+    // latest_payloads came seven migrations before the newest: then come
     // log_days and store_days, the Vercel drain secret, the mark of
-    // Davy's own project, the savings tables and the drop rules, so the
-    // store goes back six versions.
+    // Davy's own project, the savings tables, the drop rules and the
+    // quotas, so the store goes back seven versions.
     c.execute_batch(&format!(
-        "DROP TABLE latest_payloads; DROP TABLE log_days; DROP TABLE store_days; {} {} {} {} PRAGMA user_version={};",
+        "DROP TABLE latest_payloads; DROP TABLE log_days; DROP TABLE store_days; {} {} {} {} {} PRAGMA user_version={};",
+        davy::quota::UNDO,
         davy::drops::UNDO,
         davy::usage::savings::UNDO,
         davy::self_report::own::UNDO,
         davy::vercel::UNDO,
-        version - 6
+        version - 7
     ))
     .unwrap();
 }

@@ -8,6 +8,16 @@ pub fn cost(payload: &[u8]) -> Result<usize, String> {
     Ok(2 * heap::json(payload, RECORD).map_err(|e| e.to_string())?)
 }
 
+/// The records a log item holds, read without building them: the length
+/// of its `items` array, or 0 for an item [`parse`] would refuse.
+pub fn count(payload: &[u8]) -> u64 {
+    #[derive(serde::Deserialize)]
+    struct Item {
+        items: Vec<serde::de::IgnoredAny>,
+    }
+    serde_json::from_slice::<Item>(payload).map_or(0, |i| i.items.len() as u64)
+}
+
 pub fn parse(payload: &[u8], project_id: i64, observed_at: i64) -> Result<Vec<LogRecord>, String> {
     let v: Value = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
     let items = match v {

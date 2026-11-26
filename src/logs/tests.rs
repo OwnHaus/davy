@@ -216,12 +216,20 @@ fn a_request_that_decodes_has_a_price() {
 #[test]
 fn otlp_status_bodies() {
     assert_eq!(
-        otlp::status(otlp::Encoding::Json, "bad"),
+        otlp::status(otlp::Encoding::Json, false, "bad"),
         br#"{"code":3,"message":"bad"}"#
     );
     assert_eq!(
-        otlp::status(otlp::Encoding::Protobuf, "bad"),
+        otlp::status(otlp::Encoding::Protobuf, false, "bad"),
         b"\x08\x03\x12\x03bad"
+    );
+    assert_eq!(
+        otlp::status(otlp::Encoding::Json, true, "full"),
+        br#"{"code":8,"message":"full"}"#
+    );
+    assert_eq!(
+        otlp::status(otlp::Encoding::Protobuf, true, "full"),
+        b"\x08\x08\x12\x04full"
     );
     assert_eq!(otlp::success(otlp::Encoding::Json), b"{}");
     assert_eq!(otlp::success(otlp::Encoding::Protobuf), b"");

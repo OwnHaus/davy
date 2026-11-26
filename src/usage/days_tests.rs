@@ -71,6 +71,7 @@ fn memory() -> Connection {
         ("2026-11-24T00:00:00Z", 1, "davy_too_large", "monitor", 2),
         ("2026-11-24T00:00:00Z", 1, "davy_bad_slug", "monitor", 3),
         ("2026-11-25T00:00:00Z", 2, "queue_overflow", "log_item", 8),
+        ("2026-11-24T00:00:00Z", 2, "davy_quota", "error", 7),
         // Bytes, not items: left out.
         ("2026-11-25T00:00:00Z", 2, "sample_rate", "log_byte", 5_000),
         ("2026-11-22T00:00:00Z", 1, "davy_rate", "monitor", 99),
@@ -124,7 +125,7 @@ fn every_project_gets_each_count_per_day_of_the_window() {
                         accepted: vec![0, 4, 0],
                         filtered: vec![0, 0, 0],
                         discarded: vec![0, 0, 0],
-                        limited: vec![0, 0, 0],
+                        limited: vec![0, 7, 0],
                         refused: vec![0, 0, 0],
                         unreadable: vec![0, 0, 0],
                         sdk_dropped: vec![0, 0, 8],

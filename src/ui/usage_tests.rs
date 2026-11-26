@@ -1,21 +1,8 @@
 //! The contract of the usage routes.
 
 use super::{Ui, ui};
-use crate::{store, time};
+use crate::{store, test_support::away_from_midnight, time};
 use serde_json::json;
-
-/// Waits out the last seconds of a UTC day for the next one to begin, so
-/// a test that reads today before its request and the server that reads
-/// it again agree. It yields until the day turns, as only that ends it.
-async fn away_from_midnight() {
-    let start = time::now_ns();
-    if time::DAY_NS - start.rem_euclid(time::DAY_NS) < 10_000_000_000 {
-        let day = time::day_of(start);
-        while time::day_of(time::now_ns()) == day {
-            tokio::task::yield_now().await;
-        }
-    }
-}
 
 /// Masks what the web UI and the CLI measure at their own moment: the
 /// disk, and Davy's own share of it.

@@ -46,6 +46,21 @@ pub fn midnight(day: civil::Date) -> i64 {
     days.saturating_mul(DAY_NS)
 }
 
+/// Midnight UTC at the end of the day of `ns`, saturated to what `i64`
+/// nanoseconds hold.
+pub fn next_midnight(ns: i64) -> i64 {
+    ns.div_euclid(DAY_NS)
+        .saturating_add(1)
+        .saturating_mul(DAY_NS)
+}
+
+/// Whole seconds from `from` to `to`, both ns, rounded up and at least 1:
+/// what a `Retry-After` header says.
+pub fn retry_secs(from: i64, to: i64) -> u64 {
+    let ns = u64::try_from(to.saturating_sub(from)).unwrap_or(0);
+    ns.div_ceil(1_000_000_000).max(1)
+}
+
 /// RFC 3339 in UTC, with as many fraction digits as the value needs.
 pub fn rfc3339(ns: i64) -> String {
     from_nanos(ns).to_string()
@@ -87,6 +102,10 @@ pub fn whole(n: f64) -> Option<i64> {
     const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
     (n.is_finite() && (-TWO_POW_63..TWO_POW_63).contains(&n)).then_some(n as i64)
 }
+
+#[cfg(test)]
+#[path = "time/midnight_tests.rs"]
+mod midnight_tests;
 
 #[cfg(test)]
 mod tests {

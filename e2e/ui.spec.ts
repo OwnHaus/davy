@@ -280,11 +280,11 @@ test("a person signs in, finds the SDK's issue, reads its frame and resolves it"
 
     const outcomes = page.getByRole("region", { name: /^What became of what was sent/ });
     await expect(outcomes.locator(".lede")).toHaveText(
-      "Accepted counts every item Davy took in. Filtered, discarded, rate limited and refused are parts of it that Davy then did not store. Unreadable items and those the SDKs dropped never reached it.",
+      "Accepted counts every item Davy took in. Filtered, discarded and refused are parts of it that Davy then did not store. Rate limited counts items past a rate limit or daily cap, which Davy accepted first, and items past a project's quota, which it never accepted. Unreadable items and those the SDKs dropped never reached it.",
     );
     const head = page.locator("#uoutcomes thead tr");
-    await expect(head.nth(0).locator("th")).toHaveText(["Day, UTC", "Accepted", "Of those, not stored", "Never accepted"]);
-    await expect(head.nth(1).locator("th")).toHaveText(["Filtered", "Discarded", "Rate limited", "Refused", "Unreadable", "Dropped by SDK"]);
+    await expect(head.nth(0).locator("th")).toHaveText(["Day, UTC", "Accepted", "Of those, not stored", "Rate limited", "Never accepted"]);
+    await expect(head.nth(1).locator("th")).toHaveText(["Filtered", "Discarded", "Refused", "Unreadable", "Dropped by SDK"]);
     const every = outcomes.getByRole("button", { name: "Show all 31 days" });
     await every.click();
     await expect(outcomes.getByRole("button", { name: "Show the newest 14 days" })).toHaveAttribute("aria-pressed", "true");

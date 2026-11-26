@@ -22,6 +22,24 @@ pub fn cost(body: &[u8]) -> Result<usize, String> {
     Ok(2 * tree)
 }
 
+/// The records a body holds, read without building them: the elements of
+/// an array, 1 for one value, else its lines that are not blank.
+pub fn count(body: &[u8]) -> u64 {
+    use serde::de::IgnoredAny;
+    let first = body.iter().find(|b| !b.is_ascii_whitespace());
+    if first == Some(&b'[')
+        && let Ok(all) = serde_json::from_slice::<Vec<IgnoredAny>>(body)
+    {
+        return all.len() as u64;
+    }
+    if serde_json::from_slice::<IgnoredAny>(body).is_ok() {
+        return 1;
+    }
+    body.split(|b| *b == b'\n')
+        .filter(|l| !l.iter().all(u8::is_ascii_whitespace))
+        .count() as u64
+}
+
 /// A JSON array of records, one record, or one record per line (NDJSON).
 /// The content type does not matter: a body that is not one JSON value is
 /// read as NDJSON. A record that is not an object is skipped.

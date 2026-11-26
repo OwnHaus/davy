@@ -64,4 +64,5 @@ async fn a_heartbeat_ping_to_a_full_queue_is_429() {
         .await;
     assert_eq!(r.status, 429);
     assert_eq!(r.headers["retry-after"], "1");
+    assert_eq!(busy(&s), [(0, 1)], "a token picks no project");
 }

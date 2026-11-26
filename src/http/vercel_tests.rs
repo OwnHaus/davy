@@ -80,8 +80,13 @@ fn hmac(body: &[u8]) -> String {
 fn the_signature_covers_the_body_as_sent() {
     let budget = Budget::new(32 << 20);
     let decode = |signature: &str, bytes: Vec<u8>, encoding: &str| {
-        decode(Some(signed(signature)), bytes, encoding, &mut budget.hold())
-            .map_err(|(status, why)| (status.as_u16(), why))
+        decode(
+            Some(&signed(signature)),
+            bytes,
+            encoding,
+            &mut budget.hold(),
+        )
+        .map_err(|(status, why)| (status.as_u16(), why))
     };
     let refused = Err((403, "invalid x-vercel-signature".to_owned()));
     assert_eq!(hmac(DATA), MAC);

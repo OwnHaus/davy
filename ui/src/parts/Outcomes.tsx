@@ -1,5 +1,6 @@
 // What became of what each project sent, per UTC day: what Davy accepted,
-// the parts of it it then did not store, and what never reached it. Only
+// the parts of it it then did not store, what it refused past a limit,
+// partly accepted first, and what never reached it. Only
 // the rows where something arrived, the newest two weeks unless asked.
 
 import { useState } from "react";
@@ -12,14 +13,14 @@ type Outcome = keyof Omit<Counts, "stored">;
 const NOT_STORED: [Outcome, string][] = [
   ["filtered", "Filtered"],
   ["discarded", "Discarded"],
-  ["limited", "Rate limited"],
   ["refused", "Refused"],
 ];
+const LIMITED: [Outcome, string] = ["limited", "Rate limited"];
 const NEVER: [Outcome, string][] = [
   ["unreadable", "Unreadable"],
   ["sdk_dropped", "Dropped by SDK"],
 ];
-const ALL: [Outcome, string][] = [["accepted", "Accepted"], ...NOT_STORED, ...NEVER];
+const ALL: [Outcome, string][] = [["accepted", "Accepted"], ...NOT_STORED, LIMITED, ...NEVER];
 
 /** The days shown unless every day is asked for. */
 const RECENT = 14;
@@ -56,8 +57,8 @@ export function Outcomes({ data, project }: { data: UsageDays; project: string |
   return (
     <>
       <p className="lede">
-        Accepted counts every item Davy took in. Filtered, discarded, rate limited and refused are parts of it that Davy then did not store. Unreadable items and those the
-        SDKs dropped never reached it.
+        Accepted counts every item Davy took in. Filtered, discarded and refused are parts of it that Davy then did not store. Rate limited counts items past a rate limit or
+        daily cap, which Davy accepted first, and items past a project&apos;s quota, which it never accepted. Unreadable items and those the SDKs dropped never reached it.
       </p>
       <p className="hint">These count items. What an SDK reports in bytes or seconds is left out.</p>
       {longer ? (
@@ -99,6 +100,9 @@ function Head({ project }: { project: string | undefined }) {
         <th scope="colgroup" colSpan={NOT_STORED.length} className="grp">
           Of those, not stored
         </th>
+        <th scope="col" rowSpan={2} className="r">
+          {LIMITED[1]}
+        </th>
         <th scope="colgroup" colSpan={NEVER.length} className="grp">
           Never accepted
         </th>
@@ -120,6 +124,7 @@ function Table({ rows, project }: { rows: Row[]; project: string | undefined }) 
       <table className="iss otable" id="uoutcomes">
         <colgroup span={project ? 2 : 3} />
         <colgroup span={NOT_STORED.length} className="cg" />
+        <colgroup span={1} className="cg" />
         <colgroup span={NEVER.length} className="cg" />
         <Head project={project} />
         <tbody>

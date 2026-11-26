@@ -7,7 +7,7 @@
 use super::{
     App, Failure, bad,
     body::{self, Held},
-    ingest_logs,
+    ingest_logs, limit,
 };
 use crate::{logs::vercel, time, token::bearer};
 use axum::{
@@ -28,7 +28,7 @@ pub(super) async fn ingest(State(app): State<App>, req: Request) -> Response {
         let (parts, raw) = req.into_parts();
         let project = app.keys.authenticate(bearer(&parts.headers))?;
         let signed = Signed::demand(app.keys.vercel_secret(project)?, &parts.headers)?;
-        ingest_logs(
+        let outcome = ingest_logs(
             &app,
             project,
             &parts.headers,
@@ -40,8 +40,9 @@ pub(super) async fn ingest(State(app): State<App>, req: Request) -> Response {
                 vercel::parse(body, project, time::now_ns()).map_err(bad)
             },
         )
-        .await?;
-        Ok::<_, Failure>(StatusCode::OK.into_response())
+        .await;
+        let outcome = limit::busy(&app, Some(project), outcome)?;
+        Ok::<_, Failure>(outcome.answer(StatusCode::OK, super::OVER_QUOTA))
     };
     run.await.unwrap_or_else(IntoResponse::into_response)
 }
@@ -86,15 +87,24 @@ impl Signed {
 /// the raw request body, so the check runs before any decompression, and a
 /// body signed only in its decompressed form is refused.
 pub(super) fn decode(
-    signed: Option<Signed>,
+    signed: Option<&Signed>,
     bytes: Vec<u8>,
     encoding: &str,
     held: &mut Held,
 ) -> Result<Vec<u8>, Failure> {
-    if signed.is_some_and(|s| !s.matches(&bytes)) {
-        return Err(invalid());
+    if let Some(signed) = signed {
+        verify(signed, &bytes)?;
     }
     body::decode(bytes, encoding, held)
+}
+
+/// A `403` unless `signed` matches the body `bytes` as sent.
+pub(super) fn verify(signed: &Signed, bytes: &[u8]) -> Result<(), Failure> {
+    if signed.matches(bytes) {
+        Ok(())
+    } else {
+        Err(invalid())
+    }
 }
 
 fn refused(why: &str) -> Failure {

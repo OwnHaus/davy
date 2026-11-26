@@ -62,3 +62,16 @@ pub fn assert_usage_ts_fields(ty: &str, v: &serde_json::Value) {
         }
     }
 }
+
+/// Waits out the last seconds of a UTC day for the next one to begin, so
+/// a test that reads today before its request and the server that reads
+/// it again agree. It yields until the day turns, as only that ends it.
+pub async fn away_from_midnight() {
+    let start = crate::time::now_ns();
+    if crate::time::DAY_NS - start.rem_euclid(crate::time::DAY_NS) < 10_000_000_000 {
+        let day = crate::time::day_of(start);
+        while crate::time::day_of(crate::time::now_ns()) == day {
+            tokio::task::yield_now().await;
+        }
+    }
+}

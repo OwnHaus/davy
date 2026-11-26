@@ -208,3 +208,36 @@ async fn a_decoder_pays_for_its_window_before_auth() {
     assert_eq!(refused.0, StatusCode::PAYLOAD_TOO_LARGE);
     budget.hold().take(8 * MIB).unwrap();
 }
+
+#[tokio::test]
+async fn a_refused_body_is_drained_up_to_its_limit() {
+    let none = HeaderMap::new();
+    let drained = drain(Body::from(vec![0; 1000]), &none, 1000).await;
+    assert_eq!(drained, Drained::Whole);
+    let drained = drain(Body::from(vec![0; 1001]), &none, 1000).await;
+    assert_eq!(drained, Drained::Cut);
+    let mut declared = HeaderMap::new();
+    declared.insert(header::CONTENT_LENGTH, HeaderValue::from_static("1001"));
+    assert_eq!(drain(Body::empty(), &declared, 1000).await, Drained::Cut);
+    let mut expects = HeaderMap::new();
+    expects.insert(header::EXPECT, HeaderValue::from_static("100-continue"));
+    assert_eq!(drain(Body::empty(), &expects, 1000).await, Drained::Cut);
+    let ok = || axum::response::IntoResponse::into_response(StatusCode::TOO_MANY_REQUESTS);
+    assert!(
+        closing(ok(), &Drained::Whole)
+            .headers()
+            .get(header::CONNECTION)
+            .is_none()
+    );
+    assert_eq!(
+        closing(ok(), &Drained::Cut).headers()[header::CONNECTION],
+        "close"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_body_that_stalls_is_cut_after_the_drain_time() {
+    let never = futures::stream::pending::<Result<axum::body::Bytes, std::io::Error>>();
+    let stalled = Body::from_stream(never);
+    assert_eq!(drain(stalled, &HeaderMap::new(), 1000).await, Drained::Cut);
+}

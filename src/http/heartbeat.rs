@@ -1,16 +1,17 @@
-use super::{App, Failure, HeartbeatToken, Job, Path, State, StatusCode, store, time};
+use super::{App, Failure, HeartbeatToken, Job, Path, State, StatusCode, limit, store, time};
 
 pub(super) async fn ping(
     State(app): State<App>,
     Path(token): Path<String>,
 ) -> Result<&'static str, Failure> {
-    heartbeat(&app, &token, false).await
+    // A token names a monitor, so a busy ping counts under no project.
+    limit::busy(&app, None, heartbeat(&app, &token, false).await)
 }
 pub(super) async fn fail(
     State(app): State<App>,
     Path(token): Path<String>,
 ) -> Result<&'static str, Failure> {
-    heartbeat(&app, &token, true).await
+    limit::busy(&app, None, heartbeat(&app, &token, true).await)
 }
 /// The token is the credential, so a malformed and an unknown one get the
 /// same `404`.

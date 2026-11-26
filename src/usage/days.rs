@@ -16,9 +16,10 @@ use std::collections::HashMap;
 pub const NAMED: usize = 8;
 /// Projects of Other named with what each stored, the most first.
 pub const OTHER_TOP: usize = 3;
-/// The client report reasons of Davy's own rate limits and daily caps,
-/// counted as `limited`.
-pub const LIMITED: [&str; 2] = ["davy_rate", "davy_daily_cap"];
+/// The client report reasons of Davy's own rate limits, daily caps and
+/// project quotas, counted as `limited`. Items past a rate limit or a
+/// daily cap were accepted first; items past a quota never were.
+pub const LIMITED: [&str; 3] = ["davy_rate", "davy_daily_cap", crate::quota::QUOTA];
 /// The client report reasons of check-ins Davy could not read, too large
 /// or not valid, counted as `unreadable`: unlike every other reason of
 /// its own, they are written for items ingest did not count as accepted.
@@ -83,9 +84,11 @@ pub struct ProjectStored {
 }
 
 /// Counts, each a list in the order of [`UsageDays::days`]. `accepted`
-/// holds `filtered`, `discarded`, `limited` and `refused`: ingest counted
-/// those items and Davy then did not store them. `unreadable` and
-/// `sdk_dropped` were never accepted. Every count is of items: client
+/// holds `filtered`, `discarded` and `refused`: ingest counted those items
+/// and Davy then did not store them. `limited` is partly in it: a check-in
+/// past its rate limit or a session past the daily cap was accepted, an
+/// item past a project's quota never was. `unreadable` and `sdk_dropped`
+/// were never accepted. Every count is of items: client
 /// reports in bytes or time, [`NOT_ITEMS`], are left out.
 #[derive(Debug, Default, PartialEq, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
@@ -100,7 +103,8 @@ pub struct Counts {
     pub filtered: Vec<u64>,
     /// Error events of discarded issues, counted and not stored.
     pub discarded: Vec<u64>,
-    /// Items Davy refused past one of its rate limits or daily caps.
+    /// Items Davy refused past one of its rate limits, daily caps or a
+    /// project's quota.
     pub limited: Vec<u64>,
     /// Items Davy accepted and then refused for another reason, such as a
     /// check-in for a monitor that does not exist.

@@ -8,7 +8,11 @@
 
 use super::{Failure, bad};
 use crate::envelope::EnvelopeHeader;
-use axum::{body::Body, http::StatusCode};
+use axum::{
+    body::Body,
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    response::Response,
+};
 use brotli_decompressor::BrotliDecoderParameter;
 use http_body_util::BodyExt;
 use std::{
@@ -32,6 +36,9 @@ pub const BEFORE_AUTH: usize = 128 * 1024;
 /// RFC 9659 requires of an HTTP decoder. zstd's own limit is 128 MiB.
 const ZSTD_WINDOW_LOG: u32 = 23;
 pub const TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a request refused before its body is read may take to send
+/// the body Davy drops.
+pub const DRAIN_FOR: Duration = Duration::from_secs(2);
 /// What all requests together may hold while they are read and parsed.
 pub const MEMORY: usize = 256 * 1024 * 1024;
 const KIB: usize = 1024;
@@ -220,6 +227,56 @@ pub async fn read_small(
         bytes.extend_from_slice(&data);
     }
     Ok(bytes)
+}
+
+/// Whether the body of a refused request was read to its end.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Drained {
+    Whole,
+    /// Left unread, so the connection closes after the answer.
+    Cut,
+}
+
+/// Reads and drops the body of a request refused before it was read, up
+/// to `limit` bytes within [`DRAIN_FOR`], so its client reads the answer
+/// instead of an error on a socket closed while it still writes. Nothing
+/// is kept, paid for or parsed. A body that declares more than `limit`,
+/// sends more, takes longer, or waits for `100 Continue` is cut.
+pub async fn drain(mut body: Body, headers: &HeaderMap, limit: usize) -> Drained {
+    let expects = headers
+        .get(header::EXPECT)
+        .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"100-continue"));
+    let declared = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok()?.parse::<usize>().ok());
+    if expects || declared.is_some_and(|n| n > limit) {
+        return Drained::Cut;
+    }
+    let deadline = Instant::now() + DRAIN_FOR;
+    let mut seen = 0usize;
+    loop {
+        match tokio::time::timeout_at(deadline, body.frame()).await {
+            Ok(None) => return Drained::Whole,
+            Ok(Some(Ok(frame))) => {
+                seen = seen.saturating_add(frame.data_ref().map_or(0, axum::body::Bytes::len));
+                if seen > limit {
+                    return Drained::Cut;
+                }
+            }
+            Ok(Some(Err(_))) | Err(_) => return Drained::Cut,
+        }
+    }
+}
+
+/// `response`, which closes its connection when the body was `drained`
+/// only in part.
+pub fn closing(mut response: Response, drained: &Drained) -> Response {
+    if *drained == Drained::Cut {
+        response
+            .headers_mut()
+            .insert(header::CONNECTION, HeaderValue::from_static("close"));
+    }
+    response
 }
 
 /// Reads an envelope whose key is in the DSN of its header line. Reads only

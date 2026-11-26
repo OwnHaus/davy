@@ -8,6 +8,7 @@ use crate::{
         store::{LogQueue, QueueError},
     },
     monitor::{self, HeartbeatToken},
+    quota::Limits,
     sourcemaps::{self, symbolicate},
     store::{self, Job},
     time,
@@ -30,6 +31,7 @@ use std::{
 
 pub mod body;
 mod heartbeat;
+mod limit;
 mod logs;
 mod sdk;
 mod serve;
@@ -49,6 +51,8 @@ const MAX_RECORDS: usize = 10_000;
 /// envelope, and the rest of a crafted one is skipped.
 const MAX_SDK_ITEMS: usize = 10;
 pub const RATE: &str = "86400:transaction;span;replay;profile;profile_chunk:organization";
+/// What a request past a daily quota is told.
+const OVER_QUOTA: &str = "over the project's daily quota";
 
 pub struct Keys {
     db: Mutex<rusqlite::Connection>,
@@ -173,7 +177,6 @@ async fn headers(req: Request, next: Next) -> Response {
     let throttled = response.status() == StatusCode::TOO_MANY_REQUESTS;
     let h = response.headers_mut();
     let fixed = [
-        ("x-sentry-rate-limits", RATE),
         ("access-control-allow-origin", "*"),
         ("access-control-allow-methods", "POST, OPTIONS"),
         (
@@ -188,9 +191,7 @@ async fn headers(req: Request, next: Next) -> Response {
     for (name, value) in fixed {
         h.insert(name, HeaderValue::from_static(value));
     }
-    if throttled {
-        h.insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
-    }
+    limit::merge(h, throttled);
     response
 }
 pub(crate) type Failure = (StatusCode, String);
@@ -275,14 +276,17 @@ fn key(headers: &HeaderMap, query: Option<&str>, dsn: Option<&str>) -> Option<St
         .filter(|s| !s.is_empty())
 }
 async fn envelope(State(app): State<App>, Path(project): Path<i64>, req: Request) -> Response {
-    ingest(app, project, req, false)
-        .await
-        .unwrap_or_else(IntoResponse::into_response)
+    counted(app, project, req, false).await
 }
 async fn legacy(State(app): State<App>, Path(project): Path<i64>, req: Request) -> Response {
-    ingest(app, project, req, true)
-        .await
-        .unwrap_or_else(IntoResponse::into_response)
+    counted(app, project, req, true).await
+}
+/// [`ingest`], with a `429` of a full body budget or queue counted as busy
+/// for the project once its key picked it.
+async fn counted(app: App, project: i64, req: Request, legacy: bool) -> Response {
+    let mut known = None;
+    let result = ingest(&app, project, req, legacy, &mut known).await;
+    limit::busy(&app, known, result).unwrap_or_else(IntoResponse::into_response)
 }
 fn authorize(keys: &Keys, project: i64, key: Option<&str>) -> Result<(), Failure> {
     if keys.authenticate(key)? == project {
@@ -302,6 +306,42 @@ struct Parsed {
     check_in: Option<monitor::checkin::Item>,
     /// Records and bytes of what was parsed, counted once it is queued.
     tally: usage::Tally,
+    /// Events and log records skipped unparsed past a daily quota, in the
+    /// order of [`crate::quota::capped`].
+    skipped: [u64; 2],
+}
+impl Parsed {
+    fn new(id: Option<EventId>) -> Self {
+        Self {
+            id,
+            event: None,
+            logs: Vec::new(),
+            items: Vec::new(),
+            check_in: None,
+            tally: usage::Tally::default(),
+            skipped: [0; 2],
+        }
+    }
+    /// Whether nothing is left to queue.
+    fn is_empty(&self) -> bool {
+        self.event.is_none()
+            && self.logs.is_empty()
+            && self.items.is_empty()
+            && self.check_in.is_none()
+    }
+}
+/// The place in [`crate::quota::capped`] of an item `limits` refuses, which
+/// is skipped before it is parsed.
+fn blocked(d: &Disposition, limits: &Limits) -> Option<usize> {
+    let signal = match d {
+        Disposition::StoreError => Signal::Errors,
+        Disposition::StoreLogs => Signal::Logs,
+        Disposition::SdkItem | Disposition::CheckIn | Disposition::Drop => return None,
+    };
+    limits
+        .blocks(signal)
+        .then(|| crate::quota::capped(signal))
+        .flatten()
 }
 fn too_many_records() -> Failure {
     (
@@ -336,43 +376,39 @@ fn parse_sentry(
     bytes: &[u8],
     project: i64,
     legacy: bool,
+    limits: &Limits,
     maps: &sourcemaps::Store,
     held: &mut Held,
     policy: &Policy,
 ) -> Result<Parsed, Failure> {
     if legacy {
-        let mut tally = usage::Tally::default();
-        let event = if bytes.len() > MAX_ITEM {
-            None
-        } else {
-            tally.add(Signal::Errors, Count::new(1, bytes.len()));
-            Some(event(bytes, maps, held, policy)?)
-        };
-        return Ok(Parsed {
-            id: None,
-            event,
-            logs: Vec::new(),
-            items: Vec::new(),
-            check_in: None,
-            tally,
-        });
+        let mut parsed = Parsed::new(None);
+        if bytes.len() <= MAX_ITEM {
+            parsed.tally.add(Signal::Errors, Count::new(1, bytes.len()));
+            parsed.event = Some(event(bytes, maps, held, policy)?);
+        }
+        return Ok(parsed);
     }
     let envelope = Envelope::parse(bytes).map_err(bad)?;
     let observed_at = time::now_ns();
-    let mut parsed = Parsed {
-        id: envelope.header.event_id,
-        event: None,
-        logs: Vec::new(),
-        items: Vec::new(),
-        check_in: None,
-        tally: usage::Tally::default(),
-    };
+    let mut parsed = Parsed::new(envelope.header.event_id);
     for item in envelope
         .items
         .into_iter()
         .filter(|i| i.payload.len() <= MAX_ITEM)
     {
-        match disposition(&item.kind) {
+        let d = disposition(&item.kind);
+        if let Some(i) = blocked(&d, limits) {
+            // Sentry keeps one event an envelope, so one is refused at most.
+            let n = &mut parsed.skipped[i];
+            *n = if i == 0 {
+                1
+            } else {
+                n.saturating_add(crate::logs::sentry::count(item.payload))
+            };
+            continue;
+        }
+        match d {
             Disposition::StoreError if parsed.event.is_none() => {
                 parsed.event = Some(event(item.payload, maps, held, policy)?);
                 let count = Count::new(1, item.payload.len());
@@ -430,31 +466,46 @@ fn signal_of(item: &SdkItem) -> Option<Signal> {
         SdkItem::Session(_) | SdkItem::Sessions(_) => Some(Signal::Sessions),
     }
 }
-async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Response, Failure> {
+/// Takes a Sentry request, and sets `known` once its key picked the
+/// project.
+async fn ingest(
+    app: &App,
+    project: i64,
+    req: Request,
+    legacy: bool,
+    known: &mut Option<i64>,
+) -> Result<Response, Failure> {
     let (parts, raw) = req.into_parts();
     let presented = key(&parts.headers, parts.uri.query(), None);
     let encoding = encoding(&parts.headers);
     let mut held = app.budget.hold();
     // Only an envelope can carry its key in the body, in the DSN of its header line.
-    let bytes = if presented.is_none() && !legacy {
-        body::read_envelope(raw, &mut held, &encoding, |header| {
+    let (bytes, limits) = if presented.is_none() && !legacy {
+        let bytes = body::read_envelope(raw, &mut held, &encoding, |header| {
             let dsn = header.dsn.as_deref();
-            authorize(
-                &app.keys,
-                project,
-                key(&HeaderMap::new(), None, dsn).as_deref(),
-            )
+            let key = key(&HeaderMap::new(), None, dsn);
+            authorize(&app.keys, project, key.as_deref())?;
+            *known = Some(project);
+            Ok(())
         })
-        .await?
+        .await?;
+        (bytes, limit::limits(app, project))
     } else {
         authorize(&app.keys, project, presented.as_deref())?;
-        body::read(raw, &mut held).await?
+        *known = Some(project);
+        let limits = limit::limits(app, project);
+        // A legacy request is one event, refused before its body is read.
+        if legacy && let Some(l) = limit::refused(app, project, Signal::Errors, &limits) {
+            let drained = body::drain(raw, &parts.headers, body::COMPRESSED).await;
+            return Ok(body::closing(l.refuse(OVER_QUOTA), &drained));
+        }
+        (body::read(raw, &mut held).await?, limits)
     };
     let policy = app.keys.policy(project)?;
     let maps = Arc::clone(&app.sourcemaps);
     let (parsed, held) = blocking(move || {
         let body = body::decode(bytes, &encoding, &mut held)?;
-        let mut parsed = parse_sentry(&body, project, legacy, &maps, &mut held, &policy)?;
+        let mut parsed = parse_sentry(&body, project, legacy, &limits, &maps, &mut held, &policy)?;
         scrubbed_logs(&mut held, |meter| policy.logs(&mut parsed.logs, meter))?;
         let capacity = body.capacity();
         drop(body);
@@ -462,10 +513,30 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
         Ok((parsed, held))
     })
     .await?;
+    limit::count_skipped(app, project, parsed.skipped);
+    let limited = limit::Limited::of(&limits);
+    if let Some(l) = &limited
+        && parsed.is_empty()
+        && parsed.skipped.iter().any(|n| *n > 0)
+    {
+        return Ok(l.refuse(OVER_QUOTA));
+    }
     let id = parsed
         .id
+        .clone()
         .or_else(|| parsed.event.as_ref().map(|e| e.event_id.clone()))
         .unwrap_or_else(EventId::fresh);
+    accept(app, project, parsed, held).await?;
+    let mut response = json_response(&json!({"id":id.0}));
+    // The SDK stops sending what is refused, though this request is taken.
+    if let Some(l) = limited {
+        l.set(response.headers_mut(), false);
+    }
+    Ok(response)
+}
+/// Queues what a Sentry request carried, and counts each part once it is
+/// queued.
+async fn accept(app: &App, project: i64, parsed: Parsed, held: Held) -> Result<(), Failure> {
     let tally = parsed.tally;
     let count = |signal| app.usage.add(project, signal, tally.get(signal));
     if !parsed.logs.is_empty() {
@@ -501,7 +572,7 @@ async fn ingest(app: App, project: i64, req: Request, legacy: bool) -> Result<Re
         count(Signal::Checkins);
         queued.applied().await?;
     }
-    Ok(json_response(&json!({"id":id.0})))
+    Ok(())
 }
 #[cfg(test)]
 #[path = "http/key_tests.rs"]

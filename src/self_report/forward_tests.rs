@@ -100,3 +100,33 @@ fn a_record_counts_what_was_suppressed_and_dropped() {
         })
     );
 }
+
+#[tokio::test]
+async fn past_its_log_quota_the_forward_drops_its_lines_and_counts_them() {
+    crate::test_support::away_from_midnight().await;
+    let (forwarder, inbox, usage) = forwarder("self-report-forward-quota");
+    let data = forwarder.data.clone();
+    let id = forwarder.own.id;
+    let gate = usage.gate();
+    let quota = crate::quota::Settings {
+        logs: Some(1),
+        ..crate::quota::Settings::default()
+    };
+    gate.load(std::collections::HashMap::from([(id, quota)]));
+    gate.used(id, Signal::Logs, Count::new(1, 1), crate::time::now_ns());
+    let (sink, lines) = Sink::new(8);
+    sink.offer(LogLevel::Warn, "log writer", "one", AT);
+    sink.offer(LogLevel::Warn, "log writer", "two", AT);
+    drop(sink);
+    forwarder.start(lines).unwrap().join().unwrap();
+
+    assert!(inbox.try_recv().is_none());
+    let refused: Vec<_> = gate
+        .take()
+        .refused
+        .into_iter()
+        .map(|r| (r.project, r.reason, r.category, r.quantity))
+        .collect();
+    assert_eq!(refused, [(id, "davy_quota", "log_item", 2)]);
+    std::fs::remove_dir_all(&data).unwrap();
+}

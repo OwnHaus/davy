@@ -2,7 +2,9 @@
 //! project, and its crash files into issues. `davy serve` finds or makes
 //! the project before its writers start, see [`super::own`]. The thread
 //! scrubs with the project's policy and queues like any other ingest,
-//! counted in the project's usage. Every failure here goes to stderr only.
+//! counted in the project's usage. It asks the quota gate like any sender:
+//! past the project's log quota its lines are dropped and counted as
+//! refused. Every failure here goes to stderr only.
 
 use super::{
     Line, SERVICE,
@@ -133,6 +135,12 @@ impl Forwarder {
 
     fn write(&self, lines: Vec<Line>) {
         let now = crate::time::now_ns();
+        let gate = self.usage.gate();
+        if gate.limits(self.own.id, now).blocks(Signal::Logs) {
+            let n = lines.len() as u64;
+            gate.refuse(self.own.id, crate::quota::QUOTA, "log_item", n, now);
+            return;
+        }
         let mut records: Vec<LogRecord> = lines
             .into_iter()
             .map(|line| record(self.own.id, line, now))

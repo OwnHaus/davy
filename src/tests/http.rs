@@ -222,6 +222,26 @@ async fn every_ingest_route_is_429_while_the_budget_is_spent() {
         assert_eq!(r.status, 429, "{uri}");
         assert_eq!(r.headers["retry-after"], "1", "{uri}");
     }
+    let unread =
+        format!("{{\"dsn\":\"http://key-a@davy/1\"}}\n{{\"type\":\"session\"}}\n{SESSION}");
+    let r = s.send(post("/api/1/envelope/", &[], unread)).await;
+    assert_eq!(r.status, 429);
+    assert_eq!(busy(&s), [(0, 1), (1, 5)]);
+}
+
+/// The requests counted as busy, `(project, quantity)` by project.
+fn busy(s: &Server) -> Vec<(i64, i64)> {
+    let mut busy: Vec<(i64, i64)> = s
+        .usage
+        .gate()
+        .take()
+        .requests
+        .into_iter()
+        .filter(|r| r.reason == crate::quota::BUSY)
+        .map(|r| (r.project, r.quantity))
+        .collect();
+    busy.sort_unstable();
+    busy
 }
 
 #[tokio::test]
@@ -413,6 +433,7 @@ async fn full_error_queue_is_429() {
         .await;
     assert_eq!(r.status, 429);
     assert_eq!(r.headers["retry-after"], "1");
+    assert_eq!(busy(&s), [(1, 1)]);
 }
 
 #[tokio::test]
@@ -644,6 +665,8 @@ fn request(method: &str, uri: &str) -> Request<Body> {
 mod heartbeat;
 #[path = "http_items.rs"]
 mod items;
+#[path = "http_quota.rs"]
+mod quota;
 #[path = "scrub_http.rs"]
 mod scrub_http;
 #[path = "http_surface.rs"]

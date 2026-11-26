@@ -99,6 +99,28 @@ pub fn add(c: &Connection, project: i64, at: Timestamp, entries: &[Discarded]) -
     Ok(())
 }
 
+/// Adds `quantity` items Davy refused itself, for `reason` and `category`,
+/// to the counts of `project` on the day that starts at `day_ms`. Davy's
+/// own reasons are few, so they skip [`MAX_PAIRS`]: made-up names an SDK
+/// sent cannot crowd them out. A project deleted since is skipped.
+pub fn add_own(
+    c: &Connection,
+    project: i64,
+    day_ms: i64,
+    reason: &str,
+    category: &str,
+    quantity: i64,
+) -> Result<()> {
+    debug_assert!(reason.starts_with(OWN_PREFIX));
+    c.prepare_cached(
+        "INSERT INTO client_reports(day, project_id, reason, category, quantity)
+         SELECT ?1, id, ?3, ?4, ?5 FROM projects WHERE id=?2
+         ON CONFLICT DO UPDATE SET quantity=quantity+excluded.quantity",
+    )?
+    .execute(params![day_ms, project, reason, category, quantity])?;
+    Ok(())
+}
+
 /// Deletes the days older than [`KEEP_DAYS`] before `at`.
 pub fn prune(c: &Connection, at: Timestamp) -> Result<()> {
     let cutoff = at.div_euclid(DAY_MS).saturating_sub(KEEP_DAYS) * DAY_MS;

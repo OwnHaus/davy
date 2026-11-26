@@ -31,7 +31,7 @@ Every byte that arrives over the network is hostile until a parser accepts it. D
 Out of scope:
 
 - An attacker with a shell on the host or write access to the data directory.
-- Denial of service by a sender with a valid key that stays under the caps. Rate limits per key are planned for the cloud service.
+- Denial of service by a sender with a valid key that stays under the caps. A person can bound what one project stores a day with a daily quota (`davy project quota`), which Davy checks before it reads a body, so a key past it costs a lookup in memory, a body drained unread for at most 2 s, and a `429`. Quotas are off by default, and a sender under them can still fill a disk that has no room for them.
 - Limits per client address. The login backoff counts per e-mail. Davy does not trust `X-Forwarded-For`, so a limit per address belongs in the reverse proxy, on `/ui/api/login` and `/ui/api/welcome` above all.
 - Access inside the team. Every person with a login sees every project with its DSN and log key, and every event, log, monitor and channel. Davy has no roles yet, so add only people who may read all of it.
 - Search text kept as history. Davy keeps the log searches run on the web UI's logs page and with the MCP tools `search_logs` and `count_logs` for up to 90 days, query text included, and any agent with the admin token on `/mcp` can read them through `sql`. A person who pastes a secret into a log search leaves it there until the history drops it.

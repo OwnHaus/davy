@@ -363,6 +363,8 @@ pub enum Job {
     /// A shadow rule an agent adds or removes over MCP. No job makes a
     /// rule live, see src/drops/agent.rs.
     Drop(crate::drops::AgentChange),
+    /// What the quota gate refused, see src/quota.rs.
+    Quota(crate::quota::Flush),
 }
 pub type Outcome = std::result::Result<(), String>;
 pub struct Write {
@@ -400,6 +402,7 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
             crate::retention::errors::sweep(c, *at, *error_days, crate::retention::errors::BUDGET)?;
             crate::accounts::store::sweep(c, *at)?;
             crate::items::client_report::prune(c, *at)?;
+            crate::quota::prune(c, *at)?;
             crate::items::session::prune(c, *at)?;
             crate::usage::prune(c, *at)?;
             crate::discard::prune(c, *at)?;
@@ -412,6 +415,7 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
         Job::LogDays(flush) => Ok(Ok(crate::usage::stored::write(c, flush)?)),
         Job::Search { at, search } => Ok(Ok(crate::usage::savings::searches::add(c, *at, search)?)),
         Job::Drop(change) => crate::drops::apply(c, change),
+        Job::Quota(flush) => Ok(Ok(crate::quota::write(c, flush)?)),
         Job::Check {
             monitor,
             at,

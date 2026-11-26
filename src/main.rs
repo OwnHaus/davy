@@ -191,6 +191,12 @@ enum Project {
     /// whether drain requests must be signed. The secret comes on standard
     /// input and is never printed.
     Vercel(davy::vercel::Args),
+    /// Shows or sets a project's daily quotas: error events and log bytes
+    /// a UTC day. Past one, ingest answers 429 until midnight UTC. A
+    /// running server applies a change within 5 s. A project can pass its
+    /// quota by the requests in flight when it reached it, and a hard kill
+    /// of the server can lose up to 5 s of counts.
+    Quota(davy::quota::cli::Args),
     /// Prints project IDs and slugs as JSON.
     List {
         #[arg(long)]
@@ -371,6 +377,7 @@ fn run_project(out: &mut impl Write, command: Project) -> anyhow::Result<()> {
     match command {
         Project::Scrub(args) => davy::scrub::settings::run(out, &args)?,
         Project::Vercel(args) => davy::vercel::run(out, &args, std::io::stdin().lock())?,
+        Project::Quota(args) => davy::quota::cli::run(out, &args)?,
         Project::List { data } => davy::connect::list(out, &data)?,
         Project::Create {
             slug,
