@@ -224,6 +224,90 @@ test("a person signs in, finds the SDK's issue, reads its frame and resolves it"
     await both("projects");
   });
 
+  await test.step("Usage shows the disk, a project, a savings pattern, the outcomes and the chart as a table", async () => {
+    // Pattern counters reach the database on their own schedule, so wait for
+    // the savings view to list one before the page is read.
+    const patterns = () => {
+      const view = JSON.parse(davy("usage", "--project", "logs", "--view", "savings", "--json")) as { savings: { kind: string }[] };
+      return view.savings.filter((e) => e.kind === "pattern").length;
+    };
+    await expect.poll(patterns, { timeout: 15_000 }).toBeGreaterThan(0);
+    // Counts per day reach the database every few seconds, so wait for the
+    // days answer to hold what the logs project sent.
+    const accepted = async () => {
+      const r = await page.request.get(`${URL}/ui/api/usage/days?project=logs`);
+      const d = (await r.json()) as { projects: { accepted: number[] }[] };
+      return d.projects[0]?.accepted.reduce((a, b) => a + b, 0) ?? 0;
+    };
+    await expect.poll(accepted, { timeout: 15_000 }).toBeGreaterThan(0);
+    await views.getByRole("link", { name: "Usage" }).click();
+    await expect(page).toHaveURL(`${URL}/ui/usage`);
+    // With every project no pattern can say a drop command, so the page asks for one.
+    const savings = page.getByRole("region", { name: /^Savings/ });
+    const patternGroup = savings.getByRole("region", { name: "Log patterns" });
+    await expect(patternGroup.locator(".svlead")).toHaveText("Pick a project to get a drop command.");
+    await page.getByRole("button", { name: "logs", exact: true }).click();
+    await expect(page).toHaveURL(`${URL}/ui/usage?project=logs`);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Usage of logs");
+
+    // The disk's sizes and its day depend on the runner, so only the shape.
+    const disk = page.getByRole("region", { name: /^Disk/ });
+    await expect(disk.locator("dt").filter({ hasText: /^Full$/ })).toHaveCount(1);
+    await expect(disk.getByTestId("fills")).not.toBeEmpty();
+    await expect(disk.locator("dt").filter({ hasText: /^Room left$/ })).toHaveCount(1);
+    await expect(disk.getByTestId("room")).toContainText("Davy keeps");
+
+    const rows = page.locator("#uprojects tbody tr");
+    await expect(rows).toHaveCount(1);
+    await expect(rows.locator("th")).toHaveText("logs");
+    await expect(rows).toContainText("logs 30 days");
+
+    await expect(savings.locator(".lede")).toHaveText("Davy changes nothing from this page. Copy a command and run it on the server.");
+    await expect(patternGroup.locator(".svlead")).toHaveCount(0);
+    const pattern = patternGroup.locator(".sv").first();
+    await expect(pattern.locator(".try code")).toHaveText(/^search_logs pattern=[0-9a-f]{12}$/);
+    await expect(pattern.getByRole("button", { name: "Copy agent query" })).toBeVisible();
+
+    // Today is still counting, whenever the counts were last written.
+    const chart = page.locator(".stack svg");
+    await expect(chart.locator("text.today")).toHaveText("today, so far");
+    await expect(page.locator(".sread")).toHaveAttribute("aria-live", "polite");
+    await chart.focus();
+    await page.keyboard.press("End");
+    await expect(page.locator(".sread")).toContainText(/^[A-Z][a-z]{2} \d{1,2} UTC, today so far: /);
+    await page.keyboard.press("ArrowLeft");
+    await expect(page.locator(".sread")).toContainText(/^[A-Z][a-z]{2} \d{1,2} UTC: .* stored/);
+
+    const outcomes = page.getByRole("region", { name: /^What became of what was sent/ });
+    await expect(outcomes.locator(".lede")).toHaveText(
+      "Accepted counts every item Davy took in. Filtered, discarded, rate limited and refused are parts of it that Davy then did not store. Unreadable items and those the SDKs dropped never reached it.",
+    );
+    const head = page.locator("#uoutcomes thead tr");
+    await expect(head.nth(0).locator("th")).toHaveText(["Day, UTC", "Accepted", "Of those, not stored", "Never accepted"]);
+    await expect(head.nth(1).locator("th")).toHaveText(["Filtered", "Discarded", "Rate limited", "Refused", "Unreadable", "Dropped by SDK"]);
+    const every = outcomes.getByRole("button", { name: "Show all 31 days" });
+    await every.click();
+    await expect(outcomes.getByRole("button", { name: "Show the newest 14 days" })).toHaveAttribute("aria-pressed", "true");
+    await both("usage");
+
+    await page.getByRole("button", { name: "Show table" }).click();
+    const table = page.getByRole("region", { name: "Stored bytes per day of logs, UTC" });
+    // 30 days back and today.
+    await expect(table.locator("tbody tr")).toHaveCount(31);
+    await expect(table.locator("thead th")).toHaveText(["Day, UTC", "logs"]);
+    await expect(table.locator("tbody tr").first().locator("th")).toHaveText(/^[A-Z][a-z]{2} \d{1,2}, so far$/);
+    await expect(page.getByRole("button", { name: "Show chart" })).toHaveAttribute("aria-pressed", "true");
+    // Scrolled to its end, the column headers stay on top and a row's
+    // header leaves with its row.
+    await table.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+    const region = (await table.boundingBox())!;
+    const first = (await table.locator("tbody tr").first().locator("th").boundingBox())!;
+    const top = (await table.locator("thead th").first().boundingBox())!;
+    expect(first.y + first.height).toBeLessThan(region.y);
+    expect(Math.abs(top.y - region.y)).toBeLessThan(2);
+    await noAxeViolations(page, "usage, table");
+  });
+
   await test.step("Setup shows the done steps and the open ones", async () => {
     await views.getByRole("link", { name: "Setup" }).click();
     const step = (title: string) => page.locator(".steps li", { has: page.getByRole("heading", { name: title }) });
