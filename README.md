@@ -6,8 +6,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/dominikzabcik/davy/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/dominikzabcik/davy/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/dominikzabcik/davy/releases/latest"><img alt="Latest release" src="https://img.shields.io/badge/release-v0.1.0-orange"></a>
+  <a href="https://github.com/OwnHaus/davy/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/OwnHaus/davy/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/OwnHaus/davy/releases/latest"><img alt="Latest release" src="https://img.shields.io/badge/release-v0.1.0-orange"></a>
   <a href="LICENSE"><img alt="License AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue"></a>
 </p>
 
@@ -33,10 +33,10 @@ Davy replaces Sentry and Better Stack for a team that wants to run its own. It i
 
 ```sh
 docker volume create davy
-docker run --rm -v davy:/data ghcr.io/dominikzabcik/davy \
+docker run --rm -v davy:/data ghcr.io/ownhaus/davy \
   setup --data /data --public-url http://127.0.0.1:8000 --listen 0.0.0.0:8000
 docker run -d --name davy --restart unless-stopped \
-  -p 127.0.0.1:8000:8000 -v davy:/data ghcr.io/dominikzabcik/davy serve --data /data
+  -p 127.0.0.1:8000:8000 -v davy:/data ghcr.io/ownhaus/davy serve --data /data
 
 docker exec davy /davy project create my-app --data /data      # prints the DSN
 docker exec davy /davy user add you@example.com --data /data   # prints a sign-in link
@@ -46,12 +46,12 @@ Open the link, set a password, and put the DSN into `Sentry.init({ dsn })`. The 
 
 ### Binary
 
-Builds for Linux (static, x86_64 and aarch64) and macOS (Apple silicon and Intel) are on the [releases page](https://github.com/dominikzabcik/davy/releases/latest). On a Mac with Apple silicon:
+Builds for Linux (static, x86_64 and aarch64) and macOS (Apple silicon and Intel) are on the [releases page](https://github.com/OwnHaus/davy/releases/latest). On a Mac with Apple silicon:
 
 ```sh
 FILE=davy-aarch64-apple-darwin
-curl -fsSLO "https://github.com/dominikzabcik/davy/releases/latest/download/$FILE"
-curl -fsSLO "https://github.com/dominikzabcik/davy/releases/latest/download/SHA256SUMS"
+curl -fsSLO "https://github.com/OwnHaus/davy/releases/latest/download/$FILE"
+curl -fsSLO "https://github.com/OwnHaus/davy/releases/latest/download/SHA256SUMS"
 grep " $FILE\$" SHA256SUMS | shasum -a 256 -c -   # on Linux: sha256sum -c -
 install -m 755 "$FILE" ./davy
 
@@ -67,7 +67,7 @@ For a server with systemd and TLS, or a Mac that keeps Davy running, give your a
 
 ```text
 Install Davy on this machine and connect this app to it.
-Follow docs/install.md in https://github.com/dominikzabcik/davy from top to bottom.
+Follow docs/install.md in https://github.com/OwnHaus/davy from top to bottom.
 ```
 
 The agent asks for the public URL and, optionally, an SMTP server. It installs and checks the binary, sets up the service and TLS, connects the SDK in your app and adds MCP for itself. `davy doctor` tells it what is still wrong and the command that fixes it. CI follows the same page in Debian with systemd, every step but the download.

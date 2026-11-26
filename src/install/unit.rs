@@ -120,7 +120,7 @@ impl Serve {
         Ok(format!(
             "[Unit]\n\
              Description=Davy error tracking, logs and uptime\n\
-             Documentation=https://github.com/dominikzabcik/davy\n\
+             Documentation=https://github.com/OwnHaus/davy\n\
              After=network-online.target\n\
              Wants=network-online.target\n\
              \n\

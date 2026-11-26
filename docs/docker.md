@@ -1,6 +1,6 @@
 # Run Davy in Docker
 
-The image `ghcr.io/dominikzabcik/davy` holds the static binary on a distroless base and runs as a non-root user. It is built for amd64 and arm64 and signed. Tags are the version, such as `0.1.0`, and `latest` for the newest release. Pin the version on a server, so an upgrade happens when you choose.
+The image `ghcr.io/ownhaus/davy` holds the static binary on a distroless base and runs as a non-root user. It is built for amd64 and arm64 and signed. Tags are the version, such as `0.1.0`, and `latest` for the newest release. Pin the version on a server, so an upgrade happens when you choose.
 
 The image has no shell. Every command below runs the `davy` binary, which sits at `/davy`, and keeps the data in the volume at `/data`.
 
@@ -8,10 +8,10 @@ The image has no shell. Every command below runs the `davy` binary, which sits a
 
 ```sh
 docker volume create davy
-docker run --rm -v davy:/data ghcr.io/dominikzabcik/davy:0.1.0 \
+docker run --rm -v davy:/data ghcr.io/ownhaus/davy:0.1.0 \
   setup --data /data --public-url http://127.0.0.1:8000 --listen 0.0.0.0:8000
 docker run -d --name davy --restart unless-stopped \
-  -p 127.0.0.1:8000:8000 -v davy:/data ghcr.io/dominikzabcik/davy:0.1.0 serve --data /data
+  -p 127.0.0.1:8000:8000 -v davy:/data ghcr.io/ownhaus/davy:0.1.0 serve --data /data
 ```
 
 `setup` writes the settings, a random admin token and the address to listen on into the volume. `serve` reads them from there. `--listen 0.0.0.0:8000` is the address inside the container. `-p 127.0.0.1:8000:8000` keeps the port on this machine only.
@@ -30,7 +30,7 @@ The first prints the DSN for `Sentry.init({ dsn })`. Its public key is also the 
 Apps on other machines need a public URL with TLS. Run `setup` again with that URL, then restart:
 
 ```sh
-docker run --rm -v davy:/data ghcr.io/dominikzabcik/davy:0.1.0 \
+docker run --rm -v davy:/data ghcr.io/ownhaus/davy:0.1.0 \
   setup --data /data --public-url https://davy.example.com --listen 0.0.0.0:8000
 docker restart davy
 ```
@@ -78,11 +78,11 @@ docker start davy
 To upgrade, back up first, then start the new version on the same volume:
 
 ```sh
-docker pull ghcr.io/dominikzabcik/davy:0.2.0
+docker pull ghcr.io/ownhaus/davy:0.2.0
 docker stop davy
 docker rm davy
 docker run -d --name davy --restart unless-stopped \
-  -p 127.0.0.1:8000:8000 -v davy:/data ghcr.io/dominikzabcik/davy:0.2.0 serve --data /data
+  -p 127.0.0.1:8000:8000 -v davy:/data ghcr.io/ownhaus/davy:0.2.0 serve --data /data
 ```
 
 A newer Davy migrates the data of an older one. It waits up to 10 s for other processes to close the data and then refuses to migrate, so stop the old container before the new one starts, and never run two versions on one volume at once. For the same reason a rolling update that starts the new container before it stops the old one cannot finish: stop first, as Kubernetes `Recreate` does. An older one refuses data that a newer one migrated and says so, so a downgrade means restoring the backup taken before the upgrade, without what arrived since. The [changelog](../CHANGELOG.md) says when a release migrates data.
@@ -92,12 +92,12 @@ An upgrade that migrates runs in one transaction before the server answers, so i
 ## Verify the image
 
 ```sh
-cosign verify ghcr.io/dominikzabcik/davy:0.1.0 \
+cosign verify ghcr.io/ownhaus/davy:0.1.0 \
   --certificate-identity-regexp '^https://github.com/dominikzabcik/davy/.github/workflows/release.yml@refs/tags/v0.1.0$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-It prints the checks it passed. [RELEASING.md](../RELEASING.md) lists every file a release ships and how each is checked.
+It prints the checks it passed. Davy 0.1.0 was built before the repository moved to `OwnHaus/davy`, so its signature names `dominikzabcik/davy`, as above. From the next release the identity is `^https://github.com/OwnHaus/davy/.github/workflows/release.yml@refs/tags/vX.Y.Z$`. [RELEASING.md](../RELEASING.md) lists every file a release ships and how each is checked.
 
 ## Not covered here yet
 

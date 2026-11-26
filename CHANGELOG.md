@@ -52,6 +52,8 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 
 ### Changed
 
+- **Repository.** Davy moved to [github.com/OwnHaus/davy](https://github.com/OwnHaus/davy) and its image to `ghcr.io/ownhaus/davy`. Old GitHub links redirect. The 0.1.0 image was copied to the new name with its signature and SBOM, and stays at `ghcr.io/dominikzabcik/davy` too. Attestations of the 0.1.0 binaries stay under the old owner, see docs/install.md.
+
 - A log line's level is read in more spellings: `severe`, `fault`, `failure` and `exception` as error, the single letters `T`, `D`, `I`, `W`, `E` and `F`, a pino number sent as a string such as `"50"`, and a name in brackets, with a colon or after a dot, such as `[error]`, `error:` and `Level.ERROR`. Such lines were stored as info before; lines already stored keep their level.
 - An event's release longer than 200 characters, environment longer than 64, or user ID longer than 256, is dropped and the event kept without it. Each was stored whole in a column, and a release and an environment also in a tag and the releases list, from a DSN that may be public, and a user ID of a megabyte made one retention batch free far more pages than it counted.
 - **Breaking:** issue notices to one channel now wait up to 30 s, and several go out as one digest such as `[shop] 12 new issues` with the first 5 titles and their links. A test run that made 13 issues sent 15 messages in a second. A webhook receiver that acts on `issue.new` or `issue.regressed` must also handle `issue.digest`, whose `issues` array holds each issue with its type, project and link. A single issue notice and monitor notices go out as before. The upgrade adds a column to the `notifications` table.

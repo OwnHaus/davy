@@ -14,7 +14,7 @@ signed=true
 if [ "${1:-}" = --unsigned ]; then signed=false; shift; fi
 tag=${1:?usage: scripts/verify-release [--unsigned] TAG [DIR]}
 version=${tag#v}
-repo=${GITHUB_REPOSITORY:-dominikzabcik/davy}
+repo=${GITHUB_REPOSITORY:-OwnHaus/davy}
 image=ghcr.io/$(printf %s "$repo" | tr "[:upper:]" "[:lower:]"):$version
 identity="^https://github.com/$repo/.github/workflows/release.yml@refs/tags/$tag\$"
 issuer=https://token.actions.githubusercontent.com

@@ -13,7 +13,7 @@ fn the_systemd_unit_runs_as_the_user_and_writes_only_the_data_directory() {
         unit,
         "[Unit]
 Description=Davy error tracking, logs and uptime
-Documentation=https://github.com/dominikzabcik/davy
+Documentation=https://github.com/OwnHaus/davy
 After=network-online.target
 Wants=network-online.target
 

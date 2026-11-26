@@ -20,8 +20,8 @@ Pick the file for the machine: `davy-x86_64-unknown-linux-musl`, `davy-aarch64-u
 <!-- e2e: skip, the test container already has the binary -->
 ```sh
 FILE=davy-x86_64-unknown-linux-musl
-curl -fsSLO "https://github.com/dominikzabcik/davy/releases/latest/download/$FILE"
-curl -fsSLO "https://github.com/dominikzabcik/davy/releases/latest/download/SHA256SUMS"
+curl -fsSLO "https://github.com/OwnHaus/davy/releases/latest/download/$FILE"
+curl -fsSLO "https://github.com/OwnHaus/davy/releases/latest/download/SHA256SUMS"
 grep " $FILE\$" SHA256SUMS | sha256sum -c -
 ```
 
@@ -31,14 +31,16 @@ When `gh` is installed, also check that GitHub built the file from the Davy repo
 
 <!-- e2e: skip, the test container already has the binary -->
 ```sh
-gh attestation verify "$FILE" --repo dominikzabcik/davy --format json | grep -c '"verificationResult"'
+gh attestation verify "$FILE" --repo OwnHaus/davy --format json | grep -c '"verificationResult"'
 ```
 
 It prints `1` or more, one per attestation that passed. Without `--format json`, `gh` prints the result only in an interactive terminal. Run by an agent, it prints nothing and exits 0 when the check passed.
 
+Davy 0.1.0 was built before the repository moved to `OwnHaus/davy`, and GitHub keeps its attestations under the old owner. For 0.1.0, `gh` answers `HTTP 404`: run the same command with `--owner dominikzabcik` in place of `--repo OwnHaus/davy`.
+
 If either check fails, stop and tell the person. Do not run the file.
 
-For a machine without a release build, build from source instead (needs Rust, Node and pnpm): `git clone https://github.com/dominikzabcik/davy && cd davy && scripts/ui && cargo build --release`, then use `target/release/davy` as the file.
+For a machine without a release build, build from source instead (needs Rust, Node and pnpm): `git clone https://github.com/OwnHaus/davy && cd davy && scripts/ui && cargo build --release`, then use `target/release/davy` as the file.
 
 ## 2. Put it on the path
 

@@ -1,5 +1,5 @@
 Install Davy on this machine and connect this app to it.
-Follow docs/install.md in /davy, a copy of https://github.com/dominikzabcik/davy, from top to bottom.
+Follow docs/install.md in /davy, a copy of https://github.com/OwnHaus/davy, from top to bottom.
 
 Answers to what the docs tell you to ask the person: the public URL is http://127.0.0.1:8000, no TLS proxy serves it, and there is no SMTP server.
 Davy has no release yet, so step 1 has no download. The binary for this machine is /davy/release/davy-linux, and its checksum is in /davy/release/SHA256SUMS.

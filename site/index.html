@@ -44,8 +44,8 @@
     </details>
     <div class="head-out">
       <a href="roadmap.html">Roadmap</a>
-      <a class="docs" href="https://github.com/dominikzabcik/davy/tree/main/docs">Docs</a>
-      <a class="gh" href="https://github.com/dominikzabcik/davy"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg><span>GitHub</span></a>
+      <a class="docs" href="https://github.com/OwnHaus/davy/tree/main/docs">Docs</a>
+      <a class="gh" href="https://github.com/OwnHaus/davy"><svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg><span>GitHub</span></a>
     </div>
   </div>
 </header>
@@ -64,7 +64,7 @@
           <p class="prompt-label">Give your coding agent this prompt in the app's repository:</p>
           <div class="code-plate">
             <pre id="agent-prompt"><code>Install Davy on this machine and connect this app to it.
-Follow docs/install.md in https://github.com/dominikzabcik/davy from top to bottom.</code></pre>
+Follow docs/install.md in https://github.com/OwnHaus/davy from top to bottom.</code></pre>
             <button class="copy" type="button" data-copy="agent-prompt"><span>Copy</span></button>
           </div>
           <p class="prompt-after">It asks for the public URL, installs and checks the binary, sets up TLS, connects the SDK and adds MCP for itself. <a href="#install">Install by hand</a></p>
@@ -502,14 +502,14 @@ frame  src/routes/recipes.ts  scaleHandler</code></pre></div>
       <h3 class="panel-h">Docker</h3>
       <div class="code-plate"><pre id="c-docker"><code><span class="l">docker volume create davy
 </span><span class="l">docker run --rm -v davy:/data \
-</span><span class="l">  ghcr.io/dominikzabcik/davy setup \
+</span><span class="l">  ghcr.io/ownhaus/davy setup \
 </span><span class="l">  --data /data \
 </span><span class="l">  --public-url http://127.0.0.1:8000 \
 </span><span class="l">  --listen 0.0.0.0:8000
 </span><span class="l">docker run -d --name davy \
 </span><span class="l">  --restart unless-stopped \
 </span><span class="l">  -p 127.0.0.1:8000:8000 -v davy:/data \
-</span><span class="l">  ghcr.io/dominikzabcik/davy \
+</span><span class="l">  ghcr.io/ownhaus/davy \
 </span><span class="l">  serve --data /data
 </span><span class="l">
 </span><span class="l"><span class="c"># prints the DSN</span>
@@ -518,13 +518,13 @@ frame  src/routes/recipes.ts  scaleHandler</code></pre></div>
 </span><span class="l"><span class="c"># prints a sign-in link</span>
 </span><span class="l">docker exec davy /davy user add \
 </span><span class="l">  you@example.com --data /data</span></code></pre><button class="copy" type="button" data-copy="c-docker"><span>Copy</span></button></div>
-      <p>Open the link, set a password, and put the DSN into <code>Sentry.init({ dsn })</code>. The UI is at <code>http://127.0.0.1:8000/ui/</code>. <a href="https://github.com/dominikzabcik/davy/blob/main/docs/docker.md">docs/docker.md</a> adds TLS, MCP, backups and upgrades.</p>
+      <p>Open the link, set a password, and put the DSN into <code>Sentry.init({ dsn })</code>. The UI is at <code>http://127.0.0.1:8000/ui/</code>. <a href="https://github.com/OwnHaus/davy/blob/main/docs/docker.md">docs/docker.md</a> adds TLS, MCP, backups and upgrades.</p>
     </div>
 
     <div class="panel" role="tabpanel" id="p-binary" aria-labelledby="tab-binary">
       <h3 class="panel-h">Binary</h3>
       <div class="code-plate"><pre id="c-binary"><code><span class="l">FILE=davy-aarch64-apple-darwin
-</span><span class="l">URL=https://github.com/dominikzabcik/davy/releases/latest/download
+</span><span class="l">URL=https://github.com/OwnHaus/davy/releases/latest/download
 </span><span class="l">curl -fsSLO "$URL/$FILE"
 </span><span class="l">curl -fsSLO "$URL/SHA256SUMS"
 </span><span class="l"><span class="c"># on Linux: sha256sum -c - instead of shasum</span>
@@ -536,13 +536,13 @@ frame  src/routes/recipes.ts  scaleHandler</code></pre></div>
 </span><span class="l">./davy serve --data ./data &amp;
 </span><span class="l">./davy project create my-app --data ./data
 </span><span class="l">./davy user add you@example.com --data ./data</span></code></pre><button class="copy" type="button" data-copy="c-binary"><span>Copy</span></button></div>
-      <p>This is a Mac with Apple silicon. Builds for Linux (static, x86_64 and aarch64) and macOS (Apple silicon and Intel) are on the <a href="https://github.com/dominikzabcik/davy/releases/latest">releases page</a>. <a href="https://github.com/dominikzabcik/davy/blob/main/docs/install.md">docs/install.md</a> covers a server with systemd and TLS.</p>
+      <p>This is a Mac with Apple silicon. Builds for Linux (static, x86_64 and aarch64) and macOS (Apple silicon and Intel) are on the <a href="https://github.com/OwnHaus/davy/releases/latest">releases page</a>. <a href="https://github.com/OwnHaus/davy/blob/main/docs/install.md">docs/install.md</a> covers a server with systemd and TLS.</p>
     </div>
 
     <div class="panel" role="tabpanel" id="p-agent" aria-labelledby="tab-agent">
       <h3 class="panel-h">With a coding agent</h3>
       <div class="code-plate"><pre id="c-agent"><code>Install Davy on this machine and connect this app to it.
-Follow docs/install.md in https://github.com/dominikzabcik/davy from top to bottom.</code></pre><button class="copy" type="button" data-copy="c-agent"><span>Copy</span></button></div>
+Follow docs/install.md in https://github.com/OwnHaus/davy from top to bottom.</code></pre><button class="copy" type="button" data-copy="c-agent"><span>Copy</span></button></div>
       <p>The agent asks for the public URL and, optionally, an SMTP server. It installs and checks the binary, sets up the service and TLS, connects the SDK in your app and adds MCP for itself. <code>davy doctor</code> tells it what is still wrong and the command that fixes it.</p>
     </div>
   </div>
@@ -551,8 +551,8 @@ Follow docs/install.md in https://github.com/dominikzabcik/davy from top to bott
 <section class="open wrap" id="open" aria-labelledby="open-h">
   <div class="open-a">
     <h2 id="open-h" class="license">AGPL-3.0</h2>
-    <p>Davy is open source. The code, the docs and the issues are on <a href="https://github.com/dominikzabcik/davy">GitHub</a>.</p>
-    <p>Every release ships with checksums, a CycloneDX SBOM per binary, build provenance and a signed multi-arch image. Before 0.1.0 the server and the web UI each went through an internal penetration test. The reports list every finding: <a href="https://github.com/dominikzabcik/davy/blob/main/docs/security/pentest-0.1.0.md">server</a>, <a href="https://github.com/dominikzabcik/davy/blob/main/docs/security/pentest-ui-0.1.0.md">web UI</a>.</p>
+    <p>Davy is open source. The code, the docs and the issues are on <a href="https://github.com/OwnHaus/davy">GitHub</a>.</p>
+    <p>Every release ships with checksums, a CycloneDX SBOM per binary, build provenance and a signed multi-arch image. Before 0.1.0 the server and the web UI each went through an internal penetration test. The reports list every finding: <a href="https://github.com/OwnHaus/davy/blob/main/docs/security/pentest-0.1.0.md">server</a>, <a href="https://github.com/OwnHaus/davy/blob/main/docs/security/pentest-ui-0.1.0.md">web UI</a>.</p>
   </div>
   <div class="open-b">
     <h3>What 0.1.0 does not do yet</h3>
@@ -571,14 +571,14 @@ Follow docs/install.md in https://github.com/dominikzabcik/davy from top to bott
 <footer class="foot">
   <div class="foot-in wrap">
     <nav class="foot-links" aria-label="Project links">
-      <a href="https://github.com/dominikzabcik/davy">GitHub</a>
-      <a href="https://github.com/dominikzabcik/davy/blob/main/docs/install.md">Install guide</a>
-      <a href="https://github.com/dominikzabcik/davy/blob/main/docs/design.md">Design</a>
-      <a href="https://github.com/dominikzabcik/davy/blob/main/docs/architecture.md">Architecture</a>
-      <a href="https://github.com/dominikzabcik/davy/blob/main/CHANGELOG.md">Changelog</a>
+      <a href="https://github.com/OwnHaus/davy">GitHub</a>
+      <a href="https://github.com/OwnHaus/davy/blob/main/docs/install.md">Install guide</a>
+      <a href="https://github.com/OwnHaus/davy/blob/main/docs/design.md">Design</a>
+      <a href="https://github.com/OwnHaus/davy/blob/main/docs/architecture.md">Architecture</a>
+      <a href="https://github.com/OwnHaus/davy/blob/main/CHANGELOG.md">Changelog</a>
       <a href="roadmap.html">Roadmap</a>
-      <a href="https://github.com/dominikzabcik/davy/blob/main/SECURITY.md">Security</a>
-      <a href="https://github.com/dominikzabcik/davy/blob/main/llms.txt">llms.txt</a>
+      <a href="https://github.com/OwnHaus/davy/blob/main/SECURITY.md">Security</a>
+      <a href="https://github.com/OwnHaus/davy/blob/main/llms.txt">llms.txt</a>
     </nav>
     <p class="colophon">Named for Humphry Davy, whose safety lamp of 1815 went down the mine and warned early. Set in Bagnard by Sébastien Sanfilippo, drawn from the graffiti of a prisoner of the Napoleonic wars.</p>
   </div>
