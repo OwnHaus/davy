@@ -395,6 +395,7 @@ section { scroll-margin-top: 70px; }
 .duo-col p { color: var(--muted); max-width: 52ch; }
 .duo-col p:first-of-type { color: var(--ink); }
 .duo-col .code-plate { margin: 4px 0 14px; }
+.duo + .duo { margin-top: clamp(48px, 6vw, 80px); }
 
 /* ---------- agents ---------- */
 .agents { padding-top: clamp(96px, 9vw, 120px); }

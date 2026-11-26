@@ -58,7 +58,7 @@
 
     <div class="hero-grid">
       <div class="hero-text">
-        <p class="lede">Davy runs on your own server. It is one Rust binary of about 42&nbsp;MB on Linux and 31&nbsp;MB on macOS, with SQLite and Tantivy inside, and nothing to run next to it. Your apps keep their Sentry SDK and log shippers.</p>
+        <p class="lede">Davy runs on your own server. It is one Rust binary of about 30&nbsp;MB, with SQLite and Tantivy inside, and nothing to run next to it. Your apps keep their Sentry SDK and log shippers.</p>
 
         <div class="prompt">
           <p class="prompt-label">Give your coding agent this prompt in the app's repository:</p>
@@ -239,7 +239,7 @@ frame  src/routes/recipes.ts  scaleHandler</code></pre></div>
         <div class="code-plate small"><pre><code><span class="dir">→</span> mark_fixed {"issue_id": 1, "release": "pantry-api@2.4.2"}
 <span class="dir">←</span> issue 1 resolved in release pantry-api@2.4.2</code></pre></div>
       </div>
-      <figcaption><span class="fig">Fig. 5.</span> Two of the thirteen tools. The replies are cut short here; <code>mark_fixed</code> answers in exactly these words.</figcaption>
+      <figcaption><span class="fig">Fig. 5.</span> Two of the sixteen tools. The replies are cut short here; <code>mark_fixed</code> answers in exactly these words.</figcaption>
     </figure>
 
     <figure class="beat b4">
@@ -372,6 +372,23 @@ frame  src/routes/recipes.ts  scaleHandler</code></pre></div>
       <p class="aside">To webhooks (signed), Slack and e-mail.</p>
     </div>
   </div>
+  <div class="duo wrap">
+    <div class="duo-col">
+      <h2 class="runin">Disk</h2>
+      <p>The day the disk fills at the current rate, per project, from the first hour of data. The savings view names the log patterns nobody searches, logs kept longer than anyone reads and the noisiest issues, each with the command that frees the space.</p>
+      <div class="code-plate small"><pre><code><span class="l">davy usage --view savings \
+</span><span class="l">  --data /var/lib/davy</span></code></pre></div>
+      <p class="aside">The web UI has the same page, under Usage. Disk and drop rules are on <code>main</code> and come in the next release.</p>
+    </div>
+    <div class="duo-col">
+      <h2 class="runin">Drop rules</h2>
+      <p>A rule drops log lines before they are stored. In shadow it drops nothing and counts what it would, so you see the saving first. An agent can stage one; only a person makes it live.</p>
+      <div class="code-plate small"><pre><code><span class="l">davy drop add my-app --pattern 7 \
+</span><span class="l">  --shadow --data /var/lib/davy
+</span><span class="l">davy drop live 1 --data /var/lib/davy</span></code></pre></div>
+      <p class="aside">A pattern rule leaves warnings and errors alone.</p>
+    </div>
+  </div>
 </section>
 
 <section class="agents wrap" id="agents" aria-labelledby="agents-h">
@@ -380,7 +397,7 @@ frame  src/routes/recipes.ts  scaleHandler</code></pre></div>
     <p class="agents-alt">or <code>--client codex</code>, <code>--client cursor</code></p>
   </div>
   <h2 id="agents-h" class="say">Your coding agent reads the same flame.</h2>
-  <p class="intro wide">An MCP server with thirteen tools. The agent searches logs, reads an issue with its stack trace, runs read-only SQL and marks the issue fixed. Every operator step is also a CLI command with <code>--json</code>.</p>
+  <p class="intro wide">An MCP server with sixteen tools. The agent searches logs, reads an issue with its stack trace, runs read-only SQL and marks the issue fixed. Every operator step is also a CLI command with <code>--json</code>.</p>
 
   <dl class="tools">
     <div><dt><code>issue_context</code></dt><dd>The stack with source lines, breadcrumbs, releases, the logs around the error and what users wrote about it, in one call.</dd></div>
@@ -390,9 +407,9 @@ frame  src/routes/recipes.ts  scaleHandler</code></pre></div>
     <div><dt><code>sql</code> and <code>schema</code></dt><dd>One read-only SQLite query, and the tables to write it against.</dd></div>
     <div><dt><code>mark_fixed</code></dt><dd>Resolves an issue in a release. It reopens if the error comes back in that release or in one Davy first sees after the fix.</dd></div>
     <div><dt><code>release_health</code></dt><dd>Crash-free sessions and users per release, to tell whether a new release crashes more.</dd></div>
-    <div><dt><code>connect_project</code></dt><dd>An existing project's DSN, SDK setup and a test-event command.</dd></div>
-    <div><dt><code>project_status</code></dt><dd>Event and issue counts and last event times, to confirm ingest.</dd></div>
-    <div><dt><code>usage</code></dt><dd>What each project sent and when the disk fills at the current rate, with the worst case when projects keep logs for different times.</dd></div>
+    <div><dt><code>connect_project</code></dt><dd>An existing project's DSN, SDK setup and a test-event command. <code>project_status</code> then confirms the events arrive.</dd></div>
+    <div><dt><code>usage</code></dt><dd>What each project sent and the day the disk fills at the current rate. The savings view names what could take less, with the command that frees it.</dd></div>
+    <div><dt><code>drop_rule_shadow</code></dt><dd>Stages a rule that drops log lines nobody reads. It only counts what it would drop until a person makes it live.</dd></div>
     <div><dt><code>set_retention</code></dt><dd>How many days a project keeps its logs and its errors.</dd></div>
     <div><dt><code>submit_feedback</code></dt><dd>Tells whoever runs Davy that a tool was missing or wrong. Davy sends it nowhere else.</dd></div>
   </dl>
@@ -466,6 +483,7 @@ frame  src/routes/recipes.ts  scaleHandler</code></pre></div>
     <ul class="facts">
       <li>28 to 33&nbsp;MB, from the 0.1.0 release. Static builds for Linux on x86_64 and aarch64, builds for macOS on Apple silicon and Intel, and a signed multi-arch image.</li>
       <li>Under a burst, ingest answers 429 and the SDKs back off.</li>
+      <li>Davy keeps its own warnings and errors as the logs of a project of its own, so your agent searches them like any app's.</li>
       <li>Errors are kept 100 years and logs 30 days, unless a project or <code>davy serve</code> says otherwise.</li>
     </ul>
   </div>

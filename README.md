@@ -16,7 +16,7 @@
   <img alt="The issue list: errors grouped into issues, each with a 24-hour strip of events, and an inspector with the latest stack trace." src="docs/images/issues-light.png">
 </picture>
 
-Davy replaces Sentry and Better Stack for a team that wants to run its own. It is one Rust binary of about 42 MB on Linux and 31 MB on macOS, with SQLite and Tantivy inside. There is no database server, queue or cache to run next to it. Apps switch by changing the DSN or the log token, not their code. Coding agents read errors and logs and mark issues fixed over MCP.
+Davy replaces Sentry and Better Stack for a team that wants to run its own. It is one Rust binary of about 30 MB, with SQLite and Tantivy inside. There is no database server, queue or cache to run next to it. Apps switch by changing the DSN or the log token, not their code. Coding agents read errors and logs and mark issues fixed over MCP.
 
 ## What it does
 
