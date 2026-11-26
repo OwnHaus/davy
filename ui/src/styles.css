@@ -520,6 +520,8 @@ table.iss th.lead, table.iss td.lead { padding-left: 14px; }
 table.iss tbody th { position: static; z-index: auto; height: 30px; background: none; box-shadow: none; font-weight: 500; text-align: left; font-size: 12.5px; border-bottom: 1px solid var(--line); padding: 0 6px; white-space: nowrap; }
 table.utable td, table.utable tbody th { height: auto; padding-top: 5px; padding-bottom: 5px; vertical-align: top; }
 .utable .usub { display: block; font-size: 11.5px; }
+/* A long slug wraps inside the Project column instead of running over Errors. */
+table.utable tbody th.lead { white-space: normal; overflow-wrap: anywhere; }
 .page .tscroll table.utable { min-width: 1000px; }
 .utable thead th { height: auto; padding-top: 4px; padding-bottom: 4px; white-space: normal; line-height: 1.3; vertical-align: bottom; }
 table.iss td.z { color: var(--faint); }
