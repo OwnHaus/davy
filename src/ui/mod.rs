@@ -15,6 +15,7 @@ pub mod session;
 mod tests;
 #[cfg(test)]
 mod types;
+mod usage;
 
 use crate::{
     accounts::{Accounts, Person},
@@ -37,16 +38,18 @@ use std::{path::Path, sync::Arc, time::Duration};
 pub const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 /// The routes under `/ui` of the server on `data`. `writes` is the writer's
-/// UI queue, `budget` the memory budget of ingest.
+/// UI queue, `budget` the memory budget of ingest, `usage` the last disk
+/// walk and the places for usage reads, shared with the MCP tool `usage`.
 pub fn serve(
     data: &Path,
     writes: store::Sender,
     budget: Budget,
     public_url: &url::Url,
     retention: crate::retention::Defaults,
+    usage: crate::usage::Shared,
 ) -> anyhow::Result<Router> {
     let local = Local::new(store::open(data)?, writes.clone());
-    let reads = Reads::new(store::open(data)?, data.to_owned(), budget, writes);
+    let reads = Reads::new(store::open(data)?, data.to_owned(), budget, writes).with_usage(usage);
     Ok(router(
         Arc::new(local),
         Arc::new(reads),
@@ -90,6 +93,7 @@ fn protected(
         .merge(monitors::routes(Arc::clone(&reads)))
         .merge(alerts::routes(Arc::clone(&reads)))
         .merge(connect::routes(Arc::clone(&reads), public_url))
+        .merge(usage::routes(Arc::clone(&reads), retention))
         .merge(issues::routes(reads))
         .route(
             "/ui/api/{*rest}",
@@ -120,6 +124,8 @@ pub(crate) const PROTECTED: &[(&str, &str)] = &[
     ("GET", "/ui/api/setup"),
     ("GET", "/ui/api/retention"),
     ("POST", "/ui/api/retention"),
+    ("GET", "/ui/api/usage"),
+    ("GET", "/ui/api/usage/days"),
     ("GET", "/ui/api/nowhere"),
 ];
 

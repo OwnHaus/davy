@@ -50,6 +50,7 @@ pub struct Reads {
     budget: body::Budget,
     pub(super) searches: Arc<Semaphore>,
     writes: store::Sender,
+    usage: crate::usage::Shared,
 }
 
 impl Reads {
@@ -60,7 +61,21 @@ impl Reads {
             budget,
             searches: Arc::new(Semaphore::new(SEARCHES)),
             writes,
+            usage: crate::usage::Shared::default(),
         }
+    }
+
+    /// The same, with `usage` as the last disk walk and the places for
+    /// usage reads, so the usage page shares both with the MCP tool
+    /// `usage`.
+    #[must_use]
+    pub fn with_usage(self, usage: crate::usage::Shared) -> Self {
+        Self { usage, ..self }
+    }
+
+    /// The last disk walk and the places for usage reads.
+    pub(super) fn usage(&self) -> &crate::usage::Shared {
+        &self.usage
     }
 
     /// Runs `f` on the connection off the async threads.

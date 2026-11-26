@@ -89,6 +89,8 @@ fn a_shadow_rule_shows_what_it_would_drop_and_the_command_to_make_it_live() {
             "saves_per_day": 1_000,
             "hides": null,
             "suggest": format!("make it live; a person can run: davy drop live --data {d} {id}"),
+            "rule": format!("pattern {} below warn, keep 10%", health()),
+            "command": format!("davy drop live --data {d} {id}"),
         })
     );
     let human = found.json(true);

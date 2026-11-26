@@ -7,7 +7,7 @@ use super::{
     forecast::{self, Confidence, Forecast, HEADROOM_REASON, NoForecast, WhatIf},
 };
 use crate::{retention, time};
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow};
 use jiff::civil::Date;
 use rusqlite::Connection;
 use serde_json::{Map, Value, json};
@@ -89,16 +89,22 @@ pub struct Prepared {
     errors: Vec<forecast::ProjectErrors>,
 }
 
-/// Checks `req` and reads the counts and retentions it asks for.
-pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
-    let since =
-        time::instant(req.since.as_deref().unwrap_or("7d"), now_ns).map_err(anyhow::Error::msg)?;
+/// When the window `since` names starts, in nanoseconds, 7 days back
+/// without one, or why it names none.
+pub fn window(since: Option<&str>, now_ns: i64) -> Result<i64, String> {
+    let since = time::instant(since.unwrap_or("7d"), now_ns)?;
     if since > now_ns {
-        bail!("since is in the future");
+        return Err("since is in the future".to_owned());
     }
     if since < now_ns.saturating_sub(MAX_SINCE_DAYS * time::DAY_NS) {
-        bail!("since reaches back at most {MAX_SINCE_DAYS}d");
+        return Err(format!("since reaches back at most {MAX_SINCE_DAYS}d"));
     }
+    Ok(since)
+}
+
+/// Checks `req` and reads the counts and retentions it asks for.
+pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
+    let since = window(req.since.as_deref(), now_ns).map_err(anyhow::Error::msg)?;
     let from = time::day_of(since);
     let today = time::day_of(now_ns);
     // One statement reads every project with its id and retention, so a
@@ -489,8 +495,10 @@ impl Report {
             "used": size(d.used()),
             "free": size(d.free),
             "total": size(d.total),
-            "headroom": size(d.total / 100 * forecast::HEADROOM_PERCENT),
+            "headroom": size(d.headroom()),
             "headroom_reason": HEADROOM_REASON,
+            "room_left": size(d.room_left()),
+            "past_limit": d.past_limit(),
             "steady_state": f.map(|f| size(f.steady_state)),
             "days_left": f.and_then(|f| f.days_left),
             "worst_case": f.map(Forecast::worst_case),
@@ -556,11 +564,7 @@ impl Report {
             );
         }
         let Some(n) = f.days_left else {
-            let past = self
-                .disk
-                .as_ref()
-                .is_ok_and(|d| d.used() >= d.total.saturating_sub(f.headroom));
-            let past = if past {
+            let past = if self.disk.as_ref().is_ok_and(Disk::past_limit) {
                 ". The disk is past total minus headroom already, from files Davy does not grow, so watch its free space"
             } else {
                 ""

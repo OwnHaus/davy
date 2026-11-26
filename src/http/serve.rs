@@ -50,28 +50,32 @@ fn join<const N: usize>(threads: [(&str, std::thread::JoinHandle<()>); N]) -> an
 
 fn admin_routes(
     data: &std::path::Path,
-    sender: &store::Sender,
+    app: &App,
     token: Option<Token>,
     public_url: &url::Url,
-    maps: Arc<sourcemaps::Store>,
-    policies: Arc<crate::scrub::settings::Cache>,
     retention: crate::retention::Defaults,
+    shared: crate::usage::Shared,
 ) -> anyhow::Result<Router> {
     let admin = match token {
         Some(token) => mcp::router(
             data.to_owned(),
-            sender.clone(),
+            app.sender.clone(),
             token.clone(),
             public_url,
             retention,
+            shared,
         )
         .merge(crate::scrub::settings::router(
             store::open(data)?,
-            sender.clone(),
+            app.sender.clone(),
             token.clone(),
-            policies,
+            app.keys.policies(),
         ))
-        .merge(upload::router(maps, token, public_url)),
+        .merge(upload::router(
+            Arc::clone(&app.sourcemaps),
+            token,
+            public_url,
+        )),
         None => Router::new(),
     };
     Ok(admin)
@@ -274,24 +278,18 @@ pub async fn serve(
     };
     let usage = app.usage.clone();
     let reporter = early.map(|early| early.start(data, &app));
-    let maps = Arc::clone(&app.sourcemaps);
+    // One disk walk a minute and one limit on usage reads, for the MCP
+    // tool and the web UI together.
+    let shared = crate::usage::Shared::default();
     let ui = crate::ui::serve(
         data,
         writer.ui.clone(),
         app.budget.clone(),
         public_url,
         retention,
+        shared.clone(),
     )?;
-    let policies = app.keys.policies();
-    let admin = admin_routes(
-        data,
-        &writer.sender,
-        token,
-        public_url,
-        maps,
-        policies,
-        retention,
-    )?;
+    let admin = admin_routes(data, &app, token, public_url, retention, shared)?;
     let routes = router(app, admin.merge(ui));
     let listener = tokio::net::TcpListener::bind(listen).await?;
     crate::ready::notify()?;

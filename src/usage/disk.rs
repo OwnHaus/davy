@@ -106,6 +106,23 @@ impl Disk {
     pub fn used(&self) -> u64 {
         self.total.saturating_sub(self.free)
     }
+    /// The share of the filesystem Davy keeps free, see
+    /// [`super::forecast::HEADROOM_REASON`].
+    pub fn headroom(&self) -> u64 {
+        self.total / 100 * super::forecast::HEADROOM_PERCENT
+    }
+    /// What may still be used before the line of total minus headroom.
+    pub fn room_left(&self) -> u64 {
+        self.total
+            .saturating_sub(self.headroom())
+            .saturating_sub(self.used())
+    }
+    /// Whether the filesystem uses total minus headroom or more already, by
+    /// Davy's files or others. The forecast gives no day then once nothing
+    /// of Davy's grows, as nothing it does fills the disk.
+    pub fn past_limit(&self) -> bool {
+        self.room_left() == 0
+    }
     /// Why the log days are not all measured, if they are not. A gap
     /// outside `logs` leaves the forecast alone: it takes what is not logs
     /// as constant, and `used` comes from the filesystem.

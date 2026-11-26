@@ -13,6 +13,11 @@ struct Server {
 }
 
 fn server() -> Server {
+    server_with(usage::Shared::default())
+}
+
+/// [`server`] whose `usage` tool shares `usage` with others.
+fn server_with(usage: usage::Shared) -> Server {
     let data = crate::test_support::scratch("mcp");
     let c = store::open(&data).unwrap();
     store::create_project(&c, "api").unwrap();
@@ -25,6 +30,7 @@ fn server() -> Server {
             Token::new(SECRET),
             &url::Url::parse("https://davy.example/").unwrap(),
             Defaults::default(),
+            usage,
         ),
         writes,
     }

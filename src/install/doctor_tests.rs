@@ -31,6 +31,7 @@ async fn server(token: Option<&str>) -> Url {
             Token::new(t),
             &public,
             retention::Defaults::default(),
+            usage::Shared::default(),
         ));
     }
     listen(app).await

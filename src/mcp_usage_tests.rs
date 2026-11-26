@@ -18,7 +18,7 @@ const KEYS: [&str; 12] = [
     "window",
 ];
 
-const DISK_KEYS: [&str; 11] = [
+const DISK_KEYS: [&str; 13] = [
     "beyond_10_years",
     "days_left",
     "free",
@@ -26,6 +26,8 @@ const DISK_KEYS: [&str; 11] = [
     "headroom",
     "headroom_reason",
     "partial",
+    "past_limit",
+    "room_left",
     "steady_state",
     "total",
     "used",
@@ -240,6 +242,7 @@ async fn usage_view_savings_shows_a_noisy_issue_with_the_command_a_person_runs()
             "kind": "issue", "id": 1, "project": "api", "title": "payment declined",
             "events": 150, "share": 1.0,
             "suggest": format!("fix it, or a person can discard it, which also stops storing its real events: davy issue discard 1 --data {data}"),
+            "command": format!("davy issue discard 1 --data {data}"),
             "try": "issue_context 1",
         }])
     );
@@ -248,4 +251,18 @@ async fn usage_view_savings_shows_a_noisy_issue_with_the_command_a_person_runs()
     assert_eq!(keys, ["note", "savings", "window"]);
     let (text, is_error) = tool(&s.app, "usage", json!({"view": "bills"})).await;
     assert!(is_error, "{text}");
+}
+
+#[tokio::test]
+async fn usage_past_the_reads_at_once_is_refused_as_busy() {
+    let shared = usage::Shared::default();
+    let s = server_with(shared.clone());
+    let held: Vec<_> = (0..usage::AT_ONCE)
+        .map(|_| shared.permit().unwrap())
+        .collect();
+    let (text, error) = tool(&s.app, "usage", json!({})).await;
+    assert_eq!((text.as_str(), error), (usage::BUSY, true));
+    drop(held);
+    let (text, error) = tool(&s.app, "usage", json!({})).await;
+    assert!(!error, "{text}");
 }

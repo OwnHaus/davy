@@ -532,6 +532,32 @@ fn a_worst_case_says_so_in_the_summary_and_the_json() {
 }
 
 #[test]
+fn a_disk_past_the_limit_says_so_in_the_json_even_with_no_day_to_fill() {
+    let under = forecast_report((30, 30), None).json(false);
+    assert_eq!(
+        (&under["disk"]["past_limit"], &under["disk"]["room_left"]),
+        (&json!(false), &json!(2_500_000_000_000_u64))
+    );
+    // 4.95 TB used of 5 TB: past 4.5 TB, total minus 10%, by files Davy
+    // does not grow, so the forecast has no day.
+    let mut past = forecast_report((30, 30), None);
+    past.disk = Ok(disk::Disk {
+        total: 5_000_000_000_000,
+        free: 50_000_000_000,
+        ..disk::Disk::default()
+    });
+    let v = past.json(false);
+    assert_eq!(
+        (
+            &v["disk"]["past_limit"],
+            &v["disk"]["room_left"],
+            &v["disk"]["days_left"]
+        ),
+        (&json!(true), &json!(0), &json!(null))
+    );
+}
+
+#[test]
 fn a_disk_that_cannot_be_measured_still_gives_the_counts() {
     let c = memory();
     write(&c, &[row("2026-11-24", 1, Signal::Errors, 3, 3_000)]).unwrap();

@@ -607,3 +607,6 @@ mod connect;
 
 #[path = "login_tests.rs"]
 mod login;
+
+#[path = "usage_tests.rs"]
+mod usage;

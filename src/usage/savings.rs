@@ -355,6 +355,7 @@ impl Savings {
                 "searches": f.searches,
                 "history_days": f.history_days,
                 "suggest": self.retention_suggest(f),
+                "command": self.retention_command(f),
                 "saves": size(f.saves),
                 "try": retention_try(f),
             })
@@ -368,6 +369,7 @@ impl Savings {
                 "events": i.events,
                 "share": i.share,
                 "suggest": self.discard_suggest(i.id),
+                "command": self.discard_command(i.id),
                 "try": format!("issue_context {}", i.id),
             })
         });

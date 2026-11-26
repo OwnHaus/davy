@@ -18,14 +18,17 @@ use std::{
 };
 
 mod cli;
+pub mod days;
 pub mod disk;
 pub mod footprint;
 pub mod forecast;
 mod report;
 pub mod savings;
+mod shared;
 pub mod stored;
 pub use cli::{Args, run};
-pub use report::{Prepared, Report, Request, human, prepare, report};
+pub use report::{Prepared, Report, Request, human, prepare, report, window};
+pub use shared::{AT_ONCE, BUSY, Shared};
 
 pub const MIGRATION: &str = "CREATE TABLE usage_daily(day TEXT NOT NULL, project_id INTEGER NOT NULL REFERENCES projects(id), signal TEXT NOT NULL, records INTEGER NOT NULL, bytes INTEGER NOT NULL, PRIMARY KEY(day, project_id, signal)) WITHOUT ROWID;";
 /// Undoes [`MIGRATION`], for tests that run the migrations again.

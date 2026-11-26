@@ -223,22 +223,33 @@ impl Savings {
         format!("davy drop live --data {} {id}", self.data)
     }
 
-    /// The fields a pattern entry gains: what to keep, what it saves and
-    /// the shadow rule an agent adds to count it first, all null when the
-    /// view suggests nothing.
+    /// The fields a pattern entry gains: what to keep, the rule in words
+    /// and the command a person runs to add it, what it saves and the
+    /// shadow rule an agent adds to count it first, all null when the view
+    /// suggests nothing.
     pub(super) fn pattern_drop(&self, p: &Pattern, size: &dyn Fn(u64) -> Value) -> Value {
         if let Some(id) = p.decided_by {
             return json!({
                 "suggest": decided(id),
+                "rule": null,
+                "command": null,
                 "saves_per_day": null,
                 "shadow": null,
             });
         }
         let Some(keep) = p.keep else {
-            return json!({"suggest": null, "saves_per_day": null, "shadow": null});
+            return json!({
+                "suggest": null,
+                "rule": null,
+                "command": null,
+                "saves_per_day": null,
+                "shadow": null,
+            });
         };
         json!({
             "suggest": self.drop_suggest(p, keep),
+            "rule": spec(&p.id, keep).map(|s| drops::describe(&s)),
+            "command": self.drop_command(p, keep),
             "saves_per_day": size(keep.saves_per_day),
             "shadow": format!(
                 "drop_rule_shadow project={} pattern={} keep={}",
@@ -276,6 +287,8 @@ impl Savings {
             "suggest": hides(s).is_none().then(|| {
                 format!("make it live; a person can run: {}", self.live_command(r.id))
             }),
+            "rule": drops::describe(&r.spec),
+            "command": hides(s).is_none().then(|| self.live_command(r.id)),
         })
     }
 

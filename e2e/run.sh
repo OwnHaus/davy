@@ -312,7 +312,7 @@ p,issue=pathlib.Path(sys.argv[1]),int(sys.argv[2])
 data=shlex.quote(str(p/'data'))
 u=json.loads((p/'savings.json').read_text())
 # No logs, no pattern; searches recorded for minutes suggest no retention.
-assert u['savings']==[{'kind':'issue','id':issue,'project':'noisy','title':'noisy checkout timeout','events':120,'share':1.0,'suggest':f'fix it, or a person can discard it, which also stops storing its real events: davy issue discard {issue} --data {data}','try':f'issue_context {issue}'}],u
+assert u['savings']==[{'kind':'issue','id':issue,'project':'noisy','title':'noisy checkout timeout','events':120,'share':1.0,'suggest':f'fix it, or a person can discard it, which also stops storing its real events: davy issue discard {issue} --data {data}','command':f'davy issue discard {issue} --data {data}','try':f'issue_context {issue}'}],u
 assert u['note'].startswith('last_queried is approximate: '),u['note']
 text=(p/'savings.txt').read_text()
 assert f'issue     {issue} in noisy: 120 events, 100% of its error events\n          noisy checkout timeout\n          fix it, or a person can discard it, which also stops storing its real events: davy issue discard {issue} --data {data}\n          try: issue_context {issue}\n' in text,text
@@ -384,11 +384,12 @@ data=shlex.quote(str(p/'data'))
 n,days=r['logs_days'],int(r['suggest'].split()[1])
 assert (r['kind'],r['project'],r['history_days'],days<n,r['saves']>0)==('retention','-x',7,True,True),r
 assert r['suggest']==f'keep {days} days; a person can run: davy project retention --logs {days} --data {data} -- -x',r
+assert r['command']==f'davy project retention --logs {days} --data {data} -- -x',r
 # try reads: it counts the logs the cut would delete.
 assert r['try']==f'count_logs project="-x" since={n}d until={days}d',r
 text=(p/'fit.txt').read_text()
 assert f'          a person can run: davy project retention --logs {days} --data {data} -- -x\n          try: count_logs project="-x" since={n}d until={days}d\n' in text,text
-(p/'retention-x.sh').write_text(shlex.quote(binary)+r['suggest'].split('a person can run: davy',1)[1]+'\n')
+(p/'retention-x.sh').write_text(shlex.quote(binary)+r['command'].removeprefix('davy')+'\n')
 print(f'retention fit CLI: -x keeps {n} days, suggests {days} with a read-only try and the command for a person')
 PY
 SDK_ISSUE=$("$BIN" sql --data "$SCRATCH/data" "SELECT i.id FROM issues i JOIN projects p ON p.id = i.project_id WHERE p.slug = 'sentry-node-7' AND i.title LIKE 'TypeError%'" | tail -n 1)

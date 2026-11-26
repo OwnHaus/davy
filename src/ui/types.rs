@@ -19,6 +19,7 @@ use crate::{
     monitor::State,
     retention::{Change, Kept, Retention, ServerDefault, Setting},
     store::{IssueDetail, ReleaseCount},
+    usage::days::{Counts, OtherDays, ProjectDays, ProjectStored, UsageDays},
 };
 use ts_rs::{Config, TS};
 
@@ -89,6 +90,11 @@ fn file() -> String {
         decl::<Change>(&c),
         decl::<Kept>(&c),
         decl::<Retention>(&c),
+        decl::<Counts>(&c),
+        decl::<ProjectDays>(&c),
+        decl::<ProjectStored>(&c),
+        decl::<OtherDays>(&c),
+        decl::<UsageDays>(&c),
     ];
     format!("{HEADER}{}", decls.concat())
 }

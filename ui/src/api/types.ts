@@ -309,3 +309,145 @@ server_default: boolean,
 deletes_before: string, };
 
 export type Retention = { project: string, logs: Kept, errors: Kept, };
+
+export type Counts = { 
+/**
+ * Raw bytes of the logs stored on the UTC day of their index, a line
+ * indexed for tomorrow on today, and the bytes of the errors,
+ * sessions, feedback and check-ins accepted that day.
+ */
+stored: Array<number>, 
+/**
+ * Records accepted, of every signal.
+ */
+accepted: Array<number>, 
+/**
+ * Log lines live drop rules dropped.
+ */
+filtered: Array<number>, 
+/**
+ * Error events of discarded issues, counted and not stored.
+ */
+discarded: Array<number>, 
+/**
+ * Items Davy refused past one of its rate limits or daily caps.
+ */
+limited: Array<number>, 
+/**
+ * Items Davy accepted and then refused for another reason, such as a
+ * check-in for a monitor that does not exist.
+ */
+refused: Array<number>, 
+/**
+ * Check-ins Davy could not read, too large or not valid.
+ */
+unreadable: Array<number>, 
+/**
+ * Items the SDKs reported they dropped before sending.
+ */
+sdk_dropped: Array<number>, };
+
+export type ProjectDays = { project: string, 
+/**
+ * Raw bytes of the logs stored on the UTC day of their index, a line
+ * indexed for tomorrow on today, and the bytes of the errors,
+ * sessions, feedback and check-ins accepted that day.
+ */
+stored: Array<number>, 
+/**
+ * Records accepted, of every signal.
+ */
+accepted: Array<number>, 
+/**
+ * Log lines live drop rules dropped.
+ */
+filtered: Array<number>, 
+/**
+ * Error events of discarded issues, counted and not stored.
+ */
+discarded: Array<number>, 
+/**
+ * Items Davy refused past one of its rate limits or daily caps.
+ */
+limited: Array<number>, 
+/**
+ * Items Davy accepted and then refused for another reason, such as a
+ * check-in for a monitor that does not exist.
+ */
+refused: Array<number>, 
+/**
+ * Check-ins Davy could not read, too large or not valid.
+ */
+unreadable: Array<number>, 
+/**
+ * Items the SDKs reported they dropped before sending.
+ */
+sdk_dropped: Array<number>, };
+
+export type ProjectStored = { project: string, stored: Array<number>, };
+
+export type OtherDays = { 
+/**
+ * How many projects it sums.
+ */
+projects: number, 
+/**
+ * The [`OTHER_TOP`] of them that stored the most bytes in the window,
+ * the most first, a tie by age.
+ */
+top: Array<ProjectStored>, 
+/**
+ * Raw bytes of the logs stored on the UTC day of their index, a line
+ * indexed for tomorrow on today, and the bytes of the errors,
+ * sessions, feedback and check-ins accepted that day.
+ */
+stored: Array<number>, 
+/**
+ * Records accepted, of every signal.
+ */
+accepted: Array<number>, 
+/**
+ * Log lines live drop rules dropped.
+ */
+filtered: Array<number>, 
+/**
+ * Error events of discarded issues, counted and not stored.
+ */
+discarded: Array<number>, 
+/**
+ * Items Davy refused past one of its rate limits or daily caps.
+ */
+limited: Array<number>, 
+/**
+ * Items Davy accepted and then refused for another reason, such as a
+ * check-in for a monitor that does not exist.
+ */
+refused: Array<number>, 
+/**
+ * Check-ins Davy could not read, too large or not valid.
+ */
+unreadable: Array<number>, 
+/**
+ * Items the SDKs reported they dropped before sending.
+ */
+sdk_dropped: Array<number>, };
+
+export type UsageDays = { 
+/**
+ * Each UTC day of the window, oldest first, today last.
+ */
+days: Array<string>, 
+/**
+ * The slug of every project, oldest first, so a page can list them
+ * all and give each the same place whichever is asked for.
+ */
+names: Array<string>, 
+/**
+ * The first [`NAMED`] projects, oldest first, or the one asked for.
+ */
+projects: Array<ProjectDays>, 
+/**
+ * The projects past the first [`NAMED`], summed, or `None` when there
+ * are no more or one project was asked for.
+ */
+other: OtherDays | null, };
