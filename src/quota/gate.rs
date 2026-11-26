@@ -1,14 +1,14 @@
 //! The gate ingest asks before it parses a request: today's counts of
 //! each project against its quota, in memory, behind one lock.
 
-use super::{Settings, capped};
+use super::{CAPPED, Settings, capped, status::percent};
 use crate::{
     time,
     usage::{Count, Signal},
 };
 use jiff::civil::Date;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Mutex, PoisonError},
 };
 
@@ -24,6 +24,52 @@ struct State {
     today: HashMap<i64, Today>,
     refused: HashMap<(Date, i64, &'static str, &'static str), u64>,
     requests: HashMap<(Date, i64, &'static str), u64>,
+    /// The alerts of today handed to the writer or read back from
+    /// `quota_alerts`, by project, place in [`capped`], kind and quota,
+    /// so a raised quota alerts again when it is reached.
+    fired: HashSet<(i64, usize, Crossed, u64)>,
+    alerts: Vec<Alert>,
+}
+
+/// Which line of a quota a project crossed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Crossed {
+    /// The warn percent.
+    Warn,
+    /// 100%.
+    Reached,
+}
+
+impl Crossed {
+    /// The `kind` column of `quota_alerts`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Warn => "warn",
+            Self::Reached => "reached",
+        }
+    }
+    /// The kind a `quota_alerts` row names.
+    pub fn of(name: &str) -> Option<Self> {
+        [Self::Warn, Self::Reached]
+            .into_iter()
+            .find(|c| c.name() == name)
+    }
+}
+
+/// A quota a project crossed today, which the writer alerts on once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Alert {
+    pub day: Date,
+    pub project: i64,
+    pub signal: Signal,
+    pub crossed: Crossed,
+    /// Error events or log bytes used, and the quota, when it crossed.
+    pub used: u64,
+    pub quota: u64,
+    pub warn: u8,
+    /// When the gate saw it, and the midnight UTC that ends `day`, in ns.
+    pub at: i64,
+    pub resets_at: i64,
 }
 
 /// One project's day.
@@ -80,11 +126,12 @@ pub struct Requests {
 pub struct Flush {
     pub refused: Vec<Refusal>,
     pub requests: Vec<Requests>,
+    pub alerts: Vec<Alert>,
 }
 
 impl Flush {
     pub fn is_empty(&self) -> bool {
-        self.refused.is_empty() && self.requests.is_empty()
+        self.refused.is_empty() && self.requests.is_empty() && self.alerts.is_empty()
     }
 }
 
@@ -97,7 +144,58 @@ impl State {
                 let day = (time::day_of(now_ns), time::next_midnight(now_ns));
                 self.day = Some(day);
                 self.today.clear();
+                self.fired.clear();
                 day
+            }
+        }
+    }
+
+    /// Queues an alert when `project`'s use of place `i` crossed a line
+    /// of its quota not yet alerted on today. A jump past both lines
+    /// queues `Reached` alone, and `Reached` drops a `Warn` still queued.
+    fn check(&mut self, project: i64, i: usize, now_ns: i64) {
+        let Some(settings) = self.settings.get(&project).copied() else {
+            return;
+        };
+        let Some(quota) = settings.cap(i) else {
+            return;
+        };
+        let used = self.today.get(&project).map_or(0, |t| t.used[i]);
+        let crossed = if used >= quota {
+            Crossed::Reached
+        } else if percent(used, quota) >= u64::from(settings.warn) {
+            Crossed::Warn
+        } else {
+            return;
+        };
+        if !self.fired.insert((project, i, crossed, quota)) {
+            return;
+        }
+        let (day, resets_at) = self.roll(now_ns);
+        if crossed == Crossed::Reached {
+            self.fired.insert((project, i, Crossed::Warn, quota));
+            self.alerts
+                .retain(|a| !(a.day == day && a.project == project && a.signal == CAPPED[i]));
+        }
+        self.alerts.push(Alert {
+            day,
+            project,
+            signal: CAPPED[i],
+            crossed,
+            used,
+            quota,
+            warn: settings.warn,
+            at: now_ns,
+            resets_at,
+        });
+    }
+
+    /// [`Self::check`] for every project with a quota.
+    fn check_all(&mut self, now_ns: i64) {
+        let projects: Vec<i64> = self.settings.keys().copied().collect();
+        for project in projects {
+            for i in 0..CAPPED.len() {
+                self.check(project, i, now_ns);
             }
         }
     }
@@ -109,9 +207,26 @@ impl Gate {
     }
 
     /// Replaces every project's settings: a project not in `all` has the
-    /// defaults.
-    pub fn load(&self, all: HashMap<i64, Settings>) {
-        self.state().settings = all;
+    /// defaults. A lower quota can put a project past a line at once.
+    pub fn load(&self, all: HashMap<i64, Settings>, now_ns: i64) {
+        let mut s = self.state();
+        s.roll(now_ns);
+        s.settings = all;
+        s.check_all(now_ns);
+    }
+
+    /// Marks the alerts of `day` that `quota_alerts` holds as sent, each
+    /// with its project, signal, kind and quota.
+    pub fn sent(&self, day: Date, rows: &[(i64, Signal, Crossed, u64)], now_ns: i64) {
+        let mut s = self.state();
+        if s.roll(now_ns).0 != day {
+            return;
+        }
+        for &(project, signal, crossed, quota) in rows {
+            if let Some(i) = capped(signal) {
+                s.fired.insert((project, i, crossed, quota));
+            }
+        }
     }
 
     /// Adds the counts of `day` read back from `usage_daily` at start.
@@ -127,6 +242,7 @@ impl Gate {
                 today.used[i] = today.used[i].saturating_add(amount(i, count));
             }
         }
+        s.check_all(now_ns);
     }
 
     /// What `project` may send at `now_ns`.
@@ -157,6 +273,7 @@ impl Gate {
         s.roll(now_ns);
         let today = s.today.entry(project).or_default();
         today.used[i] = today.used[i].saturating_add(amount(i, count));
+        s.check(project, i, now_ns);
     }
 
     /// Counts `quantity` items of `category` that `project` sent and the
@@ -216,7 +333,12 @@ impl Gate {
             })
             .collect();
         requests.sort_by_key(|r| (r.day, r.project, r.reason));
-        Flush { refused, requests }
+        let alerts = std::mem::take(&mut s.alerts);
+        Flush {
+            refused,
+            requests,
+            alerts,
+        }
     }
 
     /// Puts back what the writer did not commit.
@@ -233,6 +355,9 @@ impl Gate {
             let n = s.requests.entry((r.day, r.project, r.reason)).or_default();
             *n = n.saturating_add(u64::try_from(r.quantity).unwrap_or(0));
         }
+        let mut alerts = flush.alerts;
+        alerts.append(&mut s.alerts);
+        s.alerts = alerts;
     }
 }
 

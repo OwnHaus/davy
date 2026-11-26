@@ -112,7 +112,10 @@ async fn past_its_log_quota_the_forward_drops_its_lines_and_counts_them() {
         logs: Some(1),
         ..crate::quota::Settings::default()
     };
-    gate.load(std::collections::HashMap::from([(id, quota)]));
+    gate.load(
+        std::collections::HashMap::from([(id, quota)]),
+        crate::time::now_ns(),
+    );
     gate.used(id, Signal::Logs, Count::new(1, 1), crate::time::now_ns());
     let (sink, lines) = Sink::new(8);
     sink.offer(LogLevel::Warn, "log writer", "one", AT);

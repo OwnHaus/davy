@@ -24,7 +24,7 @@ async fn over_quota(s: &Server) {
         logs: Some(1),
         ..Settings::default()
     };
-    gate.load(HashMap::from([(1, quota)]));
+    gate.load(HashMap::from([(1, quota)]), time::now_ns());
     gate.used(1, Signal::Errors, Count::new(1, 1), time::now_ns());
     gate.used(1, Signal::Logs, Count::new(1, 1), time::now_ns());
 }
@@ -189,7 +189,7 @@ async fn a_signed_drain_past_the_quota_is_200_and_counts_its_records_once_its_si
         logs: Some(1),
         ..Settings::default()
     };
-    gate.load(HashMap::from([(3, quota)]));
+    gate.load(HashMap::from([(3, quota)]), time::now_ns());
     gate.used(3, Signal::Logs, Count::new(1, 1), time::now_ns());
     let body = r#"[{"message":"a"},{"message":"b"}]"#;
     let drain = |signature: &str| {

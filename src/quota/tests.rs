@@ -29,7 +29,7 @@ fn quota(errors: Option<u64>, logs: Option<u64>) -> Settings {
 
 fn gate(project: i64, s: Settings) -> Gate {
     let g = Gate::default();
-    g.load(HashMap::from([(project, s)]));
+    g.load(HashMap::from([(project, s)]), NOON);
     g
 }
 
@@ -261,8 +261,8 @@ fn the_status_shows_the_quota_todays_use_and_refusals() {
     write(
         &c,
         &Flush {
-            refused: Vec::new(),
             requests,
+            ..Flush::default()
         },
     )
     .unwrap();

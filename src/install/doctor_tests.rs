@@ -93,6 +93,7 @@ async fn a_healthy_install_passes_every_check() {
                 "davy",
                 "no crash, error or warning of Davy's own in the last 24 hours"
             ),
+            ok("quotas", "no project has a quota"),
         ]
     );
 }

@@ -25,6 +25,43 @@ pub struct Incident {
     pub reason: String,
 }
 
+/// A project's use of a daily quota, as an alert shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Quota {
+    /// `errors` or `logs`.
+    pub signal: &'static str,
+    /// Error events or log bytes today, and the quota.
+    pub used: u64,
+    pub quota: u64,
+    pub percent: u64,
+    pub warn_percent: u8,
+    /// The midnight UTC when the count starts again.
+    pub resets_at: String,
+}
+
+impl Quota {
+    /// `1.6 GB of 2.0 GB` or `4000 of 5000 events`.
+    fn amounts(&self) -> (String, String) {
+        if self.signal == "logs" {
+            (
+                crate::usage::human(self.used),
+                crate::usage::human(self.quota),
+            )
+        } else {
+            (self.used.to_string(), format!("{} events", self.quota))
+        }
+    }
+
+    /// `Logs` or `Errors`.
+    fn title(&self) -> &'static str {
+        if self.signal == "logs" {
+            "Logs"
+        } else {
+            "Errors"
+        }
+    }
+}
+
 /// A change a team hears about. It holds what the body shows, read in the
 /// same transaction as the change.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,6 +70,10 @@ pub enum Notice {
     IssueRegressed(Issue),
     MonitorDown(Incident),
     MonitorUp(Incident),
+    /// A project's use reached the warn percent of a daily quota.
+    QuotaWarn(Quota),
+    /// A project's use reached a daily quota, refused until midnight UTC.
+    QuotaReached(Quota),
     /// What an agent reported with `submit_feedback`, row `id`.
     Feedback {
         id: i64,
@@ -66,6 +107,8 @@ struct Webhook<'a> {
     incident: Option<IncidentBody<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     feedback: Option<FeedbackBody<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quota: Option<&'a Quota>,
 }
 
 #[derive(Serialize)]
@@ -96,6 +139,8 @@ impl Notice {
             Self::IssueRegressed(_) => "issue.regressed",
             Self::MonitorDown(_) => "monitor.down",
             Self::MonitorUp(_) => "monitor.up",
+            Self::QuotaWarn(_) => "quota.warn",
+            Self::QuotaReached(_) => "quota.reached",
             Self::Feedback { .. } => "feedback",
             Self::Test => "test",
         }
@@ -166,6 +211,14 @@ impl Notice {
                 lines.extend(feedback.fix.clone().map(|f| ("fix", f)));
                 lines
             }
+            Self::QuotaWarn(q) | Self::QuotaReached(q) => vec![
+                ("signal", q.signal.to_owned()),
+                ("used", q.used.to_string()),
+                ("quota", q.quota.to_string()),
+                ("percent", q.percent.to_string()),
+                ("warn_percent", q.warn_percent.to_string()),
+                ("resets_at", q.resets_at.clone()),
+            ],
             Self::Test => Vec::new(),
         };
         lines.push(("at", time::rfc3339_ms(at)));
@@ -176,10 +229,16 @@ impl Notice {
         let (issue, incident) = match self {
             Self::IssueNew(issue) | Self::IssueRegressed(issue) => (Some(issue), None),
             Self::MonitorDown(incident) | Self::MonitorUp(incident) => (None, Some(incident)),
-            Self::Feedback { .. } | Self::Test => (None, None),
+            Self::Feedback { .. } | Self::QuotaWarn(_) | Self::QuotaReached(_) | Self::Test => {
+                (None, None)
+            }
         };
         let feedback = match self {
             Self::Feedback { id, feedback } => Some(FeedbackBody { id: *id, feedback }),
+            _ => None,
+        };
+        let quota = match self {
+            Self::QuotaWarn(q) | Self::QuotaReached(q) => Some(q),
             _ => None,
         };
         Webhook {
@@ -197,6 +256,7 @@ impl Notice {
                 reason: &i.reason,
             }),
             feedback,
+            quota,
         }
     }
 
@@ -220,6 +280,19 @@ impl Notice {
                 "Feedback from {}: {}",
                 client(feedback),
                 cut(&feedback.happened)
+            ),
+            Self::QuotaWarn(q) => {
+                let (used, quota) = q.amounts();
+                format!(
+                    "{} at {}% of the daily quota: {used} of {quota}",
+                    q.title(),
+                    q.percent
+                )
+            }
+            Self::QuotaReached(q) => format!(
+                "{} reached the daily quota of {}, refused until midnight UTC",
+                q.title(),
+                q.amounts().1
             ),
             Self::Test => "Test notice from Davy".to_owned(),
         };

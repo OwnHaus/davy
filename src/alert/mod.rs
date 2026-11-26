@@ -15,7 +15,7 @@ pub mod store;
 #[cfg(test)]
 mod tests;
 
-pub use notice::{Incident, Issue, Mail, Notice};
+pub use notice::{Incident, Issue, Mail, Notice, Quota};
 
 use crate::{monitor::CheckUrl, secret, text::hex};
 use anyhow::anyhow;
