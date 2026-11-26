@@ -24,7 +24,7 @@ CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::se
 ## Modules
 
 - `src/main.rs` parses the command line and calls into the library. No logic of its own beyond formatting output.
-- `src/http.rs` is the HTTP boundary. Routes, auth by project key, size caps, decompression, status codes. It turns bytes into typed values by calling the parsers, then hands them to a writer queue. It decides nothing about grouping or storage.
+- `src/http.rs` is the HTTP boundary. Routes, auth by project key, size caps, decompression, status codes; the log routes live in `src/http/logs.rs`. It turns bytes into typed values by calling the parsers, then hands them to a writer queue. It decides nothing about grouping or storage.
 - `src/envelope.rs` parses the Sentry envelope format and decides what happens to each item type (`disposition`).
 - `src/event.rs` parses a Sentry event JSON into `ErrorEvent`, leniently. This is the one place that knows the Sentry event schema.
 - `src/time.rs` reads the clock, parses timestamp strings and `--since` style instants (`30m`, RFC 3339), formats RFC 3339, and maps instants to UTC days.
