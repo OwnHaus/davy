@@ -105,7 +105,8 @@ pub struct Counted {
     pub dropped: Count,
     /// Lines it would have dropped while a shadow rule.
     pub would_drop: Count,
-    /// The first day it counted a line on.
+    /// The first day it counted a line on as a shadow rule, so what it
+    /// would drop a day divides by the days since.
     pub first: Option<Date>,
 }
 
@@ -131,9 +132,8 @@ pub fn by_rule(c: &Connection, from: Date, project: Option<i64>) -> Result<HashM
             counted.dropped = total;
         } else {
             counted.would_drop = total;
+            counted.first = first.parse().ok();
         }
-        let first: Option<Date> = first.parse().ok();
-        counted.first = [counted.first, first].into_iter().flatten().min();
     }
     Ok(out)
 }

@@ -145,6 +145,18 @@ impl Set {
         }
         Self { projects }
     }
+
+    /// The first live rule of `r`'s project that matches `r`, the one that
+    /// decides the line.
+    pub fn first_live(&self, r: &LogRecord) -> Option<i64> {
+        let mut seen = Seen::default();
+        self.projects
+            .get(&r.project_id)?
+            .live
+            .iter()
+            .find(|rule| rule.matches(r, &mut seen))
+            .map(|rule| rule.id)
+    }
 }
 
 /// What the rules learned of a line, worked out once and only if a rule

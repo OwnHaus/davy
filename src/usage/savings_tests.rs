@@ -464,11 +464,15 @@ fn the_savings_view_shows_patterns_retention_and_issues() {
                 {"kind": "pattern", "id": id("GET /health 200 12ms"), "project": "shop",
                  "service": "api", "level": "info", "example": "GET /health 200 12ms",
                  "bytes": 2_300, "per_day": 329, "share": 0.76, "last_queried": null,
-                 "try": format!("search_logs pattern={}", id("GET /health 200 12ms"))},
+                 "try": format!("search_logs pattern={}", id("GET /health 200 12ms")),
+                 "suggest": format!("keep 1%; a person can run: davy drop add --pattern {} --keep 1% --data {d} -- shop", id("GET /health 200 12ms")),
+                 "saves_per_day": 325,
+                 "shadow": format!(r#"drop_rule_shadow project="shop" pattern="{}" keep="1%""#, id("GET /health 200 12ms"))},
                 {"kind": "pattern", "id": id("payment declined for order 42"), "project": "shop",
                  "service": "api", "level": "error", "example": "payment declined for order 42",
                  "bytes": 320, "per_day": 46, "share": 0.11, "last_queried": payment_at,
-                 "try": format!("search_logs pattern={}", id("payment declined for order 42"))},
+                 "try": format!("search_logs pattern={}", id("payment declined for order 42")),
+                 "suggest": null, "saves_per_day": null, "shadow": null},
                 {"kind": "retention", "project": "shop", "logs_days": 90, "oldest_read_days": 6,
                  "searches": 2, "history_days": 19, "saves": 6_836_000,
                  "suggest": format!("keep 14 days; a person can run: davy project retention --logs 14 --data {d} -- shop"),
@@ -559,6 +563,7 @@ fn a_retention_entry_puts_the_slug_last_and_says_one_day() {
         days: 7.0,
         patterns: Vec::new(),
         partial: false,
+        shadow: Vec::new(),
         retention: vec![fit],
         issues: Vec::new(),
         data: "d".into(),
@@ -581,3 +586,6 @@ fn a_retention_entry_puts_the_slug_last_and_says_one_day() {
         "{text}"
     );
 }
+
+#[path = "savings_drop_tests.rs"]
+mod drop_tests;

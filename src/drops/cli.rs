@@ -187,9 +187,10 @@ impl Listed {
     }
 }
 
-/// What `spec` names and keeps, as `davy drop list` prints it: text from
-/// outside quoted, with quotes and backslashes escaped and what a terminal
-/// would act on made printable.
+/// What `spec` names and keeps, as `davy drop list`, `davy drop live`
+/// and the savings view print it: text from outside quoted, with quotes
+/// and backslashes escaped and what a terminal would act on made
+/// printable.
 pub fn describe(spec: &Spec) -> String {
     let what = match &spec.matches {
         Match::Pattern(id) if spec.any_level => {

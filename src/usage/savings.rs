@@ -15,12 +15,14 @@ CREATE TABLE search_days(day TEXT NOT NULL, project_id INTEGER NOT NULL, searche
 /// examples included.
 pub const UNDO: &str = "ALTER TABLE issues DROP COLUMN discarded_at; DROP TABLE discarded_daily; DROP TABLE searches; DROP TABLE search_days;";
 
+mod drop;
 mod fit;
 mod noisy;
 mod queried;
 pub mod searches;
 mod text;
 
+pub use drop::{KEEP_READ, KEEP_UNREAD, Keep, Shadow};
 pub use fit::{Fit, LOOK_BACK_DAYS, MIN_HISTORY_DAYS, STEPS};
 pub use noisy::{MIN_EVENTS, MIN_SHARE_PERCENT, Noisy};
 pub use queried::HISTORY;
@@ -86,6 +88,11 @@ pub struct Pattern {
     pub share: f64,
     /// RFC 3339, see [`queried::last_queried`].
     pub last_queried: Option<String>,
+    /// The share a drop rule would keep, in the view of one project.
+    pub keep: Option<Keep>,
+    /// The live rule that decides its lines, which keep would otherwise
+    /// suggest a rule for.
+    pub decided_by: Option<i64>,
 }
 
 /// Where logs and errors could take less.
@@ -97,6 +104,7 @@ pub struct Savings {
     /// The pattern counters of a day could not be read in full, or the
     /// window held more than a report reads, so the bytes may be fewer.
     pub partial: bool,
+    pub shadow: Vec<Shadow>,
     pub retention: Vec<Fit>,
     pub issues: Vec<Noisy>,
     /// The data directory, quoted for a shell, for the commands shown.
@@ -124,9 +132,86 @@ pub fn savings(
         None => None,
     };
     let start = time::midnight(report.since);
+    let (found, partial) =
+        patterns_in(c, data, report, (req.project.as_ref(), filter), top, now_ns)?;
+    // Davy's own project gets no retention, issue or drop suggestion: its
+    // lines are few, so cutting them saves little, and a crash of Davy is
+    // to be fixed in Davy, not discarded. Its patterns and shadow rules
+    // show like any other's, its shadow rules without a command.
+    let own = crate::self_report::own::find(c)?.map(|o| o.id);
+    let rules = crate::drops::load(c, filter, now_ns / 1_000_000)?;
+    let patterns = drop::with_keep(found, filter.filter(|f| own != Some(*f)), &rules);
+    let slug = |id: i64| {
+        kept.iter()
+            .find(|(k, _)| *k == id)
+            .map(|(_, k)| k.project.clone())
+            .unwrap_or_default()
+    };
+    let shadow = drop::shadows(
+        c,
+        rules,
+        (&slug, own),
+        report.since,
+        now_ns / 1_000_000,
+        top,
+    )?;
+    let ratio = report
+        .forecast
+        .as_ref()
+        .ok()
+        .and_then(|f| f.logs.as_ref())
+        .and_then(|l| l.ratio)
+        .map_or(PRIOR.ratio.mid, |r| r.mid);
+    let (mut fits, mut issues) = (Vec::new(), Vec::new());
+    for (id, k) in kept
+        .iter()
+        .filter(|(id, _)| filter.is_none_or(|f| f == *id) && own != Some(*id))
+    {
+        let project = (*id, k.project.as_str());
+        fits.extend(fit::fit(c, project, k.logs.days.get(), ratio, now_ns)?);
+        issues.extend(noisy::noisy(c, project, start / 1_000_000, top)?);
+    }
+    fits.sort_by(|a, b| {
+        b.saves
+            .cmp(&a.saves)
+            .then_with(|| a.project.cmp(&b.project))
+    });
+    fits.truncate(top);
+    issues.sort_by(|a, b| b.events.cmp(&a.events).then(a.id.cmp(&b.id)));
+    issues.truncate(top);
+    Ok(Savings {
+        since: report.since,
+        days: report.days,
+        patterns,
+        partial,
+        shadow,
+        retention: fits,
+        issues,
+        data: sh(&std::path::absolute(data)
+            .unwrap_or_else(|_| data.to_owned())
+            .display()
+            .to_string()),
+    })
+}
+
+/// Patterns, each with the highest level of its lines, and whether a
+/// day's counters were read in part.
+type Found = (Vec<(Pattern, Option<u8>)>, bool);
+
+/// The `top` patterns with the most bytes in the window, each with the
+/// highest level of its lines, and whether a day's counters were read in
+/// part.
+fn patterns_in(
+    c: &Connection,
+    data: &Path,
+    report: &Report,
+    (project, filter): (Option<&String>, Option<i64>),
+    top: usize,
+    now_ns: i64,
+) -> Result<Found> {
     let window = PatternQuery {
         project: filter,
-        since: start,
+        since: time::midnight(report.since),
         until: now_ns,
         min_level: None,
         // The row of patterns without a count of their own is no pattern.
@@ -150,48 +235,15 @@ pub fn savings(
         })
         .collect();
     let when = queried::last_queried(c, filter, &targets)?;
-    let patterns = rows
+    let found_patterns = rows
         .into_iter()
         .zip(when)
-        .map(|(r, at)| pattern(r, req.project.clone(), found.raw_bytes, report.days, at))
+        .map(|(r, at)| {
+            let p = pattern(r, project.cloned(), found.raw_bytes, report.days, at);
+            (p, highest(r))
+        })
         .collect();
-    let ratio = report
-        .forecast
-        .as_ref()
-        .ok()
-        .and_then(|f| f.logs.as_ref())
-        .and_then(|l| l.ratio)
-        .map_or(PRIOR.ratio.mid, |r| r.mid);
-    // Davy's own project gets no retention or issue entry: its lines are
-    // few, so a shorter retention saves little, and a crash of Davy is to
-    // be fixed in Davy, not discarded. Its patterns show like any other's.
-    let own = crate::self_report::own::find(c)?.map(|o| o.id);
-    let (mut fits, mut issues) = (Vec::new(), Vec::new());
-    for (id, k) in kept
-        .iter()
-        .filter(|(id, _)| filter.is_none_or(|f| f == *id) && own != Some(*id))
-    {
-        let project = (*id, k.project.as_str());
-        fits.extend(fit::fit(c, project, k.logs.days.get(), ratio, now_ns)?);
-        issues.extend(noisy::noisy(c, project, start / 1_000_000, top)?);
-    }
-    fits.sort_by(|a, b| {
-        b.saves
-            .cmp(&a.saves)
-            .then_with(|| a.project.cmp(&b.project))
-    });
-    fits.truncate(top);
-    issues.sort_by(|a, b| b.events.cmp(&a.events).then(a.id.cmp(&b.id)));
-    issues.truncate(top);
-    Ok(Savings {
-        since: report.since,
-        days: report.days,
-        patterns,
-        partial,
-        retention: fits,
-        issues,
-        data: sh(&data.display().to_string()),
-    })
+    Ok((found_patterns, partial))
 }
 
 /// The highest level of `row`'s records.
@@ -224,6 +276,8 @@ fn pattern(
         per_day: super::report::bytes_per_day(r.raw_bytes, days),
         share: noisy::share(r.raw_bytes, total),
         last_queried: at.map(time::rfc3339_ms),
+        keep: None,
+        decided_by: None,
     }
 }
 
@@ -271,7 +325,7 @@ impl Savings {
             }
         };
         let patterns = self.patterns.iter().map(|p| {
-            json!({
+            let mut entry = json!({
                 "kind": "pattern",
                 "id": p.id,
                 "project": p.project,
@@ -283,8 +337,15 @@ impl Savings {
                 "share": p.share,
                 "last_queried": p.last_queried,
                 "try": format!("search_logs pattern={}", p.id),
-            })
+            });
+            if let (Value::Object(entry), Value::Object(more)) =
+                (&mut entry, self.pattern_drop(p, &size))
+            {
+                entry.extend(more);
+            }
+            entry
         });
+        let shadows = self.shadow.iter().map(|s| self.shadow_json(s, &size));
         let fits = self.retention.iter().map(|f| {
             json!({
                 "kind": "retention",
@@ -312,7 +373,7 @@ impl Savings {
         });
         let mut out = json!({
             "window": {"since": self.since.to_string(), "days": (self.days * 10.0).round() / 10.0},
-            "savings": patterns.chain(fits).chain(issues).collect::<Vec<_>>(),
+            "savings": patterns.chain(shadows).chain(fits).chain(issues).collect::<Vec<_>>(),
             "note": NOTE,
         });
         if self.partial {

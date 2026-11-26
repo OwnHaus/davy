@@ -332,10 +332,17 @@ fn live_rules_count_as_filtered_and_shadow_rules_do_not() {
         counts::Counted {
             dropped: n(8, 800),
             would_drop: n(0, 0),
-            first: Some(yesterday),
+            first: None,
         }
     );
-    assert_eq!(counted[&2].would_drop, n(7, 700));
+    assert_eq!(
+        counted[&2],
+        counts::Counted {
+            dropped: n(0, 0),
+            would_drop: n(7, 700),
+            first: Some(today),
+        }
+    );
 }
 
 #[test]

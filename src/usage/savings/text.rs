@@ -1,6 +1,6 @@
 //! The savings view of `davy usage` in a terminal.
 
-use super::{NOTE, Savings, days, human, retention_try};
+use super::{NOTE, Pattern, Savings, days, human, retention_try};
 use std::{borrow::Cow, io::Write};
 
 /// `s` with control characters replaced: an example, a title and a slug
@@ -27,28 +27,20 @@ impl Savings {
     pub fn text(&self, out: &mut impl Write) -> std::io::Result<()> {
         let window = format!("since {} ({:.1} days)", self.since, self.days);
         writeln!(out, "{:<9} {window}", "window")?;
-        if self.patterns.is_empty() && self.retention.is_empty() && self.issues.is_empty() {
+        if self.patterns.is_empty()
+            && self.shadow.is_empty()
+            && self.retention.is_empty()
+            && self.issues.is_empty()
+        {
             writeln!(out, "{:<9} nothing to suggest", "savings")?;
         }
         for p in &self.patterns {
-            let seen = p.last_queried.as_deref().unwrap_or("never");
-            let of = [p.project.as_deref(), p.service.as_deref(), p.level]
-                .into_iter()
-                .flatten()
-                .map(safe)
-                .collect::<Vec<_>>()
-                .join(" ");
-            writeln!(
-                out,
-                "{:<9} {} {} ({}), {}/day, {of}, last queried {seen}",
-                "pattern",
-                p.id,
-                human(p.bytes),
-                percent(p.share),
-                human(p.per_day)
-            )?;
-            writeln!(out, "{:<9} {}", "", safe(&p.example))?;
-            writeln!(out, "{:<9} try: search_logs pattern={}", "", p.id)?;
+            self.pattern_text(out, p)?;
+        }
+        for s in &self.shadow {
+            let [what, command] = self.shadow_text(s);
+            writeln!(out, "{:<9} {what}", "shadow")?;
+            writeln!(out, "{:<9} {command}", "")?;
         }
         for f in &self.retention {
             writeln!(
@@ -94,5 +86,42 @@ impl Savings {
             )?;
         }
         writeln!(out, "{:<9} {NOTE}", "note")
+    }
+
+    fn pattern_text(&self, out: &mut impl Write, p: &Pattern) -> std::io::Result<()> {
+        let seen = p.last_queried.as_deref().unwrap_or("never");
+        let of = [p.project.as_deref(), p.service.as_deref(), p.level]
+            .into_iter()
+            .flatten()
+            .map(safe)
+            .collect::<Vec<_>>()
+            .join(" ");
+        writeln!(
+            out,
+            "{:<9} {} {} ({}), {}/day, {of}, last queried {seen}",
+            "pattern",
+            p.id,
+            human(p.bytes),
+            percent(p.share),
+            human(p.per_day)
+        )?;
+        writeln!(out, "{:<9} {}", "", safe(&p.example))?;
+        if let Some(keep) = p.keep
+            && let Some(command) = self.drop_command(p, keep)
+        {
+            writeln!(
+                out,
+                "{:<9} keep {}% to save {}/day",
+                "",
+                keep.percent,
+                human(keep.saves_per_day)
+            )?;
+            writeln!(out, "{:<9} a person can run: {}", "", safe(&command))?;
+        }
+        if let Some(id) = p.decided_by {
+            writeln!(out, "{:<9} {}", "", super::drop::decided(id))?;
+        }
+        writeln!(out, "{:<9} try: search_logs pattern={}", "", p.id)?;
+        Ok(())
     }
 }

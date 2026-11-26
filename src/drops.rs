@@ -12,7 +12,7 @@ pub mod counts;
 mod judge;
 
 pub use agent::{AgentChange, apply};
-pub use cli::{Drop, Listed, list, run};
+pub use cli::{Drop, Listed, describe, list, run};
 pub use counts::{Key, filtered_between, write};
 pub use judge::{Judge, Live, Seen, Set, reload, reload_every};
 
