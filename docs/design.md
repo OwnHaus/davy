@@ -1030,7 +1030,7 @@ client_reports(day INTEGER, project_id INTEGER, reason TEXT, category TEXT, quan
                PRIMARY KEY(day, project_id, reason, category)) WITHOUT ROWID
 ```
 
-`day` is midnight UTC in unix milliseconds, so one row grows by addition and a busy app adds a few rows a day. A reason or category must be at most 64 characters of `a-z`, `0-9` and `_`, which every name the SDKs send is. Rows are kept 90 days and the sweep deletes older ones.
+`day` is midnight UTC in unix milliseconds, so one row grows by addition and a busy app adds a few rows a day. A reason or category must be at most 64 characters of `a-z`, `0-9` and `_`, which every name the SDKs send is. Rows are kept 90 days and the sweep deletes older ones. Reasons that start with `davy_` are Davy's own: it writes them for items it refused itself, such as `davy_rate` for a check-in past its rate limit or `davy_daily_cap` for a session past the daily cap. An SDK's entry with such a reason is skipped, so no one who holds a DSN can add to Davy's own counts.
 
 **User feedback.** The SDKs' feedback widget and `Sentry.captureFeedback` send a `feedback` item, an event whose `contexts.feedback` holds `message`, `name`, `contact_email`, `url` and `associated_event_id`. Older SDKs send a `user_report` item with `event_id`, `comments`, `name` and `email`. Both become one row:
 

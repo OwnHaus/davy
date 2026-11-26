@@ -7,6 +7,7 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 ### Security
 
 - Scrub credentials, sensitive keys, credit cards and standalone IP addresses by default. Scrubbing runs on the server before storing or indexing ingest. E-mail and personal identity filtering are opt-in. Keys with look-alike letters, such as a Cyrillic `о` in `password`, match as their Latin form. Configure each project with `davy project scrub`; the admin HTTP API can only tighten a policy, and every change is logged. MCP project status reports the policy. Existing records are unchanged.
+- An SDK client report can no longer add to the counts Davy keeps of what it refused itself. Davy writes those under reasons that start with `davy_`, and a report with such a reason, which anyone with a project's DSN could send, was stored as if Davy had written it. Davy now skips those entries. Rows stored before cannot be told apart from Davy's own.
 
 ### Added
 

@@ -23,6 +23,10 @@ const MAX_PAIRS: i64 = 100;
 const MAX_QUANTITY: u64 = 1_000_000;
 /// Days a row is kept.
 pub const KEEP_DAYS: i64 = 90;
+/// The reasons of the counts Davy writes itself, for its own limits and
+/// refusals. An SDK's entry with one is skipped, so no client can add to
+/// them.
+pub const OWN_PREFIX: &str = "davy_";
 
 /// The count of one reason and category in one report.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,14 +50,20 @@ struct RawDiscarded {
 }
 
 /// The entries of a client report Davy keeps. `None` when the payload is not
-/// a report. Entries with a name that is not short snake case, or a quantity
-/// of 0, are skipped. A quantity over [`MAX_QUANTITY`] counts as that.
+/// a report. Entries with a name that is not short snake case, a reason
+/// that starts with [`OWN_PREFIX`] or a quantity of 0 are skipped. A
+/// quantity over [`MAX_QUANTITY`] counts as that.
 pub fn parse(payload: &[u8]) -> Option<Vec<Discarded>> {
     let raw: Raw = serde_json::from_slice(payload).ok()?;
     Some(
         raw.discarded_events
             .into_iter()
-            .filter(|d| name(&d.reason) && name(&d.category) && d.quantity > 0)
+            .filter(|d| {
+                name(&d.reason)
+                    && !d.reason.starts_with(OWN_PREFIX)
+                    && name(&d.category)
+                    && d.quantity > 0
+            })
             .take(MAX_ENTRIES)
             .map(|d| Discarded {
                 reason: d.reason,

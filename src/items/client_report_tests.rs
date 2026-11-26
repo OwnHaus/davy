@@ -46,6 +46,16 @@ fn parse_keeps_snake_case_names_and_caps_the_quantity() {
 }
 
 #[test]
+fn parse_skips_the_reasons_davy_writes_itself() {
+    let payload = br#"{"discarded_events": [
+        {"reason": "davy_rate", "category": "error", "quantity": 1000000},
+        {"reason": "davy_invalid", "category": "log_byte", "quantity": 777777},
+        {"reason": "davyish", "category": "error", "quantity": 3}
+    ]}"#;
+    assert_eq!(parse(payload), Some(vec![d("davyish", "error", 3)]));
+}
+
+#[test]
 fn parse_reads_a_report_without_entries_and_refuses_what_is_not_one() {
     assert_eq!(parse(br#"{"timestamp": 1700000000}"#), Some(vec![]));
     assert_eq!(parse(b"not json"), None);
