@@ -43,7 +43,7 @@ async fn no_tool_discards_an_issue() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 13, "{names:?}");
+    assert_eq!(names.len(), 16, "{names:?}");
     assert!(names.iter().all(|n| !n.contains("discard")), "{names:?}");
     let write = json!({"query": "UPDATE issues SET discarded_at=1 WHERE id=1"});
     let (text, is_error) = tool(&s.app, "sql", write).await;

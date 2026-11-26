@@ -124,7 +124,8 @@ fn rules_go_after_the_others_and_an_equal_rule_is_found_not_added() {
         added(&c, &message("health"), true, By::Person),
         Ok(Added {
             id: 1,
-            created: false
+            created: false,
+            taken_over: false
         })
     );
     assert_eq!(ids(&c, NOON_MS), [(1, true), (2, false)]);
@@ -185,7 +186,8 @@ fn an_agents_shadow_rule_expires_after_14_days() {
         again,
         Ok(Added {
             id: 2,
-            created: true
+            created: true,
+            taken_over: false
         })
     );
     counts::prune(&c, expires + 14 * DAY_MS).unwrap();
@@ -381,4 +383,66 @@ fn removing_a_rule_keeps_its_counts_and_its_id_is_not_used_again() {
         filtered_between(&c, day, day, Some(1)).unwrap(),
         HashMap::from([(1, n(4, 40))])
     );
+}
+
+#[test]
+fn an_equal_rule_in_the_other_state_is_refused_with_the_command_that_turns_it() {
+    let c = memory();
+    let agents = added(&c, &message("poll"), false, By::Agent).unwrap().id;
+    assert_eq!(
+        added(&c, &message("poll"), true, By::Person),
+        Err(format!(
+            "rule {agents} matches the same way and is a shadow rule: a person makes it live with davy drop live {agents}"
+        ))
+    );
+    let persons = added(&c, &message("health"), true, By::Person).unwrap().id;
+    assert_eq!(
+        added(&c, &message("health"), false, By::Agent),
+        Err(format!(
+            "rule {persons} matches the same way and is live: a person makes it a shadow rule with davy drop shadow {persons}"
+        ))
+    );
+    assert_eq!(ids(&c, NOON_MS), [(agents, false), (persons, true)]);
+}
+
+#[test]
+fn a_person_who_adds_an_agents_shadow_rule_takes_it_over() {
+    let c = memory();
+    let staged = added(&c, &message("poll"), false, By::Agent).unwrap();
+    assert_eq!(
+        get(&c, staged.id).unwrap().unwrap().expires_at,
+        Some(NOON_MS + 14 * DAY_MS)
+    );
+    assert_eq!(
+        added(&c, &message("poll"), false, By::Person),
+        Ok(Added {
+            id: 1,
+            created: false,
+            taken_over: true
+        })
+    );
+    let rule = get(&c, 1).unwrap().unwrap();
+    assert_eq!(
+        (rule.by, rule.expires_at, rule.live),
+        (By::Person, None, false)
+    );
+    // Taken over once: adding it again finds a person's rule.
+    assert_eq!(
+        added(&c, &message("poll"), false, By::Person),
+        Ok(Added {
+            id: 1,
+            created: false,
+            taken_over: false
+        })
+    );
+    // An agent adding a person's rule takes nothing over.
+    assert_eq!(
+        added(&c, &message("poll"), false, By::Agent),
+        Ok(Added {
+            id: 1,
+            created: false,
+            taken_over: false
+        })
+    );
+    assert_eq!(get(&c, 1).unwrap().unwrap().by, By::Person);
 }

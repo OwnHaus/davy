@@ -360,6 +360,9 @@ pub enum Job {
         at: Timestamp,
         search: crate::usage::savings::searches::Search,
     },
+    /// A shadow rule an agent adds or removes over MCP. No job makes a
+    /// rule live, see src/drops/agent.rs.
+    Drop(crate::drops::AgentChange),
 }
 pub type Outcome = std::result::Result<(), String>;
 pub struct Write {
@@ -408,6 +411,7 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
         Job::Usage(rows) => Ok(Ok(crate::usage::write(c, rows)?)),
         Job::LogDays(flush) => Ok(Ok(crate::usage::stored::write(c, flush)?)),
         Job::Search { at, search } => Ok(Ok(crate::usage::savings::searches::add(c, *at, search)?)),
+        Job::Drop(change) => crate::drops::apply(c, change),
         Job::Check {
             monitor,
             at,

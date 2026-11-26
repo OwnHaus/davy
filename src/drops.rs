@@ -6,11 +6,13 @@
 //! own over MCP, a few per project, and they expire. No MCP tool, route or
 //! ingest path writes a live rule or turns a shadow rule live.
 
+mod agent;
 mod cli;
 pub mod counts;
 mod judge;
 
-pub use cli::{Drop, run};
+pub use agent::{AgentChange, apply};
+pub use cli::{Drop, Listed, list, run};
 pub use counts::{Key, filtered_between, write};
 pub use judge::{Judge, Live, Seen, Set, reload, reload_every};
 
@@ -257,10 +259,14 @@ pub struct Added {
     /// False when a rule of the project matched the same way already, and
     /// that one is the rule.
     pub created: bool,
+    /// True when that rule was an agent's shadow rule and a person added
+    /// it: it is the person's now and never expires.
+    pub taken_over: bool,
 }
 
 /// Adds a rule to `project` after its others, or finds the one that
-/// matches the same way. The outer error is a database failure, the inner
+/// matches the same way, which a person takes over from an agent. The
+/// outer error is a database failure, the inner
 /// one a refusal. An agent adds only shadow rules, [`MAX_AGENT_SHADOW`] at
 /// once, each for [`AGENT_DAYS`]. Runs inside the caller's transaction.
 pub fn add(
@@ -280,8 +286,28 @@ pub fn add(
         "DELETE FROM drop_rules WHERE project_id=?1 AND expires_at<=?2",
         params![project, now_ms],
     )?;
-    if let Some(id) = same(c, project, spec)? {
-        return Ok(Ok(Added { id, created: false }));
+    if let Some((id, was_live)) = same(c, project, spec)? {
+        return Ok(match (was_live, live) {
+            (true, false) => Err(format!(
+                "rule {id} matches the same way and is live: a person makes it a shadow rule with davy drop shadow {id}"
+            )),
+            (false, true) => Err(format!(
+                "rule {id} matches the same way and is a shadow rule: a person makes it live with davy drop live {id}"
+            )),
+            _ => {
+                let taken_over = by == By::Person
+                    && c.execute(
+                        "UPDATE drop_rules SET by='person', expires_at=NULL, changed_at=?2
+                         WHERE id=?1 AND by='agent'",
+                        params![id, now_ms],
+                    )? == 1;
+                Ok(Added {
+                    id,
+                    created: false,
+                    taken_over,
+                })
+            }
+        });
     }
     let (all, agents): (i64, i64) = c.query_row(
         "SELECT count(*), coalesce(sum(by='agent' AND live=0), 0) FROM drop_rules WHERE project_id=?1",
@@ -308,6 +334,7 @@ pub fn add(
     Ok(Ok(Added {
         id: c.last_insert_rowid(),
         created: true,
+        taken_over: false,
     }))
 }
 
@@ -320,11 +347,12 @@ fn columns(m: &Match) -> (Option<i64>, Option<i64>, Option<&str>) {
     }
 }
 
-/// The rule of `project` that matches as `spec` does.
-fn same(c: &Connection, project: i64, spec: &Spec) -> Result<Option<i64>> {
+/// The rule of `project` that matches as `spec` does, and whether it is
+/// live.
+pub fn same(c: &Connection, project: i64, spec: &Spec) -> Result<Option<(i64, bool)>> {
     let (pattern, level, message) = columns(&spec.matches);
     Ok(c.query_row(
-        "SELECT id FROM drop_rules WHERE project_id=?1 AND coalesce(pattern,-1)=coalesce(?2,-1)
+        "SELECT id, live FROM drop_rules WHERE project_id=?1 AND coalesce(pattern,-1)=coalesce(?2,-1)
          AND coalesce(level,-1)=coalesce(?3,-1) AND coalesce(message,'')=coalesce(?4,'')
          AND coalesce(service,'')=coalesce(?5,'') AND keep_percent=?6 AND any_level=?7",
         params![
@@ -336,7 +364,7 @@ fn same(c: &Connection, project: i64, spec: &Spec) -> Result<Option<i64>> {
             spec.keep,
             spec.any_level
         ],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )
     .optional()?)
 }

@@ -70,6 +70,7 @@ fn listed_json_gives_raw_bytes_and_the_command_for_a_shadow_rule() {
             "by": "agent",
             "position": 2,
             "pattern": null,
+            "any_level": false,
             "level": null,
             "message": r#"poll "a\b""#,
             "service": "api",

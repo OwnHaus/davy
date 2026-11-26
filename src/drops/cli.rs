@@ -140,6 +140,7 @@ impl Listed {
             "by": r.by.as_str(),
             "position": r.position,
             "pattern": pattern,
+            "any_level": r.spec.any_level,
             "level": level,
             "message": message,
             "service": r.spec.service,
@@ -334,6 +335,7 @@ fn add(out: &mut impl Write, spec: &Spec, live: bool, data: &Path, project: &str
     tx.commit()?;
     let mut shown = one(&c, added.id, data)?.json(false);
     shown["created"] = json!(added.created);
+    shown["taken_over"] = json!(added.taken_over);
     writeln!(out, "{}", text::json(&shown, false)?)?;
     Ok(())
 }

@@ -56,6 +56,7 @@ Call `schema` before writing other SQL. To see how often a log line happens and 
 `project_status` shows how long a project keeps its logs and errors, and `set_retention` changes it. \
 Davy records its own warnings, errors and crashes in a project of its own, `davy` unless a person took that slug: `project_status` sums up its last 24 hours for any slug and names it in davy.project, `search_logs` with that project reads the lines, and a crash is an issue of level fatal there, which `issue_context` opens. \
 To see what each project stores, how fast it grows and when the disk fills, call `usage`; its what_if shows what another retention or log volume would do. \
+To see what dropping some logs would save, add a shadow rule with `drop_rule_shadow`: it drops nothing and counts, and `drop_rules` shows the result; only a person makes a rule live, with the command it gives. \
 When a tool was missing, returned the wrong thing or needed a workaround, call `submit_feedback`.";
 
 const LOG_NOTES: &str = "
@@ -90,7 +91,7 @@ pub fn router(
         writes,
         retention,
         disk: usage::disk::Shared::default(),
-        tool_router: Tools::tool_router(),
+        tool_router: Tools::tool_router() + Tools::drop_router(),
     };
     let config = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)
@@ -582,8 +583,11 @@ impl Tools {
     }
 }
 
+/// Every answer as compact JSON, through [`crate::text::json`], so a text
+/// a client sent cannot reach an agent's terminal or log as a bidi mark or
+/// a C1 control.
 fn json(v: &impl Serialize) -> anyhow::Result<String> {
-    Ok(serde_json::to_string(v)?)
+    Ok(crate::text::json(v, false)?)
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -597,6 +601,9 @@ impl ServerHandler for Tools {
             .with_instructions(INSTRUCTIONS)
     }
 }
+
+#[path = "mcp_drops.rs"]
+mod drop_tools;
 
 #[cfg(test)]
 #[path = "mcp_tests.rs"]
