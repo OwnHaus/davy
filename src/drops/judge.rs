@@ -25,7 +25,7 @@ enum Matcher {
     /// A pattern, and whether warnings and worse match too.
     Pattern(u64, bool),
     Level(LogLevel),
-    Contains(Finder<'static>),
+    Contains(Box<Finder<'static>>),
     Glob(Glob),
 }
 
@@ -88,7 +88,9 @@ impl Rule {
             Match::Pattern(id) => Matcher::Pattern(*id, s.spec.any_level),
             Match::Level(l) => Matcher::Level(*l),
             Match::Message(m) if m.contains('*') => Matcher::Glob(Glob::new(m)),
-            Match::Message(m) => Matcher::Contains(Finder::new(m.as_bytes()).into_owned()),
+            Match::Message(m) => {
+                Matcher::Contains(Box::new(Finder::new(m.as_bytes()).into_owned()))
+            }
         };
         Self {
             id: s.id,
