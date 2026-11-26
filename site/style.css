@@ -463,6 +463,8 @@ section { scroll-margin-top: 70px; }
 .open-b ul { margin: 0; padding: 0; list-style: none; }
 .open-b li { position: relative; padding-left: 22px; margin-bottom: 12px; color: var(--muted); font-size: .97rem; }
 .open-b li::before { content: ""; position: absolute; left: 2px; top: .72em; width: 9px; height: 2px; border-radius: 1px; background: var(--cap); }
+.open-next { margin: 18px 0 14px; padding-top: 16px; border-top: 1px solid var(--edge); font-size: .97rem; color: var(--muted); }
+.open-next a { color: var(--ink); }
 
 /* ---------- footer: the floor of the shaft ---------- */
 .foot { position: relative; overflow: hidden; padding-top: 40px; }
@@ -470,6 +472,7 @@ section { scroll-margin-top: 70px; }
 .foot-links { display: grid; grid-template-columns: repeat(3, max-content); gap: 10px 36px; font-size: .95rem; }
 .foot-links a { text-decoration: none; color: var(--muted); }
 .foot-links a:hover { color: var(--ink); text-decoration: underline; }
+.foot-links a[aria-current="page"], .head-out a[aria-current="page"] { color: var(--ink); }
 .colophon { font-size: .88rem; color: var(--cap); max-width: 50ch; justify-self: end; margin: 0; }
 .foot-word {
   /* Bagnard: ascent .75em, descent .25em, caps 0.72em. Line-height 1 and a -.24em bottom margin
@@ -603,6 +606,31 @@ html:not(.js) .sim-board, html:not(.js) .sim-story { display: none; }
 .code-plate.ls { margin: 0 0 22px; }
 .code-plate.ls pre { white-space: pre; overflow-wrap: normal; }
 
+/* ---------- the roadmap page ---------- */
+/* A ledger: the stage on the left in the serif, its parts ruled off on the right. */
+.road { padding-top: clamp(48px, 6vw, 88px); padding-bottom: clamp(72px, 7vw, 104px); }
+.road-head { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(32px, 5vw, 80px); align-items: end; margin-bottom: clamp(44px, 5.5vw, 76px); }
+.road-head h1 { text-align: left; margin: 0; max-width: 16ch; }
+.road-head .intro { margin: 0 0 .3em; }
+.stage { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 8fr); gap: clamp(24px, 5vw, 80px); padding: 26px 0 40px; border-top: 1px solid color-mix(in srgb, var(--line) 30%, transparent); }
+.stage-h h2 { font: 400 2.4rem/1 var(--serif); }
+.stage-h p { margin: 12px 0 0; font-size: .93rem; color: var(--cap); max-width: 26ch; }
+.items { list-style: none; margin: 0; padding: 0; }
+.items li { display: grid; grid-template-columns: minmax(0, 15rem) minmax(0, 1fr) 4.2rem; gap: 4px 28px; align-items: baseline; padding: 13px 0 14px; border-bottom: 1px solid var(--edge); }
+.items li:first-child { padding-top: 4px; }
+.items li:last-child { border-bottom: 0; }
+.items h3 { font: 400 1.3rem/1.25 var(--serif); }
+.items p { margin: 0; font-size: .95rem; line-height: 1.5; color: var(--muted); }
+.items time { font: .8rem/1.5 var(--mono); color: var(--cap); text-align: right; white-space: nowrap; }
+/* what is being built burns: the lamp's flame by its name */
+.building h2 { color: var(--flame-ink); }
+.building h3::before {
+  content: ""; display: inline-block; width: 7px; height: 10px; margin-right: 10px; vertical-align: 1px;
+  background: var(--flame);
+  clip-path: path("M3.5 0C5 2.6 7 4.6 7 6.6 7 8.6 5.4 10 3.5 10S0 8.6 0 6.6C0 4.6 2 2.6 3.5 0Z");
+}
+.later h3, .later p { color: var(--cap); }
+
 /* ---------- smaller screens ---------- */
 @media (max-width: 1080px) {
   .nav { display: none; }
@@ -614,9 +642,16 @@ html:not(.js) .sim-board, html:not(.js) .sim-story { display: none; }
   .hero-lamp { grid-column: 2; grid-row: 1 / span 2; }
   .ledger { grid-column: 1; grid-row: 2; justify-self: start; }
   .plate { min-height: 0; }
+  .items li { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px; }
+  .items h3 { grid-column: 1; grid-row: 1; }
+  .items time { grid-column: 2; grid-row: 1; }
+  .items p { grid-column: 1 / -1; max-width: 68ch; }
 }
 @media (max-width: 860px) {
-  .switch-head, .switch-grid, .inside, .open, .duo, .foot-in { grid-template-columns: minmax(0, 1fr); }
+  .switch-head, .switch-grid, .inside, .open, .duo, .foot-in, .road-head, .stage { grid-template-columns: minmax(0, 1fr); }
+  .stage { gap: 18px; }
+  .stage-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; }
+  .stage-h p { margin: 0; max-width: none; }
   .part, .part.flip { grid-template-columns: minmax(0, 1fr); }
   .part .shot, .part.flip .shot { grid-column: 1; grid-row: 2; margin-inline: 0; }
   .part .notes, .part.flip .notes { grid-column: 1; grid-row: 1; }
@@ -643,6 +678,7 @@ html:not(.js) .sim-board, html:not(.js) .sim-story { display: none; }
   .tools div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .key { grid-template-columns: minmax(0, 1fr); }
   .foot-links { grid-template-columns: repeat(2, max-content); }
+  .stage-h h2 { font-size: 2rem; }
   .code-plate { display: block; }
   .code-plate pre, .code-plate.small pre { font-size: .74rem; white-space: pre-wrap; overflow-wrap: anywhere; }
   .code-plate.big pre { font-size: 1.05rem; overflow-wrap: normal; }
@@ -667,6 +703,10 @@ html:not(.js) .sim-board, html:not(.js) .sim-story { display: none; }
     font: .8rem/1.3 var(--sans); color: var(--cap);
     text-decoration: underline; text-decoration-color: var(--edge); text-underline-offset: 3px;
   }
+}
+/* Docs is in the footer as the install guide, design and architecture; on a phone the header keeps the roadmap */
+@media (max-width: 520px) {
+  .head-out .docs { display: none; }
 }
 @media (max-width: 370px) {
   .toc summary span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

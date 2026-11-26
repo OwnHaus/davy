@@ -53,6 +53,7 @@ Mechanical rules live in `Cargo.toml` `[lints]`, `clippy.toml`, `deny.toml` and 
 - `CONTRIBUTING.md` holds the commit, changelog, dependency and review rules, `RELEASING.md` the release flow. Read them before a commit or a release.
 - One logical change per commit. Formatting, refactors and behavior changes go in separate commits.
 - A change an operator would notice adds a line under `## Unreleased` in `CHANGELOG.md` in the same commit.
+- A change that ships or starts an item of `roadmap.json` updates that item in the same commit, then `node site/tools/roadmap.cjs` rewrites the website. `scripts/check` fails when the site is behind.
 - Never commit generated data, `data/`, `target/` or secrets.
 - Never force-push `main`.
 - The repo owner is the only author. No AI attribution in commits or PRs: no `Co-Authored-By` trailer for a model, no "Generated with" line.

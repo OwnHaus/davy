@@ -43,6 +43,13 @@ else
     printf 'check: pnpm or node is missing, skipping the UI (see CONTRIBUTING.md)\n' >&2
     [ -z "${CI:-}" ] || problem 'CI runs the UI checks, so it needs pnpm and node'
 fi
+# The website's roadmap is written from roadmap.json, which this also checks.
+if command -v node >/dev/null 2>&1; then
+    node site/tools/roadmap.cjs --check || problem 'roadmap.json or the site is wrong, see the lines above'
+else
+    printf 'check: node is missing, skipping the roadmap (see CONTRIBUTING.md)\n' >&2
+    [ -z "${CI:-}" ] || problem 'CI checks the roadmap, so it needs node'
+fi
 if command -v osv-scanner >/dev/null 2>&1; then
     if ! found=$(osv-scanner scan --lockfile ui/pnpm-lock.yaml 2>&1); then
         printf '%s\n' "$found" >&2

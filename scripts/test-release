@@ -46,6 +46,7 @@ printf '[package]\nname = "t"\nversion = "0.1.0"\nedition = "2024"\n' >Cargo.tom
 printf 'target/\n' >.gitignore
 printf '<img alt="Latest release" src="https://img.shields.io/badge/release-v0.1.0-orange">\n' >README.md
 printf '# Changelog\n\n## Unreleased\n\n### Added\n\n' >CHANGELOG.md
+printf '{"items": [\n{"version": "unreleased"},\n{"version": "0.1.0"}\n]}\n' >roadmap.json
 cargo generate-lockfile --quiet
 git add -A
 git commit --quiet -m 'feat(core): start'
@@ -84,5 +85,7 @@ check "$(git cat-file -t v0.2.0)" tag 'an annotated tag'
 check "$(git tag -l --format='%(contents)' v0.2.0 | grep -c '^- A thing.$')" 1 'the tag message holds the changelog section'
 check "$(git tag -l --format='%(contents)' v0.2.0 | grep -c 'The start')" 0 'the tag message stops at the next release'
 check "$(grep -c 'fix(core): elsewhere' "$dir/out")" 1 'the fix commit is listed'
+check "$(grep -c '"version": "0.2.0"' roadmap.json)" 1 'the roadmap names the release'
+check "$(grep -c '"version": "0.1.0"' roadmap.json)" 1 'the roadmap keeps older releases'
 check "$(git status --porcelain)" '' 'a clean tree after the release'
 exit "$fail"

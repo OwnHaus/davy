@@ -25,6 +25,7 @@ To install Davy and connect an app, follow docs/install.md from top to bottom. E
 - [Design](docs/design.md): what each part does and why, milestone by milestone.
 - [Architecture](docs/architecture.md): how the binary is built inside.
 - [Security](SECURITY.md): how to report a vulnerability and what Davy defends against.
+- [Roadmap](roadmap.json): what shipped, with its version and date, what is being built and what comes next.
 
 ## Connect a new app
 

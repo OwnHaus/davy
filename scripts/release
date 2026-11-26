@@ -1,6 +1,7 @@
 #!/bin/sh
 # Cuts release X.Y.Z as RELEASING.md describes: checks the tree, runs the gate
-# and e2e, sets the version, dates the changelog section, commits and tags.
+# and e2e, sets the version, dates the changelog section, moves the roadmap's
+# shipped items to the version, commits and tags.
 # It pushes nothing; the last line it prints is the push command.
 # Usage: scripts/release [--unsigned] X.Y.Z
 set -eu
@@ -20,6 +21,9 @@ version=${1:-}
 printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' ||
     die 'usage: scripts/release [--unsigned] X.Y.Z'
 tag=v$version
+if [ -f site/tools/roadmap.cjs ] && ! command -v node >/dev/null 2>&1; then
+    die 'node is missing, and the release rewrites the roadmap pages with it'
+fi
 if [ "$sign" = -s ] && [ -z "$(git config user.signingkey || true)" ]; then
     die 'no signing key in git config user.signingkey (RELEASING.md, Signing), or pass --unsigned for a test tag'
 fi
@@ -64,6 +68,15 @@ awk -v h="## $version ($date)" '
     { print }
 ' CHANGELOG.md >CHANGELOG.md.new
 mv CHANGELOG.md.new CHANGELOG.md
+
+# What shipped since the last release is in this one now.
+if [ -f roadmap.json ]; then
+    sed "s/\"version\": \"unreleased\"/\"version\": \"$version\"/" roadmap.json >roadmap.json.new
+    mv roadmap.json.new roadmap.json
+    if [ -f site/tools/roadmap.cjs ]; then
+        node site/tools/roadmap.cjs >/dev/null
+    fi
+fi
 
 git commit --quiet -am "chore(release): release $version"
 printf '%s %s\n%s\n' "Davy $version" "($date)" "$section" | git tag "$sign" "$tag" -F -
