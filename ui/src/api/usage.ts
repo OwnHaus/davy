@@ -14,6 +14,28 @@ export type UsageProject = {
   logs_stored: Count;
   logs_filtered: Count;
   errors_discarded: number;
+  limits: Limits;
+};
+
+/** Errors in events, logs in bytes received, on the UTC day open now. */
+export type QuotaUse = { quota: number; today: number; percent: number; refusing: boolean };
+
+/** A spike rate: error events or log records a second, null when off. */
+export type SpikeRate = { setting: "default" | "off" | "set"; per_second: number | null };
+
+/** Today's refusals by reason. */
+export type Refused = { davy_quota: number; davy_spike: number };
+
+/** A project's daily quotas against today's use, its spike rates and today's refusals. */
+export type Limits = {
+  errors: QuotaUse | null;
+  logs: QuotaUse | null;
+  warn_percent: number;
+  spike: { errors: SpikeRate; logs: SpikeRate };
+  resets_at: string;
+  refused_today: Refused;
+  refused_log_requests_today: Refused;
+  busy_refused_requests_today: number;
 };
 
 export type Disk = {
@@ -47,6 +69,8 @@ export type UsageReport = {
   growth_per_day: number | null;
   forecast: string;
   projects: UsageProject[];
+  /** Busy 429s refused today before a key was read. */
+  busy_refused_requests_today_no_project: number;
   disk?: Disk;
   disk_error?: string;
   basis: Basis | null;

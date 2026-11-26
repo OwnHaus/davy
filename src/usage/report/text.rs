@@ -1,7 +1,13 @@
 //! The report for a terminal: `davy usage` without `--json`.
 
 use super::{Report, Signal, bytes_per_day, human, in_days, per_day, rates, safe};
-use crate::usage::{disk::Disk, forecast::Forecast};
+use crate::{
+    quota::{
+        Spike,
+        status::{Status, percent},
+    },
+    usage::{disk::Disk, forecast::Forecast},
+};
 
 impl Report {
     /// The report for a terminal.
@@ -172,9 +178,65 @@ impl Report {
                 "{:<20} keeps logs {} days, errors {} days{discarded}",
                 p.slug, p.logs_days, p.errors_days
             )?;
+            if let Some(line) = limits(&p.limits) {
+                writeln!(out, "{:<20} {line}", p.slug)?;
+            }
+        }
+        if self.busy_no_project > 0 {
+            writeln!(
+                out,
+                "{:<20} refused today {} busy requests before their key was read",
+                "no project", self.busy_no_project
+            )?;
         }
         Ok(())
     }
+}
+
+/// A project's quotas against today's use, its spike rates and today's
+/// refusals in a line, or nothing for a project with the defaults that
+/// refused nothing today.
+fn limits(s: &Status) -> Option<String> {
+    let set = s.settings;
+    let quiet = s.refused == [0, 0] && s.requests == [0, 0] && s.busy == 0;
+    let spikes = [set.spike, set.spike_logs];
+    if !set.has_quota() && spikes == [Spike::Default; 2] && quiet {
+        return None;
+    }
+    let mut parts: Vec<String> = [(0, "errors"), (1, "logs")]
+        .into_iter()
+        .filter_map(|(i, name)| {
+            let quota = set.cap(i)?;
+            let shown = |n: u64| if i == 0 { n.to_string() } else { human(n) };
+            Some(format!(
+                "{name} {} of {} today ({}%)",
+                shown(s.today[i]),
+                shown(quota),
+                percent(s.today[i], quota)
+            ))
+        })
+        .collect();
+    let spike = |i: usize| match (set.rate(i), spikes[i]) {
+        (None, _) => "off".to_owned(),
+        (Some(n), Spike::Default) => format!("{n}/s (default)"),
+        (Some(n), _) => format!("{n}/s"),
+    };
+    parts.push(format!("spike errors {}, logs {}", spike(0), spike(1)));
+    let [quota, spike] = s.refused;
+    parts.push(format!(
+        "refused today {quota} over quota, {spike} over spike"
+    ));
+    if let [quota, spike] = s.requests
+        && quota + spike > 0
+    {
+        parts.push(format!(
+            "log requests {quota} over quota, {spike} over spike"
+        ));
+    }
+    if s.busy > 0 {
+        parts.push(format!("{} busy requests", s.busy));
+    }
+    Some(parts.join(", "))
 }
 
 /// The estimate in a line, if there is one.

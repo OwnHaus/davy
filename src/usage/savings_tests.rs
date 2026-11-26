@@ -439,6 +439,8 @@ fn week(now: i64) -> Report {
         what_if: WhatIf::default(),
         projects: Vec::new(),
         default_log_days: None,
+        now: 0,
+        busy_no_project: 0,
     }
 }
 

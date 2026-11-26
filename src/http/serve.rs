@@ -286,8 +286,9 @@ pub async fn serve(
     crate::quota::start(&store::open(data)?, usage.gate(), crate::time::now_ns())?;
     let reporter = early.map(|early| early.start(data, &app));
     // One disk walk a minute and one limit on usage reads, for the MCP
-    // tool and the web UI together.
-    let shared = crate::usage::Shared::default();
+    // tool and the web UI together, and the gate the MCP tool asks what
+    // it refuses now.
+    let shared = crate::usage::Shared::with_gate(Arc::clone(usage.gate()));
     let ui = crate::ui::serve(
         data,
         writer.ui.clone(),

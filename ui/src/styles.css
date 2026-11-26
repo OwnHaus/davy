@@ -523,7 +523,10 @@ table.utable td, table.utable tbody th { height: auto; padding-top: 5px; padding
 .page .tscroll table.utable { min-width: 1000px; }
 .utable thead th { height: auto; padding-top: 4px; padding-bottom: 4px; white-space: normal; line-height: 1.3; vertical-align: bottom; }
 table.iss td.z { color: var(--faint); }
-.w-day { width: 92px; } .w-keep { width: 108px; }
+.w-day { width: 92px; } .w-keep { width: 108px; } .w-quota { width: 200px; }
+.utable .uqline { display: block; white-space: nowrap; min-height: 1lh; }
+.uqline.uq-reached { color: var(--lv-error); font-weight: 550; }
+.uqline.uq-warn { color: var(--lv-warning); font-weight: 550; }
 .svgroup { margin-top: 16px; }
 .svgroup h4 { margin: 0 0 6px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
 .svlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }

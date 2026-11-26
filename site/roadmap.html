@@ -57,14 +57,6 @@
     <p class="intro">Each shipped part carries the day it landed on <code>main</code>. The same list is in <a href="https://github.com/dominikzabcik/davy/blob/main/roadmap.json">roadmap.json</a>, which this page is written from, and the <a href="https://github.com/dominikzabcik/davy/blob/main/CHANGELOG.md">changelog</a> has every detail.</p>
   </header>
   <div class="stages"><!--roadmap:start-->
-    <section class="stage building" aria-labelledby="st-building">
-      <div class="stage-h">
-        <h2 id="st-building">Being built</h2>
-      </div>
-      <ol class="items">
-        <li id="quotas"><h3>Daily quotas and spike protection</h3><p>Each project gets a daily limit, so one runaway app cannot fill the disk for the others.</p></li>
-      </ol>
-    </section>
     <section class="stage next" aria-labelledby="st-next">
       <div class="stage-h">
         <h2 id="st-next">Next</h2>
@@ -92,6 +84,7 @@
         <p>Shipped since the last release, in the next one.</p>
       </div>
       <ol class="items">
+        <li id="quotas"><h3>Daily quotas and spike protection</h3><p>Each project gets a daily limit, so one runaway app cannot fill the disk for the others.</p><time datetime="2026-11-26">Nov 26</time></li>
         <li id="usage-page"><h3>A usage page in the web UI</h3><p>One page shows the disk used and free, the day it fills, what each project sends and where it could take less.</p><time datetime="2026-11-26">Nov 26</time></li>
         <li id="agent-drop-rules"><h3>Agents propose drop rules</h3><p>An agent stages a drop rule that only counts what it would drop, and a person makes it live.</p><time datetime="2026-11-26">Nov 26</time></li>
         <li id="drop-rules"><h3>Drop rules with shadow mode</h3><p>Log lines nobody needs are dropped before they are stored, after a shadow run shows what a rule would drop.</p><time datetime="2026-11-25">Nov 25</time></li>

@@ -73,6 +73,8 @@ fn report(logs: Option<Logs>, range: [Option<Date>; 2]) -> Report {
         what_if: WhatIf::default(),
         projects: Vec::new(),
         default_log_days: None,
+        now: 0,
+        busy_no_project: 0,
     }
 }
 
@@ -549,4 +551,83 @@ fn each_project_shows_the_error_events_it_discarded_in_the_window() {
     let text = String::from_utf8(out).unwrap();
     let line = "shop                 keeps logs 30 days, errors 36500 days, discarded 4 error events received\n";
     assert!(text.contains(line), "{text}");
+}
+
+#[test]
+fn a_project_with_a_quota_or_a_spike_rate_shows_a_line_of_its_limits() {
+    let mut c = Connection::open_in_memory().unwrap();
+    store::init(&mut c).unwrap();
+    for slug in ["shop", "api", "web"] {
+        store::create_project(&c, slug).unwrap();
+    }
+    let shop = crate::quota::Settings {
+        errors: Some(5000),
+        logs: Some(2 * GB),
+        ..crate::quota::Settings::default()
+    };
+    let api = crate::quota::Settings {
+        spike: crate::quota::Spike::Off,
+        ..crate::quota::Settings::default()
+    };
+    crate::quota::settings::store(&c, 1, &shop).unwrap();
+    crate::quota::settings::store(&c, 2, &api).unwrap();
+    let row = |signal, records, bytes| super::super::Row {
+        day: day("2026-11-24"),
+        project: 1,
+        signal,
+        count: Count { records, bytes },
+    };
+    super::super::write(
+        &c,
+        &[row(Signal::Errors, 40, 9), row(Signal::Logs, 7, 1_200 * MB)],
+    )
+    .unwrap();
+    let own = crate::items::client_report::add_own;
+    own(
+        &c,
+        1,
+        at("2026-11-24T00:00:00Z") / 1_000_000,
+        crate::quota::SPIKE,
+        "default",
+        6,
+    )
+    .unwrap();
+    let refused = |project, reason, quantity| crate::quota::Requests {
+        day: day("2026-11-24"),
+        project,
+        reason,
+        quantity,
+    };
+    let flush = crate::quota::Flush {
+        requests: vec![
+            refused(2, crate::quota::QUOTA, 1),
+            refused(2, crate::quota::BUSY, 2),
+            refused(crate::quota::NO_PROJECT, crate::quota::BUSY, 5),
+        ],
+        ..crate::quota::Flush::default()
+    };
+    crate::quota::write(&c, &flush).unwrap();
+    let req = Request {
+        project: None,
+        since: None,
+        what_if: WhatIf::default(),
+        defaults: retention::Defaults::default(),
+    };
+    let r = prepare(&c, &req, at("2026-11-24T12:00:00Z"))
+        .unwrap()
+        .finish(Err("not walked".into()));
+    assert_eq!(r.json(false)["busy_refused_requests_today_no_project"], 5);
+    let mut out = Vec::new();
+    r.text(&mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let busy = "no project           refused today 5 busy requests before their key was read\n";
+    assert!(text.ends_with(busy), "{text}");
+    let lines: Vec<&str> = text.lines().filter(|l| l.contains("spike")).collect();
+    assert_eq!(
+        lines,
+        [
+            "api                  spike errors off, logs off, refused today 0 over quota, 0 over spike, log requests 1 over quota, 0 over spike, 2 busy requests",
+            "shop                 errors 40 of 5000 today (0%), logs 1.2 GB of 2.0 GB today (60%), spike errors 4000/s (default), logs off, refused today 0 over quota, 6 over spike",
+        ]
+    );
 }

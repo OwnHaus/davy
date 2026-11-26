@@ -382,3 +382,47 @@ async fn the_cli_sets_a_quota_and_prints_it_for_a_person_or_as_json() {
     assert_eq!(json["busy_refused_requests_today"], 0);
     std::fs::remove_dir_all(&data).unwrap();
 }
+
+#[tokio::test]
+async fn the_cli_json_is_the_object_davy_usage_json_shows_of_the_project() {
+    use clap::Parser as _;
+    crate::test_support::away_from_midnight().await;
+    let data = crate::test_support::scratch("quota-same");
+    let mut c = store::open(&data).unwrap();
+    store::init(&mut c).unwrap();
+    store::create_project(&c, "a").unwrap();
+    let set = Settings {
+        logs: Some(2_000_000_000),
+        spike_logs: Spike::Rate(100),
+        ..Settings::default()
+    };
+    settings::store(&c, 1, &set).unwrap();
+    let now = time::now_ns();
+    let row = Row {
+        day: time::day_of(now),
+        project: 1,
+        signal: Signal::Logs,
+        count: Count::new(10, 1_200_000_000),
+    };
+    crate::usage::write(&c, &[row]).unwrap();
+    let day_ms = time::midnight(time::day_of(now)) / 1_000_000;
+    client_report::add_own(&c, 1, day_ms, SPIKE, "log_item", 7).unwrap();
+    let args = ["quota", "a", "--data", data.to_str().unwrap(), "--json"];
+    let mut out = Vec::new();
+    cli::run(&mut out, &cli::Args::try_parse_from(args).unwrap()).unwrap();
+    let quota: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let req = crate::usage::Request {
+        project: Some("a".into()),
+        since: None,
+        what_if: crate::usage::forecast::WhatIf::default(),
+        defaults: crate::retention::Defaults::default(),
+    };
+    let usage = crate::usage::prepare(&c, &req, time::now_ns())
+        .unwrap()
+        .finish(Err("not walked".into()))
+        .json(false);
+    assert_eq!(usage["projects"][0]["limits"], quota);
+    assert_eq!(quota["logs"]["today"], 1_200_000_000);
+    assert_eq!(quota["refused_today"]["davy_spike"], 7);
+    std::fs::remove_dir_all(&data).unwrap();
+}

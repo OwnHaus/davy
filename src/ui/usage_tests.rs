@@ -28,6 +28,15 @@ async fn the_summary_is_what_davy_usage_json_prints() {
     store::create_project(&s.db, "shop").unwrap();
     let today = time::day_of(time::now_ns()).to_string();
     counted(&s, &today, "errors", 4, 2_000);
+    let quota = crate::quota::Settings {
+        errors: Some(10),
+        spike: crate::quota::Spike::Rate(50),
+        ..crate::quota::Settings::default()
+    };
+    crate::quota::settings::store(&s.db, 1, &quota).unwrap();
+    let midnight_ms = time::midnight(time::day_of(time::now_ns())) / 1_000_000;
+    crate::items::client_report::add_own(&s.db, 1, midnight_ms, crate::quota::SPIKE, "default", 3)
+        .unwrap();
     let cookie = s.person("ann@example.com", time::now_ms());
     let r = s
         .get("/ui/api/usage?since=1d", &[("cookie", &cookie)])
@@ -38,6 +47,22 @@ async fn the_summary_is_what_davy_usage_json_prints() {
     assert_eq!(shop["signals"]["errors"]["records"], 4);
     assert_eq!(shop["signals"]["errors"]["bytes"], 2_000);
     assert_eq!(shop["errors_discarded"], 0);
+    assert_eq!(
+        shop["limits"],
+        json!({
+            "errors": {"quota": 10, "today": 4, "percent": 40, "refusing": false},
+            "logs": null,
+            "warn_percent": 80,
+            "spike": {
+                "errors": {"setting": "set", "per_second": 50},
+                "logs": {"setting": "off", "per_second": null},
+            },
+            "resets_at": time::rfc3339(time::next_midnight(time::now_ns())),
+            "refused_today": {"davy_quota": 0, "davy_spike": 3},
+            "refused_log_requests_today": {"davy_quota": 0, "davy_spike": 0},
+            "busy_refused_requests_today": 0,
+        })
+    );
     // Sizes are bytes, as with --json, never text such as "2.0 kB".
     if r.body["disk_error"].is_null() {
         assert!(r.body["disk"]["total"].is_u64(), "{}", r.body);
@@ -65,6 +90,8 @@ async fn the_summary_is_what_davy_usage_json_prints() {
     let fields = crate::test_support::assert_usage_ts_fields;
     fields("UsageReport", &r.body);
     fields("UsageProject", shop);
+    fields("Limits", &shop["limits"]);
+    fields("QuotaUse", &shop["limits"]["errors"]);
     fields("Count", &shop["signals"]["errors"]);
     if r.body["disk_error"].is_null() {
         fields("Disk", &r.body["disk"]);

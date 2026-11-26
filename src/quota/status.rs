@@ -123,6 +123,21 @@ impl Status {
     }
 }
 
+/// Sets `refusing` in `json`, a status as [`Status::json`] gives it, to
+/// what the running server's gate says now: past a quota by the stored
+/// counts or those still in memory, and per signal past its spike rate,
+/// which only the server knows.
+pub fn live(json: &mut Value, gate: &super::Limits) {
+    for (i, name) in ["errors", "logs"].into_iter().enumerate() {
+        if let Some(quota) = json[name].as_object_mut() {
+            let stored = quota.get("refusing").and_then(Value::as_bool);
+            let refusing = stored.unwrap_or(false) || gate.quota[i];
+            quota.insert("refusing".to_owned(), json!(refusing));
+        }
+        json["spike"][name]["refusing"] = json!(gate.spike[i].is_some());
+    }
+}
+
 /// A spike setting as JSON: `default`, `off` or `set`, and the rate it
 /// gives, `null` for none.
 fn spike(setting: Spike, rate: Option<u64>) -> Value {

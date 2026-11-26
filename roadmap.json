@@ -2,12 +2,6 @@
   "about": "What Davy does, what is being built and what comes next. A change that ships or starts an item updates this file in the same commit; node site/tools/roadmap.cjs then rewrites the site.",
   "items": [
     {
-      "id": "quotas",
-      "title": "Daily quotas and spike protection",
-      "what": "Each project gets a daily limit, so one runaway app cannot fill the disk for the others.",
-      "status": "in progress"
-    },
-    {
       "id": "cold-tier",
       "title": "A cold tier for old logs",
       "what": "Old days of logs become compressed segments that stay searchable and can live on object storage.",
@@ -42,6 +36,14 @@
       "title": "A hosted Davy, run by us",
       "what": "The same Davy, for teams that would rather not run a server.",
       "status": "later"
+    },
+    {
+      "id": "quotas",
+      "title": "Daily quotas and spike protection",
+      "what": "Each project gets a daily limit, so one runaway app cannot fill the disk for the others.",
+      "status": "shipped",
+      "version": "unreleased",
+      "date": "2026-11-26"
     },
     {
       "id": "usage-page",

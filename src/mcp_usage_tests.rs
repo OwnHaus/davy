@@ -3,8 +3,9 @@
 use super::*;
 
 /// The keys of the usage tool's `disk`.
-const KEYS: [&str; 12] = [
+const KEYS: [&str; 13] = [
     "basis",
+    "busy_refused_requests_today_no_project",
     "davy",
     "default_log_days",
     "disk",
@@ -123,6 +124,7 @@ async fn usage_shows_the_counts_and_the_forecast_with_human_sizes() {
         [
             "errors_days",
             "errors_discarded",
+            "limits",
             "logs_days",
             "logs_filtered",
             "logs_stored",
@@ -142,6 +144,86 @@ async fn usage_shows_the_counts_and_the_forecast_with_human_sizes() {
         keys(&api["signals"]["errors"]),
         ["bytes", "bytes_per_day", "records", "records_per_day"]
     );
+}
+
+#[tokio::test]
+async fn usage_shows_each_projects_quota_today_and_its_refusals() {
+    crate::test_support::away_from_midnight().await;
+    let s = server();
+    let c = store::open(&s.data).unwrap();
+    let quota = crate::quota::Settings {
+        logs: Some(2_000_000_000),
+        ..crate::quota::Settings::default()
+    };
+    crate::quota::settings::store(&c, 1, &quota).unwrap();
+    let now = time::now_ns();
+    let row = usage::Row {
+        day: time::day_of(now),
+        project: 1,
+        signal: usage::Signal::Logs,
+        count: usage::Count {
+            records: 10,
+            bytes: 1_200_000_000,
+        },
+    };
+    usage::write(&c, &[row]).unwrap();
+    let midnight_ms = time::midnight(time::day_of(now)) / 1_000_000;
+    let own = crate::items::client_report::add_own;
+    own(&c, 1, midnight_ms, crate::quota::QUOTA, "log_item", 2).unwrap();
+    let (text, error) = tool(&s.app, "usage", json!({"since": "1d"})).await;
+    assert!(!error, "{text}");
+    let v: Value = serde_json::from_str(&text).unwrap();
+    let resets_at = time::rfc3339(time::next_midnight(now));
+    assert_eq!(
+        v["projects"][0]["limits"],
+        json!({
+            "errors": null,
+            "logs": {"quota": "2.0 GB", "today": "1.2 GB", "percent": 60, "refusing": false},
+            "warn_percent": 80,
+            "spike": {
+                "errors": {"setting": "default", "per_second": 4000, "refusing": false},
+                "logs": {"setting": "off", "per_second": null, "refusing": false},
+            },
+            "resets_at": resets_at,
+            "refused_today": {"davy_quota": 2, "davy_spike": 0},
+            "refused_log_requests_today": {"davy_quota": 0, "davy_spike": 0},
+            "busy_refused_requests_today": 0,
+        })
+    );
+}
+
+/// The live gate knows a spike bucket and today's counts not flushed yet,
+/// which the store does not.
+#[tokio::test]
+async fn usage_says_what_the_running_server_refuses_now() {
+    crate::test_support::away_from_midnight().await;
+    let gate = Arc::new(crate::quota::Gate::default());
+    let s = server_with(usage::Shared::with_gate(Arc::clone(&gate)));
+    let c = store::open(&s.data).unwrap();
+    let quota = crate::quota::Settings {
+        logs: Some(1_000),
+        spike: crate::quota::Spike::Rate(1),
+        ..crate::quota::Settings::default()
+    };
+    crate::quota::settings::store(&c, 1, &quota).unwrap();
+    let now = time::now_ns();
+    gate.load(std::collections::HashMap::from([(1, quota)]), now);
+    gate.used(1, usage::Signal::Logs, usage::Count::new(1, 1_000), now);
+    gate.used(1, usage::Signal::Errors, usage::Count::new(11, 1), now);
+    let (text, error) = tool(&s.app, "usage", json!({"since": "1d"})).await;
+    assert!(!error, "{text}");
+    let v: Value = serde_json::from_str(&text).unwrap();
+    let limits = &v["projects"][0]["limits"];
+    let refusing = |path: &[&str]| path.iter().fold(limits, |v, k| &v[*k])["refusing"].clone();
+    assert_eq!(
+        [
+            refusing(&["logs"]),
+            refusing(&["spike", "errors"]),
+            refusing(&["spike", "logs"]),
+        ],
+        [json!(true), json!(true), json!(false)]
+    );
+    assert_eq!(limits["logs"]["today"], "0 B", "the store has none yet");
 }
 
 #[tokio::test]

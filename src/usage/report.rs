@@ -40,9 +40,16 @@ pub struct Report {
     /// The server's log retention, when a project keeps it for want of
     /// its own. `davy usage` and `davy doctor` assume it.
     pub default_log_days: Option<u32>,
+    /// When the report was made, which today's limits are of.
+    pub now: i64,
+    /// Requests refused today while busy before their key was read, so
+    /// under no project.
+    pub busy_no_project: u64,
 }
 
 pub struct Project {
+    /// Not shown: what the MCP tool `usage` asks the live gate about.
+    pub id: i64,
     pub slug: String,
     pub logs_days: u32,
     pub errors_days: u32,
@@ -57,6 +64,10 @@ pub struct Project {
     /// Log lines live drop rules dropped, on the UTC days of receipt of
     /// the window, see src/drops.rs: in `logs`, never stored.
     pub filtered: Count,
+    /// The project's daily quotas against what the writer stored today,
+    /// its spike rate and today's refusals, as `davy project quota` shows
+    /// them, whatever the window.
+    pub limits: crate::quota::status::Status,
 }
 
 /// The report on `data`, which walks the disk now.
@@ -78,6 +89,7 @@ pub struct Prepared {
     what_if: WhatIf,
     default_days: u32,
     projects: Vec<Project>,
+    busy_no_project: u64,
     /// Raw bytes per index day and project of the newest days, see
     /// [`forecast::Input::raw`].
     raw: Vec<forecast::RawDay>,
@@ -127,10 +139,12 @@ pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
     let stored = super::stored::between(c, from, today.tomorrow()?, filter)?;
     let discarded = crate::discard::between(c, from, today, filter)?;
     let filtered = crate::drops::filtered_between(c, from, today, filter)?;
+    let limits = crate::quota::status::all(c, now_ns)?;
     let projects = kept
         .iter()
         .filter(|(id, _)| filter.is_none_or(|f| f == *id))
         .map(|(id, k)| Project {
+            id: *id,
             slug: k.project.clone(),
             logs_days: k.logs.days.get(),
             errors_days: k.errors.days.get(),
@@ -138,6 +152,7 @@ pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
             stored: stored.get(id).copied().unwrap_or_default(),
             discarded: discarded.get(id).copied().unwrap_or_default(),
             filtered: filtered.get(id).copied().unwrap_or_default(),
+            limits: limits.get(id).copied().unwrap_or_default(),
         })
         .collect();
     // The estimate counts a project's logs on disk as far back as it, or
@@ -161,6 +176,7 @@ pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
         what_if: req.what_if.clone(),
         default_days: req.defaults.logs.get(),
         projects,
+        busy_no_project: limits.get(&crate::quota::NO_PROJECT).map_or(0, |s| s.busy),
         raw,
         own: crate::self_report::own::find(c)?.map(|o| o.slug),
         counted_since: super::stored::counted_since(c)?,
@@ -253,6 +269,8 @@ impl Prepared {
             what_if: self.what_if,
             projects: self.projects,
             default_log_days,
+            now: self.now,
+            busy_no_project: self.busy_no_project,
         }
     }
 
@@ -395,6 +413,7 @@ impl Report {
             "shortest_log_days": f.map(|f| f.shortest_days),
             "forecast": self.summary(),
             "projects": self.projects.iter().map(|p| self.project(p, &size)).collect::<Vec<_>>(),
+            "busy_refused_requests_today_no_project": self.busy_no_project,
         });
         match &self.disk {
             Ok(d) => {
@@ -534,7 +553,20 @@ impl Report {
             "logs_stored": count(p.stored),
             "logs_filtered": count(p.filtered),
             "errors_discarded": p.discarded,
+            "limits": self.limits(p, size),
         })
+    }
+
+    /// `p`'s limits as [`crate::quota::status::Status::json`] has them,
+    /// with log sizes through `size`.
+    fn limits(&self, p: &Project, size: &impl Fn(u64) -> Value) -> Value {
+        let mut out = p.limits.json(self.now);
+        for key in ["quota", "today"] {
+            if let Some(b) = out["logs"][key].as_u64() {
+                out["logs"][key] = size(b);
+            }
+        }
+        out
     }
 
     /// When the disk fills, in a sentence, in a worst case why the day is

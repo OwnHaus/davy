@@ -8,7 +8,7 @@ import { getRouteApi, useNavigate } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
 import { get, query } from "../api/client";
 import type { UsageDays } from "../api/types";
-import type { Count, Savings as SavingsData, UsageProject, UsageReport } from "../api/usage";
+import type { Count, Limits, QuotaUse, Savings as SavingsData, UsageProject, UsageReport } from "../api/usage";
 import { bytes, plural, shown } from "../lib/text";
 import { Outcomes } from "../parts/Outcomes";
 import { Savings } from "../parts/Savings";
@@ -228,8 +228,45 @@ function byAge(projects: UsageProject[], names: string[]): UsageProject[] {
   return [...projects].sort((a, b) => at(a.project) - at(b.project));
 }
 
+/**
+ * A quota's line, its state word first: `logs reached 1.0 MB` in the danger
+ * colour, `logs at 85% of 1.0 MB` in the warning colour past the warn
+ * percent, else `logs 120.0 KB of 1.0 MB`. Without a quota the line stays,
+ * empty, so logs and errors keep their places in every row.
+ */
+function QuotaLine(props: {
+  name: string;
+  q: QuotaUse | null;
+  warn: number;
+  size: (n: number) => string;
+  sub?: boolean;
+}) {
+  const { name, q, warn, size, sub } = props;
+  const base = sub ? "uqline usub" : "uqline";
+  if (!q) return <span className={base} />;
+  if (q.refusing || q.percent >= 100) {
+    return <span className={`${base} uq-reached`}>{`${name} reached ${size(q.quota)}`}</span>;
+  }
+  if (q.percent >= warn) {
+    return <span className={`${base} uq-warn`}>{`${name} at ${q.percent}% of ${size(q.quota)}`}</span>;
+  }
+  return <span className={base}>{`${name} ${size(q.today)} of ${size(q.quota)}`}</span>;
+}
+
+/** The project's quotas on the UTC day open now: logs, then errors. */
+function QuotaCell({ limits }: { limits: Limits }) {
+  const warn = limits.warn_percent;
+  return (
+    <td className="r uquota">
+      <QuotaLine name="logs" q={limits.logs} warn={warn} size={bytes} />
+      <QuotaLine name="errors" q={limits.errors} warn={warn} size={count} sub />
+    </td>
+  );
+}
+
 function Projects({ projects, names }: { projects: UsageProject[]; names: string[] }) {
   if (projects.length === 0) return <p className="none">No projects yet.</p>;
+  const quotas = projects.some((p) => p.limits.logs || p.limits.errors);
   return (
     <div className="tscroll" role="region" aria-labelledby="u-projects" tabIndex={0}>
       <table className="iss utable" id="uprojects">
@@ -248,6 +285,11 @@ function Projects({ projects, names }: { projects: UsageProject[]; names: string
                 {label}
               </th>
             ))}
+            {quotas ? (
+              <th scope="col" className="r w-quota">
+                Quota today
+              </th>
+            ) : null}
             <th scope="col" className="r w-keep">
               Retention
             </th>
@@ -265,6 +307,7 @@ function Projects({ projects, names }: { projects: UsageProject[]; names: string
               <Cell c={p.logs_stored} bytesOnly />
               <Cell c={p.logs_filtered} />
               <td className="r">{count(p.errors_discarded)}</td>
+              {quotas ? <QuotaCell limits={p.limits} /> : null}
               <td className="r">
                 logs {keep(p.logs_days)}
                 <span className="usub">errors {keep(p.errors_days)}</span>

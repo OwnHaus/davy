@@ -82,6 +82,8 @@ fn report_of(input: &Input, today: u64) -> Report {
         what_if: WhatIf::default(),
         projects: Vec::new(),
         default_log_days: None,
+        now: 0,
+        busy_no_project: 0,
     }
 }
 
@@ -130,6 +132,7 @@ const ERRORS_JSON: &str = concat!(
     r#""ratio":null,"ratio_range":null,"raw_days":7,"raw_per_day":0},"#,
     r#""why":"Davy counted no raw log bytes in the last 30 days and the disk holds no closed log day since 2026-11-17,"#,
     r#" so logs add nothing and the forecast rests on errors alone; confidence is medium as SQLite growth measured bytes per event on 0 of 7 days and the footprint benchmark gives the rest"},"#,
+    r#""busy_refused_requests_today_no_project":0,"#,
     r#""davy":{"logs":0,"logs_today":0,"other":0,"sqlite":2000000000,"#,
     r#""uploads":0},"disk":{"beyond_10_years":false,"days_left":5,"free":51000000000,"#,
     r#""full_on":"2026-11-29","headroom":50000000000,"headroom_reason":"10% of the filesystem stays free: filesystems reserve blocks,"#,
@@ -170,6 +173,7 @@ const JSON: &str = concat!(
     r#""why":"7 closed log days measured on this server: the growth is their median size on disk; confidence is medium as errors add over 5% of what the bound adds until the disk fills,"#,
     r#" or of the room left to the limit within 10 years where it never fills,"#,
     r#" and SQLite growth measured their bytes per event on 0 of 7 days"},"#,
+    r#""busy_refused_requests_today_no_project":0,"#,
     r#""davy":{"logs":6700000000,"logs_today":400000000,"other":0,"#,
     r#""sqlite":2000000000,"uploads":0},"disk":{"beyond_10_years":false,"#,
     r#""days_left":5,"free":55000000000,"full_on":"2026-11-29","#,
@@ -232,6 +236,7 @@ const NEVER_JSON: &str = concat!(
     r#""raw_per_day":0},"#,
     r#""why":"Davy counted no raw log bytes in the last 30 days and the disk holds no closed log day since 2026-11-17,"#,
     r#" so logs add nothing and the forecast rests on errors alone; confidence is medium as SQLite growth measured bytes per event on 0 of 7 days and the footprint benchmark gives the rest"},"#,
+    r#""busy_refused_requests_today_no_project":0,"#,
     r#""davy":{"logs":0,"logs_today":0,"other":0,"sqlite":2000000000,"uploads":0},"#,
     r#""disk":{"beyond_10_years":false,"days_left":null,"free":60000000000,"#,
     r#""full_on":null,"headroom":50000000000,"#,

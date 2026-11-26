@@ -483,6 +483,8 @@ fn forecast_report(kept: (u32, u32), days_left: Option<u64>) -> Report {
         what_if: forecast::WhatIf::default(),
         projects: Vec::new(),
         default_log_days: None,
+        now: 0,
+        busy_no_project: 0,
     }
 }
 
