@@ -1,5 +1,5 @@
 use super::*;
-use crate::quota::Settings;
+use crate::quota::{Settings, Spike};
 
 const D: &str = "/var/lib/davy";
 
@@ -85,6 +85,11 @@ fn the_check_reads_the_stored_quotas_and_todays_use() {
         },
     )
     .unwrap();
+    let off = Settings {
+        spike: Spike::Off,
+        ..Settings::default()
+    };
+    quota::settings::store(&c, 2, &off).unwrap();
     let now = crate::time::now_ns();
     let row = usage::Row {
         day: crate::time::day_of(now),
@@ -95,11 +100,16 @@ fn the_check_reads_the_stored_quotas_and_todays_use() {
     usage::write(&c, &[row]).unwrap();
     drop(c);
     let got = quotas(&dir, D, now);
+    let tomorrow = quotas(&dir, D, now + 86_400_000_000_000);
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(got.status, Status::Warn);
     assert_eq!(
         got.detail,
         "shop used 2 of its 2 errors quota today (100%); ingest refuses it until midnight UTC"
+    );
+    assert_eq!(
+        tomorrow,
+        ok("quotas", "1 project has a quota, not reached today")
     );
     let empty = crate::test_support::scratch("doctor-quota");
     assert_eq!(

@@ -51,8 +51,6 @@ const MAX_RECORDS: usize = 10_000;
 /// envelope, and the rest of a crafted one is skipped.
 const MAX_SDK_ITEMS: usize = 10;
 pub const RATE: &str = "86400:transaction;span;replay;profile;profile_chunk:organization";
-/// What a request past a daily quota is told.
-const OVER_QUOTA: &str = "over the project's daily quota";
 
 pub struct Keys {
     db: Mutex<rusqlite::Connection>,
@@ -306,8 +304,8 @@ struct Parsed {
     check_in: Option<monitor::checkin::Item>,
     /// Records and bytes of what was parsed, counted once it is queued.
     tally: usage::Tally,
-    /// Events and log records skipped unparsed past a daily quota, in the
-    /// order of [`crate::quota::capped`].
+    /// Events and log records skipped unparsed past a daily quota or a
+    /// spike rate, in the order of [`crate::quota::capped`].
     skipped: [u64; 2],
 }
 impl Parsed {
@@ -339,7 +337,7 @@ fn blocked(d: &Disposition, limits: &Limits) -> Option<usize> {
         Disposition::SdkItem | Disposition::CheckIn | Disposition::Drop => return None,
     };
     limits
-        .blocks(signal)
+        .refuses(signal)
         .then(|| crate::quota::capped(signal))
         .flatten()
 }
@@ -494,10 +492,12 @@ async fn ingest(
         authorize(&app.keys, project, presented.as_deref())?;
         *known = Some(project);
         let limits = limit::limits(app, project);
-        // A legacy request is one event, refused before its body is read.
+        // A legacy request is one event, refused before its body is read. An
+        // envelope is parsed, as a quota or a bucket refuses some of its
+        // items and takes the rest, such as a check-in.
         if legacy && let Some(l) = limit::refused(app, project, Signal::Errors, &limits) {
             let drained = body::drain(raw, &parts.headers, body::COMPRESSED).await;
-            return Ok(body::closing(l.refuse(OVER_QUOTA), &drained));
+            return Ok(body::closing(l.refuse(l.message()), &drained));
         }
         (body::read(raw, &mut held).await?, limits)
     };
@@ -513,13 +513,12 @@ async fn ingest(
         Ok((parsed, held))
     })
     .await?;
-    limit::count_skipped(app, project, parsed.skipped);
-    let limited = limit::Limited::of(&limits);
-    if let Some(l) = &limited
+    limit::count_skipped(app, project, parsed.skipped, &limits);
+    if let Some(l) = limit::Limited::of(&limits)
         && parsed.is_empty()
         && parsed.skipped.iter().any(|n| *n > 0)
     {
-        return Ok(l.refuse(OVER_QUOTA));
+        return Ok(l.refuse(l.message()));
     }
     let id = parsed
         .id
@@ -528,8 +527,8 @@ async fn ingest(
         .unwrap_or_else(EventId::fresh);
     accept(app, project, parsed, held).await?;
     let mut response = json_response(&json!({"id":id.0}));
-    // The SDK stops sending what is refused, though this request is taken.
-    if let Some(l) = limited {
+    // The SDK stops sending what a quota refuses, though this request is taken.
+    if let Some(l) = limit::Limited::taken(&limits) {
         l.set(response.headers_mut(), false);
     }
     Ok(response)

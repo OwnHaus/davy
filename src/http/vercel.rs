@@ -42,7 +42,7 @@ pub(super) async fn ingest(State(app): State<App>, req: Request) -> Response {
         )
         .await;
         let outcome = limit::busy(&app, Some(project), outcome)?;
-        Ok::<_, Failure>(outcome.answer(StatusCode::OK, super::OVER_QUOTA))
+        Ok::<_, Failure>(outcome.answer(StatusCode::OK, |why| why))
     };
     run.await.unwrap_or_else(IntoResponse::into_response)
 }

@@ -58,7 +58,7 @@ export function Outcomes({ data, project }: { data: UsageDays; project: string |
     <>
       <p className="lede">
         Accepted counts every item Davy took in. Filtered, discarded and refused are parts of it that Davy then did not store. Rate limited counts items past a rate limit or
-        daily cap, which Davy accepted first, and items past a project&apos;s quota, which it never accepted. Unreadable items and those the SDKs dropped never reached it.
+        daily cap, which Davy accepted first, and items past a project&apos;s quota or spike rate, which it never accepted. Unreadable items and those the SDKs dropped never reached it.
       </p>
       <p className="hint">These count items. What an SDK reports in bytes or seconds is left out.</p>
       {longer ? (

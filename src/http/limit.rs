@@ -1,8 +1,9 @@
-//! What ingest answers a project past a daily quota (`docs/design.md`,
-//! "Quotas and spike protection"): a `429` with `Retry-After` until
-//! midnight UTC, at most [`MAX_WAIT`], and an `X-Sentry-Rate-Limits`
-//! entry per refused category, which the [`super::headers`] middleware
-//! puts after Davy's fixed [`super::RATE`].
+//! What ingest answers a project past a daily quota or a spike rate
+//! (`docs/design.md`, "Quotas and spike protection"): a `429` with
+//! `Retry-After` until midnight UTC or until the signal's bucket takes
+//! items again, at most [`MAX_WAIT`], and an `X-Sentry-Rate-Limits` entry
+//! per refused category, which the [`super::headers`] middleware puts
+//! after Davy's fixed [`super::RATE`].
 
 use super::{App, Failure};
 use crate::{
@@ -21,6 +22,9 @@ pub(super) const RATE_LIMITS: &str = "x-sentry-rate-limits";
 /// until midnight sends nothing after a person raises the quota, so it
 /// asks again after 5 min and the gate refuses it again if need be.
 pub(super) const MAX_WAIT: u64 = 300;
+/// Why a request past a quota or a spike rate is refused.
+const OVER_QUOTA: &str = "over the project's daily quota";
+const OVER_SPIKE: &str = "over the project's spike rate";
 
 /// Why ingest refused, or would refuse, some of a request.
 #[derive(Debug, PartialEq, Eq)]
@@ -29,22 +33,73 @@ pub(super) struct Limited {
     retry_after: u64,
     /// `X-Sentry-Rate-Limits` entries, `secs:categories:scope:reason`.
     entries: Vec<String>,
+    /// Why, for the body of a `429`.
+    message: &'static str,
+}
+
+/// How long `limits` refuses `signal` and why: until midnight UTC past a
+/// quota, or until its bucket takes items again, at most [`MAX_WAIT`].
+fn wait(limits: &Limits, signal: Signal) -> Option<(u64, &'static str)> {
+    let secs = if limits.blocks(signal) {
+        limits.midnight
+    } else {
+        limits.spiked(signal)?
+    };
+    Some((secs.min(MAX_WAIT), limits.reason(signal)))
+}
+
+fn message(reason: &str) -> &'static str {
+    if reason == quota::QUOTA {
+        OVER_QUOTA
+    } else {
+        OVER_SPIKE
+    }
 }
 
 impl Limited {
-    /// The entries of every signal `limits` refuses, or `None` when it
-    /// refuses none.
+    /// The entries of every signal `limits` refuses, with `Retry-After`
+    /// the soonest of their waits, or `None` when it refuses none.
     pub(super) fn of(limits: &Limits) -> Option<Self> {
-        let wait = limits.midnight.min(MAX_WAIT);
-        let entries: Vec<String> = quota::CAPPED
+        let waits: Vec<(Signal, u64, &str)> = quota::CAPPED
             .into_iter()
-            .filter(|s| limits.blocks(*s))
-            .map(|s| entry(wait, quota::category(s), quota::QUOTA))
+            .filter_map(|s| wait(limits, s).map(|(secs, reason)| (s, secs, reason)))
             .collect();
-        (!entries.is_empty()).then_some(Self {
-            retry_after: wait,
-            entries,
+        let retry_after = waits.iter().map(|w| w.1).min()?;
+        let past_quota = waits.iter().any(|w| w.2 == quota::QUOTA);
+        Some(Self {
+            retry_after,
+            entries: waits
+                .iter()
+                .map(|(s, secs, reason)| entry(*secs, quota::category(*s), reason))
+                .collect(),
+            message: if past_quota { OVER_QUOTA } else { OVER_SPIKE },
         })
+    }
+
+    /// [`Self::of`] for a request of `signal` alone, which waits and is
+    /// told why for that signal, or `None` when `limits` takes it.
+    pub(super) fn of_signal(limits: &Limits, signal: Signal) -> Option<Self> {
+        let (secs, reason) = wait(limits, signal)?;
+        Self::of(limits).map(|l| Self {
+            retry_after: secs,
+            message: message(reason),
+            ..l
+        })
+    }
+
+    /// [`Self::of`] the quotas alone, for a request ingest took: a spike
+    /// rate passed by this request waits seconds, and an SDK told on a
+    /// `200` would hold back what the bucket takes again by then.
+    pub(super) fn taken(limits: &Limits) -> Option<Self> {
+        Self::of(&Limits {
+            spike: [None; 2],
+            ..*limits
+        })
+    }
+
+    /// Why ingest refused, for the body of a `429`.
+    pub(super) fn message(&self) -> &'static str {
+        self.message
     }
 
     /// Sets the rate limit header, and with `retry` `Retry-After`.
@@ -74,33 +129,31 @@ pub(super) fn limits(app: &App, project: i64) -> Limits {
     app.usage.gate().limits(project, time::now_ns())
 }
 
-/// When `limits` refuses `signal`, counts the refused request and says
-/// why. For a route that carries one signal, before its body is read: a
-/// `/store/` request is one error event, counted as one item, and a log
-/// request holds records nobody counted, so it counts as one request.
+/// When `limits` refuses `signal`, past a quota or its spike rate, counts
+/// the refused request and says why. For a route that carries one
+/// signal, before its body is read: a `/store/` request is one error
+/// event, counted as one item, and a log request holds records nobody
+/// counted, so it counts as one request.
 pub(super) fn refused(app: &App, project: i64, signal: Signal, limits: &Limits) -> Option<Limited> {
-    if !limits.blocks(signal) {
-        return None;
-    }
+    let limited = Limited::of_signal(limits, signal)?;
     let gate = app.usage.gate();
-    let now = time::now_ns();
+    let (reason, now) = (limits.reason(signal), time::now_ns());
     if signal == Signal::Logs {
-        gate.refuse_request(project, quota::QUOTA, now);
+        gate.refuse_request(project, reason, now);
     } else {
-        gate.refuse(project, quota::QUOTA, quota::category(signal), 1, now);
+        gate.refuse(project, reason, quota::category(signal), 1, now);
     }
-    Limited::of(limits)
+    Some(limited)
 }
 
-/// Counts what an envelope sent of each signal `limits` refused: its
-/// first event, and the log records of each skipped log item.
-pub(super) fn count_skipped(app: &App, project: i64, skipped: [u64; 2]) {
+/// Counts what an envelope sent of each signal `limits` refused, past a
+/// quota or a spike rate: its first event, and the log records of each
+/// skipped log item.
+pub(super) fn count_skipped(app: &App, project: i64, skipped: [u64; 2], limits: &Limits) {
     let now = time::now_ns();
     for (signal, n) in quota::CAPPED.into_iter().zip(skipped) {
-        let category = quota::category(signal);
-        app.usage
-            .gate()
-            .refuse(project, quota::QUOTA, category, n, now);
+        let (reason, category) = (limits.reason(signal), quota::category(signal));
+        app.usage.gate().refuse(project, reason, category, n, now);
     }
 }
 

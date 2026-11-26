@@ -330,8 +330,8 @@ filtered: Array<number>,
  */
 discarded: Array<number>, 
 /**
- * Items Davy refused past one of its rate limits, daily caps or a
- * project's quota.
+ * Items Davy refused past one of its rate limits, daily caps, or a
+ * project's quota or spike rate.
  */
 limited: Array<number>, 
 /**
@@ -368,8 +368,8 @@ filtered: Array<number>,
  */
 discarded: Array<number>, 
 /**
- * Items Davy refused past one of its rate limits, daily caps or a
- * project's quota.
+ * Items Davy refused past one of its rate limits, daily caps, or a
+ * project's quota or spike rate.
  */
 limited: Array<number>, 
 /**
@@ -417,8 +417,8 @@ filtered: Array<number>,
  */
 discarded: Array<number>, 
 /**
- * Items Davy refused past one of its rate limits, daily caps or a
- * project's quota.
+ * Items Davy refused past one of its rate limits, daily caps, or a
+ * project's quota or spike rate.
  */
 limited: Array<number>, 
 /**

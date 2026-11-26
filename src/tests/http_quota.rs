@@ -1,10 +1,13 @@
 //! A project past a daily quota: `429` with `Retry-After` until midnight
 //! UTC and a rate limit entry per refused category, counted as
-//! `davy_quota`, while other projects are taken as before.
+//! `davy_quota`, while other projects are taken as before. A project past
+//! a spike rate: `429` with `Retry-After` until that signal's bucket takes
+//! items again and an entry for its category, counted as `davy_spike`,
+//! while its other signals are taken.
 
 use super::*;
 use crate::{
-    quota::{Refusal, Settings},
+    quota::{Refusal, Settings, Spike},
     time,
     usage::{Count, Signal},
 };
@@ -212,4 +215,169 @@ async fn a_signed_drain_past_the_quota_is_200_and_counts_its_records_once_its_si
     assert_eq!(r.headers["x-sentry-rate-limits"], RATE);
     assert!(s.logs.try_recv().is_none());
     assert_eq!(refused(&s), [(3, "davy_quota", "log_item", 2)]);
+}
+
+/// Gives project `a` (id 1) a spike rate of one error event a second, so
+/// a burst of ten, and with `logs` one log record a second too.
+fn spike_of_one(s: &Server, logs: bool) {
+    let rate = Settings {
+        spike: Spike::Rate(1),
+        spike_logs: if logs { Spike::Rate(1) } else { Spike::Default },
+        ..Settings::default()
+    };
+    s.usage
+        .gate()
+        .load(HashMap::from([(1, rate)]), time::now_ns());
+}
+
+/// The status of each of `n` events sent to `path`, answering each job
+/// the store would commit.
+async fn burst(s: &Server, path: &str, n: usize) -> Vec<u16> {
+    let mut out = Vec::new();
+    for _ in 0..n {
+        let send = s.send(post(path, &[], EVENT));
+        tokio::pin!(send);
+        let reply = loop {
+            tokio::select! {
+                r = &mut send => break r,
+                () = async {
+                    if let Ok(write) = s.error_inbox.try_recv() {
+                        drop(write.done.send(Ok(())));
+                    }
+                    tokio::task::yield_now().await;
+                } => {}
+            }
+        };
+        out.push(reply.status);
+    }
+    out
+}
+
+/// The requests counted as refused unread in the next flush.
+fn requests(s: &Server) -> Vec<(i64, &'static str, i64)> {
+    let flush = s.usage.gate().take();
+    flush
+        .requests
+        .iter()
+        .map(|r| (r.project, r.reason, r.quantity))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_burst_past_the_spike_rate_is_429_while_a_quiet_project_is_taken() {
+    let s = server();
+    spike_of_one(&s, false);
+    let noisy = burst(&s, "/api/1/store/?sentry_key=key-a", 12).await;
+    assert_eq!(noisy, [[200; 10].as_slice(), &[429, 429]].concat());
+    let quiet = burst(&s, "/api/2/store/?sentry_key=key-b", 3).await;
+    assert_eq!(quiet, [200, 200, 200]);
+    let r = s
+        .send(post("/api/1/store/?sentry_key=key-a", &[], EVENT))
+        .await;
+    assert_eq!(r.status, 429);
+    assert_eq!(r.headers["retry-after"], "1");
+    assert_eq!(
+        r.headers["x-sentry-rate-limits"].to_str().unwrap(),
+        format!("{RATE}, 1:error:project:davy_spike")
+    );
+    assert_eq!(r.body, b"over the project's spike rate");
+    assert_eq!(refused(&s), [(1, "davy_spike", "error", 3)]);
+}
+
+#[tokio::test]
+async fn past_the_error_rate_an_envelope_keeps_its_check_in_and_logs_are_taken() {
+    let s = server();
+    spike_of_one(&s, false);
+    s.usage.add(1, Signal::Errors, Count::new(10, 10));
+    let event = format!("{{}}\n{{\"type\":\"event\"}}\n{EVENT}\n");
+    let r = s
+        .send(post("/api/1/envelope/?sentry_key=key-a", &[], event))
+        .await;
+    assert_eq!(
+        (r.status, r.body.as_slice()),
+        (429, b"over the project's spike rate".as_slice())
+    );
+    assert!(s.error_inbox.try_recv().is_err());
+    let check_in = r#"{"check_in_id":"42424242-4242-4242-4242-424242424242","monitor_slug":"backup","status":"ok"}"#;
+    let keyed_in_body = format!(
+        "{{\"dsn\":\"https://key-a@davy.example/1\"}}\n{{\"type\":\"event\"}}\n{EVENT}\n\
+         {{\"type\":\"check_in\"}}\n{check_in}\n"
+    );
+    let (r, job) = tokio::join!(
+        s.send(post("/api/1/envelope/", &[], keyed_in_body)),
+        take(&s)
+    );
+    assert_eq!(r.status, 200);
+    assert!(matches!(job, store::Job::CheckIn { project: 1, .. }));
+    assert_eq!(
+        r.headers["x-sentry-rate-limits"], RATE,
+        "no spike entry on a 200"
+    );
+    let r = s.send(otlp("application/json", OTLP_JSON)).await;
+    assert_eq!(r.status, 200, "log records have no rate by default");
+    assert!(s.logs.try_recv().is_some());
+    assert_eq!(refused(&s), [(1, "davy_spike", "error", 2)]);
+}
+
+#[tokio::test]
+async fn past_the_log_rate_logs_are_429_and_errors_are_taken() {
+    let s = server();
+    spike_of_one(&s, true);
+    s.usage.add(1, Signal::Logs, Count::new(10, 10));
+    let r = s.send(otlp("application/json", OTLP_JSON)).await;
+    assert_eq!(r.status, 429);
+    assert_eq!(r.headers["retry-after"], "1");
+    let status: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+    assert_eq!(
+        status,
+        serde_json::json!({"code": 8, "message": "over the project's spike rate"})
+    );
+    assert!(s.logs.try_recv().is_none());
+    assert_eq!(requests(&s), [(1, "davy_spike", 1)]);
+    let (r, job) = tokio::join!(
+        s.send(post("/api/1/store/?sentry_key=key-a", &[], EVENT)),
+        take(&s)
+    );
+    assert_eq!(r.status, 200);
+    assert!(matches!(job, store::Job::Ingest { project: 1, .. }));
+    let r = s
+        .send(post(
+            "/api/1/envelope/?sentry_key=key-a",
+            &[],
+            fixture("sentry-node-10-logs/1.body"),
+        ))
+        .await;
+    assert_eq!(r.status, 429);
+    assert_eq!(
+        r.headers["x-sentry-rate-limits"].to_str().unwrap(),
+        format!("{RATE}, 1:log_item:project:davy_spike")
+    );
+    assert_eq!(refused(&s), [(1, "davy_spike", "log_item", 3)]);
+}
+
+#[tokio::test]
+async fn a_request_past_a_quota_and_the_spike_rate_waits_for_the_quota() {
+    let s = server();
+    over_quota(&s).await;
+    spike_of_one(&s, false);
+    let quota = Settings {
+        errors: Some(1),
+        logs: Some(1),
+        spike: Spike::Rate(1),
+        ..Settings::default()
+    };
+    s.usage
+        .gate()
+        .load(HashMap::from([(1, quota)]), time::now_ns());
+    s.usage.add(1, Signal::Errors, Count::new(10, 1));
+    let r = s
+        .send(post("/api/1/store/?sentry_key=key-a", &[], EVENT))
+        .await;
+    assert_eq!(r.status, 429);
+    assert_eq!(
+        quota_entries(&r),
+        "S:error:project:davy_quota, S:log_item:project:davy_quota"
+    );
+    assert_eq!(r.body, b"over the project's daily quota");
+    assert_eq!(refused(&s), [(1, "davy_quota", "error", 1)]);
 }

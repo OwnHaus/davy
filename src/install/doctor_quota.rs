@@ -38,7 +38,7 @@ fn read(c: &Connection, now_ns: i64) -> Result<Vec<(String, status::Status)>> {
     let mut out = Vec::new();
     for row in rows {
         let (id, slug) = row?;
-        if let Some(s) = all.remove(&id).filter(|s| !s.settings.is_default()) {
+        if let Some(s) = all.remove(&id).filter(|s| s.settings.has_quota()) {
             out.push((slug, s));
         }
     }

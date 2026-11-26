@@ -1,10 +1,10 @@
-//! Each project's quotas against what it sent today, as `davy project
-//! quota --json`, `davy usage --json`, the web UI and the MCP tool `usage`
-//! show it. Today's use is what the writer stored: the counts of the last
-//! few seconds wait in memory for the next flush, so a server may refuse
-//! a few seconds before `refusing` says so.
+//! Each project's quotas against what it sent today, and its spike
+//! rates, as `davy project quota --json`, `davy usage --json`, the web UI
+//! and the MCP tool `usage` show it. Today's use is what the writer
+//! stored: the counts of the last few seconds wait in memory for the next
+//! flush, so a server may refuse a few seconds before `refusing` says so.
 
-use super::{BUSY, QUOTA, Settings, settings};
+use super::{BUSY, QUOTA, SPIKE, Settings, Spike, settings};
 use crate::{time, usage};
 use anyhow::Result;
 use rusqlite::Connection;
@@ -13,9 +13,9 @@ use std::collections::HashMap;
 
 /// The reasons a status counts refusals of, in the order of
 /// [`Status::refused`].
-pub const REASONS: [&str; 1] = [QUOTA];
+pub const REASONS: [&str; 2] = [QUOTA, SPIKE];
 /// Why each of [`REASONS`] refused, for a person.
-const WHY: [&str; 1] = ["past a quota"];
+const WHY: [&str; 2] = ["past a quota", "past a spike rate"];
 
 /// One project's quotas and its use today.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -25,10 +25,10 @@ pub struct Status {
     /// [`super::capped`].
     pub today: [u64; 2],
     /// Items refused today, in the order of [`REASONS`].
-    pub refused: [u64; 1],
+    pub refused: [u64; 2],
     /// Log requests refused today before their body was read, in the
     /// order of [`REASONS`].
-    pub requests: [u64; 1],
+    pub requests: [u64; 2],
     /// Requests refused today with a `429` because the body budget or a
     /// queue was full, whatever they carried.
     pub busy: u64,
@@ -48,7 +48,7 @@ impl Status {
                 })
             })
         };
-        let by_reason = |counts: [u64; 1]| -> serde_json::Map<String, Value> {
+        let by_reason = |counts: [u64; 2]| -> serde_json::Map<String, Value> {
             REASONS
                 .iter()
                 .zip(counts)
@@ -59,6 +59,10 @@ impl Status {
             "errors": signal(0),
             "logs": signal(1),
             "warn_percent": self.settings.warn,
+            "spike": {
+                "errors": spike(self.settings.spike, self.settings.rate(0)),
+                "logs": spike(self.settings.spike_logs, self.settings.rate(1)),
+            },
             "resets_at": time::rfc3339(time::next_midnight(now_ns)),
             "refused_today": by_reason(self.refused),
             "refused_log_requests_today": by_reason(self.requests),
@@ -95,6 +99,14 @@ impl Status {
             });
         }
         lines.push(format!("warn at: {}%", self.settings.warn));
+        for (i, name) in ["errors", "logs"].into_iter().enumerate() {
+            let setting = [self.settings.spike, self.settings.spike_logs][i];
+            lines.push(match (self.settings.rate(i), setting) {
+                (None, _) => format!("spike {name}: off"),
+                (Some(n), Spike::Default) => format!("spike {name}: {n} a second, the default"),
+                (Some(n), _) => format!("spike {name}: {n} a second"),
+            });
+        }
         lines.push(format!(
             "resets at: {}",
             time::rfc3339(time::next_midnight(now_ns))
@@ -111,14 +123,26 @@ impl Status {
     }
 }
 
+/// A spike setting as JSON: `default`, `off` or `set`, and the rate it
+/// gives, `null` for none.
+fn spike(setting: Spike, rate: Option<u64>) -> Value {
+    let setting = if rate.is_none() {
+        "off"
+    } else {
+        setting.name()
+    };
+    json!({"setting": setting, "per_second": rate})
+}
+
 /// `used` in whole percent of `quota`, rounded down.
 pub fn percent(used: u64, quota: u64) -> u64 {
     let p = u128::from(used) * 100 / u128::from(quota.max(1));
     u64::try_from(p).unwrap_or(u64::MAX)
 }
 
-/// The status of every project with a quota or a refusal today, keyed by
-/// project. A project not in it has the defaults and refused nothing.
+/// The status of every project with a setting other than the default or
+/// a refusal today, keyed by project. A project not in it has the
+/// defaults and refused nothing.
 pub fn all(c: &Connection, now_ns: i64) -> Result<HashMap<i64, Status>> {
     let mut out: HashMap<i64, Status> = settings::all(c)?
         .into_iter()

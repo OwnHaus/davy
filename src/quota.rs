@@ -3,9 +3,9 @@
 //! quota`. Ingest checks them in memory against today's counts, which the
 //! usage counter keeps as it counts what ingest accepts, so the hot path
 //! never reads SQLite. What ingest refuses is counted in `client_reports`
-//! under [`QUOTA`], in items, and a log request refused before its body
-//! was read in `refused_requests`, in requests, as is a `429` of a full
-//! body budget or queue under [`BUSY`].
+//! under [`QUOTA`] or [`SPIKE`], in items, and a log request refused
+//! before its body was read in `refused_requests`, in requests, as is a
+//! `429` of a full body budget or queue under [`BUSY`].
 
 use crate::{
     alert,
@@ -21,12 +21,17 @@ use std::time::Duration;
 pub mod cli;
 mod gate;
 pub mod settings;
+mod spike;
 pub mod status;
 pub use gate::{Alert, Crossed, Flush, Gate, Limits, Refusal, Requests};
-pub use settings::Settings;
+pub use settings::{DEFAULT_SPIKE, Settings, Spike};
+pub use spike::BURST_SECS;
 
 /// The client report reason of items refused past a daily quota.
 pub const QUOTA: &str = "davy_quota";
+/// The client report reason of items, or of log requests refused unread,
+/// past a spike rate.
+pub const SPIKE: &str = "davy_spike";
 /// The reason of requests refused with `429` because the body budget or a
 /// queue was full, counted in `refused_requests` under the project their
 /// key picked, or [`NO_PROJECT`] when the key was not read yet.
@@ -47,7 +52,7 @@ pub const MIGRATION: &str = "ALTER TABLE projects ADD COLUMN quota_errors INTEGE
 ALTER TABLE projects ADD COLUMN quota_logs INTEGER CHECK(quota_logs > 0);
 ALTER TABLE projects ADD COLUMN quota_warn INTEGER NOT NULL DEFAULT 80 CHECK(quota_warn BETWEEN 1 AND 100);
 ALTER TABLE projects ADD COLUMN spike INTEGER CHECK(spike >= 0);
-ALTER TABLE projects ADD COLUMN spike_logs INTEGER CHECK(spike_logs > 0);
+ALTER TABLE projects ADD COLUMN spike_logs INTEGER CHECK(spike_logs >= 0);
 CREATE TABLE quota_alerts(day TEXT NOT NULL, project_id INTEGER NOT NULL REFERENCES projects(id), signal TEXT NOT NULL, kind TEXT NOT NULL, quota INTEGER NOT NULL, PRIMARY KEY(day, project_id, signal, kind, quota)) WITHOUT ROWID;
 CREATE TABLE refused_requests(day INTEGER NOT NULL, project_id INTEGER NOT NULL, reason TEXT NOT NULL, quantity INTEGER NOT NULL, PRIMARY KEY(day, project_id, reason)) WITHOUT ROWID;";
 /// Undoes [`MIGRATION`], for tests that run the migrations again.
@@ -233,3 +238,7 @@ mod tests;
 #[cfg(test)]
 #[path = "quota/alert_tests.rs"]
 mod alert_tests;
+
+#[cfg(test)]
+#[path = "quota/spike_tests.rs"]
+mod spike_tests;

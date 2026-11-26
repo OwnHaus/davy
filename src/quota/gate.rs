@@ -1,7 +1,8 @@
 //! The gate ingest asks before it parses a request: today's counts of
-//! each project against its quota, in memory, behind one lock.
+//! each project against its quota and its spike buckets of errors and
+//! of logs, in memory, behind one lock.
 
-use super::{CAPPED, Settings, capped, status::percent};
+use super::{CAPPED, QUOTA, SPIKE, Settings, capped, spike::Buckets, status::percent};
 use crate::{
     time,
     usage::{Count, Signal},
@@ -29,6 +30,7 @@ struct State {
     /// so a raised quota alerts again when it is reached.
     fired: HashSet<(i64, usize, Crossed, u64)>,
     alerts: Vec<Alert>,
+    buckets: Buckets,
 }
 
 /// Which line of a quota a project crossed.
@@ -87,16 +89,31 @@ pub struct Limits {
     pub quota: [bool; 2],
     /// Whole seconds until midnight UTC, when the quotas start again.
     pub midnight: u64,
+    /// Whole seconds until the spike bucket of errors and of logs takes
+    /// items again, `None` when it takes them now.
+    pub spike: [Option<u64>; 2],
 }
 
 impl Limits {
-    /// Whether an item of `signal` is refused now.
+    /// Whether an item of `signal` is refused now past a quota.
     pub fn blocks(&self, signal: Signal) -> bool {
         capped(signal).is_some_and(|i| self.quota[i])
     }
-    /// Whether anything is refused now.
-    pub fn any(&self) -> bool {
-        self.quota.contains(&true)
+    /// Whole seconds until `signal`'s spike bucket takes items again, when
+    /// it refuses them and no quota does: past a quota the bucket would
+    /// not help.
+    pub fn spiked(&self, signal: Signal) -> Option<u64> {
+        let i = capped(signal)?;
+        if self.quota[i] { None } else { self.spike[i] }
+    }
+    /// Whether an item of `signal` is refused now, past a quota or its
+    /// spike rate.
+    pub fn refuses(&self, signal: Signal) -> bool {
+        self.blocks(signal) || self.spiked(signal).is_some()
+    }
+    /// The client report reason an item of `signal` is refused for.
+    pub fn reason(&self, signal: Signal) -> &'static str {
+        if self.blocks(signal) { QUOTA } else { SPIKE }
     }
 }
 
@@ -207,12 +224,24 @@ impl Gate {
     }
 
     /// Replaces every project's settings: a project not in `all` has the
-    /// defaults. A lower quota can put a project past a line at once.
+    /// defaults. A lower quota can put a project past a line at once, and
+    /// a new spike rate starts with a full bucket.
     pub fn load(&self, all: HashMap<i64, Settings>, now_ns: i64) {
+        fn rate(m: &HashMap<i64, Settings>, p: i64, i: usize) -> Option<u64> {
+            m.get(&p).copied().unwrap_or_default().rate(i)
+        }
         let mut s = self.state();
         s.roll(now_ns);
+        let changed: Vec<(i64, usize)> = (s.settings.keys().chain(all.keys()))
+            .flat_map(|p| [(*p, 0), (*p, 1)])
+            .filter(|&(p, i)| rate(&s.settings, p, i) != rate(&all, p, i))
+            .collect();
+        for key in changed {
+            s.buckets.forget(key);
+        }
         s.settings = all;
         s.check_all(now_ns);
+        s.buckets.prune(now_ns);
     }
 
     /// Marks the alerts of `day` that `quota_alerts` holds as sent, each
@@ -249,27 +278,38 @@ impl Gate {
     pub fn limits(&self, project: i64, now_ns: i64) -> Limits {
         let mut s = self.state();
         let (_, end) = s.roll(now_ns);
-        let mut limits = Limits {
-            midnight: time::retry_secs(now_ns, end),
-            ..Limits::default()
-        };
-        let Some(settings) = s.settings.get(&project).copied() else {
-            return limits;
-        };
+        let settings = s.settings.get(&project).copied().unwrap_or_default();
         let used = s.today.get(&project).map_or([0; 2], |t| t.used);
-        for (i, blocked) in limits.quota.iter_mut().enumerate() {
-            *blocked = settings.cap(i).is_some_and(|cap| used[i] >= cap);
+        let quota = [0, 1].map(|i| settings.cap(i).is_some_and(|cap| used[i] >= cap));
+        let spike = [0, 1].map(|i| {
+            let until = s
+                .buckets
+                .refused_until((project, i), settings.rate(i), now_ns);
+            until.map(|until| time::retry_secs(now_ns, until))
+        });
+        Limits {
+            quota,
+            midnight: time::retry_secs(now_ns, end),
+            spike,
         }
-        limits
     }
 
-    /// Counts what ingest accepted for `project` at `now_ns`. The usage
-    /// counter calls it with each count it adds.
+    /// Counts what ingest accepted for `project` at `now_ns`: its error
+    /// events or log records against the signal's spike bucket, and its
+    /// error events or log bytes against today's quota. Other signals
+    /// meet neither. The usage counter calls it with each count it adds.
     pub fn used(&self, project: i64, signal: Signal, count: Count, now_ns: i64) {
         let Some(i) = capped(signal) else {
             return;
         };
         let mut s = self.state();
+        let rate = s
+            .settings
+            .get(&project)
+            .copied()
+            .unwrap_or_default()
+            .rate(i);
+        s.buckets.charge((project, i), rate, count.records, now_ns);
         s.roll(now_ns);
         let today = s.today.entry(project).or_default();
         today.used[i] = today.used[i].saturating_add(amount(i, count));

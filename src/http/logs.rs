@@ -2,13 +2,12 @@
 //! from a raw body to queued log records.
 
 use super::{
-    App, Failure, MAX_RECORDS, OVER_QUOTA, bad, blocking, body, body::Held, encoding, header_str,
-    limit, too_many_records, vercel,
+    App, Failure, MAX_RECORDS, bad, blocking, body, body::Held, encoding, header_str, limit,
+    too_many_records, vercel,
 };
 use crate::{
     http::sdk::scrubbed_logs,
     logs::{LogRecord, logtail, otlp},
-    quota::QUOTA,
     scrub::Policy,
     time,
     token::bearer,
@@ -31,20 +30,26 @@ pub(super) enum Outcome {
 }
 
 impl Outcome {
-    /// The answer: `taken`, or a `429` with `body` and why.
-    pub(super) fn answer(self, taken: impl IntoResponse, refused: impl IntoResponse) -> Response {
+    /// The answer: `taken`, or a `429` with the body `refused` makes of
+    /// why.
+    pub(super) fn answer<R: IntoResponse>(
+        self,
+        taken: impl IntoResponse,
+        refused: impl FnOnce(&'static str) -> R,
+    ) -> Response {
         match self {
             Self::Taken => taken.into_response(),
-            Self::Refused(l, drained) => body::closing(l.refuse(refused), &drained),
+            Self::Refused(l, drained) => body::closing(l.refuse(refused(l.message())), &drained),
         }
     }
 }
 
 /// Reads, decompresses and parses a log body, which `parse` pays for, and
 /// queues its records, counted with the decompressed size of the body.
-/// A project past its daily log quota is refused before the body is read,
-/// which is drained and dropped. A signed Vercel drain is read and its
-/// signature checked instead, and its records are dropped and counted.
+/// A project past its daily log quota or its log spike rate is refused
+/// before the body is read, which is drained and dropped. A signed Vercel
+/// drain is read and its signature checked instead, and its records are
+/// dropped and counted.
 pub(super) async fn ingest_logs(
     app: &App,
     project: i64,
@@ -57,7 +62,7 @@ pub(super) async fn ingest_logs(
     let mut held = app.budget.hold();
     let limits = limit::limits(app, project);
     let encoding = encoding(headers);
-    if limits.blocks(Signal::Logs) {
+    if limits.refuses(Signal::Logs) {
         if let Some(signed) = signed {
             let bytes = body::read(raw, &mut held).await?;
             let records = blocking(move || {
@@ -66,7 +71,8 @@ pub(super) async fn ingest_logs(
             })
             .await?;
             let gate = app.usage.gate();
-            gate.refuse(project, QUOTA, "log_item", records, time::now_ns());
+            let reason = limits.reason(Signal::Logs);
+            gate.refuse(project, reason, "log_item", records, time::now_ns());
             return Ok(Outcome::Taken);
         }
         if let Some(l) = limit::refused(app, project, Signal::Logs, &limits) {
@@ -112,7 +118,7 @@ pub(super) async fn logtail_ingest(State(app): State<App>, req: Request) -> Resp
         )
         .await;
         let outcome = limit::busy(&app, Some(project), outcome)?;
-        Ok::<_, Failure>(outcome.answer(StatusCode::ACCEPTED, OVER_QUOTA))
+        Ok::<_, Failure>(outcome.answer(StatusCode::ACCEPTED, |why| why))
     };
     run.await.unwrap_or_else(IntoResponse::into_response)
 }
@@ -147,10 +153,10 @@ pub(super) async fn otlp_ingest(State(app): State<App>, req: Request) -> Respons
     };
     let typed = |encoding: otlp::Encoding| [(header::CONTENT_TYPE, encoding.content_type())];
     match (run.await, encoding) {
-        (Ok((encoding, outcome)), _) => outcome.answer(
-            (typed(encoding), otlp::success(encoding)),
-            (typed(encoding), otlp::status(encoding, true, OVER_QUOTA)),
-        ),
+        (Ok((encoding, outcome)), _) => outcome
+            .answer((typed(encoding), otlp::success(encoding)), |why| {
+                (typed(encoding), otlp::status(encoding, true, why))
+            }),
         (Err((status, message)), Some(encoding)) => {
             let exhausted = status == StatusCode::TOO_MANY_REQUESTS;
             let body = otlp::status(encoding, exhausted, &message);

@@ -312,6 +312,8 @@ new_run() {
 project() {
   local dsn
   dsn=$("$BIN" project create bench --data "$1" --public-url "http://127.0.0.1:1")
+  # The corpus goes in as fast as the server takes it, not at a project's rate.
+  "$BIN" project quota bench --data "$1" --spike off --spike-logs off > /dev/null
   KEY="${dsn#*://}"; KEY="${KEY%%@*}"
   PROJECT="${dsn##*/}"
 }

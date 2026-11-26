@@ -189,12 +189,37 @@ fn settings_are_stored_and_read_back() {
         errors: Some(5000),
         logs: Some(2_000_000_000),
         warn: 90,
+        spike: Spike::Rate(250),
+        spike_logs: Spike::Rate(20_000),
     };
     settings::store(&c, 1, &s).unwrap();
     assert_eq!(settings::of(&c, 1).unwrap(), s);
     assert_eq!(settings::all(&c).unwrap(), HashMap::from([(1, s)]));
+    let off = Settings {
+        spike: Spike::Off,
+        spike_logs: Spike::Off,
+        ..Settings::default()
+    };
+    settings::store(&c, 2, &off).unwrap();
+    assert_eq!(settings::of(&c, 2).unwrap(), off);
     settings::store(&c, 1, &Settings::default()).unwrap();
-    assert!(settings::all(&c).unwrap().is_empty());
+    assert_eq!(settings::all(&c).unwrap(), HashMap::from([(2, off)]));
+    assert_eq!(
+        (s.rate(0), s.rate(1), off.rate(0), off.rate(1)),
+        (Some(250), Some(20_000), None, None)
+    );
+    let defaults = Settings::default();
+    assert_eq!((defaults.rate(0), defaults.rate(1)), (Some(4000), None));
+}
+
+#[test]
+fn the_cli_reads_spike_rates() {
+    assert_eq!(cli::spike("250"), Ok(Spike::Rate(250)));
+    assert_eq!(cli::spike("off"), Ok(Spike::Off));
+    assert_eq!(cli::spike("default"), Ok(Spike::Default));
+    for bad in ["0", "-5", "1.5", "fast", ""] {
+        assert!(cli::spike(bad).is_err(), "{bad:?}");
+    }
 }
 
 #[test]
@@ -273,20 +298,30 @@ fn the_status_shows_the_quota_todays_use_and_refusals() {
             "errors": null,
             "logs": {"quota": 2_000_000_000, "today": 1_200_000_000, "percent": 60, "refusing": false},
             "warn_percent": 80,
+            "spike": {
+                "errors": {"setting": "default", "per_second": 4000},
+                "logs": {"setting": "off", "per_second": null},
+            },
             "resets_at": "2026-11-27T00:00:00Z",
-            "refused_today": {"davy_quota": 0},
-            "refused_log_requests_today": {"davy_quota": 0},
+            "refused_today": {"davy_quota": 0, "davy_spike": 0},
+            "refused_log_requests_today": {"davy_quota": 0, "davy_spike": 0},
             "busy_refused_requests_today": 3,
         })
     );
     assert_eq!(
         all[&1].text(NOON),
         "errors: no quota\nlogs: 1.2 GB of 2.0 GB today (60%)\nwarn at: 80%\n\
-         resets at: 2026-11-27T00:00:00Z\nrefused today past a quota: 0 items, 0 log requests\n\
+         spike errors: 4000 a second, the default\nspike logs: off\n\
+         resets at: 2026-11-27T00:00:00Z\n\
+         refused today past a quota: 0 items, 0 log requests\n\
+         refused today past a spike rate: 0 items, 0 log requests\n\
          refused today while busy: 3 requests\n"
     );
-    assert_eq!((all[&NO_PROJECT].busy, all[&NO_PROJECT].requests), (5, [0]));
-    assert_eq!(all[&2].refused, [4]);
+    assert_eq!(
+        (all[&NO_PROJECT].busy, all[&NO_PROJECT].requests),
+        (5, [0, 0])
+    );
+    assert_eq!(all[&2].refused, [4, 0]);
     assert_eq!(all[&2].settings, Settings::default());
     assert_eq!(status::percent(1, 3), 33);
     assert_eq!(status::percent(5, 0), 500);
@@ -331,7 +366,9 @@ async fn the_cli_sets_a_quota_and_prints_it_for_a_person_or_as_json() {
         text,
         format!(
             "project: a\nerrors: 0 of 150 today (0%)\nlogs: no quota\nwarn at: 50%\n\
+             spike errors: 4000 a second, the default\nspike logs: off\n\
              resets at: {resets}\nrefused today past a quota: 0 items, 0 log requests\n\
+             refused today past a spike rate: 0 items, 0 log requests\n\
              refused today while busy: 0 requests\n\
              A running server applies a change within 5 s.\n"
         )

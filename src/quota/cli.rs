@@ -1,7 +1,8 @@
-//! `davy project quota`: shows or sets a project's daily quotas. A running
-//! server reads the change within [`super::RELOAD_EVERY`].
+//! `davy project quota`: shows or sets a project's daily quotas and spike
+//! rate. A running server reads the change within
+//! [`super::RELOAD_EVERY`].
 
-use super::{Settings, settings, status};
+use super::{Settings, Spike, settings, status};
 use crate::{store, time};
 use clap::Parser;
 use std::{io::Write, path::PathBuf};
@@ -26,8 +27,17 @@ pub struct Args {
     /// The percent of a quota at which an alert warns, 1 to 100.
     #[arg(long, value_name = "PERCENT", value_parser = clap::value_parser!(u8).range(1..=100))]
     pub warn: Option<u8>,
-    /// Removes every quota and the warning percent.
-    #[arg(long, conflicts_with_all = ["errors", "logs", "warn"])]
+    /// Error events a second the project may send, with a burst of 10
+    /// seconds of them: a rate, `off` for no limit, or `default` (4000).
+    #[arg(long, value_name = "RATE", value_parser = spike)]
+    pub spike: Option<Spike>,
+    /// Log records a second the project may send, with a burst of 10
+    /// seconds of them: a rate, or `off` (the default) for no limit.
+    #[arg(long, value_name = "RATE", value_parser = spike)]
+    pub spike_logs: Option<Spike>,
+    /// Removes every quota and sets the warning percent and the spike
+    /// rates back to their defaults.
+    #[arg(long, conflicts_with_all = ["errors", "logs", "warn", "spike", "spike_logs"])]
     pub clear: bool,
     /// Prints the same as JSON, numbers only.
     #[arg(long)]
@@ -54,6 +64,12 @@ pub fn run(out: &mut impl Write, args: &Args) -> anyhow::Result<()> {
     }
     if let Some(warn) = args.warn {
         s.warn = warn;
+    }
+    if let Some(spike) = args.spike {
+        s.spike = spike;
+    }
+    if let Some(spike) = args.spike_logs {
+        s.spike_logs = spike;
     }
     if s != settings::of(&c, id)? {
         settings::store(&c, id, &s)?;
@@ -82,6 +98,20 @@ pub fn count(s: &str) -> Result<Limit, String> {
     match s.parse::<u64>() {
         Ok(n) if n > 0 && i64::try_from(n).is_ok() => Ok(Limit(Some(n))),
         _ => Err(format!("expected a whole number over 0 or off, got {s:?}")),
+    }
+}
+
+/// Items a second over 0, `off` or `default`.
+pub fn spike(s: &str) -> Result<Spike, String> {
+    match s {
+        "off" => Ok(Spike::Off),
+        "default" => Ok(Spike::Default),
+        _ => match count(s) {
+            Ok(Limit(Some(n))) => Ok(Spike::Rate(n)),
+            _ => Err(format!(
+                "expected items a second over 0, off or default, got {s:?}"
+            )),
+        },
     }
 }
 

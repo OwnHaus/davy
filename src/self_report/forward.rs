@@ -136,9 +136,11 @@ impl Forwarder {
     fn write(&self, lines: Vec<Line>) {
         let now = crate::time::now_ns();
         let gate = self.usage.gate();
-        if gate.limits(self.own.id, now).blocks(Signal::Logs) {
+        let limits = gate.limits(self.own.id, now);
+        if limits.refuses(Signal::Logs) {
             let n = lines.len() as u64;
-            gate.refuse(self.own.id, crate::quota::QUOTA, "log_item", n, now);
+            let reason = limits.reason(Signal::Logs);
+            gate.refuse(self.own.id, reason, "log_item", n, now);
             return;
         }
         let mut records: Vec<LogRecord> = lines

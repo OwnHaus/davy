@@ -18,6 +18,9 @@ PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); pr
 URL="http://127.0.0.1:$PORT"
 DSN=$("$BIN" project create load --data "$SCRATCH/data" --public-url "$URL")
 KEY="${DSN#*://}"; KEY="${KEY%%@*}"
+# The rate measured is the server's, not the project's spike rate for logs,
+# which is off by default; set here so a changed default does not skew it.
+"$BIN" project quota load --data "$SCRATCH/data" --spike-logs off > /dev/null
 /usr/bin/time -l "$BIN" serve --data "$SCRATCH/data" --listen "127.0.0.1:$PORT" --public-url "$URL" >"$SCRATCH/server.log" 2>&1 &
 PID=$!
 for i in {1..100}; do curl -s -o /dev/null "$URL/" && break; sleep 0.1; done
