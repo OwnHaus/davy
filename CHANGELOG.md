@@ -73,6 +73,10 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 - The uptime chart no longer draws an hour with one failed check like an outage. A bar is now as tall as the hour's mean response, with the share of checks that failed in red at its top, and the hover reads `1 of 60 checks failed`. Only an hour an incident was open in is a full hatched bar. The hourly cells in `/ui/api/monitors` have a new `down` field for that.
 - An HTTP check no longer fails with `connection closed before message completed` when the target closes an idle keep-alive connection just as the next check starts. Each check and alert delivery now opens a new connection, so a check's response time includes connecting and the TLS handshake, as for a new visitor, and is higher than before for targets that kept the connection open.
 
+### Changed
+
+- The web UI wears the look of the website: warm dark surfaces, cream text and brass in dark, deep brass ink on daylight paper in light, with its own fonts, which the binary serves itself and which add 92 KB. Every text and status color keeps WCAG AA in both themes, warning and error now read orange and rose red, apart from the brass accent, and the heat strip and the log histogram are brass, light to dark.
+
 ## 0.1.0 (2026-11-23)
 
 The first release. One binary takes errors from the Sentry SDKs and logs from Logtail shippers and OpenTelemetry, checks uptime, sends alerts, serves a web UI for one team and gives coding agents MCP tools. Install it with [docs/install.md](docs/install.md) or the Docker quick start in the [README](README.md).
