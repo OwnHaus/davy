@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/davy-mark-dark.svg">
+    <img alt="" src="docs/images/davy-mark-light.svg" width="96" height="96">
+  </picture>
+</p>
+
 <h1 align="center">Davy</h1>
 
 <p align="center">
@@ -6,8 +13,15 @@
 </p>
 
 <p align="center">
+  <a href="https://ownhaus.dev/davy/">Website</a> ·
+  <a href="https://ownhaus.dev/docs">Docs</a> ·
+  <a href="https://ownhaus.dev/davy/install">Install</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/OwnHaus/davy/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/OwnHaus/davy/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/OwnHaus/davy/releases/latest"><img alt="Latest release" src="https://img.shields.io/badge/release-v0.1.0-orange"></a>
+  <a href="https://github.com/OwnHaus/davy/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/OwnHaus/davy?label=release&color=orange"></a>
   <a href="LICENSE"><img alt="License AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue"></a>
 </p>
 
