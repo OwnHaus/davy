@@ -136,7 +136,7 @@ svg { display: block; flex: none; }
 [hidden] { display: none !important; }
 
 /* Shell */
-.app { display: grid; grid-template-rows: 40px minmax(0, 1fr) 26px; height: 100vh; }
+.app { display: grid; grid-template-rows: 40px minmax(0, 1fr) 26px; grid-template-columns: minmax(0, 1fr); height: 100vh; }
 .top { position: relative; display: flex; align-items: center; gap: 16px; background: var(--rail); padding: 0 16px 0 14px; }
 /* The engraved brass rule under the bar, brightest under the mark. */
 .top::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background: linear-gradient(90deg, var(--brass-line) 0, var(--brass-line-hi) 90px, var(--brass-line) 260px, var(--line) 62%); pointer-events: none; }
@@ -655,6 +655,8 @@ table.otable td, table.otable tbody th { height: auto; padding-top: 5px; padding
   .body, .body.wide { grid-template-columns: minmax(0, 1fr); }
   .railbtn { display: inline-flex; }
   .brand { width: auto; }
+  /* The account keeps its width; the views scroll inside the bar instead. */
+  .acct { flex: none; }
   #rail { display: none; }
   #rail.open { display: flex; position: fixed; top: 40px; bottom: 26px; left: 0; width: 240px; z-index: 30; box-shadow: var(--shadow); }
   .who .em { display: none; }
