@@ -26,16 +26,35 @@ impl LogWriter {
     /// Starts the writer of the day indexes in `root`. A project keeps
     /// `retention_days` of logs unless `overrides` names it.
     pub fn start(root: PathBuf, retention_days: u32, overrides: Overrides) -> Result<Self> {
+        Self::start_with(root, retention_days, overrides, None)
+    }
+
+    /// As [`LogWriter::start`], turning days older than `hot_days` cold,
+    /// none when it is `None`. See "Cold tier" in docs/design.md.
+    pub fn start_with(
+        root: PathBuf,
+        retention_days: u32,
+        overrides: Overrides,
+        hot_days: Option<u32>,
+    ) -> Result<Self> {
         anyhow::ensure!(
             (1..=MAX_RETENTION_DAYS).contains(&retention_days),
             "log retention must be 1 to {MAX_RETENTION_DAYS} days"
         );
         std::fs::create_dir_all(&root)?;
         let (queue, inbox) = LogQueue::bounded(QUEUE_ROWS, QUEUE_BYTES);
+        if let Some(days) = hot_days {
+            anyhow::ensure!(
+                (1..=MAX_RETENTION_DAYS).contains(&days),
+                "hot days must be 1 to {MAX_RETENTION_DAYS}"
+            );
+        }
         let mut state = State::new(root, retention_days, overrides);
+        state.cold.hot_days = hot_days;
         let log_days = state.log_days.clone();
         let drops = state.drops.clone();
         let thread = thread::spawn(move || {
+            report(LogLevel::Warn, "cold tier", state.recover_cold(), false);
             let mut next_commit = Instant::now() + COMMIT_EVERY;
             let mut next_flush = Instant::now() + tally::FLUSH_EVERY;
             let mut next_retention = Instant::now();
@@ -70,6 +89,12 @@ impl LogWriter {
                     let own = !state.foreign();
                     report(LogLevel::Error, "commit", state.commit(), own);
                     report(LogLevel::Warn, "close idle", state.close_idle(), false);
+                    report(
+                        LogLevel::Warn,
+                        "cold tier",
+                        state.cold_tick(now_ns()),
+                        false,
+                    );
                     next_commit = now + COMMIT_EVERY;
                 }
                 if now >= next_flush {

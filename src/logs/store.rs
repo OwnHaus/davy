@@ -12,8 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tantivy::{
-    Index, IndexSettings, IndexWriter, Order, TantivyDocument, Term,
-    collector::TopDocs,
+    Index, IndexSettings, IndexWriter, TantivyDocument, Term,
     query::{BooleanQuery, EmptyQuery, Occur, Query, QueryParser, RangeQuery, TermQuery},
     schema::{FAST, Field, INDEXED, IndexRecordOption, STORED, STRING, Schema, TEXT},
     store::{Compressor, ZstdCompressor},
@@ -215,6 +214,7 @@ pub(super) struct State {
     /// The drop rules in force, see src/drops.rs.
     drops: crate::drops::Live,
     judge: crate::drops::Judge,
+    cold: cold::Cold,
 }
 
 impl State {
@@ -239,6 +239,7 @@ impl State {
             log_days: LogDays::new(crate::time::now_ms()),
             listed: false,
             foreign: false,
+            cold: cold::Cold::new(None),
         }
     }
 
@@ -269,6 +270,9 @@ impl State {
             {
                 self.close(oldest)?;
             }
+            // A log for a day turning cold keeps it hot, and one for a
+            // day a failure left half cold goes into a new hot day.
+            self.unseal(day)?;
             let index = open_index(&self.root, day)?;
             let values = has_values(&index);
             let pattern = pattern_field(&index);
@@ -423,6 +427,7 @@ impl State {
     /// of a day whose writer a failed commit dropped too, whatever fails on
     /// the way.
     pub(super) fn close_all(&mut self) -> Result<()> {
+        let stopped = self.stop_cold();
         let days: Vec<_> = self.open.keys().copied().collect();
         let closed = self.close_each(days);
         let held: Vec<Date> = self.tallies.lock().map_or_else(
@@ -432,7 +437,7 @@ impl State {
         for day in held {
             self.write_tally(day);
         }
-        closed
+        closed.and(stopped)
     }
 }
 
@@ -466,25 +471,6 @@ pub struct LogHit {
     /// patterns.
     pub pattern: Option<String>,
     pub attributes: Map<String, Value>,
-}
-
-/// The newest `q.limit` hits, oldest first.
-pub fn search(root: &Path, q: &LogQuery) -> Result<Vec<LogHit>> {
-    retrying(|| search_once(root, q))
-}
-
-/// Runs `f` a second time when its first pass met a day that retention
-/// deleted between the `meta.json` check and the open. tantivy reports that
-/// only as text, so a pass that no longer sees the day is the way to recover.
-fn retrying<T>(f: impl Fn() -> Result<T>) -> Result<T> {
-    f().or_else(|e| {
-        let missing = format!("{e:#}");
-        if missing.contains("does not exist") || missing.contains("No such file") {
-            f()
-        } else {
-            Err(e)
-        }
-    })
 }
 
 impl Day {
@@ -556,39 +542,15 @@ pub fn check_text(text: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-fn search_once(root: &Path, q: &LogQuery) -> Result<Vec<LogHit>> {
-    let f = schema().1;
-    let mut hits = Vec::new();
-    let mut skip = q.skip;
-    for day in days(root, q.since, q.until)? {
-        if hits.len() >= q.limit {
-            break;
-        }
-        let day = day?;
-        let top = day.searcher.search(
-            &day.matching(&f, q)?,
-            &TopDocs::with_limit(q.limit - hits.len() + skip)
-                .order_by_fast_field::<i64>("ts", Order::Desc),
-        )?;
-        for (ts, address) in top {
-            if skip > 0 && ts == Some(q.until) {
-                skip -= 1;
-                continue;
-            }
-            skip = 0;
-            if hits.len() == q.limit {
-                break;
-            }
-            let doc: TantivyDocument = day.searcher.doc(address)?;
-            hits.push(hit::hit(&day.index.schema(), &f, &doc)?);
-        }
-    }
-    hits.reverse();
-    Ok(hits)
-}
-
 #[path = "hit.rs"]
 mod hit;
+
+#[path = "search.rs"]
+mod search;
+use search::retrying;
+#[cfg(test)]
+pub use search::search_all;
+pub use search::{Found, search, search_for};
 
 #[path = "cold.rs"]
 pub mod cold;
@@ -606,12 +568,14 @@ pub use day_dirs::{Stray, strays};
 
 #[path = "retention.rs"]
 mod retention;
-use days::{Day, days};
+use days::Day;
 pub use retention::{Overrides, no_overrides};
 
 #[path = "histogram.rs"]
 mod histogram;
-pub use histogram::{Histogram, LogCounts, MAX_BUCKETS, histogram};
+#[cfg(test)]
+pub use histogram::histogram_all;
+pub use histogram::{Histogram, LogCounts, MAX_BUCKETS, histogram, histogram_for};
 
 #[path = "queue.rs"]
 mod queue;

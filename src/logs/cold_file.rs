@@ -270,6 +270,40 @@ impl<S: Source> ColdFile<S> {
         Ok(block)
     }
 
+    /// Fails unless the file says it is of `day` and `project`, the day
+    /// and project its path gives, and its times and every block's lie
+    /// within that UTC day: a file moved or copied from another day or
+    /// another project's name, or a header that lies, is left out whole.
+    pub(super) fn belongs(&self, day: jiff::civil::Date, project: u64) -> Result<()> {
+        let meta = self.footer.meta;
+        ensure!(
+            meta.project == project,
+            "a file of project {} under project {project}",
+            meta.project
+        );
+        ensure!(
+            meta.day == super::convert::yyyymmdd(day)?,
+            "a file of day {} under {day}",
+            meta.day
+        );
+        let start = crate::time::midnight(day);
+        let end = day
+            .tomorrow()
+            .map_or(i64::MAX, |d| crate::time::midnight(d) - 1);
+        let within = |min: i64, max: i64| start <= min && max <= end;
+        ensure!(
+            self.footer.rows == 0 || within(self.footer.min_ts, self.footer.max_ts),
+            "the file's times lie outside {day}"
+        );
+        for (i, e) in self.footer.blocks.iter().enumerate() {
+            ensure!(
+                within(e.header.min_ts, e.header.max_ts),
+                "block {i}'s times lie outside {day}"
+            );
+        }
+        Ok(())
+    }
+
     /// Block `i` as stored, its header and checksum checked against the
     /// footer, still compressed.
     pub(super) fn checked(&self, i: usize) -> Result<Vec<u8>> {

@@ -40,7 +40,6 @@ use tantivy::{
 pub(super) struct Matcher {
     since: i64,
     until: i64,
-    #[expect(dead_code, reason = "cold search reads it in the next commit")]
     project: Option<u64>,
     min_level: Option<u8>,
     pattern: Option<u64>,
@@ -81,7 +80,6 @@ impl Matcher {
     }
 
     /// Whether a block of `project` from `min_ts` to `max_ts` may match.
-    #[expect(dead_code, reason = "cold search reads it in the next commit")]
     pub(super) fn may_match(&self, project: u64, min_ts: i64, max_ts: i64, levels: u8) -> bool {
         let level_ok = self
             .min_level
@@ -95,7 +93,6 @@ impl Matcher {
     /// Whether every row of a block with header `h` matches, so the
     /// header can count them: the block lies in the window, holds no level
     /// below the least asked for, and there is no text or pattern to match.
-    #[expect(dead_code, reason = "cold search reads it in the next commit")]
     pub(super) fn counts_whole(&self, h: &Header) -> bool {
         let below = |min: u8| u16::from(h.levels) & ((1u16 << min.saturating_sub(1)) - 1) != 0;
         self.text.is_none()

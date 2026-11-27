@@ -256,6 +256,17 @@ The synthetic rows across settings, without a dictionary:
 - **A full scan reads 2.4 to 7.0M rows a second at the chosen setting (noisy).** A text query reads as fast while the word filter leaves few rows; rows it lets through are indexed in memory to run the query, at about 30k to 90k rows a second, so `PacketResponder`, held by a third of HDFS, takes 7.5 s, and `"Failed password"` on OpenSSH 3.9 s. The 5 s budget of a search stops such a scan and says where.
 - **The word filter matters for phrases.** In the first run the block id phrase of HDFS took 37.6 s: in a query over two fields the filter took each field's first word, `blk`, which every line holds. It now takes the list whose shortest word is longest, and the same query takes 1.0 s.
 
+### Ingest during a conversion
+
+`examples/cold_ingest.rs` writes 1M synthetic web logs into a day ten days back, then starts a log writer with 7 hot days and ingests logs for today in batches of 5,000 as fast as the queue takes them until that day is cold, then as long again with every day hot. At background priority, load average 5.4 to 5.6:
+
+| | Rows | Seconds | Rows/s |
+|---|---|---|---|
+| While the day turned cold | 1,055,000 | 19.1 | 55.2k |
+| Every day hot | 1,075,000 | 19.1 | 56.2k |
+
+Ingest kept 0.98 of its rate while the conversion ran on its own thread. The conversion of 1M rows, three projects, ended within the 19.1 s.
+
 ## Rerun
 
 ```sh
@@ -273,6 +284,7 @@ python3 -I bench/footprint-report.py --tables bench/footprint.json   # the footp
 cargo build --release --example error_footprint
 target/release/examples/error_footprint store .scratch/hot 10 10000 64   # error disk per event, about 15 s
 target/release/examples/error_footprint sim side .scratch/side 10 10000 64   # one design as bare SQL: current, table, side or autovacuum
-cargo build --release --example cold_bench
+cargo build --release --example cold_bench --example cold_ingest
 target/release/examples/cold_bench CORPUS line .scratch/cold 'Failed password'   # cold tier settings; COLD_LEVELS, COLD_BLOCKS, COLD_DICTS and COLD_QUERY_AT narrow the run
+target/release/examples/cold_ingest .scratch/ingest 1000000                    # ingest while a day of 1M logs turns cold, about 1 minute
 ```

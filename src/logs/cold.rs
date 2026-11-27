@@ -2,9 +2,6 @@
 //! per day and project, searched by the same queries as the day indexes.
 //! See "Cold tier" in docs/design.md.
 
-#[doc(hidden)]
-#[path = "cold_bench.rs"]
-pub mod bench;
 #[path = "cold_block.rs"]
 mod block;
 #[path = "cold_convert.rs"]
@@ -13,5 +10,42 @@ mod convert;
 mod file;
 #[path = "cold_format.rs"]
 mod format;
+#[path = "cold_layout.rs"]
+mod layout;
 #[path = "cold_query.rs"]
 mod query;
+#[path = "cold_retention.rs"]
+mod retention;
+#[path = "cold_turn.rs"]
+mod turn;
+pub(super) use turn::Cold;
+#[path = "cold_search.rs"]
+mod search;
+pub use search::{BUDGET, ColdScan};
+#[path = "cold_note.rs"]
+mod note;
+pub use layout::DIR;
+
+/// Whether `name`, in a cold day directory, is a finished segment: not
+/// one being written, `.N.tmp`, nor anything else.
+pub fn segment_name(name: &str) -> bool {
+    layout::seq_of(name).is_some()
+}
+pub(super) use layout::segments as cold_segments;
+pub use note::ColdNote;
+pub(super) use search::{CHANGED, Parts, Scan, days};
+#[doc(hidden)]
+#[path = "cold_bench.rs"]
+pub mod bench;
+
+/// The days with a segment, oldest first. A directory a cut emptied, or
+/// one with only a segment being written, holds no log of its own.
+pub(super) fn cold_days(root: &std::path::Path) -> anyhow::Result<Vec<jiff::civil::Date>> {
+    let mut kept = Vec::new();
+    for day in layout::days(root)? {
+        if !layout::segments(root, day)?.is_empty() {
+            kept.push(day);
+        }
+    }
+    Ok(kept)
+}

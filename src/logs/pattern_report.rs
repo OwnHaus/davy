@@ -1,7 +1,8 @@
 //! The top log patterns of a window, from the counters in [`super::tally`].
 
 use super::{
-    day_dirs::{self, Entry},
+    cold::{self, Parts},
+    day_dirs, retrying,
     tally::{self, DayTally, Levels, level_index},
 };
 use crate::{
@@ -100,23 +101,17 @@ struct Sum {
 }
 
 /// The `q.limit` patterns with the most bytes from `q.since` to `q.until`.
+/// A day that turns cold while it is read starts the report over, once,
+/// as it does a search.
 pub fn top_patterns(root: &Path, q: &PatternQuery) -> Result<PatternReport> {
+    retrying(|| top_patterns_once(root, q))
+}
+
+fn top_patterns_once(root: &Path, q: &PatternQuery) -> Result<PatternReport> {
     let (first, last) = (day_of(q.since), day_of(q.until));
     // A symlink named like a day is not one, so a report reads no counters
     // from outside the root.
-    let day = |e: &std::fs::DirEntry| match day_dirs::entry(e) {
-        Entry::Day(day) => Some(day),
-        Entry::Stray(_) | Entry::Other => None,
-    };
-    let mut days: Vec<Date> = match std::fs::read_dir(root) {
-        Ok(entries) => entries
-            .filter_map(|e| day(&e.ok()?))
-            .filter(|d| (first..=last).contains(d))
-            .collect(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(e.into()),
-    };
-    days.sort_unstable_by(|a, b| b.cmp(a));
+    let days = cold::days(root, q.since, q.until)?;
     let live = tally::live(root);
     let project = q.project.map(i64::cast_unsigned);
     let (mut sums, mut unread, mut restarted) = (HashMap::new(), Vec::new(), Vec::new());
@@ -128,30 +123,49 @@ pub fn top_patterns(root: &Path, q: &PatternQuery) -> Result<PatternReport> {
             break;
         }
         from = day;
-        if let Some(live) = &live {
+        let Ok(parts) = Parts::of(root, day) else {
+            unread.push(day.to_string());
+            continue;
+        };
+        let held = live.as_ref().and_then(|live| {
             let held = live.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(tally) = held.get(&day) {
-                add(&mut sums, &mut merged, tally, q);
-                if tally.restarted(project) {
-                    restarted.push(day.to_string());
+            let tally = held.get(&day).filter(|_| parts.hot)?;
+            add(&mut sums, &mut merged, tally, q);
+            Some(tally.restarted(project))
+        });
+        if held == Some(true) {
+            restarted.push(day.to_string());
+        }
+        let hot = root.join(day.to_string());
+        let mut dirs = parts.segment_dirs(root);
+        if held.is_none() && parts.hot && day_dirs::real_dir(&hot).unwrap_or(false) {
+            dirs.insert(0, hot);
+        }
+        // A day that turned cold has its counters in each segment, and
+        // late logs in the hot day: their sum counts the day.
+        for dir in dirs {
+            match DayTally::load(&dir, project) {
+                Ok((tally, failed)) => {
+                    add(&mut sums, &mut merged, &tally, q);
+                    if !failed.is_empty() {
+                        unread.push(day.to_string());
+                    }
+                    if tally.restarted(project) {
+                        restarted.push(day.to_string());
+                    }
                 }
-                continue;
+                Err(_) => unread.push(day.to_string()),
             }
         }
-        let dir = root.join(day.to_string());
-        match DayTally::load(&dir, project) {
-            Ok((tally, failed)) => {
-                add(&mut sums, &mut merged, &tally, q);
-                if !failed.is_empty() {
-                    unread.push(day.to_string());
-                }
-                if tally.restarted(project) {
-                    restarted.push(day.to_string());
-                }
+        if let Err(e) = parts.unchanged(root) {
+            if format!("{e:#}").contains(cold::CHANGED) {
+                return Err(e);
             }
-            Err(_) => unread.push(day.to_string()),
+            unread.push(day.to_string());
         }
     }
+    unread.dedup();
+    restarted.dedup();
     let mut report = report(sums, if truncated { from } else { first }, last, q.limit);
     report.unread = unread;
     report.restarted = restarted;

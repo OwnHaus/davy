@@ -68,7 +68,7 @@ fn names(dir: &Path) -> Result<Vec<String>> {
 
 /// The projects with counters in `dir`, and those whose file was set
 /// aside, see [`set_aside`].
-pub(super) fn projects(dir: &Path) -> Result<(Vec<u64>, Vec<u64>)> {
+pub(in crate::logs::store) fn projects(dir: &Path) -> Result<(Vec<u64>, Vec<u64>)> {
     let (mut projects, mut aside) = (Vec::new(), Vec::new());
     for file in names(dir)? {
         match project_of(&file) {
@@ -103,7 +103,7 @@ pub(super) fn damaged(e: &anyhow::Error) -> bool {
 /// The counters of `project` in `dir`, if it has any. A file past the
 /// bounds the writer keeps is an error, so a damaged or foreign file
 /// cannot make the writer or a report hold more than they would.
-pub(super) fn load(dir: &Path, project: u64) -> Result<Option<ProjectDay>> {
+pub(in crate::logs::store) fn load(dir: &Path, project: u64) -> Result<Option<ProjectDay>> {
     let path = dir.join(name(project));
     let text = match read_capped(&path) {
         Ok(Some(text)) => text,
@@ -207,7 +207,7 @@ pub(super) fn set_aside(dir: &Path, project: u64) -> Result<PathBuf> {
 }
 
 /// The counters of `day` as the bytes of its file.
-pub(super) fn encode(day: &ProjectDay) -> Result<Vec<u8>> {
+pub(in crate::logs::store) fn encode(day: &ProjectDay) -> Result<Vec<u8>> {
     let out = Out {
         version: VERSION,
         patterns: &day.patterns,
@@ -224,7 +224,7 @@ pub(super) fn save(dir: &Path, project: u64, bytes: &[u8]) -> Result<()> {
 /// temporary copies a crash left among them. A file already gone is fine,
 /// so the cut can run again until it holds. A file that cannot be removed
 /// does not keep the others, and its error is returned.
-pub(super) fn remove(dir: &Path, cut: &Cut) -> Result<()> {
+pub(in crate::logs::store) fn remove(dir: &Path, cut: &Cut) -> Result<()> {
     let mut first = None;
     for file in names(dir)? {
         let Some((project, _)) = project_of(&file) else {

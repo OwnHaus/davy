@@ -1,9 +1,13 @@
 //! Counts of the logs a query matches over time, for the histogram above
 //! the log list.
 
-use super::{DAY_NS, LogQuery, days, retrying, schema};
+use super::{
+    DAY_NS, LogQuery,
+    cold::{self, ColdScan, Parts, Scan},
+    days, retrying, schema,
+};
 use anyhow::Result;
-use std::path::Path;
+use std::{path::Path, time::Duration};
 use tantivy::{
     DocId, Score, SegmentReader,
     collector::{Collector, SegmentCollector},
@@ -60,6 +64,8 @@ pub struct Histogram {
     pub from: i64,
     pub step: i64,
     pub counts: Vec<u64>,
+    /// What it read of the cold tier, none if it read no cold file.
+    pub cold: Option<ColdScan>,
 }
 
 /// The first bucket's start and the narrowest step of [`STEPS`] that covers
@@ -81,10 +87,22 @@ fn buckets_for(since: i64, until: i64) -> (i64, i64) {
 /// What `q` matches from `q.since` to `q.until` in round buckets, at most
 /// [`MAX_BUCKETS`]. `q.limit` does not apply.
 pub fn histogram(root: &Path, q: &LogQuery) -> Result<Histogram> {
-    retrying(|| histogram_once(root, q))
+    histogram_for(root, q, cold::BUDGET)
 }
 
-fn histogram_once(root: &Path, q: &LogQuery) -> Result<Histogram> {
+/// [`histogram`], reading cold files for `budget` at most.
+pub fn histogram_for(root: &Path, q: &LogQuery, budget: Duration) -> Result<Histogram> {
+    retrying(|| histogram_once(root, q, budget))
+}
+
+/// [`histogram`] with no time budget, so a test that compares two counts
+/// never compares a count the budget cut.
+#[cfg(test)]
+pub fn histogram_all(root: &Path, q: &LogQuery) -> Result<Histogram> {
+    histogram_for(root, q, Duration::MAX)
+}
+
+fn histogram_once(root: &Path, q: &LogQuery, budget: Duration) -> Result<Histogram> {
     anyhow::ensure!(q.since <= q.until, "the histogram starts after it ends");
     let (from, step) = buckets_for(q.since, q.until);
     let buckets = Buckets {
@@ -94,12 +112,27 @@ fn histogram_once(root: &Path, q: &LogQuery) -> Result<Histogram> {
     };
     let f = schema().1;
     let mut counts = vec![0; buckets.len];
-    for day in days(root, q.since, q.until)? {
-        let day = day?;
-        let part = day.searcher.search(&day.matching(&f, q)?, &buckets)?;
+    let mut scan = Scan::new(q, budget);
+    for day in cold::days(root, q.since, q.until)? {
+        if scan.out_of_time() {
+            break;
+        }
+        let parts = Parts::of(root, day)?;
+        let mut part = vec![0; buckets.len];
+        if let Some(d) = parts.hot.then(|| days::one(root, day)).flatten() {
+            let d = d?;
+            part = d.searcher.search(&d.matching(&f, q)?, &buckets)?;
+        }
+        scan.count(root, &parts, (from, step), &mut part)?;
+        parts.unchanged(root)?;
         counts.iter_mut().zip(part).for_each(|(c, n)| *c += n);
     }
-    Ok(Histogram { from, step, counts })
+    Ok(Histogram {
+        from,
+        step,
+        counts,
+        cold: scan.finish(),
+    })
 }
 
 /// Counts the matching logs of each bucket from the `ts` fast field, in
@@ -188,6 +221,9 @@ pub struct LogCounts {
     pub step: String,
     /// The start of each bucket that has logs, and how many, oldest first.
     pub buckets: Vec<(String, u64)>,
+    /// What the count read of the cold tier, absent if it read none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cold: Option<cold::ColdNote>,
 }
 
 impl From<Histogram> for LogCounts {
@@ -208,7 +244,7 @@ impl From<Histogram> for LogCounts {
             );
         let mut start = h.from;
         let mut buckets = Vec::new();
-        for n in h.counts {
+        for &n in &h.counts {
             if n > 0 {
                 buckets.push((crate::time::rfc3339(start), n));
             }
@@ -218,6 +254,7 @@ impl From<Histogram> for LogCounts {
             total: buckets.iter().map(|(_, n)| n).sum(),
             step,
             buckets,
+            cold: h.cold.as_ref().map(cold::ColdNote::from),
         }
     }
 }

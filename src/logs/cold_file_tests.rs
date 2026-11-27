@@ -276,3 +276,35 @@ fn a_block_with_a_row_outside_its_header_is_refused() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn a_file_is_of_the_day_and_project_it_says_and_its_times_lie_in_it() {
+    let dir = scratch("cold-of-day");
+    let day: jiff::civil::Date = "2026-11-20".parse().unwrap();
+    let path = dir.join("day.dlc");
+    std::fs::create_dir_all(&dir).unwrap();
+    let params = Params {
+        level: 3,
+        block_bytes: 1 << 20,
+        dict: None,
+    };
+    let mut w = Writer::create(&path, params).unwrap();
+    for i in 0..5 {
+        let at = crate::time::midnight(day) + i;
+        w.push(&Row { ts: at, ..row(i) }).unwrap();
+    }
+    w.finish(meta()).unwrap();
+    let f = ColdFile::open(&path).unwrap();
+    f.belongs(day, 3).unwrap();
+    let moved = f.belongs(day.tomorrow().unwrap(), 3).unwrap_err();
+    assert_eq!(moved.to_string(), "a file of day 20261120 under 2026-11-21");
+    let renamed = f.belongs(day, 4).unwrap_err();
+    assert_eq!(renamed.to_string(), "a file of project 3 under project 4");
+    // Its meta says the day, but its rows are of 1970.
+    let early = ColdFile::open(&write(&dir, 5, 1 << 20, None)).unwrap();
+    assert_eq!(
+        early.belongs(day, 3).unwrap_err().to_string(),
+        "the file's times lie outside 2026-11-20"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -6,7 +6,6 @@
 //! tantivy replaces on every commit.
 
 use super::day_dirs::{self, Entry};
-use crate::time::day_of;
 use anyhow::{Context, Result};
 use jiff::civil::Date;
 use std::{
@@ -72,15 +71,10 @@ fn cache() -> std::sync::MutexGuard<'static, Cache> {
     CACHE.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The searcher of each day index from `since` to `until`, newest first.
-/// A day is opened only when the iterator reaches it.
-pub(super) fn days(
-    root: &Path,
-    since: i64,
-    until: i64,
-) -> Result<impl Iterator<Item = Result<Day>>> {
+/// The hot days of the log root, oldest first. A stray is not one: see
+/// `day_dirs`.
+pub(super) fn list(root: &Path) -> Result<Vec<Date>> {
     let mut all: Vec<Date> = match std::fs::read_dir(root) {
-        // A stray is not searched: see `day_dirs`.
         Ok(entries) => entries
             .filter_map(|e| match day_dirs::entry(&e.ok()?) {
                 Entry::Day(day) => Some(day),
@@ -90,20 +84,25 @@ pub(super) fn days(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(e.into()),
     };
-    all.sort_unstable_by(|a, b| b.cmp(a));
+    all.sort_unstable();
+    Ok(all)
+}
+
+/// The hot days of the log root, oldest first, closing the open indexes
+/// of days no longer there.
+pub(super) fn current(root: &Path) -> Result<Vec<Date>> {
+    let all = list(root)?;
     cache()
         .days
-        .retain(|(r, d), _| r != root || all.binary_search_by(|x| d.cmp(x)).is_ok());
-    let (first, last) = (day_of(since), day_of(until));
-    let root = root.to_owned();
-    Ok(all
-        .into_iter()
-        .filter(move |d| (first..=last).contains(d))
-        .filter_map(move |day| {
-            let dir = root.join(day.to_string());
-            let stamp = Stamp::of(&dir)?;
-            Some(open(&root, day, &dir, stamp))
-        }))
+        .retain(|(r, d), _| r != root || all.binary_search(d).is_ok());
+    Ok(all)
+}
+
+/// The searcher of the hot day `day`, none when it has no index.
+pub(super) fn one(root: &Path, day: Date) -> Option<Result<Day>> {
+    let dir = root.join(day.to_string());
+    let stamp = Stamp::of(&dir)?;
+    Some(open(root, day, &dir, stamp))
 }
 
 /// Drops the open index of a day retention is about to delete, so its

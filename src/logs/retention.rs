@@ -18,9 +18,11 @@
 //! retention, or a log was written to it. A pass that has deleted for
 //! longer than its budget stops, and the next one goes on, so writes wait
 //! at most about one day's merge.
+//!
+//! Cold days, kept as files of their own, are cut by `cold_retention`.
 
 use super::{
-    DAY_NS, Fields, State, WRITER_HEAP,
+    DAY_NS, Fields, State, WRITER_HEAP, cold,
     day_dirs::{self, Entry, Stray, real_dir},
     days, parse_day,
 };
@@ -48,7 +50,7 @@ use tantivy::{
 /// days of their own, and the lock a change of that takes.
 pub struct Overrides {
     read: Box<dyn FnMut() -> Result<HashMap<u64, u32>> + Send>,
-    lock: Lock,
+    pub(super) lock: Lock,
 }
 
 impl Overrides {
@@ -92,7 +94,7 @@ impl Policy {
     }
 
     /// What `day` holds that is past its project's retention at `now`.
-    fn cut(&self, day: Date, now: i64) -> Cut {
+    pub(super) fn cut(&self, day: Date, now: i64) -> Cut {
         let expired = |days: u32| day < day_of(now - DAY_NS * i64::from(days));
         let projects = |gone: bool| {
             let p = self
@@ -152,7 +154,7 @@ enum Deleted {
 
 impl State {
     /// Reads the projects' own settings into the policy.
-    fn refresh(&mut self) -> Result<()> {
+    pub(super) fn refresh(&mut self) -> Result<()> {
         let projects = (self.overrides.read)().context("reading the retention settings")?;
         self.policy = self.policy.with_projects(projects);
         Ok(())
@@ -174,6 +176,7 @@ impl State {
         self.swept.retain(|day, _| found.contains(day));
         self.marked.retain(|day, _| found.contains(day));
         self.uncut.retain(|day, _| found.contains(day));
+        self.cold_retention(now)?;
         for day in found {
             if let Err(e) = self.recut(day) {
                 report(day, &e);
@@ -215,6 +218,14 @@ impl State {
                 }
             }
         }
+        // A cold day keeps its logs in the cold directory.
+        match cold::cold_days(&self.root) {
+            Ok(days) => present.extend(days),
+            Err(e) => {
+                unread = true;
+                report_entry(&e);
+            }
+        }
         // A day with neither a directory nor a stray in its place lost its
         // logs, whatever the settings say. An entry that could not be read
         // may be such a day, so its listing marks nothing.
@@ -228,7 +239,7 @@ impl State {
     }
 
     /// Whether `cut` would delete from `day` what was not deleted before.
-    fn needs(&self, day: Date, cut: &Cut) -> bool {
+    pub(super) fn needs(&self, day: Date, cut: &Cut) -> bool {
         match cut {
             Cut::Only(gone) if gone.is_empty() => false,
             _ => self.swept.get(&day) != Some(cut),
@@ -315,7 +326,7 @@ impl State {
                 index,
                 writer,
                 reader,
-            }) => (self.compact(day, &index, *writer, &reader), true),
+            }) => (self.compact(day, &cut, &index, *writer, &reader), true),
         };
         Ok(match (kept, counted) {
             (Err(e), _) | (Ok(true), Err(e)) => Err(e),
@@ -333,8 +344,13 @@ impl State {
     /// left to mark that still holds deleted logs, from a pass that stopped
     /// before its merge, is handed on to be merged.
     fn delete(&mut self, day: Date, cut: &Cut) -> Result<Deleted> {
+        // A hot day a failure left half cold goes, unmarked: its logs are
+        // in a segment, which the cold pass cuts.
+        if self.unseal(day)? {
+            return Ok(Deleted::Day);
+        }
         if matches!(cut, Cut::AllBut(kept) if kept.is_empty()) {
-            self.trash(day)?;
+            self.trash(day, cut)?;
             return Ok(Deleted::Day);
         }
         let dir = self.root.join(day.to_string());
@@ -370,6 +386,7 @@ impl State {
     fn compact(
         &mut self,
         day: Date,
+        cut: &Cut,
         index: &Index,
         mut writer: IndexWriter,
         reader: &IndexReader,
@@ -388,7 +405,7 @@ impl State {
         if reader.searcher().num_docs() > 0 {
             return Ok(true);
         }
-        self.trash(day).map(|()| false)
+        self.trash(day, cut).map(|()| false)
     }
 
     /// Removes what a crash left in `.trash` between renaming a day there
@@ -419,9 +436,9 @@ impl State {
         }
     }
 
-    /// Deletes the whole of `day`: renamed into `.trash` first, so a search
-    /// sees all of it or none.
-    fn trash(&mut self, day: Date) -> Result<()> {
+    /// Deletes the whole of hot `day`, emptied by `cut`: renamed into
+    /// `.trash` first, so a search sees all of it or none.
+    fn trash(&mut self, day: Date, cut: &Cut) -> Result<()> {
         self.drop_tally(day);
         self.close(day)?;
         self.swept.remove(&day);
@@ -434,8 +451,16 @@ impl State {
         anyhow::ensure!(real_dir(&dir)?, "{} is gone", dir.display());
         let target = trash.join(format!("{day}-{}", now_ns()));
         std::fs::rename(&dir, &target)?;
-        // Searches no longer see the day, so its logs are gone.
-        self.mark_gone(day);
+        // Searches no longer see the hot day. When segments hold more of
+        // the day, only what the cut took is gone, and marked once.
+        // A day whose segments cannot be listed is taken to have some.
+        let cold = !cold::cold_segments(&self.root, day).is_ok_and(|s| s.is_empty());
+        if !cold {
+            self.mark_gone(day);
+        } else if self.marked.get(&day) != Some(cut) {
+            self.mark_cut(day, cut);
+            self.marked.insert(day, cut.clone());
+        }
         std::fs::remove_dir_all(&target)?;
         Ok(())
     }
