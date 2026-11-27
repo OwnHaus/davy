@@ -15,9 +15,11 @@
     },
     {
       "id": "scoped-tokens",
-      "title": "Scoped API tokens",
-      "what": "A token can be limited to some projects and to reading, so an agent gets only the access it needs.",
-      "status": "next"
+      "title": "Agent tokens with a level",
+      "what": "Each agent gets its own token with a level, read, triage or full, and only a person unlocks a change that deletes data.",
+      "status": "shipped",
+      "version": "unreleased",
+      "date": "2026-11-28"
     },
     {
       "id": "audit-log",

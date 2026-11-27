@@ -28,9 +28,20 @@ pub fn read(name: &str, env: impl Fn(&str) -> Option<String>) -> anyhow::Result<
     }
 }
 
-/// Reads `DAVY_TOKEN` or `DAVY_TOKEN_FILE` and refuses a short token.
+/// Reads `DAVY_TOKEN` or `DAVY_TOKEN_FILE` and refuses a short token or
+/// an agent token's secret. The admin check runs before the agent tokens,
+/// so an agent token taken as the admin token would reach every tool.
 pub fn admin_token(env: impl Fn(&str) -> Option<String>) -> anyhow::Result<Option<String>> {
     let token = read("DAVY_TOKEN", env)?;
+    if token
+        .as_deref()
+        .is_some_and(|t| t.starts_with(crate::tokens::PREFIX))
+    {
+        bail!(
+            "the admin token starts with {}, so it is an agent token's secret: an agent token goes in the environment the agent's MCP client starts from, never in that of davy serve. Give the server its own admin token, `davy setup` writes one to DATA/token",
+            crate::tokens::PREFIX
+        );
+    }
     if let Some(chars) = token.as_deref().and_then(too_short) {
         bail!(
             "the admin token has {chars} characters and needs {MIN_TOKEN_CHARS}, `davy setup` writes one to DATA/token"
@@ -120,5 +131,20 @@ mod tests {
         let path = file(&format!("{ok}\n"));
         let found = admin_token(env(&[("DAVY_TOKEN_FILE", path.to_str().unwrap())])).unwrap();
         assert_eq!(found.as_deref(), Some(ok.as_str()));
+    }
+
+    #[test]
+    fn an_agent_token_is_refused_as_the_admin_token() {
+        let agent = format!("{}{}", crate::tokens::PREFIX, "a".repeat(64));
+        let err = admin_token(env(&[("DAVY_TOKEN", &agent)])).unwrap_err();
+        assert!(
+            err.to_string().starts_with(
+                "the admin token starts with davy_agent_, so it is an agent token's secret"
+            ),
+            "{err}"
+        );
+        let path = file(&agent);
+        let from_file = admin_token(env(&[("DAVY_TOKEN_FILE", path.to_str().unwrap())]));
+        assert!(from_file.is_err());
     }
 }

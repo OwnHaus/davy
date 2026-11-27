@@ -1,4 +1,5 @@
-//! The admin access token. It guards `/mcp` and the source map upload.
+//! The admin access token. It guards the source map upload and the scrub
+//! settings, and with the agent tokens of src/tokens.rs, `/mcp`.
 
 use axum::{
     extract::{Request, State},
@@ -18,7 +19,7 @@ impl Token {
     }
 
     /// `blake3::Hash` compares in constant time.
-    fn admits(&self, presented: &str) -> bool {
+    pub(crate) fn admits(&self, presented: &str) -> bool {
         blake3::hash(presented.as_bytes()) == self.0
     }
 }

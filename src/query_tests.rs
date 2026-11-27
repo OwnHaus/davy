@@ -135,6 +135,35 @@ fn credential_columns_read_as_null() {
 }
 
 #[test]
+fn agent_token_hashes_read_as_null() {
+    let (data, c) = store_with_one_event();
+    let name = crate::tokens::Name::parse("ci").unwrap();
+    crate::tokens::create(
+        &store::open(&data).unwrap(),
+        &name,
+        crate::access::Level::Triage,
+        7,
+    )
+    .unwrap()
+    .unwrap();
+    let r = run(
+        &c,
+        "SELECT name, level, hash, length(hash), created_at FROM agent_tokens",
+    )
+    .unwrap();
+    assert_eq!(
+        r.rows,
+        [vec![
+            json!("ci"),
+            json!("triage"),
+            Value::Null,
+            Value::Null,
+            json!(7)
+        ]]
+    );
+}
+
+#[test]
 fn password_session_and_invite_hashes_read_as_null() {
     use crate::accounts::{Email, Secret, store as accounts};
     let (data, _) = store_with_one_event();
@@ -301,9 +330,10 @@ fn reading_a_database_of_an_older_davy_asks_for_an_upgrade_and_leaves_it() {
     let c = store::open(&data).unwrap();
     // A store as version 17 left it, before usage_daily, latest_payloads,
     // log_days, the Vercel drain secret, the mark of Davy's own project and
-    // the savings and drop rule tables.
+    // the savings, drop rule, quota and agent token tables.
     c.execute_batch(&format!(
-        "DROP TABLE latest_payloads; {} {} {} {} {} {} {}",
+        "DROP TABLE latest_payloads; {} {} {} {} {} {} {} {}",
+        crate::tokens::UNDO,
         crate::quota::UNDO,
         crate::drops::UNDO,
         crate::usage::UNDO,
@@ -313,7 +343,7 @@ fn reading_a_database_of_an_older_davy_asks_for_an_upgrade_and_leaves_it() {
         crate::vercel::UNDO
     ))
     .unwrap();
-    let older = store::SCHEMA_VERSION - 8;
+    let older = store::SCHEMA_VERSION - 9;
     c.pragma_update(None, "user_version", older).unwrap();
     let err = open(&data).unwrap_err();
     assert_eq!(

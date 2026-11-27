@@ -24,15 +24,15 @@ async fn server(token: Option<&str>) -> Url {
         let data = scratch("doctor");
         crate::store::open(&data).unwrap();
         let (writes, _) = crossbeam_channel::bounded(1);
-        let public = Url::parse("http://127.0.0.1/").unwrap();
-        app = app.merge(crate::mcp::router(
+        let mcp = crate::mcp::router(
             data,
             writes,
-            Token::new(t),
-            &public,
+            Some(Token::new(t)),
+            &Url::parse("http://127.0.0.1/").unwrap(),
             retention::Defaults::default(),
             usage::Shared::default(),
-        ));
+        );
+        app = app.merge(mcp.unwrap());
     }
     listen(app).await
 }
@@ -199,7 +199,7 @@ async fn a_short_token_fails_and_the_server_refuses_it() {
         &not_ok(
             "mcp",
             Status::Fail,
-            format!("{url}mcp refuses the token in {d}/token, so the server runs with another one"),
+            format!("{url}mcp refuses the token in {d}/token, so the server has another or none"),
             format!("restart the server, it reads {d}/token when it starts")
         )
     );

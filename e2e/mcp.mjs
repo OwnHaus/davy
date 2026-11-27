@@ -10,9 +10,10 @@ const client = new Client({ name: 'davy-e2e', version: '1.0.0' })
 await client.connect(transport)
 
 const { tools } = await client.listTools()
-// No tool discards an issue, shortens a retention or makes a drop rule
-// live: the savings view and the drop tools only show the command for a
-// person to run.
+// The admin token reaches no tool that discards an issue, shortens a
+// retention or makes a drop rule live: the savings view and the drop tools
+// only show the command for a person to run. drop_rule_live is for an agent
+// token a person unlocked, see tokens.mjs.
 assert.deepEqual(tools.map(t => t.name).sort(), ['connect_project', 'count_logs', 'drop_rule_remove', 'drop_rule_shadow', 'drop_rules', 'issue_context', 'log_patterns', 'mark_fixed', 'project_status', 'release_health', 'schema', 'search_logs', 'set_retention', 'sql', 'submit_feedback', 'usage'])
 
 async function call(name, args) {

@@ -309,13 +309,20 @@ impl Setting {
 }
 
 /// What to change for one project. A setting left out stays as it is.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+/// The web UI sends it, and it is the arguments of the MCP tool
+/// `set_retention`, so the check of the call, the writer and the ledger
+/// read the same fields.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 #[cfg_attr(test, derive(ts_rs::TS), ts(rename = "RetentionChange"))]
 #[serde(deny_unknown_fields)]
 pub struct Change {
+    /// Project slug.
     pub project: String,
+    /// Days of logs to keep, 1 to 36500, or "default" for the server's. Leave out to keep it as it is.
     #[cfg_attr(test, ts(optional))]
     pub logs_days: Option<Setting>,
+    /// Days of errors to keep, by when Davy received them: events, their issues and user feedback. 1 to 36500, or "default". Leave out to keep it as it is.
     #[cfg_attr(test, ts(optional))]
     pub errors_days: Option<Setting>,
 }
@@ -442,6 +449,11 @@ pub fn one(
 pub enum By {
     Person,
     Agent(Defaults),
+    /// An agent whose token a person unlocked for destructive changes: it
+    /// may shorten a retention or return one to the default, as a person
+    /// may, while the token stays unlocked, on any project but Davy's own.
+    /// Only an unlocked token makes the proof, see src/access.rs.
+    Unlocked(crate::access::Unlocked, Defaults),
 }
 
 /// Stores `change` and returns the project's new settings. The inner error
@@ -454,9 +466,7 @@ pub fn set(c: &Connection, change: &Change, by: By) -> Result<Result<Stored, Str
     let Some(before) = stored(c, &change.project)? else {
         return Ok(Err(unknown(&change.project)));
     };
-    if let By::Agent(defaults) = by
-        && let Some(why) = refused(change, before, defaults)
-    {
+    if let Some(why) = refusal(c, change, before, by)? {
         return Ok(Err(why));
     }
     let column = |s: Option<Setting>| -> (bool, Option<u32>) {
@@ -479,15 +489,43 @@ pub fn set(c: &Connection, change: &Change, by: By) -> Result<Result<Stored, Str
     Ok(Ok(after))
 }
 
+/// Why `by` may not make `change` to a project that keeps `before`, if
+/// it may not. A person may make any change. An agent may not delete, and
+/// an unlocked one may, unless the project is Davy's own, whose warnings
+/// and errors davy doctor reads, or the token was locked or revoked since
+/// the call was admitted.
+fn refusal(c: &Connection, change: &Change, before: Stored, by: By) -> Result<Option<String>> {
+    Ok(match by {
+        By::Person => None,
+        By::Agent(defaults) => refused(change, before, defaults),
+        By::Unlocked(proof, defaults) => {
+            if refused(change, before, defaults).is_none() {
+                None
+            } else if crate::self_report::own::find(c)?
+                .is_some_and(|own| own.slug == change.project)
+            {
+                Some(format!(
+                    "project {:?} is Davy's own, whose warnings and errors davy doctor and project_status read: an agent never shortens its retention, a person can with `davy project retention`",
+                    change.project
+                ))
+            } else if !crate::tokens::still_unlocked(c, proof)? {
+                Some(crate::tokens::NO_LONGER_UNLOCKED.to_owned())
+            } else {
+                None
+            }
+        }
+    })
+}
+
 /// One line in the log for each stored change, so it shows who changed
 /// what.
 fn report(by: By, project: &str, now: Stored) {
     let shown =
         |d: Option<Days>| d.map_or("the default".to_owned(), |d| format!("{} days", d.get()));
-    let who = if by == By::Person {
-        "a person"
-    } else {
-        "an agent"
+    let who = match by {
+        By::Person => "a person",
+        By::Agent(_) => "an agent",
+        By::Unlocked(..) => "an agent with destructive changes unlocked",
     };
     crate::self_report::info(
         "retention",
@@ -529,6 +567,14 @@ fn refused(change: &Change, before: Stored, defaults: Defaults) -> Option<String
             )
         })
     })
+}
+
+/// Why `change` would delete data or lose a floor a person set, when it
+/// would: the changes an agent makes only with destructive changes
+/// unlocked. `None` for a project that does not exist, which [`set`]
+/// refuses.
+pub fn destructive(c: &Connection, change: &Change, defaults: Defaults) -> Result<Option<String>> {
+    Ok(stored(c, &change.project)?.and_then(|before| refused(change, before, defaults)))
 }
 
 /// The refusal for a project that does not exist.

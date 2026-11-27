@@ -34,10 +34,11 @@ CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::se
 - `src/context.rs` gathers one issue with its compacted latest event, recent events, releases and nearby logs.
 - `src/accounts/` holds the people of a self-hosted Davy: e-mail, password and secret rules and the `Accounts` trait the UI asks for the person (`mod.rs`), the user, invite and session rows and the changes the writer applies to them (`store.rs`), the per-e-mail login backoff (`backoff.rs`) and `davy user` (`cli.rs`).
 - `src/ui/` is the web UI boundary: the routes, the `Host` and `Origin` guard and the page headers (`mod.rs`), login, logout, welcome and a person's own password and sessions (`account.rs`), the cookie and the SQLite `Accounts` (`session.rs`), and the UI build that `build.rs` embeds from `ui/dist/` (`assets.rs`).
-- `src/token.rs` holds the admin token and the middleware that requires it.
+- `src/token.rs` holds the admin token and the middleware that requires it for the scrub and upload routes.
+- `src/access.rs` is the one table of what each MCP tool needs, the levels `read`, `triage` and `full`, the grant a caller holds and the `Unlocked` proof a destructive change carries. `src/tokens.rs` keeps the agent tokens as hashes, with their level and unlock, and `davy token` (`tokens/cli.rs`). See "Agent tokens" in `design.md`.
 - `src/upload.rs` is the `sentry-cli` boundary: chunk upload and artifact bundle assembly behind the admin token.
 - `src/sourcemaps/` stores uploaded builds per debug ID (`mod.rs`), unpacks artifact bundles (`bundle.rs`) and rewrites minified frames in an event before it is parsed (`symbolicate.rs`, pure apart from the build lookup).
-- `src/mcp.rs` is the MCP boundary: allowed hosts behind the admin token, and the tools as thin calls into `query`, `context`, `logs::store::search` and the writer queue.
+- `src/mcp.rs` is the MCP boundary: allowed hosts, and the tools as thin calls into `query`, `context`, `logs::store::search` and the writer queue. `src/mcp_access.rs` admits the admin token or a live agent token, lists the tools the caller's grant reaches and refuses a call above it, asking `access::need`.
 - `src/monitor/` holds uptime monitors: what a monitor watches, its limits and the state machine a check result moves (`mod.rs`), the HTTP check and its scheduler task (`check.rs`), the monitor rows (`store.rs`), and cron check-ins from the Sentry SDKs: the item parser (`checkin.rs`), the schedule with its crontab and time zone (`schedule.rs`) and the writer's rules for a check-in (`checkin_store.rs`). The tables are created by `store.rs` migrations like every other table.
 - `src/alert/` holds alert channels: their kinds and signing secret (`mod.rs`), what a notice says and the body each channel kind gets (`notice.rs`, pure), the one message for issue notices that waited together (`digest.rs`, pure), the channel and outbox rows (`store.rs`), the SMTP sender of e-mail rows (`mail.rs`), and the notifier task that sends due rows and stores each result through the writer queue (`deliver.rs`). `store::insert` and `monitor::store` call `alert::store::notify` inside the writer's transaction.
 - `src/net.rs` holds what checks and deliveries share when they reach a URL a user typed: the client, the `Reach` it enforces (any address, or public ones only for the cloud), the User-Agent and the error text that never holds the URL.
@@ -54,20 +55,21 @@ CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::se
 
 ## Trust boundaries
 
-Six kinds of caller reach the server. Each route belongs to exactly one.
+Seven kinds of caller reach the server. Each route belongs to exactly one.
 
 | Caller | Credential | Routes | May do |
 |---|---|---|---|
 | SDK or log shipper | Project ingest key, public | `/api/{project}/envelope/`, `/api/{project}/store/`, `/`, `/v1/logs` | Write events and logs into the one project the key names, up to the project's daily quota and spike rate, past which `/store/` and the log routes answer `429` before they read the body, which they drain unread, and an envelope drops the items refused and takes the rest |
 | Vercel Log Drain | Project ingest key, public, in a custom `Authorization` header; plus `x-vercel-signature`, the HMAC of the body as sent under the drain secret, when the project has one. The secret guards this route only: the same key still writes through the SDK routes above | `/vercel/logs` | Write logs into the one project the key names, up to the project's daily quota and spike rate for logs, checked after the signature; past either the route answers `200` and drops the records, as Vercel turns off a drain that keeps failing |
 | Heartbeat sender, such as a cron job | Heartbeat token, secret, in the path | `/api/heartbeat/{token}`, `/api/heartbeat/{token}/fail` | Record a ping or a failure for the one monitor the token names |
-| Coding agent | Admin token, secret | `/mcp`, `/api/projects/{project}/scrub` | Read everything, mark issues fixed, set how long a project keeps its logs and errors, tighten project scrubbing |
+| Coding agent | Admin token, secret | `/mcp`, `/api/projects/{project}/scrub` | Read everything, mark issues fixed, keep a project's logs and errors longer, tighten project scrubbing |
+| Coding agent | Agent token, secret, `davy_agent_...` | `/mcp` | What its level reaches: `read` reads everything, `triage` also marks issues fixed and stages shadow drop rules, `full` also keeps data longer. With destructive changes a person unlocked, it also shortens retention and makes drop rules live |
 | `sentry-cli` | Admin token, secret | `/api/0/organizations/{org}/chunk-upload/`, `.../artifactbundle/assemble/` | Write source map builds |
 | Person in a browser | Session cookie `__Host-davy_session`, secret, from a login or a welcome link | `/ui/api/*` but login, logout and welcome | Read everything, change the status of issues, set how long a project keeps its logs and errors, change their own password, end their own sessions |
 
 The pages under `/ui/` and the login, logout and welcome routes need no credential. The admin token opens nothing under `/ui/`, and the session cookie opens nothing outside it. A UI write also needs `Content-Type: application/json` and the exact `Origin` of the public URL.
 
-The CLI is a seventh caller. `davy user add` prints the welcome link a person sets their password with. It runs on the host with file access to the data directory and needs no credential. The cloud service adds tenants above projects. A cloud feature must not let one tenant's key or token reach another tenant's data, so every query the cloud runs carries the tenant in its type, not in a string filter.
+The CLI is an eighth caller. `davy user add` prints the welcome link a person sets their password with, and `davy token add` the secret of an agent token, once. It runs on the host with file access to the data directory and needs no credential. The cloud service adds tenants above projects. A cloud feature must not let one tenant's key or token reach another tenant's data, so every query the cloud runs carries the tenant in its type, not in a string filter.
 
 ## Invariants
 

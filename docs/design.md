@@ -355,7 +355,7 @@ A coding agent should get from "there is an error" to a fix without a human copy
 ### Transport and auth
 
 - MCP over Streamable HTTP at `/mcp` inside `davy serve`, stateless, JSON responses (rmcp `legacy_session_mode = false`, `json_response = true`). In-process, so `mark_fixed` goes through the writer thread and log search never races segment cleanup. One port for ingest and agents. No stdio server: an agent on the same machine connects to `127.0.0.1`.
-- `DAVY_TOKEN=<secret> davy serve`, at least 32 characters. There is no command line flag, because arguments show up in `ps` and shell history. `/mcp` takes `Authorization: Bearer <secret>`. Without a configured token `/mcp` is not mounted and answers 404. A project's ingest key is never accepted on `/mcp`, because it ships inside browser bundles.
+- `DAVY_TOKEN=<secret> davy serve`, at least 32 characters. There is no command line flag, because arguments show up in `ps` and shell history. `/mcp` takes `Authorization: Bearer <secret>`, the admin token or an agent token of its own, whose level decides which tools it reaches (see [Agent tokens](#agent-tokens)). Without a configured admin token `/mcp` takes agent tokens alone, and answers `401` to anything else. A project's ingest key is never accepted on `/mcp`, because it ships inside browser bundles.
 - The token is compared as a blake3 hash, so the comparison takes the same time for every wrong token.
 - Allowed `Host` values are loopback and the host of `--public-url`, against DNS rebinding. A request with an `Origin` must come from loopback or the public URL, so another site's page gets `403` even before the token is checked.
 
@@ -370,11 +370,12 @@ A coding agent should get from "there is an error" to a fix without a human copy
 | `log_patterns` | `project?`, `since?`, `until?`, `level?`, `limit?` | The patterns with the most bytes, as "Log patterns" says: id, template, example, records, bytes, share, levels and services. `since` defaults to `24h`, `limit` to 20, at most 100. |
 | `connect_project` | `slug`, `sdk?` | Existing project DSN, SDK instructions and test command. New projects require local CLI access. |
 | `project_status` | `slug` | Event count, last event time (ms), issue count, last log time (ns), `retention`: the days of logs and errors the project keeps, and `davy`: Davy's own warnings, errors and crashes of the last 24 hours (see "Self-monitoring"). |
-| `set_retention` | `project`, `logs_days?`, `errors_days?` | What the project keeps now, as `retention` in `project_status`. A setting is 1 to 36,500 days or `"default"`, and may only keep data longer. |
+| `set_retention` | `project`, `logs_days?`, `errors_days?` | What the project keeps now, as `retention` in `project_status`. A setting is 1 to 36,500 days or `"default"`, and may only keep data longer, unless a person unlocked destructive changes for the token. |
 | `usage` | `project?`, `since?`, `what_if?`, `view?`, `top?` | What each project sent and when the disk fills: `disk`, `davy`, `growth_per_day` of all logs together, `longest_log_days` and `shortest_log_days`, `forecast`, `projects` with records and bytes accepted per signal over the window and per day and `logs_stored`, records and raw bytes of the logs stored by index day, and `logs_filtered`, those live drop rules dropped by day of receipt, and `limits`, the project's daily quotas against today's use, its spike rate and today's refusals, and `no_forecast` or `disk_error` when there is none. Sizes as `4.1 GB`. See "Usage and disk forecast". `view` `savings` answers with where logs and errors could take less instead, at most `top` entries of each kind; see "Savings". |
 | `drop_rules` | `project?` | `{rules, note}`: the drop rules in force, in the order the log writer tries them, as `davy drop list` shows them with sizes as strings, a shadow rule with `make_live`, the command a person runs to make it live. |
 | `drop_rule_shadow` | `project`, exactly one of `pattern`, `level`, `message`, then `service?`, `keep?` | `{rule, note}`: the shadow rule added, or the equal one the project has. No field makes it live. Refused on Davy's own project and for a level rule of warn or above. |
 | `drop_rule_remove` | `project`, `rule_id` | `{removed}`. Only a shadow rule an agent added; its counts go with it. |
+| `drop_rule_live` | `project`, `rule_id` | `{rule, note}`: the rule, live now and a person's. Only for a token a person unlocked for destructive changes, see [Agent tokens](#agent-tokens). |
 | `release_health` | `project?`, `since?` | Per release and environment, newest first, at most 50: `sessions`, `errored`, `crashed`, `abnormal`, `crash_free_sessions`, `users`, `crashed_users`, `crash_free_users`, `first_hour`, `last_hour`. `since` defaults to `7d`. |
 | `issue_context` | `issue_id` | The issue, its latest event made compact, its recent events and releases, and the logs around the latest event. |
 | `mark_fixed` | `issue_id`, `release?` | A sentence that says which release the fix is expected in. |
@@ -439,8 +440,8 @@ The same library functions back three commands, for agents that run shell comman
 
 - Unit tests with literal values: `on_event` for every row of the regression rule; `sql` returns exact rows, refuses a write, refuses two statements, cuts at 500 rows, decompresses with `payload_json`, and interrupts a runaway recursive query; compaction of the `sentry-node-10` error fixture gives the exact exception, frames and context lines.
 - A store test resolves an issue in a release and asserts that an event from an older release keeps it resolved and one from a newer release reopens it.
-- HTTP contract tests: `/mcp` is 401 without the token or with a wrong one and 403 for a `Host` or `Origin` it does not serve; with the right one `tools/list` and `tools/call` of `sql` and `mark_fixed` answer. Without a configured token `serve` does not merge the MCP router, so there is no route to test.
-- `e2e/run.sh` connects with the official MCP TypeScript client (`@modelcontextprotocol/sdk`) over Streamable HTTP with the bearer token, lists the sixteen tools, calls `issue_context` on an issue the Sentry SDKs created and asserts the exception type and an in-app frame, finds a log with `search_logs` and counts it with `count_logs`, finds its pattern with `log_patterns` and its lines by that pattern with `search_logs`, calls `mark_fixed` and reads the status back with `sql`, lengthens a project's retention with `set_retention` and sees a shorter one refused, and reads the counts of the e2e projects with `usage`.
+- HTTP contract tests: `/mcp` is 401 without the token or with a wrong one and 403 for a `Host` or `Origin` it does not serve; with the right one `tools/list` and `tools/call` of `sql` and `mark_fixed` answer. Without a configured admin token it is 401 to every bearer token but a live agent token.
+- `e2e/run.sh` connects with the official MCP TypeScript client (`@modelcontextprotocol/sdk`) over Streamable HTTP with the admin token, lists the sixteen tools it reaches, calls `issue_context` on an issue the Sentry SDKs created and asserts the exception type and an in-app frame, finds a log with `search_logs` and counts it with `count_logs`, finds its pattern with `log_patterns` and its lines by that pattern with `search_logs`, calls `mark_fixed` and reads the status back with `sql`, lengthens a project's retention with `set_retention` and sees a shorter one refused, and reads the counts of the e2e projects with `usage`.
 - `scripts/check` passes.
 
 ## Milestone 5: source maps
@@ -778,7 +779,7 @@ The cleanup pass surveyed the code at `7b4fabf` and found 28 items: duplicated c
 
 ## Milestone 9: web UI for one team
 
-The CLI and MCP serve agents and whoever lives in a terminal. A team also needs a place to see what broke, read a stack trace, search logs and check a monitor without a shell on the server. This milestone gives one team that place, inside the same binary. Roles, SSO and an audit log stay in the closed cloud (see "License and open core").
+The CLI and MCP serve agents and whoever lives in a terminal. A team also needs a place to see what broke, read a stack trace, search logs and check a monitor without a shell on the server. This milestone gives one team that place, inside the same binary. Roles and SSO stay in the closed cloud (see "License and open core"). Agent tokens and the ledger of what agents did came later, see [Agent tokens](#agent-tokens).
 
 A person in the UI reads everything, changes the status of issues and manages their own account. Everything that makes Davy reach a URL or decides who gets in stays on the host: monitors, channels, projects and users are created with the CLI. Self-hosted Davy reaches any address (`net::Reach::Any`), because only someone with a shell on the host could type a URL. A form that let every account type one would let every account make Davy fetch internal addresses.
 
@@ -967,7 +968,7 @@ npm is a supply chain of its own, and Davy is a security product. The rules:
 
 ### Not in this milestone
 
-Creating monitors, channels, projects and users from the UI, which needs roles and a public-only `Reach` for URLs typed in a browser. Dashboards and saved queries, alert rules beyond channels, traces, more than one team, roles, SSO, an audit log, translations, and a mobile layout beyond a readable single column.
+Creating monitors, channels, projects and users from the UI, which needs roles and a public-only `Reach` for URLs typed in a browser. Dashboards and saved queries, alert rules beyond channels, traces, more than one team, roles, SSO, translations, and a mobile layout beyond a readable single column.
 
 ### Done means
 
@@ -1431,7 +1432,7 @@ that are null before the first record. The event count and time come from
 the issues index, which holds `event_count` and `last_seen`, and count the
 events the project still keeps. Logs become visible after the log writer
 commits. The two tools brought the MCP tool count to ten, and
-`set_retention` to eleven, `log_patterns` to twelve and `usage` to thirteen, and `drop_rules`, `drop_rule_shadow` and `drop_rule_remove` (see [Drop rules](#drop-rules)) brought it to sixteen. `retention` in `project_status` shows the days
+`set_retention` to eleven, `log_patterns` to twelve and `usage` to thirteen, and `drop_rules`, `drop_rule_shadow` and `drop_rule_remove` (see [Drop rules](#drop-rules)) brought it to sixteen, and `drop_rule_live` (see [Agent tokens](#agent-tokens)) to seventeen, of which the admin token lists sixteen. `retention` in `project_status` shows the days
 of logs and errors in effect and the instant before which they are deleted. `scrub` shows the
 project's scrubbing settings.
 
@@ -1911,7 +1912,7 @@ A rule is added after the project's others. Making a rule live puts it after the
 
 ### Who may do what
 
-The risk of a rule is a rule that drops what someone needs. So only a person makes a rule that drops.
+The risk of a rule is a rule that drops what someone needs. So only a person makes a rule that drops, at the CLI, or by unlocking destructive changes for one agent token of level `full`, whose agent may then call `drop_rule_live` (see [Agent tokens](#agent-tokens)).
 
 - A person adds, lists, toggles and removes rules with `davy drop`, the only way to write a live rule or make a rule live:
   - `davy drop add (--pattern ID [--any-level] | --level LEVEL | --message TEXT) [--service NAME] [--keep N%] [--shadow] --data DATA SLUG` adds a rule, live unless `--shadow` is given, and prints it as JSON.
@@ -1926,8 +1927,8 @@ The risk of a rule is a rule that drops what someone needs. So only a person mak
   - `drop_rule_remove` removes one of the agent's shadow rules, and the counts it made with it.
   - Each answer carries `note`: a shadow rule drops nothing and counts from within 5 s, only a person makes it live, and an agent holds at most 10 per project, each for 14 days.
   - An agent cannot stage a rule on Davy's own project (see [Self-monitoring](#self-monitoring)), whose warnings and errors `davy doctor` and `project_status` read, nor a level rule at warn or above, which names warnings and errors. Each is refused with an error that says why and that a person can add it with `davy drop add`.
-  - The tools write through the store writer as `Job::Drop`, whose change is a shadow rule to add or one to remove. It has no change that makes a rule live, so the guarantee below is in the type, not in a check.
-- No MCP tool, route or ingest path writes a live rule or turns a rule live: `drops::add` refuses a live rule from an agent, and no agent path calls `drops::set_live`. A shadow rule's listing names the command a person runs to make it live, `davy drop live --data DATA ID` with the absolute data directory quoted for a POSIX shell, so it works from any directory. An agent's prompt can carry text someone else wrote, so it can propose a rule and count it, never enforce it.
+  - The tools write through the store writer as `Job::Drop`, whose change is a shadow rule to add, one to remove, or one to make live. The last carries `access::Unlocked`, which only a token a person unlocked yields, so the guarantee below is in the type, not in a check of each tool.
+- No route or ingest path writes a live rule or turns a rule live, and no MCP tool does for a token a person did not unlock: `drops::add` refuses a live rule from an agent, and the one agent path that calls `drops::set_live` needs the unlock. A shadow rule's listing names the command a person runs to make it live, `davy drop live --data DATA ID` with the absolute data directory quoted for a POSIX shell, so it works from any directory. An agent's prompt can carry text someone else wrote, so it can propose a rule and count it, never enforce it.
 - A list words each rule as `pattern 0000000abcde below warn` or `at any level`, `level debug and below`, `message contains "ok"` or `message like "ok*"`, then `service "api"` and `drop all` or `keep 5%`. A message and a service are quoted, with `"` and `\` escaped by a `\`, so a text cannot close its quotes and read as more of the rule. The project, a message and a service are printed with control characters and bidi marks as U+FFFD, so a rule's text cannot move the cursor or forge a line. The JSON `davy drop` prints and every MCP answer are written through `text::json`, which writes DEL, C1 controls and those marks as `\u` escapes.
 
 ### Bounds and cost
@@ -2044,3 +2045,73 @@ Agents search the last days most, and want old logs kept long and still searchab
 - Segments in object storage, fetched by byte range with the footer cached locally, and the same checks on what comes back.
 - Compaction of a day's segments into one, for days with many late logs.
 - Paging past the budget in the web UI: a time cursor at `unscanned_to` can repeat or skip logs where blocks overlap in time, so the page only says where it stopped.
+
+## Agent tokens
+
+An agent that reads errors and logs needs none of the rights of one that changes retention, and an agent's prompt can carry text someone else wrote. So each agent gets a token of its own with a level, the autonomy dial: what it may do without asking a person. The admin token keeps working as before.
+
+### Tokens
+
+- `davy token add NAME --level read|triage|full --data DATA` adds a token and prints, once, `{"token": ..., "secret": "davy_agent_..."}`. The secret is `davy_agent_` and 43 characters of base64url, 256 random bits; the prefix lets a person and a secret scanner tell it from the admin token. Only its blake3 hash is stored, so a copy of the database holds no secret.
+- A name is 1 to 64 of `a-z`, `0-9`, `.`, `_` and `-`, starting with a letter or a digit, so it reads the same in a shell, a log line and the web UI. A taken name is refused, also one revoked less than 180 days ago, so the ledger never names two tokens alike. At most 50 tokens are live at once.
+- `davy token list [--json] --data DATA` lists every token, live ones first, each group newest first: name, level, whether destructive changes are unlocked, the last call and the revocation. Never a secret or a hash. It opens the store read-only.
+- `davy token level NAME LEVEL`, `davy token unlock NAME`, `davy token lock NAME` and `davy token revoke NAME`, each with `--data DATA`, change a token and print it as JSON. They open the store without creating or upgrading it, as `davy drop live` does. A name no live token has is refused with `no token named "NAME", or it was revoked`.
+- A revoked token's next call answers `401`. Its row stays 180 days after the revocation, so the ledger names it, then the sweep deletes it.
+- `used_at` is written at most once a minute per token, through the writer, and skipped when its queue is full, so a busy agent costs one write a minute, not one per call.
+- An agent token goes where the admin token went: `DAVY_TOKEN` in the environment the agent's MCP client starts from, which the config `davy mcp-config` prints reads, or the bearer token of its MCP config. Never in the environment of `davy serve`: the server refuses a `DAVY_TOKEN`, `DAVY_TOKEN_FILE` or `DATA/token` that starts with `davy_agent_` and says where the token goes, so an agent's secret given to the wrong process stops the start instead of becoming the admin token. `davy mcp-config` itself is unchanged: `--show-token` prints the admin token, and a person who gives an agent its own token sets `DAVY_TOKEN` to it.
+- Migration 26 adds `agent_tokens(id, name, hash, level, unlocked_at, unlocked_by, created_at, used_at, revoked_at)`, with checks that `level` is `read`, `triage` or `full` and that only a `full` token is unlocked. The read-only `sql` tool reads `agent_tokens.hash` as NULL, like the other credential columns.
+
+### Levels
+
+Each level holds every right of the ones below it.
+
+- `read`: every tool that only reads.
+- `triage`: also the changes a person undoes in a click: resolve an issue, send feedback, stage or remove a shadow drop rule, which drops nothing.
+- `full`: also configuration that loses nothing: keep data longer.
+
+A destructive change deletes data or stops keeping it: a shorter retention, a return to a lower server default, and a live drop rule. No level makes one. A person unlocks destructive changes for one token of level `full`, on the Tokens page of the web UI or with `davy token unlock`, and the web UI shows the token as unlocked, by whom and since when. Lowering a token below `full` or revoking it locks it again. Only a person can unlock: no MCP tool changes a token.
+
+The admin token holds `full` and is never unlocked. It sits in every agent config made before agent tokens, so it keeps what it could do before and nothing more: a destructive change stays with a person at the CLI or in the web UI, or with an agent token a person unlocked.
+
+### Classification
+
+`access::need` in src/access.rs is the one table of what each tool needs, and mirrors this one. A test lists the router's tools and fails when a tool has no row.
+
+| Tool | Needs | Why |
+| --- | --- | --- |
+| `schema` | read | reads |
+| `sql` | read | one read-only statement |
+| `search_logs` | read | reads; the search is recorded for the savings view |
+| `count_logs` | read | reads; recorded like `search_logs` |
+| `log_patterns` | read | reads |
+| `connect_project` | read | reads an existing project; new projects need the CLI |
+| `project_status` | read | reads |
+| `usage` | read | reads |
+| `drop_rules` | read | reads |
+| `release_health` | read | reads |
+| `issue_context` | read | reads |
+| `mark_fixed` | triage | a person reopens the issue in a click, and a regression reopens it |
+| `submit_feedback` | triage | stores a note about Davy itself |
+| `drop_rule_shadow` | triage | counts, drops nothing, expires in 14 days |
+| `drop_rule_remove` | triage | removes the agent's own shadow rule |
+| `set_retention` | full, or full unlocked when it would delete | longer loses nothing; shorter deletes for good |
+| `drop_rule_live` | full unlocked | a live rule drops lines before they are stored |
+
+`set_retention` needs `full` with destructive changes unlocked when the change would delete data or lose a floor a person set: a setting below the days in effect, or `"default"` where the project keeps its own days. The server asks the stored settings before the call. Arguments the tool would refuse anyway keep the plain need, so the tool says what is wrong with them. The writer checks the same again when it applies the change, so two calls at once cannot slip past, and a cut that does not carry the unlock is refused there too.
+
+### Enforcement
+
+- `/mcp` admits a request whose bearer token is the admin token or a live agent token, and answers `401` with `WWW-Authenticate: Bearer` and the same text otherwise, so the answer never says which of the two a wrong token missed. An agent token is found by its hash in one indexed read on a blocking thread, so a slow disk holds up no other request, then the caller, its name and grant, rides in the request.
+- `tools/list` lists only the tools the caller's grant reaches, with `cacheScope: private` where the protocol has cache hints, as the list depends on the token.
+- A call above the grant is a tool error, not a protocol error, so the agent reads it: `TOOL needs level NEED, and the token "NAME" holds HELD. A person changes a token's level, and unlocks destructive changes, on the Tokens page of the web UI or with davy token.` A refused `set_retention` starts with why the change would delete, as before. For the admin token the last sentence says that it never makes a destructive change, and who does.
+- A tool the table has no row for is `tool not found`, whether or not the router has it.
+- A call that the grant reaches and that is destructive gets the proof `access::Unlocked`, which only `Caller::unlocked` makes, for an agent token a person unlocked, and which names that token. `set_retention` passes it to the writer as `By::Unlocked`, and `drop_rule_live` cannot be called without it: its writer job carries it. So no path makes a destructive change without passing the one check.
+- The proof is read at the start of the call, and the writer may run the change later, behind other jobs. So the writer reads the token's unlock again, in the transaction that makes the change, and refuses the change when a person locked or revoked the token meanwhile: `the token was locked or revoked while the call waited for the writer, so the change was not made`, and who unlocks it again.
+- `set_retention` with the proof refuses to shorten the retention of Davy's own project, as `drop_rule_live` refuses a rule on it: `davy doctor` and `project_status` read its warnings and errors. A person still can, with `davy project retention`.
+- `drop_rule_live` takes `project` and `rule_id` and makes a shadow rule of the project live, as `davy drop live --yes` does: the rule becomes a person's and never expires, as the person who unlocked the token answers for it. It refuses a rule on Davy's own project and a level rule at warn or above, as `drop_rule_shadow` does, so an unlocked agent cannot hide Davy's own warnings, and a rule that is live already, unknown or expired.
+
+### Not in this feature
+
+- Tokens limited to some projects. A token reaches every project, as the admin token does; see "Tenant scope in agent tools".
+- Expiry dates. A person revokes a token.
+- Rights beyond the MCP tools: an agent token opens no other route, such as the scrub settings or source map upload.

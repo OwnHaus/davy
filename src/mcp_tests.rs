@@ -1,4 +1,5 @@
 use super::*;
+use crate::retention::Setting;
 use axum::body::{Body, to_bytes};
 use axum::http::header;
 use serde_json::{Value, json};
@@ -27,11 +28,12 @@ fn server_with(usage: usage::Shared) -> Server {
         app: router(
             data,
             tx,
-            Token::new(SECRET),
+            Some(Token::new(SECRET)),
             &url::Url::parse("https://davy.example/").unwrap(),
             Defaults::default(),
             usage,
-        ),
+        )
+        .unwrap(),
         writes,
     }
 }
@@ -40,7 +42,10 @@ fn server_with(usage: usage::Shared) -> Server {
 fn next_job(writes: &crossbeam_channel::Receiver<store::Write>) -> store::Write {
     loop {
         let w = writes.recv().unwrap();
-        if !matches!(w.job, Job::First { .. } | Job::Search { .. }) {
+        if !matches!(
+            w.job,
+            Job::First { .. } | Job::Search { .. } | Job::Token(_)
+        ) {
             return w;
         }
     }
@@ -496,7 +501,8 @@ async fn set_retention_stores_the_change_and_shows_what_is_kept() {
     let data = s.data.clone();
     let writer = std::thread::spawn(move || {
         let c = store::open(&data).unwrap();
-        for _ in 0..3 {
+        // A shorter setting is refused before the writer, see below.
+        for _ in 0..2 {
             let w = next_job(&s.writes);
             let Job::SetRetention(change, by) = w.job else {
                 panic!("expected a retention job");
@@ -542,12 +548,15 @@ async fn set_retention_stores_the_change_and_shows_what_is_kept() {
         json!({"project": "api", "logs_days": 7}),
     )
     .await;
-    assert!(
-        error && text.starts_with("an agent may only keep data longer: logs are kept 90 days"),
-        "{text}"
+    assert_eq!(
+        (text.as_str(), error),
+        (
+            "an agent may only keep data longer: logs are kept 90 days and 7 would delete what is older for good. A person shortens it with `davy project retention` or in the web UI. set_retention needs level full with destructive changes unlocked, and the admin token holds full. The admin token never makes a destructive change: a person makes it with the CLI or the web UI, or unlocks it for an agent token of level full.",
+            true
+        )
     );
     writer.join().unwrap();
-    // Refused before the writer: nothing to change, or out of range.
+    // Refused before the writer too: nothing to change, or out of range.
     let (text, error) = tool(&s.app, "set_retention", json!({"project": "api"})).await;
     assert!(
         error && text.starts_with("give logs_days, errors_days or both"),
@@ -582,18 +591,7 @@ async fn set_retention_refuses_an_agent_the_default_and_stores_none_of_the_chang
         errors_days: Some(Setting::Days(400)),
     };
     retention::set(&c, &own, By::Person).unwrap().unwrap();
-    let data = s.data.clone();
-    let writer = std::thread::spawn(move || {
-        let c = store::open(&data).unwrap();
-        for _ in 0..2 {
-            let w = next_job(&s.writes);
-            let Job::SetRetention(change, by) = w.job else {
-                panic!("expected a retention job");
-            };
-            let stored = retention::set(&c, &change, by).unwrap();
-            w.done.send(stored.map(drop)).unwrap();
-        }
-    });
+    // Refused before the writer, so no job reaches it.
     let refusal = "an agent may not return errors to the server default: the project keeps them 400 days of its own";
     // Alone, and with a longer logs setting that must not slip through.
     for change in [
@@ -603,7 +601,11 @@ async fn set_retention_refuses_an_agent_the_default_and_stores_none_of_the_chang
         let (text, error) = tool(&s.app, "set_retention", change).await;
         assert!(error && text.starts_with(refusal), "{text}");
     }
-    writer.join().unwrap();
+    assert!(
+        s.writes
+            .try_iter()
+            .all(|w| !matches!(w.job, Job::SetRetention(..)))
+    );
     let kept = retention::stored(&c, "api").unwrap().unwrap();
     assert_eq!(
         (

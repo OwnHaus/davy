@@ -1,5 +1,7 @@
 //! The MCP server agents use to read and triage errors and logs. `http::serve`
-//! mounts it at `/mcp` when an access token is configured.
+//! mounts it at `/mcp`, where the admin token or an agent token admits a
+//! call, and each token's level decides which tools it lists and may call,
+//! see src/mcp_access.rs.
 
 use crate::{
     connect::{self, Sdk},
@@ -16,10 +18,10 @@ use crate::{
         },
     },
     query,
-    retention::{self, By, Change, Defaults, Setting},
+    retention::{self, By, Change, Defaults},
     store::{self, IssueStatus, Job},
     time,
-    token::{self, Token},
+    token::Token,
     usage::{self, savings::searches},
 };
 use axum::{
@@ -29,12 +31,12 @@ use axum::{
     response::Response,
 };
 use rmcp::{
-    RoleServer, ServerHandler,
+    RoleServer,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{CallToolResult, ContentBlock, ServerCapabilities, ServerConfig},
+    model::{CallToolResult, ContentBlock},
     schemars::JsonSchema,
     service::RequestContext,
-    tool, tool_handler, tool_router,
+    tool, tool_router,
     transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
     },
@@ -43,7 +45,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -58,7 +60,8 @@ Call `schema` before writing other SQL. To see how often a log line happens and 
 `project_status` shows how long a project keeps its logs and errors, and `set_retention` changes it. \
 Davy records its own warnings, errors and crashes in a project of its own, `davy` unless a person took that slug: `project_status` sums up its last 24 hours for any slug and names it in davy.project, `search_logs` with that project reads the lines, and a crash is an issue of level fatal there, which `issue_context` opens. \
 To see what each project stores, how fast it grows and when the disk fills, call `usage`; its what_if shows what another retention or log volume would do. \
-To see what dropping some logs would save, add a shadow rule with `drop_rule_shadow`: it drops nothing and counts, and `drop_rules` shows the result; only a person makes a rule live, with the command it gives. \
+To see what dropping some logs would save, add a shadow rule with `drop_rule_shadow`: it drops nothing and counts, and `drop_rules` shows the result; a person makes a rule live with the command it gives. \
+Your token's level decides which tools you see: read, triage (resolve issues, shadow rules, feedback) or full (keep data longer). Deleting data, by a shorter retention or a live drop rule, needs a full token a person unlocked for destructive changes; a refused call names the level it needs. \
 When a tool was missing, returned the wrong thing or needed a workaround, call `submit_feedback`.";
 
 const LOG_NOTES: &str = "
@@ -70,7 +73,8 @@ Combine with AND, OR, NOT and parentheses. Levels are trace, debug, info, warn, 
 count_logs takes the same filters and returns counts per time bucket instead of the logs.
 log_patterns lists the shapes of the lines with the most bytes; pass a row's id as pattern to search_logs or count_logs.";
 
-/// `/mcp`, behind the token. Requests must name loopback or the host of
+/// `/mcp`, behind the admin token, when there is one, and the agent
+/// tokens in `data`. Requests must name loopback or the host of
 /// `public_url` in their `Host` header, and a browser page that sends one
 /// must come from loopback or `public_url`, which stops DNS rebinding.
 /// Projects without a retention of their own keep what `retention` says,
@@ -79,17 +83,22 @@ log_patterns lists the shapes of the lines with the most bytes; pass a row's id 
 pub fn router(
     data: PathBuf,
     writes: store::Sender,
-    token: Token,
+    token: Option<Token>,
     public_url: &url::Url,
     retention: Defaults,
     usage: usage::Shared,
-) -> Router {
+) -> anyhow::Result<Router> {
     let public_host = public_url.host_str().unwrap_or("localhost");
     let public_origin = format!(
         "{}://{public_host}:{}",
         public_url.scheme(),
         public_url.port_or_known_default().unwrap_or(443)
     );
+    let gate = Arc::new(access::Gate {
+        admin: token,
+        db: Mutex::new(store::open(&data)?),
+        writes: writes.clone(),
+    });
     let tools = Tools {
         data: Arc::from(data),
         public_url: public_url.clone(),
@@ -114,13 +123,10 @@ pub fn router(
     });
     let service: StreamableHttpService<Tools, LocalSessionManager> =
         StreamableHttpService::new(move || Ok(tools.clone()), Arc::default(), config);
-    Router::new()
+    Ok(Router::new()
         .nest_service("/mcp", service)
         .layer(middleware::from_fn_with_state(seen, first_agent))
-        .layer(middleware::from_fn_with_state(
-            Arc::new(token),
-            token::require,
-        ))
+        .layer(middleware::from_fn_with_state(gate, access::require)))
 }
 
 /// Whether this server has recorded an agent on `/mcp` yet, for the setup
@@ -286,17 +292,6 @@ struct ProjectStatus {
 
 #[derive(Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
-struct SetRetention {
-    /// Project slug.
-    project: String,
-    /// Days of logs to keep, 1 to 36500, or "default" for the server's. Leave out to keep it as it is.
-    logs_days: Option<Setting>,
-    /// Days of errors to keep, by when Davy received them: events, their issues and user feedback. 1 to 36500, or "default". Leave out to keep it as it is.
-    errors_days: Option<Setting>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[schemars(crate = "rmcp::schemars")]
 struct Usage {
     /// Project slug. Leave out for every project.
     project: Option<String>,
@@ -333,28 +328,32 @@ impl Tools {
     }
 
     #[tool(
-        description = "Keep a project's logs or errors longer: each 1 to 36500 days, or \"default\" for the server's. A shorter retention is refused, because it deletes data for good, and so is \"default\" for a project with a retention of its own, because a lower default later would delete what it keeps; a person makes either change with the CLI or the web UI. Returns, for logs and errors, the days kept, whether they are the server default, and deletes_before: what is older goes within a minute and cannot be restored. Errors expire by when Davy received them; an issue whose events have all expired is deleted, and a later event of the same error opens a new issue."
+        description = "Keep a project's logs or errors longer: each 1 to 36500 days, or \"default\" for the server's. A shorter retention deletes data for good, and \"default\" for a project with a retention of its own lets a lower default later delete what it keeps: either needs a token a person unlocked for destructive changes, and is refused otherwise and on Davy's own project; a person also makes either change with the CLI or the web UI. Returns, for logs and errors, the days kept, whether they are the server default, and deletes_before: what is older goes within a minute and cannot be restored. Errors expire by when Davy received them; an issue whose events have all expired is deleted, and a later event of the same error opens a new issue."
     )]
-    async fn set_retention(&self, Parameters(req): Parameters<SetRetention>) -> Reply {
-        if req.logs_days.is_none() && req.errors_days.is_none() {
+    async fn set_retention(
+        &self,
+        ctx: RequestContext<RoleServer>,
+        Parameters(change): Parameters<Change>,
+    ) -> Reply {
+        if change.logs_days.is_none() && change.errors_days.is_none() {
             return Err(
                 "give logs_days, errors_days or both; project_status shows the current settings"
                     .to_owned(),
             );
         }
-        let change = Change {
-            project: req.project,
-            logs_days: req.logs_days,
-            errors_days: req.errors_days,
-        };
         change.check()?;
         let slug = change.project.clone();
-        store::submit(
-            &self.writes,
-            Job::SetRetention(change, By::Agent(self.retention)),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+        // The writer refuses a change that deletes unless the caller holds
+        // the proof, whatever the check before the call found.
+        let by = ctx
+            .extensions
+            .get::<crate::access::Unlocked>()
+            .map_or(By::Agent(self.retention), |u| {
+                By::Unlocked(*u, self.retention)
+            });
+        store::submit(&self.writes, Job::SetRetention(change, by))
+            .await
+            .map_err(|e| e.to_string())?;
         let defaults = self.retention;
         self.blocking(move |data| {
             let kept = retention::one(&query::open(data)?, &slug, defaults, time::now_ms())?;
@@ -364,7 +363,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "What each project sent Davy and when the disk fills. Returns sizes as text such as \"4.1 GB\" (powers of 1000): disk (used, free, total, the 10% headroom kept free, room_left: what may still be used before total minus headroom, past_limit: true when the filesystem uses that much already, by Davy's files or others, steady_state: what Davy takes once retention deletes as much as arrives, logs at the longest log retention and each project's errors at its error retention, days_left and full_on, both null when the disk never fills or fills beyond 10 years, which past_limit true does not mean, beyond_10_years, and worst_case; a what-if that lowers the longest log retention frees the closed days it deletes), what Davy's files take, growth_per_day (all logs together, the growth days_left and full_on rest on; basis.logs.basis says how it was measured, and for blended and first_day it is the high end of basis.logs.growth_per_day), longest_log_days (the longest log retention of any project, which caps steady_state) and shortest_log_days, and per project the log and error retention in days and, per signal (errors, logs, sessions, feedback, checkins), records and bytes accepted in the window and per day, counted once a queue took them, so they include items Davy later turned down. errors_discarded is the error events of discarded issues received in the window, counted and not stored, each resend of an event included. Bytes are what clients sent, decompressed, on the UTC day Davy accepted them. logs_stored, per project, is records and raw bytes of the logs stored, as the pattern counters count them, on the UTC day of the index that holds them, from the window's first day to tomorrow, as a line may be up to a day ahead. A line sent in the window with a time before it is in logs, not in logs_stored. logs_filtered, per project, is records and raw bytes of the lines live drop rules dropped, on the UTC day Davy received them: in logs, never stored. The two count different bytes on different days: never subtract one from the other. limits, per project, is its daily quotas on the UTC day open now, whatever the window: errors and logs (null without a quota, else quota, today, percent and refusing, errors in events and logs in bytes received; today is what the writer stored, up to 5 s behind; refusing is true while the server refuses that signal past its quota now), warn_percent, spike.errors and spike.logs (setting: default, off or set; per_second, error events or log records a second, null when off; refusing, true while the server refuses that signal past its spike rate now, for at most 10 s after a burst), resets_at (RFC 3339, midnight UTC, when the quotas start again), refused_today (items refused today past a quota, davy_quota, and past a spike rate, davy_spike), refused_log_requests_today (log requests refused before their body was read, by the same reasons, as requests, since their lines were never counted) and busy_refused_requests_today (requests refused with 429 while the server's body budget or a queue was full). busy_refused_requests_today_no_project counts such requests refused before their key was read. Only a person changes limits, with davy project quota. Counts are kept per UTC day, so the window starts at midnight UTC of the day since names. disk.partial, when not null, names what the disk walk left out, such as a directory Davy may not read, and why it stopped early; the sizes leave that out. disk_error replaces disk and davy when the walk failed. The disk is measured at most once a minute, so calling again sooner returns the same disk. When projects keep logs for different times, worst_case is true: Davy cannot tell each project's share of the logs, so the forecast takes every log as kept longest_log_days and, at the current rate of logs, full_on is the earliest day the disk can fill; it may fill later or never, so watch free space over a few days before you shorten a retention for that day. what_if_note says when a what-if for one project cannot change that worst case. estimate (full_on, days_left, steady_state, beyond_10_years, clamped) keeps each project's logs as long as that project keeps them: it splits the logs' middle growth by each project's raw bytes per day and takes every project's logs to pack alike, so it is an estimate, never earlier than disk.full_on; clamped is true when its own sums were earlier and it took that day, as raw counts and the disk disagree. A what-if for one project moves it when Davy counted raw bytes per project. estimate is null for a what-if of logs_bytes_per_day and without a forecast. default_log_days, when a project has no log retention of its own, is the server's. basis says what growth_per_day rests on: confidence (low, medium or high; high falls to medium when errors add over 5% of what the bound adds until the disk fills, or of the room left to the limit within 10 years where it never fills, and fewer than 7 days measured their bytes per event), full_on_range (full_on at the high growth and at the low, null for never or beyond 10 years; it is the range of the growth only, so with worst_case true both days are the earliest the disk can fill), why (one sentence to quote to a person, with the reason when confidence is low or errors lower it), logs and errors. basis.errors is null when no project received error events in the last 7 closed days, or today for a project whose errors began today; else projects, events_per_day (each project's mean over those days, from its first errors or since it was made when later, or up to now before a whole day has closed since), bytes_per_event (SQLite bytes per event of the estimate, estimate_growth_per_day over events_per_day, rounded down), own_days (days of the last 30 when SQLite grew with 10,000 or more new events, up to 7, which measure bytes per event), basis (measured on 7 such days, blended with the footprint benchmark on 1 to 6, or footprint) and growth_per_day (what errors add to SQLite a day at the bound's bytes per event, for each project the highest of its benchmark, the measured high end and that end scaled to its payloads, a gross rate, which days_left counts until each project holds its error retention) and estimate_growth_per_day (the estimate's, never above growth_per_day). A closed day measures how logs pack when Davy counted it whole, it holds 10 MB or more of raw logs, no retention cut a project on it and its size on disk is known; the newest such days of the last 30 closed ones count, up to possible_days: 7, or the shortest log retention of a project with logs when that is less. logs.basis is measured (possible_days such days: the growth is their median size on disk, or raw_per_day times their ratio when a newer day had under 10 MB of raw logs), blended (raw_per_day times a ratio of disk to raw bytes from own_days of possible_days such days, the rest from footprint, the storage benchmark), measured_disk (the median size on disk of the closed days, as the server counted raw bytes too late or too little to measure the ratio), first_day (the raw bytes of the counted_hours so far times the footprint, from the first hour on; its range is wide) or errors_only (no raw log bytes counted in the last 30 days and no closed log day on disk, so logs add nothing, or logs too new or too few for the bases above, which then count as 0 until they give a forecast, so the disk may fill earlier; growth_per_day is 0 and the forecast rests on errors: confidence is high with bytes per event measured on 7 days, medium on the footprint benchmark, low while errors that began less than a whole day or 7 whole days ago add over 5% of the errors' growth, or while logs count as 0, and full_on_range is full_on at the errors' growth_per_day and at their estimate_growth_per_day, so it covers bytes per event, not the rate, and two equal days at low confidence are not a narrow forecast). logs also gives growth_per_day low, mid and high, raw_per_day over raw_days whole closed days (its mid is the larger of their median and their mean), ratio and ratio_range, own_ratio and footprint_ratio. basis is null without a forecast and for a what-if of logs_bytes_per_day. Without a forecast, growth_per_day, longest_log_days and shortest_log_days are null and no_forecast says why, such as under an hour of logs counted, nothing growing yet (no logs and no error events in the last 7 days) or logs not measured in full. view savings answers instead with window, note (why last_queried is approximate, which reads Davy does not record, and that discarding stops storing an issue's real events too) and savings, a list of entries by kind, at most top of each. pattern: the log patterns with the most raw bytes in the window, with id, project (null for every project), service and level with the most records, example, bytes, per_day, share (of the raw log bytes of the window), last_queried (RFC 3339, the newest of the last 1000 searches with text or a pattern filter whose filters find the example, null for none) and try (the search_logs call for its lines); in the view of one project a pattern whose lines stay below warn and that no drop rule names also has suggest (keep 1%, or 10% when a search asked for it, and the davy drop add command a person runs; rule gives the rule in words and command the command alone), saves_per_day (raw bytes a day dropping the rest frees) and shadow (the drop_rule_shadow call that counts it first and drops nothing), else null, and suggest says which rule decides when a live rule already matches its example. shadow: a shadow drop rule, most bytes first, with id, project, by, pattern, level or message, service, keep_percent, created_at, expires_at, hours (it has counted, since the latest of the window's start, its making and its first day counted as a shadow rule), would_drop (records and bytes it would have dropped in the window, among lines no live rule dropped), saves_per_day (null until it has counted a full day), rule (the rule in words), hides, and suggest and command (the davy drop live command a person runs, in a sentence and alone; null with hides saying what it would hide for a rule on Davy's own project or one that can drop warnings and errors). retention: a project with searches in the last 30 days, recorded for 7 whole days or more, that need fewer days of logs than it keeps, with logs_days, oldest_read_days (how far back the oldest search read), searches, history_days, saves (the disk the days the cut frees take), suggest (the smallest of 7, 14, 30, 60, 90, 180 and 365 days at least twice oldest_read_days, under logs_days, and the davy command a person runs to set it; command gives the command alone) and try (a count_logs call over the days the cut would delete). Searches by davy logs and issue_context are not recorded, so ask before you pass a suggestion on. issue: an issue not discarded that sent 20% or more of its project's error events in the window, and 100 or more, with id, project, title, events, share, suggest, command (the davy issue discard command alone) and try. The commands name the server's data directory by its absolute path. Davy's own project has no retention or issue entry. Only a person shortens a retention, discards an issue or makes a drop rule live, with the command shown. Usage reads of this tool and the web UI's usage page run at most 4 at once; past that the tool answers that it is busy, so ask again in a second. Read-only."
+        description = "What each project sent Davy and when the disk fills. Returns sizes as text such as \"4.1 GB\" (powers of 1000): disk (used, free, total, the 10% headroom kept free, room_left: what may still be used before total minus headroom, past_limit: true when the filesystem uses that much already, by Davy's files or others, steady_state: what Davy takes once retention deletes as much as arrives, logs at the longest log retention and each project's errors at its error retention, days_left and full_on, both null when the disk never fills or fills beyond 10 years, which past_limit true does not mean, beyond_10_years, and worst_case; a what-if that lowers the longest log retention frees the closed days it deletes), what Davy's files take, growth_per_day (all logs together, the growth days_left and full_on rest on; basis.logs.basis says how it was measured, and for blended and first_day it is the high end of basis.logs.growth_per_day), longest_log_days (the longest log retention of any project, which caps steady_state) and shortest_log_days, and per project the log and error retention in days and, per signal (errors, logs, sessions, feedback, checkins), records and bytes accepted in the window and per day, counted once a queue took them, so they include items Davy later turned down. errors_discarded is the error events of discarded issues received in the window, counted and not stored, each resend of an event included. Bytes are what clients sent, decompressed, on the UTC day Davy accepted them. logs_stored, per project, is records and raw bytes of the logs stored, as the pattern counters count them, on the UTC day of the index that holds them, from the window's first day to tomorrow, as a line may be up to a day ahead. A line sent in the window with a time before it is in logs, not in logs_stored. logs_filtered, per project, is records and raw bytes of the lines live drop rules dropped, on the UTC day Davy received them: in logs, never stored. The two count different bytes on different days: never subtract one from the other. limits, per project, is its daily quotas on the UTC day open now, whatever the window: errors and logs (null without a quota, else quota, today, percent and refusing, errors in events and logs in bytes received; today is what the writer stored, up to 5 s behind; refusing is true while the server refuses that signal past its quota now), warn_percent, spike.errors and spike.logs (setting: default, off or set; per_second, error events or log records a second, null when off; refusing, true while the server refuses that signal past its spike rate now, for at most 10 s after a burst), resets_at (RFC 3339, midnight UTC, when the quotas start again), refused_today (items refused today past a quota, davy_quota, and past a spike rate, davy_spike), refused_log_requests_today (log requests refused before their body was read, by the same reasons, as requests, since their lines were never counted) and busy_refused_requests_today (requests refused with 429 while the server's body budget or a queue was full). busy_refused_requests_today_no_project counts such requests refused before their key was read. Only a person changes limits, with davy project quota. Counts are kept per UTC day, so the window starts at midnight UTC of the day since names. disk.partial, when not null, names what the disk walk left out, such as a directory Davy may not read, and why it stopped early; the sizes leave that out. disk_error replaces disk and davy when the walk failed. The disk is measured at most once a minute, so calling again sooner returns the same disk. When projects keep logs for different times, worst_case is true: Davy cannot tell each project's share of the logs, so the forecast takes every log as kept longest_log_days and, at the current rate of logs, full_on is the earliest day the disk can fill; it may fill later or never, so watch free space over a few days before you shorten a retention for that day. what_if_note says when a what-if for one project cannot change that worst case. estimate (full_on, days_left, steady_state, beyond_10_years, clamped) keeps each project's logs as long as that project keeps them: it splits the logs' middle growth by each project's raw bytes per day and takes every project's logs to pack alike, so it is an estimate, never earlier than disk.full_on; clamped is true when its own sums were earlier and it took that day, as raw counts and the disk disagree. A what-if for one project moves it when Davy counted raw bytes per project. estimate is null for a what-if of logs_bytes_per_day and without a forecast. default_log_days, when a project has no log retention of its own, is the server's. basis says what growth_per_day rests on: confidence (low, medium or high; high falls to medium when errors add over 5% of what the bound adds until the disk fills, or of the room left to the limit within 10 years where it never fills, and fewer than 7 days measured their bytes per event), full_on_range (full_on at the high growth and at the low, null for never or beyond 10 years; it is the range of the growth only, so with worst_case true both days are the earliest the disk can fill), why (one sentence to quote to a person, with the reason when confidence is low or errors lower it), logs and errors. basis.errors is null when no project received error events in the last 7 closed days, or today for a project whose errors began today; else projects, events_per_day (each project's mean over those days, from its first errors or since it was made when later, or up to now before a whole day has closed since), bytes_per_event (SQLite bytes per event of the estimate, estimate_growth_per_day over events_per_day, rounded down), own_days (days of the last 30 when SQLite grew with 10,000 or more new events, up to 7, which measure bytes per event), basis (measured on 7 such days, blended with the footprint benchmark on 1 to 6, or footprint) and growth_per_day (what errors add to SQLite a day at the bound's bytes per event, for each project the highest of its benchmark, the measured high end and that end scaled to its payloads, a gross rate, which days_left counts until each project holds its error retention) and estimate_growth_per_day (the estimate's, never above growth_per_day). A closed day measures how logs pack when Davy counted it whole, it holds 10 MB or more of raw logs, no retention cut a project on it and its size on disk is known; the newest such days of the last 30 closed ones count, up to possible_days: 7, or the shortest log retention of a project with logs when that is less. logs.basis is measured (possible_days such days: the growth is their median size on disk, or raw_per_day times their ratio when a newer day had under 10 MB of raw logs), blended (raw_per_day times a ratio of disk to raw bytes from own_days of possible_days such days, the rest from footprint, the storage benchmark), measured_disk (the median size on disk of the closed days, as the server counted raw bytes too late or too little to measure the ratio), first_day (the raw bytes of the counted_hours so far times the footprint, from the first hour on; its range is wide) or errors_only (no raw log bytes counted in the last 30 days and no closed log day on disk, so logs add nothing, or logs too new or too few for the bases above, which then count as 0 until they give a forecast, so the disk may fill earlier; growth_per_day is 0 and the forecast rests on errors: confidence is high with bytes per event measured on 7 days, medium on the footprint benchmark, low while errors that began less than a whole day or 7 whole days ago add over 5% of the errors' growth, or while logs count as 0, and full_on_range is full_on at the errors' growth_per_day and at their estimate_growth_per_day, so it covers bytes per event, not the rate, and two equal days at low confidence are not a narrow forecast). logs also gives growth_per_day low, mid and high, raw_per_day over raw_days whole closed days (its mid is the larger of their median and their mean), ratio and ratio_range, own_ratio and footprint_ratio. basis is null without a forecast and for a what-if of logs_bytes_per_day. Without a forecast, growth_per_day, longest_log_days and shortest_log_days are null and no_forecast says why, such as under an hour of logs counted, nothing growing yet (no logs and no error events in the last 7 days) or logs not measured in full. view savings answers instead with window, note (why last_queried is approximate, which reads Davy does not record, and that discarding stops storing an issue's real events too) and savings, a list of entries by kind, at most top of each. pattern: the log patterns with the most raw bytes in the window, with id, project (null for every project), service and level with the most records, example, bytes, per_day, share (of the raw log bytes of the window), last_queried (RFC 3339, the newest of the last 1000 searches with text or a pattern filter whose filters find the example, null for none) and try (the search_logs call for its lines); in the view of one project a pattern whose lines stay below warn and that no drop rule names also has suggest (keep 1%, or 10% when a search asked for it, and the davy drop add command a person runs; rule gives the rule in words and command the command alone), saves_per_day (raw bytes a day dropping the rest frees) and shadow (the drop_rule_shadow call that counts it first and drops nothing), else null, and suggest says which rule decides when a live rule already matches its example. shadow: a shadow drop rule, most bytes first, with id, project, by, pattern, level or message, service, keep_percent, created_at, expires_at, hours (it has counted, since the latest of the window's start, its making and its first day counted as a shadow rule), would_drop (records and bytes it would have dropped in the window, among lines no live rule dropped), saves_per_day (null until it has counted a full day), rule (the rule in words), hides, and suggest and command (the davy drop live command a person runs, in a sentence and alone; null with hides saying what it would hide for a rule on Davy's own project or one that can drop warnings and errors). retention: a project with searches in the last 30 days, recorded for 7 whole days or more, that need fewer days of logs than it keeps, with logs_days, oldest_read_days (how far back the oldest search read), searches, history_days, saves (the disk the days the cut frees take), suggest (the smallest of 7, 14, 30, 60, 90, 180 and 365 days at least twice oldest_read_days, under logs_days, and the davy command a person runs to set it; command gives the command alone) and try (a count_logs call over the days the cut would delete). Searches by davy logs and issue_context are not recorded, so ask before you pass a suggestion on. issue: an issue not discarded that sent 20% or more of its project's error events in the window, and 100 or more, with id, project, title, events, share, suggest, command (the davy issue discard command alone) and try. The commands name the server's data directory by its absolute path. Davy's own project has no retention or issue entry. Only a person discards an issue, with the command shown. A person shortens a retention or makes a drop rule live with the command shown, or unlocks destructive changes for a token of level full, whose agent may call set_retention and drop_rule_live for that, on any project but Davy's own. Usage reads of this tool and the web UI's usage page run at most 4 at once; past that the tool answers that it is busy, so ask again in a second. Read-only."
     )]
     async fn usage(&self, Parameters(req): Parameters<Usage>) -> Reply {
         let _permit = self.usage.permit().ok_or_else(|| usage::BUSY.to_owned())?;
@@ -615,17 +614,8 @@ fn json(v: &impl Serialize) -> anyhow::Result<String> {
     Ok(crate::text::json(v, false)?)
 }
 
-#[tool_handler(router = self.tool_router)]
-#[expect(
-    clippy::unused_async_trait_impl,
-    reason = "the generated list_tools is async because the trait says so"
-)]
-impl ServerHandler for Tools {
-    fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions(INSTRUCTIONS)
-    }
-}
+#[path = "mcp_access.rs"]
+mod access;
 
 #[path = "mcp_drops.rs"]
 mod drop_tools;

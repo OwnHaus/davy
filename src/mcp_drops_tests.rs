@@ -240,3 +240,12 @@ fn an_answer_escapes_what_could_reorder_or_control_a_terminal() {
         r#"{"message":"a\u202eb\u0085c\u2066d"}"#
     );
 }
+
+#[test]
+fn without_the_proof_drop_rule_live_makes_no_change() {
+    let refused = drop_tools::live_change(None, "api".to_owned(), 1, time::now_ms());
+    assert_eq!(
+        refused.err().as_deref(),
+        Some("drop_rule_live needs a token of level full with destructive changes unlocked")
+    );
+}

@@ -4,6 +4,10 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 
 ## Unreleased
 
+### Added
+
+- Agent tokens with a level. `davy token add NAME --level read|triage|full --data DATA` gives one agent a token of its own for `/mcp` and prints its secret once, as JSON; Davy keeps only its hash, and `davy serve` refuses it as its own admin token. `read` reaches the tools that read, `triage` also `mark_fixed`, `submit_feedback` and the shadow drop rule tools, and `full` also `set_retention` to keep data longer. `tools/list` shows a token only the tools its level reaches, and a call above it is refused with the level it needs. No level deletes data: a person unlocks destructive changes for one token of level `full` with `davy token unlock`, and only then may its agent shorten a retention or make a drop rule live with the new tool `drop_rule_live`, on any project but Davy's own; a lock or revoke stops a change still waiting for the writer. `davy token list`, `davy token level`, `davy token lock` and `davy token revoke` do the rest; a revoked token's next call answers `401`. The admin token keeps every tool it had and stays unable to delete data. Without an admin token `/mcp` now takes agent tokens and answers `401` to anything else, where it answered `404`. The upgrade adds the `agent_tokens` table as schema version 26.
+
 ## 0.2.0 (2026-11-28)
 
 ### Security

@@ -68,6 +68,11 @@ enum Command {
         #[command(subcommand)]
         command: davy::accounts::cli::User,
     },
+    /// Agent tokens for /mcp, each with a level: read, triage or full.
+    Token {
+        #[command(subcommand)]
+        command: davy::tokens::cli::Token,
+    },
     /// Discards an issue, so its new events are counted and not stored.
     Issue {
         #[command(subcommand)]
@@ -319,6 +324,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Monitor { command } => monitor::cli::run(&mut out.lock(), command)?,
         Command::Channel { command } => run_channel(&mut out.lock(), command)?,
         Command::User { command } => davy::accounts::cli::run(&mut out.lock(), command)?,
+        Command::Token { command } => davy::tokens::cli::run(&mut out.lock(), command)?,
         Command::Issue { command } => davy::discard::run(&mut out.lock(), command)?,
         Command::Drop { command } => {
             let stdin = std::io::stdin();

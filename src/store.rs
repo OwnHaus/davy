@@ -360,9 +360,11 @@ pub enum Job {
         at: Timestamp,
         search: crate::usage::savings::searches::Search,
     },
-    /// A shadow rule an agent adds or removes over MCP. No job makes a
-    /// rule live, see src/drops/agent.rs.
+    /// A shadow rule an agent adds or removes over MCP, or a rule an agent
+    /// a person unlocked makes live, see src/drops/agent.rs.
     Drop(crate::drops::AgentChange),
+    /// A change to an agent token, see src/tokens.rs.
+    Token(crate::tokens::Change),
     /// What the quota gate refused, see src/quota.rs.
     Quota(crate::quota::Flush),
 }
@@ -370,6 +372,22 @@ pub type Outcome = std::result::Result<(), String>;
 pub struct Write {
     pub job: Job,
     pub done: oneshot::Sender<Outcome>,
+}
+/// Alerts for late monitors, and deletes what expired by `at`.
+fn sweep(c: &Connection, at: Timestamp, error_days: crate::retention::Days) -> Result<()> {
+    crate::monitor::store::sweep(c, at)?;
+    crate::retention::errors::sweep(c, at, error_days, crate::retention::errors::BUDGET)?;
+    crate::accounts::store::sweep(c, at)?;
+    crate::items::client_report::prune(c, at)?;
+    crate::quota::prune(c, at)?;
+    crate::items::session::prune(c, at)?;
+    crate::usage::prune(c, at)?;
+    crate::discard::prune(c, at)?;
+    crate::usage::savings::searches::prune(c, at)?;
+    crate::usage::stored::sweep(c, at)?;
+    crate::drops::counts::prune(c, at)?;
+    crate::tokens::prune(c, at)?;
+    Ok(())
 }
 /// Runs one job. The outer error is a database failure that aborts the batch,
 /// the inner one a problem with this job alone.
@@ -398,17 +416,7 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
                 .ok_or_else(|| format!("no monitor {monitor}")))
         }
         Job::Sweep { at, error_days } => {
-            crate::monitor::store::sweep(c, *at)?;
-            crate::retention::errors::sweep(c, *at, *error_days, crate::retention::errors::BUDGET)?;
-            crate::accounts::store::sweep(c, *at)?;
-            crate::items::client_report::prune(c, *at)?;
-            crate::quota::prune(c, *at)?;
-            crate::items::session::prune(c, *at)?;
-            crate::usage::prune(c, *at)?;
-            crate::discard::prune(c, *at)?;
-            crate::usage::savings::searches::prune(c, *at)?;
-            crate::usage::stored::sweep(c, *at)?;
-            crate::drops::counts::prune(c, *at)?;
+            sweep(c, *at, *error_days)?;
             Ok(Ok(()))
         }
         Job::Usage(rows) => Ok(Ok(crate::usage::write(c, rows)?)),
@@ -443,6 +451,7 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
                 .ok_or_else(|| format!("no project {project}")))
         }
         Job::Account(change) => crate::accounts::store::apply(c, change),
+        Job::Token(change) => crate::tokens::apply(c, change),
         Job::SetRetention(change, by) => Ok(crate::retention::set(c, change, *by)?.map(drop)),
         Job::First { what, at } => {
             crate::firsts::record(c, *what, *at)?;

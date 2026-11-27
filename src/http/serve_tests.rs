@@ -131,11 +131,12 @@ async fn a_warning_of_davy_is_found_with_search_logs_in_the_project_davy() {
     let mcp = mcp::router(
         data.clone(),
         sender,
-        Token::new(MCP_TOKEN),
+        Some(Token::new(MCP_TOKEN)),
         &url::Url::parse("https://davy.example/").unwrap(),
         crate::retention::Defaults::default(),
         crate::usage::Shared::default(),
-    );
+    )
+    .unwrap();
     let early = mcp_tool(
         mcp.clone(),
         "search_logs",
@@ -255,11 +256,12 @@ async fn a_crash_of_davy_is_an_issue_of_the_project_davy() {
     let mcp = mcp::router(
         data.clone(),
         writer.sender.clone(),
-        Token::new(MCP_TOKEN),
+        Some(Token::new(MCP_TOKEN)),
         &url::Url::parse("https://davy.example/").unwrap(),
         crate::retention::Defaults::default(),
         crate::usage::Shared::default(),
-    );
+    )
+    .unwrap();
     let found = mcp_tool(
         mcp.clone(),
         "sql",

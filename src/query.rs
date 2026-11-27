@@ -67,7 +67,8 @@ const NOTES: &str = "Notes:
 - monitors.state is pending, up, failing or down. Times in monitors, checks and incidents are unix milliseconds. An incident with no resolved_at is open. monitors.heartbeat_token, monitors.url, channels.url, channels.secret and projects.vercel_secret read as NULL.
 - channels.dropped counts issue, feedback and operator notices that a full outbox dropped, so above 0 a real alert was lost. channels.sdk_dropped counts dropped notices of monitors made by check-ins, which anyone with a project's DSN can raise.
 - A heartbeat with monitors.slug also takes Sentry SDK check-ins for that slug. monitors.source is cli for a monitor made by davy monitor add and sdk for one made by a check-in. A heartbeat expects every every_s seconds, or every months calendar months, or at the times of the crontab cron, both in the IANA zone; due_at is when the sweep marks it down. run_id and run_started_at belong to a run started by an in_progress check-in. Refused check-ins are counted in client_reports with category monitor and reason davy_too_large, davy_invalid, davy_bad_slug, davy_unknown_monitor, davy_bad_config, davy_monitor_cap or davy_rate.
-- users.password, sessions.hash and invites.hash read as NULL.
+- users.password, sessions.hash, invites.hash and agent_tokens.hash read as NULL.
+- agent_tokens holds the tokens agents call /mcp with, each with a level, read, triage or full, that decides which tools it reaches. unlocked_at is when a person unlocked destructive changes for it, unlocked_by who: an e-mail, or cli. Times are unix milliseconds; used_at is the last call, written at most once a minute. A revoked token keeps its row 180 days.
 - client_reports counts what the SDKs dropped before sending, per UTC day (unix milliseconds at midnight), project, reason and category, such as before_send and error, or sample_rate and transaction. reason davy_daily_cap counts user feedback Davy refused past 1000 per project and day, and with category session the sessions refused past 1000000 per project and day. reason davy_out_of_window counts sessions that started more than 5 days ago or over an hour ahead. Rows are kept 90 days. When an app reports no errors, check here that its SDK did not drop them.
 - release_sessions counts the sessions SDKs report, per project, hour the session started (unix milliseconds), release and environment. started is every session, errored the ones with an error (crashed ones too), crashed and abnormal the ones that ended so. Crash-free sessions are 100 * (started - crashed) / started. release_users holds one row per UTC day, project, release, environment and user, where user is a hash of the SDK's user id and flags has bit 2 for errored and bit 4 for crashed. Both are kept 90 days. The release_health tool reads them. session_seen is how Davy counts each session once.
 - user_feedback holds what users wrote through the SDK's feedback widget or captureFeedback. received_at is unix milliseconds. issue_id is the issue of the event it names, NULL when it names none, arrived before that event, or that issue was deleted.
@@ -145,8 +146,9 @@ pub fn open(data: &Path) -> Result<Connection> {
 /// Columns that hold a credential. An agent has no use for one, and a
 /// prompt-injected agent could leak it, so they read as NULL. A monitor URL
 /// often carries a token in its query string. A password hash can be cracked
-/// offline, and the session and invite hashes are kept out the same way.
-const CREDENTIALS: [(&str, &str); 8] = [
+/// offline, and the session, invite and agent token hashes are kept out the
+/// same way.
+const CREDENTIALS: [(&str, &str); 9] = [
     ("monitors", "heartbeat_token"),
     ("monitors", "url"),
     ("channels", "url"),
@@ -155,6 +157,7 @@ const CREDENTIALS: [(&str, &str); 8] = [
     ("sessions", "hash"),
     ("invites", "hash"),
     ("projects", "vercel_secret"),
+    ("agent_tokens", "hash"),
 ];
 
 /// SQLite counts ATTACH and most PRAGMAs as read-only, so `Statement::readonly`

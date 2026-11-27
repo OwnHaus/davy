@@ -318,7 +318,19 @@ export type ServerDefault = "default";
 
 export type Setting = number | ServerDefault;
 
-export type RetentionChange = { project: string, logs_days?: Setting, errors_days?: Setting, };
+export type RetentionChange = { 
+/**
+ * Project slug.
+ */
+project: string, 
+/**
+ * Days of logs to keep, 1 to 36500, or "default" for the server's. Leave out to keep it as it is.
+ */
+logs_days?: Setting, 
+/**
+ * Days of errors to keep, by when Davy received them: events, their issues and user feedback. 1 to 36500, or "default". Leave out to keep it as it is.
+ */
+errors_days?: Setting, };
 
 export type Kept = { days: number, 
 /**

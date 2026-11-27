@@ -37,6 +37,21 @@ The client reads `DAVY_TOKEN` when it starts, so the person opens a new terminal
 
 To check, ask the agent: "List the unresolved issues in Davy." It calls `sql` and answers with the issues.
 
+## A token of the agent's own
+
+The admin token reaches every tool. To give an agent less, a person adds a token for it on the server:
+
+<!-- e2e: skip, e2e/tokens.mjs adds, unlocks and calls tokens against a running server -->
+```sh
+sudo runuser -u davy -- davy token add ci-triage --level triage --data /var/lib/davy
+```
+
+It prints the secret once, as JSON. Put it in the file of step 1 instead of the admin token, so the agent's client reads it as `DAVY_TOKEN`. Never give it to `davy serve`: the server refuses a secret that starts with `davy_agent_` as its own token.
+
+- `read` reaches the tools that read, `triage` also `mark_fixed`, `submit_feedback` and the shadow drop rule tools, `full` also `set_retention` to keep data longer.
+- No level deletes data. A person unlocks destructive changes for one token of level `full`, with `davy token unlock NAME --data /var/lib/davy` or on the Tokens page of the web UI, and only then may its agent shorten a retention or make a drop rule live with `drop_rule_live`.
+- `davy token list`, `level`, `lock` and `revoke` do the rest. A revoked token's next call answers `401`.
+
 ## What the agent can do
 
 - `issue_context` returns what fixing an issue needs: the stack with source lines, breadcrumbs, the releases it occurs in, the logs around it and what users wrote about it through the SDK's feedback widget.

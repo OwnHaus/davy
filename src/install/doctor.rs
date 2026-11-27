@@ -367,7 +367,7 @@ async fn mcp(client: &reqwest::Client, url: &Url, token: &str, d: &str) -> Check
         (StatusCode::UNAUTHORIZED, _) => not_ok(
             "mcp",
             Status::Fail,
-            format!("{mcp} refuses the token in {d}/token, so the server runs with another one"),
+            format!("{mcp} refuses the token in {d}/token, so the server has another or none"),
             restart,
         ),
         (status, _) => not_ok(

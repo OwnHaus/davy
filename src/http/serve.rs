@@ -61,27 +61,30 @@ fn admin_routes(
     retention: crate::retention::Defaults,
     shared: crate::usage::Shared,
 ) -> anyhow::Result<Router> {
+    // `/mcp` answers agent tokens without an admin token too; the scrub
+    // settings and the upload answer the admin token only.
+    let mcp = mcp::router(
+        data.to_owned(),
+        app.sender.clone(),
+        token.clone(),
+        public_url,
+        retention,
+        shared,
+    )?;
     let admin = match token {
-        Some(token) => mcp::router(
-            data.to_owned(),
-            app.sender.clone(),
-            token.clone(),
-            public_url,
-            retention,
-            shared,
-        )
-        .merge(crate::scrub::settings::router(
-            store::open(data)?,
-            app.sender.clone(),
-            token.clone(),
-            app.keys.policies(),
-        ))
-        .merge(upload::router(
-            Arc::clone(&app.sourcemaps),
-            token,
-            public_url,
-        )),
-        None => Router::new(),
+        Some(token) => mcp
+            .merge(crate::scrub::settings::router(
+                store::open(data)?,
+                app.sender.clone(),
+                token.clone(),
+                app.keys.policies(),
+            ))
+            .merge(upload::router(
+                Arc::clone(&app.sourcemaps),
+                token,
+                public_url,
+            )),
+        None => mcp,
     };
     Ok(admin)
 }

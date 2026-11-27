@@ -1,7 +1,8 @@
 //! The MCP tools for drop rules: an agent lists the rules and adds or
-//! removes shadow rules of its own. No tool takes a state, writes a live
-//! rule or makes a rule live; the answers name the `davy drop` command a
-//! person runs for that. See "Drop rules" in docs/design.md.
+//! removes shadow rules of its own, and with a token a person unlocked for
+//! destructive changes makes a shadow rule live. Otherwise the answers name
+//! the `davy drop` command a person runs for that. See "Drop rules" in
+//! docs/design.md.
 
 use super::{Reply, Tools, json};
 use crate::{
@@ -10,12 +11,15 @@ use crate::{
     store::{self, Job},
     time,
 };
-use rmcp::{handler::server::wrapper::Parameters, schemars::JsonSchema, tool, tool_router};
+use rmcp::{
+    RoleServer, handler::server::wrapper::Parameters, schemars::JsonSchema,
+    service::RequestContext, tool, tool_router,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 /// Said with every answer, so an agent knows what it may do.
-pub(super) const NOTE: &str = "A shadow rule drops nothing: it counts the lines it would drop among those no live rule drops, from within 5 s of being added. Only a person makes a rule live, with the command in make_live. An agent holds at most 10 shadow rules per project, each for 14 days.";
+pub(super) const NOTE: &str = "A shadow rule drops nothing: it counts the lines it would drop among those no live rule drops, from within 5 s of being added. A person makes a rule live, with the command in make_live, or unlocks destructive changes for a token of level full, whose agent may call drop_rule_live. An agent holds at most 10 shadow rules per project, each for 14 days.";
 
 #[derive(Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -52,6 +56,16 @@ pub(super) struct DropRuleRemove {
     rule_id: i64,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(deny_unknown_fields)]
+pub(super) struct DropRuleLive {
+    /// Project slug.
+    project: String,
+    /// The id of a shadow rule, as drop_rules gave it.
+    rule_id: i64,
+}
+
 #[tool_router(router = drop_router, vis = "pub(super)")]
 impl Tools {
     #[tool(
@@ -74,7 +88,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Add a shadow drop rule to a project to see what dropping some of its logs would save, without dropping anything. Give exactly one of pattern, level and message, and optionally service and keep. From within 5 s Davy counts, per day, the lines and bytes the rule would drop among those no live rule drops; drop_rules and the usage savings view show it. A rule that matches like one the project has answers that rule. Refused on Davy's own project and for a level rule of warn or above, which only a person adds. The rule expires after 14 days, and an agent holds at most 10 per project. Returns the rule as drop_rules shows it, with make_live: an agent cannot make a rule live, so pass that command to a person, with what the rule would drop."
+        description = "Add a shadow drop rule to a project to see what dropping some of its logs would save, without dropping anything. Give exactly one of pattern, level and message, and optionally service and keep. From within 5 s Davy counts, per day, the lines and bytes the rule would drop among those no live rule drops; drop_rules and the usage savings view show it. A rule that matches like one the project has answers that rule. Refused on Davy's own project and for a level rule of warn or above, which only a person adds. The rule expires after 14 days, and an agent holds at most 10 per project. Returns the rule as drop_rules shows it, with make_live: pass that command to a person, with what the rule would drop, unless a person unlocked destructive changes for your token and drop_rule_live is listed."
     )]
     async fn drop_rule_shadow(&self, Parameters(req): Parameters<DropRuleShadow>) -> Reply {
         let spec = Spec::new(
@@ -122,4 +136,51 @@ impl Tools {
             .map_err(|e| e.to_string())?;
         json(&json!({"removed": rule})).map_err(|e| format!("{e:#}"))
     }
+
+    #[tool(
+        description = "Make a shadow drop rule live: from within 5 s it drops the lines it matches before they are stored, and they cannot be read again. Needs a token of level full that a person unlocked for destructive changes. Check what the rule would drop with drop_rules first, and tell the person. Refused on Davy's own project and for a level rule of warn or above. A person holds the rule from then on: it never expires, and only a person makes it a shadow rule again or removes it. Returns the rule as drop_rules shows it."
+    )]
+    async fn drop_rule_live(
+        &self,
+        ctx: RequestContext<RoleServer>,
+        Parameters(req): Parameters<DropRuleLive>,
+    ) -> Reply {
+        let proof = ctx.extensions.get::<crate::access::Unlocked>().copied();
+        let id = req.rule_id;
+        let change = live_change(proof, req.project.clone(), id, time::now_ms())?;
+        store::submit(&self.writes, Job::Drop(change))
+            .await
+            .map_err(|e| e.to_string())?;
+        self.blocking(move |data| {
+            let c = query::open(data)?;
+            let project = store::project_by_slug(&c, &req.project)?;
+            let listed = drops::list(&c, Some(project), data, time::now_ms())?;
+            let rule = listed
+                .iter()
+                .find(|l| l.rule.id == id)
+                .ok_or_else(|| anyhow::anyhow!("rule {id} is gone: a person removed it"))?;
+            json(&json!({"rule": rule.json(true), "note": NOTE}))
+        })
+        .await
+    }
+}
+
+/// The live change, or the refusal without the proof: the gate gives the
+/// proof only to an unlocked token of level full, and this is what holds
+/// when a route around the gate reaches the tool.
+pub(super) fn live_change(
+    proof: Option<crate::access::Unlocked>,
+    project: String,
+    rule: i64,
+    at_ms: i64,
+) -> Result<AgentChange, String> {
+    let unlocked = proof.ok_or_else(|| {
+        "drop_rule_live needs a token of level full with destructive changes unlocked".to_owned()
+    })?;
+    Ok(AgentChange::Live {
+        project,
+        rule,
+        at_ms,
+        unlocked,
+    })
 }
