@@ -34,6 +34,8 @@ fn filling() -> Input {
         total: 500 * GB,
         projects: projects(&[("api", 30), ("shop", 30)]),
         default_days: 30,
+        cold: Vec::new(),
+        hot_days: None,
         raw: Vec::new(),
         counted_since: None,
         now: 0,
@@ -55,6 +57,11 @@ fn a_disk_that_fills_says_when() {
             // 8 GB for 30 closed days and today, and 10 GB of SQLite and
             // uploads.
             steady_state: 258 * GB,
+            tiers: Tiers {
+                hot_days: None,
+                ratio_ppm: 200_000,
+                own: false,
+            },
             headroom: 50 * GB,
             // 150 GB to the limit at 8 GB a day.
             days_left: Some(19),
@@ -466,6 +473,8 @@ fn a_server_without_projects_takes_its_default_retention() {
     let input = Input {
         projects: Vec::new(),
         default_days: 30,
+        cold: Vec::new(),
+        hot_days: None,
         ..filling()
     };
     let f = forecast(&input, &WhatIf::default()).unwrap();
@@ -529,4 +538,34 @@ fn a_date_past_ten_years_is_beyond_for_the_bound_and_the_estimate() {
         (f.days_left, f.full_on, f.beyond_10_years),
         (Some(3_650), Some(day("2036-11-21")), false)
     );
+}
+
+/// Days past `--hot-days` take the benchmark's 0.2 of what they took
+/// hot, so the disk of `filling` holds its 30 days and never fills.
+#[test]
+fn days_that_turn_cold_lower_the_steady_state() {
+    let input = Input {
+        hot_days: Some(7),
+        ..filling()
+    };
+    let f = forecast(&input, &WhatIf::default()).unwrap();
+    // 8 GB each for today and 7 closed days, 1.6 GB each for 23, and 10
+    // GB of SQLite and uploads.
+    assert_eq!(
+        (f.steady_state, f.days_left, f.full_on, f.tiers.ratio_ppm),
+        (110_800 * MB, None, None, 200_000)
+    );
+
+    // A what-if of 5 days frees the cold days older than that too.
+    let input = Input {
+        cold: vec![(day("2026-11-10"), 3 * GB), (day("2026-11-16"), 2 * GB)],
+        ..input
+    };
+    let what_if = WhatIf {
+        logs_days: Some(5),
+        ..WhatIf::default()
+    };
+    assert_eq!(freed(&input, 5), 5 * GB + 9 * GB + 7 * GB);
+    let f = forecast(&input, &what_if).unwrap();
+    assert_eq!((f.longest_days, f.steady_state), (5, 58 * GB));
 }

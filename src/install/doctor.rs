@@ -34,6 +34,9 @@ pub struct Args {
     /// for projects without a retention of their own.
     #[arg(long, default_value_t = retention::DEFAULT_LOG_DAYS)]
     pub log_retention_days: u32,
+    /// The server's `--hot-days`, for the days the forecast takes as cold.
+    #[arg(long, default_value_t = retention::HotDays::default())]
+    pub hot_days: retention::HotDays,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -88,6 +91,7 @@ fn not_ok(
 pub async fn run(out: &mut impl Write, args: &Args) -> anyhow::Result<()> {
     let defaults = retention::Defaults {
         logs: retention::Days::new(args.log_retention_days).map_err(anyhow::Error::msg)?,
+        hot_days: args.hot_days,
         ..retention::Defaults::default()
     };
     let checks = checks(&args.data, defaults).await;
@@ -145,6 +149,8 @@ pub async fn checks(data: &Path, defaults: retention::Defaults) -> Vec<Check> {
         },
     }
     checks.push(logs(&crate::logs::dir(data)));
+    let today = crate::time::day_of(crate::time::now_ns());
+    checks.push(cold::cold(data, &d, today));
     checks.push(davy::davy(data, &d, crate::time::now_ms()));
     checks.push(quota::quotas(data, &d, crate::time::now_ns()));
     let (forecast, assumed) = forecast(data, defaults, crate::time::now_ns()).unzip();
@@ -671,6 +677,9 @@ fn open_mode(path: &Path) -> Option<u32> {
 fn open_mode(_path: &Path) -> Option<u32> {
     None
 }
+
+#[path = "doctor_cold.rs"]
+mod cold;
 
 #[path = "doctor_davy.rs"]
 mod davy;

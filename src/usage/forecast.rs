@@ -13,16 +13,19 @@
 //! The log growth comes from [`growth`]: raw bytes per day times how they
 //! pack, or the disk sizes of the closed days. Error events add to SQLite
 //! per project until each project's error retention balances, see
-//! [`errors`]. Both run through [`fill`].
+//! [`errors`]. Both run through [`fill`]. Days past `--hot-days` take
+//! their cold size, see [`tiers`].
 
 mod errors;
 mod estimate;
 mod fill;
 mod growth;
+mod tiers;
 
 pub use errors::{ErrorBasis, Errors, Lean, MIN_EVENTS, ProjectErrors, StoreDay};
 pub use fill::{Fill, HORIZON_DAYS};
 pub use growth::{Basis, Confidence, LOOK_BACK, Logs, RawDay, Spread, hours};
+pub use tiers::{PRIOR_PPM as COLD_PRIOR_PPM, Tiers};
 
 use crate::usage::footprint::Prior;
 use fill::Part;
@@ -45,8 +48,13 @@ pub const HEADROOM_REASON: &str = "10% of the filesystem stays free: filesystems
 #[derive(Clone, Debug, PartialEq)]
 pub struct Input {
     pub today: Date,
-    /// Each closed log day on disk and its size, oldest first.
+    /// Each closed log day on disk and the size of its index, oldest
+    /// first.
     pub closed: Vec<(Date, u64)>,
+    /// Each cold log day on disk and the size of its files, oldest first.
+    pub cold: Vec<(Date, u64)>,
+    /// Closed days the server keeps hot, `--hot-days`: all when `None`.
+    pub hot_days: Option<u32>,
     /// What Davy's files take now.
     pub davy: u64,
     /// What SQLite, uploads and other files take now. SQLite grows from
@@ -166,8 +174,11 @@ pub struct Forecast {
     pub shortest_days: u32,
     /// The most Davy takes once retention deletes as much as arrives: the
     /// longest log retention's closed days and today, each a day's growth,
-    /// SQLite with each project's error retention full, and uploads.
+    /// or its cold share past `--hot-days`, SQLite with each project's
+    /// error retention full, and uploads.
     pub steady_state: u64,
+    /// How logs split into hot and cold days.
+    pub tiers: Tiers,
     pub headroom: u64,
     /// `None` when the disk never fills at this rate, or fills beyond
     /// [`HORIZON_DAYS`].
@@ -316,7 +327,17 @@ pub fn forecast(input: &Input, what_if: &WhatIf) -> Result<Forecast, NoForecast>
         .as_ref()
         .map_or((&none, &none), |f| (&f.bound, &f.estimate));
     let freed = freed(input, longest);
-    let run = |growth, errors: &[Part]| bound(input, growth, longest, freed, errors, limit);
+    let tiers = Tiers::of(input);
+    let run = |growth: u64, errors: &[Part]| {
+        bound(
+            input,
+            growth,
+            tiers.steady(growth, longest),
+            freed,
+            errors,
+            limit,
+        )
+    };
     let b = run(growth, bound_errors);
     let fill = Fill::new(input.today, b.days);
     let at = |growth, errors: &[Part]| Fill::new(input.today, run(growth, errors).days).full_on;
@@ -328,7 +349,7 @@ pub fn forecast(input: &Input, what_if: &WhatIf) -> Result<Forecast, NoForecast>
     };
     let split = logs
         .as_ref()
-        .map(|l| estimate::logs(input, l, &after, longest));
+        .map(|l| estimate::logs(input, l, &after, (longest, tiers)));
     let by_project = split.as_ref().is_some_and(|s| s.by_project);
     let estimate = split.map(|s| estimate(input, s, estimate_errors, limit, b.days));
     let errors = found.as_ref().map(|f| Errors {
@@ -341,6 +362,7 @@ pub fn forecast(input: &Input, what_if: &WhatIf) -> Result<Forecast, NoForecast>
         longest_days: longest,
         shortest_days: after.iter().map(|(_, n)| *n).min().unwrap_or(longest),
         steady_state: b.steady_state,
+        tiers,
         headroom,
         days_left: fill.days_left,
         full_on: fill.full_on,
@@ -368,20 +390,12 @@ struct Bound {
     left: u64,
 }
 
-/// The bound at `growth` of logs kept `longest` days, with the errors'
-/// parts `errors`, once a what-if's shorter retention deleted the closed
-/// days that take `freed`.
-fn bound(
-    input: &Input,
-    growth: u64,
-    longest: u32,
-    freed: u64,
-    errors: &[Part],
-    limit: u64,
-) -> Bound {
-    // Retention of N days deletes a day once it is more than N days old,
-    // so the disk holds N closed days and today.
-    let logs = growth.saturating_mul(u64::from(longest) + 1);
+/// The bound at `growth` of logs that hold `logs` once retention
+/// balances, with the errors' parts `errors`, once a what-if's shorter
+/// retention deleted the closed days that take `freed`. Retention of N
+/// days deletes a day once it is more than N days old, so the disk holds
+/// N closed days and today, see [`Tiers::steady`].
+fn bound(input: &Input, growth: u64, logs: u64, freed: u64, errors: &[Part], limit: u64) -> Bound {
     let now = input.davy.saturating_sub(input.fixed).saturating_sub(freed);
     let mut parts = vec![Part {
         growth,
@@ -402,9 +416,10 @@ fn bound(
     }
 }
 
-/// What the closed days take that a what-if lowering the longest log
-/// retention to `longest` deletes at the next sweep, by their sizes on
-/// disk: those older than `longest` days. Without such a what-if, none.
+/// What the closed days, hot and cold, take that a what-if lowering the
+/// longest log retention to `longest` deletes at the next sweep, by their
+/// sizes on disk: those older than `longest` days. Without such a
+/// what-if, none.
 fn freed(input: &Input, longest: u32) -> u64 {
     let before = input.projects.iter().map(|(_, n)| *n).max();
     if longest >= before.unwrap_or(input.default_days) {
@@ -417,6 +432,7 @@ fn freed(input: &Input, longest: u32) -> u64 {
     input
         .closed
         .iter()
+        .chain(&input.cold)
         .filter(|(day, _)| *day < first)
         .fold(0, |sum, (_, bytes)| sum.saturating_add(*bytes))
 }
@@ -592,8 +608,10 @@ fn measured(input: &Input, shortest: u32) -> Result<Direct, NoForecast> {
         .take(DAYS)
         .collect();
     let sizes: Vec<u64> = days.iter().map(|(_, bytes)| *bytes).collect();
-    // With 1 day of retention, yesterday is the only day not cut.
-    let need = if shortest >= 2 { 2 } else { 1 };
+    // With 1 day of retention, yesterday is the only day not cut, and
+    // with 1 hot day the only one not cold.
+    let hot = input.hot_days.map_or(shortest, |h| h.min(shortest));
+    let need = if hot >= 2 { 2 } else { 1 };
     match (median(&sizes), days.last()) {
         (Some(m), Some((oldest, _))) if sizes.len() >= need => Ok(Direct {
             growth: m,

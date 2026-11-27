@@ -109,6 +109,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let retention = retention::Defaults {
         logs: days("log-retention-days", args.log_retention_days)?,
         errors: days("error-retention-days", args.error_retention_days)?,
+        hot_days: retention::HotDays::OFF,
     };
     let env = env(&args.data, |key| std::env::var(key).ok());
     let token = secret::admin_token(&env)?;

@@ -109,9 +109,13 @@ impl Report {
             human(d.total),
             human(d.free)
         )?;
+        let cold = match d.cold_bytes() {
+            0 => String::new(),
+            b => format!(", cold {}", human(b)),
+        };
         writeln!(
             out,
-            "{:<9} logs {} (today {}), sqlite {}, uploads {}, other {}",
+            "{:<9} logs {} (today {}{cold}), sqlite {}, uploads {}, other {}",
             "davy",
             human(d.logs()),
             human(d.today),

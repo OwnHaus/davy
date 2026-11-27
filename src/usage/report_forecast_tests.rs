@@ -35,6 +35,8 @@ fn logs_server() -> Input {
         total: 500 * GB,
         projects: vec![("api".to_owned(), 30), ("shop".to_owned(), 7)],
         default_days: 30,
+        cold: Vec::new(),
+        hot_days: None,
         raw: days
             .iter()
             .map(|d| RawDay {
@@ -94,6 +96,20 @@ fn a_server_with_logs_answers_byte_for_byte_as_before() {
     r.text(&mut out).unwrap();
     assert_eq!(String::from_utf8(out).unwrap(), TEXT);
     assert_eq!(r.json(false).to_string(), JSON);
+
+    // Cold days show beside today's logs, and in the JSON as logs_cold.
+    let mut r = r;
+    if let Ok(d) = &mut r.disk {
+        d.cold = vec![(day("2026-11-10"), 300 * MB)];
+    }
+    let mut out = Vec::new();
+    r.text(&mut out).unwrap();
+    assert!(
+        String::from_utf8(out).unwrap().contains(
+            "davy      logs 7.0 GB (today 400.0 MB, cold 300.0 MB), sqlite 2.0 GB, uploads 0 B, other 0 B\n"
+        )
+    );
+    assert_eq!(r.json(false)["davy"]["logs_cold"], 300 * MB);
 }
 
 /// No logs and shop's errors on the footprint benchmark: 100 000 events a
@@ -126,14 +142,14 @@ const ERRORS_JSON: &str = concat!(
     r#"{"basis":{"confidence":"medium","errors":{"basis":"footprint","#,
     r#""bytes_per_event":2100,"estimate_growth_per_day":210000000,"events_per_day":100000,"#,
     r#""growth_per_day":210000000,"own_days":0,"projects":1},"full_on_range":["2026-11-29","#,
-    r#""2026-11-29"],"logs":{"basis":"errors_only","counted_hours":null,"#,
+    r#""2026-11-29"],"logs":{"basis":"errors_only","cold_ratio":0.2,"counted_hours":null,"#,
     r#""footprint":"fixture","footprint_ratio":0.761,"growth_per_day":{"high":0,"#,
-    r#""low":0,"mid":0},"own_days":0,"own_ratio":null,"possible_days":7,"#,
+    r#""low":0,"mid":0},"hot_days":null,"own_cold_ratio":false,"own_days":0,"own_ratio":null,"possible_days":7,"#,
     r#""ratio":null,"ratio_range":null,"raw_days":7,"raw_per_day":0},"#,
     r#""why":"Davy counted no raw log bytes in the last 30 days and the disk holds no closed log day since 2026-11-17,"#,
     r#" so logs add nothing and the forecast rests on errors alone; confidence is medium as SQLite growth measured bytes per event on 0 of 7 days and the footprint benchmark gives the rest"},"#,
     r#""busy_refused_requests_today_no_project":0,"#,
-    r#""davy":{"logs":0,"logs_today":0,"other":0,"sqlite":2000000000,"#,
+    r#""davy":{"logs":0,"logs_cold":0,"logs_hot":0,"logs_today":0,"other":0,"sqlite":2000000000,"#,
     r#""uploads":0},"disk":{"beyond_10_years":false,"days_left":5,"free":51000000000,"#,
     r#""full_on":"2026-11-29","headroom":50000000000,"headroom_reason":"10% of the filesystem stays free: filesystems reserve blocks,"#,
     r#" and index merges and SQLite checkpoints need room for a copy of what they rewrite","#,
@@ -165,16 +181,16 @@ const JSON: &str = concat!(
     r#""bytes_per_event":2100,"estimate_growth_per_day":210000000,"#,
     r#""events_per_day":100000,"growth_per_day":210000000,"own_days":0,"#,
     r#""projects":1},"full_on_range":["2026-11-29","2026-11-29"],"#,
-    r#""logs":{"basis":"measured","counted_hours":null,"footprint":"fixture","#,
+    r#""logs":{"basis":"measured","cold_ratio":0.2,"counted_hours":null,"footprint":"fixture","#,
     r#""footprint_ratio":0.761,"growth_per_day":{"high":950000000,"#,
-    r#""low":850000000,"mid":900000000},"own_days":7,"own_ratio":0.6429,"#,
+    r#""low":850000000,"mid":900000000},"hot_days":null,"own_cold_ratio":false,"own_days":7,"own_ratio":0.6429,"#,
     r#""possible_days":7,"ratio":0.6429,"ratio_range":[0.6071,0.6786],"#,
     r#""raw_days":7,"raw_per_day":1400000000},"#,
     r#""why":"7 closed log days measured on this server: the growth is their median size on disk; confidence is medium as errors add over 5% of what the bound adds until the disk fills,"#,
     r#" or of the room left to the limit within 10 years where it never fills,"#,
     r#" and SQLite growth measured their bytes per event on 0 of 7 days"},"#,
     r#""busy_refused_requests_today_no_project":0,"#,
-    r#""davy":{"logs":6700000000,"logs_today":400000000,"other":0,"#,
+    r#""davy":{"logs":6700000000,"logs_cold":0,"logs_hot":6700000000,"logs_today":400000000,"other":0,"#,
     r#""sqlite":2000000000,"uploads":0},"disk":{"beyond_10_years":false,"#,
     r#""days_left":5,"free":55000000000,"full_on":"2026-11-29","#,
     r#""headroom":50000000000,"#,
@@ -230,14 +246,14 @@ const NEVER_JSON: &str = concat!(
     r#""bytes_per_event":2100,"estimate_growth_per_day":210000000,"#,
     r#""events_per_day":100000,"growth_per_day":210000000,"own_days":0,"projects":1},"#,
     r#""full_on_range":[null,null],"logs":{"basis":"errors_only","#,
-    r#""counted_hours":null,"footprint":"fixture","footprint_ratio":0.761,"#,
-    r#""growth_per_day":{"high":0,"low":0,"mid":0},"own_days":0,"own_ratio":null,"#,
+    r#""cold_ratio":0.2,"counted_hours":null,"footprint":"fixture","footprint_ratio":0.761,"#,
+    r#""growth_per_day":{"high":0,"low":0,"mid":0},"hot_days":null,"own_cold_ratio":false,"own_days":0,"own_ratio":null,"#,
     r#""possible_days":7,"ratio":null,"ratio_range":null,"raw_days":7,"#,
     r#""raw_per_day":0},"#,
     r#""why":"Davy counted no raw log bytes in the last 30 days and the disk holds no closed log day since 2026-11-17,"#,
     r#" so logs add nothing and the forecast rests on errors alone; confidence is medium as SQLite growth measured bytes per event on 0 of 7 days and the footprint benchmark gives the rest"},"#,
     r#""busy_refused_requests_today_no_project":0,"#,
-    r#""davy":{"logs":0,"logs_today":0,"other":0,"sqlite":2000000000,"uploads":0},"#,
+    r#""davy":{"logs":0,"logs_cold":0,"logs_hot":0,"logs_today":0,"other":0,"sqlite":2000000000,"uploads":0},"#,
     r#""disk":{"beyond_10_years":false,"days_left":null,"free":60000000000,"#,
     r#""full_on":null,"headroom":50000000000,"#,
     r#""headroom_reason":"10% of the filesystem stays free: filesystems reserve blocks,"#,

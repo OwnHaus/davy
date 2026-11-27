@@ -360,7 +360,8 @@ fn closed(input: &Input) -> Vec<Day> {
 
 /// At most 7, and no more than the shortest log retention of a project
 /// with raw bytes: a server keeping logs 3 days never holds more than 3
-/// closed days uncut.
+/// closed days uncut. Nor more than `--hot-days`: a cold day has no index
+/// to measure.
 fn possible(input: &Input) -> usize {
     let counted = input
         .projects
@@ -371,6 +372,7 @@ fn possible(input: &Input) -> usize {
         .min()
         .or_else(|| input.projects.iter().map(|(_, n)| *n).min())
         .unwrap_or(input.default_days);
+    let shortest = input.hot_days.map_or(shortest, |h| h.min(shortest));
     usize::try_from(shortest).map_or(DAYS, |n| n.clamp(1, DAYS))
 }
 

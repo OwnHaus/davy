@@ -88,6 +88,7 @@ pub struct Prepared {
     kept: Vec<(i64, retention::Retention)>,
     what_if: WhatIf,
     default_days: u32,
+    hot_days: Option<u32>,
     projects: Vec<Project>,
     busy_no_project: u64,
     /// Raw bytes per index day and project of the newest days, see
@@ -175,6 +176,7 @@ pub fn prepare(c: &Connection, req: &Request, now_ns: i64) -> Result<Prepared> {
         kept,
         what_if: req.what_if.clone(),
         default_days: req.defaults.logs.get(),
+        hot_days: req.defaults.hot_days.get(),
         projects,
         busy_no_project: limits.get(&crate::quota::NO_PROJECT).map_or(0, |s| s.busy),
         raw,
@@ -286,6 +288,8 @@ impl Prepared {
         forecast::Input {
             today: self.today,
             closed: theirs.closed,
+            cold: disk.cold.clone(),
+            hot_days: self.hot_days,
             davy: disk.davy(),
             fixed: disk.fixed(),
             used: disk.used(),
@@ -421,6 +425,8 @@ impl Report {
                 out["davy"] = json!({
                     "logs": size(d.logs()),
                     "logs_today": size(d.today),
+                    "logs_hot": size(d.hot()),
+                    "logs_cold": size(d.cold_bytes()),
                     "sqlite": size(d.sqlite),
                     "uploads": size(d.uploads),
                     "other": size(d.other),
@@ -488,6 +494,9 @@ impl Report {
                 "own_ratio": l.own_ratio.map(ratio),
                 "footprint_ratio": ratio(l.prior.ratio.mid),
                 "footprint": l.prior.source,
+                "hot_days": f.tiers.hot_days,
+                "cold_ratio": ratio(f.tiers.ratio_ppm),
+                "own_cold_ratio": f.tiers.own,
             },
             "errors": f.errors.map(|e| json!({
                 "projects": e.projects,

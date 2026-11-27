@@ -64,6 +64,8 @@ pub(super) fn server() -> Input {
         total: 500 * GB,
         projects: vec![("api".to_owned(), 7), ("shop".to_owned(), 30)],
         default_days: 30,
+        cold: Vec::new(),
+        hot_days: None,
         raw,
         counted_since: Some(time::midnight(day("2026-10-20"))),
         now: time::midnight(today) + 12 * 3_600_000_000_000,
@@ -100,22 +102,30 @@ fn a_raised_retention_does_not_count_cut_days_as_on_disk() {
     let input = server();
     // api's 7 closed days and today: 14 GB and 0.9 GB. Its 23 older
     // days are on disk for shop but cut for api.
-    assert_eq!(on_disk(&input, "api", 30), 14_900 * MB);
-    assert_eq!(on_disk(&input, "api", 7), 14_900 * MB);
+    assert_eq!(on_disk(&input, "api", 30), (14_900 * MB, 0));
+    assert_eq!(on_disk(&input, "api", 7), (14_900 * MB, 0));
     // shop: 23 older days of 4 GB, 28 GB and 1.7 GB.
-    assert_eq!(on_disk(&input, "shop", 30), 121_700 * MB);
-    assert_eq!(on_disk(&input, "shop", 7), 29_700 * MB);
+    assert_eq!(on_disk(&input, "shop", 30), (121_700 * MB, 0));
+    assert_eq!(on_disk(&input, "shop", 7), (29_700 * MB, 0));
+    // A day with cold files counts as cold.
+    let tiered = Input {
+        closed: server().closed[23..].to_vec(),
+        cold: server().closed[..23].to_vec(),
+        hot_days: Some(7),
+        ..server()
+    };
+    assert_eq!(on_disk(&tiered, "shop", 30), (29_700 * MB, 92_000 * MB));
     // A directory retention already deleted holds nothing.
     let gone = Input {
         closed: server().closed[1..].to_vec(),
         ..server()
     };
-    assert_eq!(on_disk(&gone, "shop", 30), 117_700 * MB);
+    assert_eq!(on_disk(&gone, "shop", 30), (117_700 * MB, 0));
     let split = logs(
         &input,
         &measured(3_600 * MB),
         &[("api", 30), ("shop", 30)],
-        30,
+        all_hot(30),
     );
     assert_eq!(
         split,
@@ -142,7 +152,12 @@ fn a_raised_retention_does_not_count_cut_days_as_on_disk() {
 #[test]
 fn a_shorter_retention_frees_what_it_would_delete_now() {
     let input = server();
-    let split = logs(&input, &measured(3_600 * MB), &[("api", 7), ("shop", 7)], 7);
+    let split = logs(
+        &input,
+        &measured(3_600 * MB),
+        &[("api", 7), ("shop", 7)],
+        all_hot(7),
+    );
     assert_eq!(
         split,
         Split {
@@ -177,7 +192,7 @@ fn without_raw_bytes_per_project_the_logs_are_one_part() {
             &input,
             &measured(3_600 * MB),
             &[("api", 7), ("shop", 30)],
-            30
+            all_hot(30)
         ),
         Split {
             parts: vec![Part {
@@ -201,7 +216,12 @@ fn without_raw_bytes_per_project_a_shorter_retention_frees_its_days_too() {
         ..server()
     };
     assert_eq!(
-        logs(&input, &measured(3_600 * MB), &[("api", 7), ("shop", 7)], 7),
+        logs(
+            &input,
+            &measured(3_600 * MB),
+            &[("api", 7), ("shop", 7)],
+            all_hot(7)
+        ),
         Split {
             parts: vec![Part {
                 growth: 3_600 * MB,
@@ -253,7 +273,7 @@ fn a_first_day_shares_by_bytes_over_the_time_counted() {
         ..measured(3_600 * MB)
     };
     assert_eq!(shares(&input, &first), [("api", 2 * GB), ("shop", 4 * GB)]);
-    let split = logs(&input, &first, &[("api", 7), ("shop", 30)], 30);
+    let split = logs(&input, &first, &[("api", 7), ("shop", 30)], all_hot(30));
     assert_eq!(
         split.parts.iter().map(|p| p.growth).collect::<Vec<_>>(),
         [1_200 * MB, 2_400 * MB]
@@ -449,4 +469,14 @@ pub(super) fn shop_errors() -> ProjectErrors {
         stored: 1_200_000,
         days: 30,
     }
+}
+
+/// `longest` with every day hot.
+fn all_hot(longest: u32) -> (u32, Tiers) {
+    let tiers = Tiers {
+        hot_days: None,
+        ratio_ppm: 200_000,
+        own: false,
+    };
+    (longest, tiers)
 }

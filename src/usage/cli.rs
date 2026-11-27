@@ -36,6 +36,10 @@ pub struct Args {
     /// this command cannot read from a running server.
     #[arg(long, default_value_t = retention::DEFAULT_LOG_DAYS)]
     pub log_retention_days: u32,
+    /// The server's `--hot-days`, which the forecast needs for the days
+    /// that turn cold.
+    #[arg(long, default_value_t = retention::HotDays::default())]
+    pub hot_days: retention::HotDays,
     /// summary: counts, disk and forecast. savings: where logs and errors
     /// could take less, with the command to try.
     #[arg(long, value_enum, default_value_t)]
@@ -64,6 +68,7 @@ pub fn run(out: &mut impl Write, args: &Args) -> Result<()> {
         },
         defaults: retention::Defaults {
             logs: retention::Days::new(args.log_retention_days).map_err(anyhow::Error::msg)?,
+            hot_days: args.hot_days,
             ..retention::Defaults::default()
         },
     };

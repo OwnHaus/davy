@@ -80,6 +80,7 @@ async fn the_summary_is_what_davy_usage_json_prints() {
             logs_days: None,
             logs_bytes_per_day: None,
             log_retention_days: crate::retention::DEFAULT_LOG_DAYS,
+            hot_days: crate::retention::HotDays::default(),
             view: crate::usage::savings::View::Summary,
             top: crate::usage::savings::DEFAULT_TOP,
             json: true,

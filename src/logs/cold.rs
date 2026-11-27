@@ -34,6 +34,11 @@ pub fn segment_name(name: &str) -> bool {
 pub(super) use layout::segments as cold_segments;
 pub use note::ColdNote;
 pub(super) use search::{CHANGED, Parts, Scan, days};
+#[path = "cold_verify.rs"]
+mod verify;
+#[cfg(test)]
+pub(crate) use verify::cold_day;
+pub use verify::{MAX_BAD, Verified, verify};
 #[doc(hidden)]
 #[path = "cold_bench.rs"]
 pub mod bench;

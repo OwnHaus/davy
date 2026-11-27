@@ -46,6 +46,8 @@ pub(super) fn server(since: &str, now: &str, days: &[(Date, u64, Option<u64>)]) 
         total: 500 * GB,
         projects: vec![("api".to_owned(), 30)],
         default_days: 30,
+        cold: Vec::new(),
+        hot_days: None,
         raw: days
             .iter()
             .filter(|(_, raw, _)| *raw > 0)

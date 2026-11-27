@@ -5,7 +5,7 @@
 //! benchmark.
 
 use super::{
-    DAYS, Input, LOOK_BACK, Logs,
+    DAYS, Input, LOOK_BACK, Logs, Tiers,
     fill::Part,
     growth::{Basis, raw_per_day, whole},
 };
@@ -29,15 +29,20 @@ pub struct Split {
 /// of the raw bytes per day, which is its raw bytes times one ratio: the
 /// middle growth over all raw bytes per day. Its room is what it holds
 /// once retention balances, less what it holds now: its uncut days within
-/// that retention whose directory is on disk. Without raw bytes per
-/// project, the logs are one part kept `longest` days, which frees what
-/// the bound frees.
-pub fn logs(input: &Input, logs: &Logs, after: &[(&str, u32)], longest: u32) -> Split {
+/// that retention whose directory is on disk, a cold one at the cold
+/// ratio of `tiers`. Without raw bytes per project, the logs are one part
+/// kept `longest` days, which frees what the bound frees.
+pub fn logs(
+    input: &Input,
+    logs: &Logs,
+    after: &[(&str, u32)],
+    (longest, tiers): (u32, Tiers),
+) -> Split {
     let growth = logs.growth.mid;
     let shares = shares(input, logs);
     let total: u128 = shares.iter().map(|(_, r)| u128::from(*r)).sum();
     if total == 0 {
-        let steady = growth.saturating_mul(u64::from(longest) + 1);
+        let steady = tiers.steady(growth, longest);
         let freed = super::freed(input, longest);
         let now = input.davy.saturating_sub(input.fixed).saturating_sub(freed);
         return Split {
@@ -51,6 +56,7 @@ pub fn logs(input: &Input, logs: &Logs, after: &[(&str, u32)], longest: u32) -> 
         };
     }
     let disk = |raw: u64| clamp(u128::from(raw) * u128::from(growth) / total);
+    let held = |(hot, cold): (u64, u64)| disk(hot).saturating_add(tiers.cold(disk(cold)));
     let mut split = Split {
         by_project: true,
         ..Split::default()
@@ -61,15 +67,15 @@ pub fn logs(input: &Input, logs: &Logs, after: &[(&str, u32)], longest: u32) -> 
             .find(|(s, _)| s == slug)
             .map_or(0, |(_, r)| *r);
         let per_day = disk(raw);
-        let steady = per_day.saturating_mul(u64::from(*days) + 1);
-        let held = disk(on_disk(input, slug, *days));
+        let steady = tiers.steady(per_day, *days);
+        let now = held(on_disk(input, slug, *days));
         let kept = input.projects.iter().find(|(s, _)| s == slug);
-        let before = kept.map_or(held, |(_, n)| disk(on_disk(input, slug, *n)));
-        split.freed = split.freed.saturating_add(before.saturating_sub(held));
+        let before = kept.map_or(now, |(_, n)| held(on_disk(input, slug, *n)));
+        split.freed = split.freed.saturating_add(before.saturating_sub(now));
         split.steady = split.steady.saturating_add(steady);
         split.parts.push(Part {
             growth: per_day,
-            room: steady.saturating_sub(held),
+            room: steady.saturating_sub(now),
         });
     }
     split
@@ -110,22 +116,29 @@ fn shares<'a>(input: &'a Input, logs: &Logs) -> Vec<(&'a str, u64)> {
         .collect()
 }
 
-/// Raw bytes of `slug` that sit on disk while it keeps logs `days` days:
-/// its uncut rows from `days` days before today on, of a day whose
-/// directory is on disk. Today's and tomorrow's directories are open.
-fn on_disk(input: &Input, slug: &str, days: u32) -> u64 {
+/// Raw bytes of `slug` that sit on disk while it keeps logs `days` days,
+/// hot and cold: its uncut rows from `days` days before today on, of a
+/// day on disk. Today's and tomorrow's directories are open. A day with
+/// cold files counts as cold, the smaller, as its late logs are few.
+fn on_disk(input: &Input, slug: &str, days: u32) -> (u64, u64) {
     let first = input
         .today
         .checked_sub(i64::from(days).days())
         .unwrap_or(Date::MIN);
-    let on_disk = |day: Date| day >= input.today || input.closed.iter().any(|(d, _)| *d == day);
-    input
-        .raw
-        .iter()
-        .filter(|r| r.day >= first && on_disk(r.day))
-        .flat_map(|r| &r.projects)
-        .filter(|(s, _, cut)| s == slug && !cut)
-        .fold(0_u64, |sum, (_, b, _)| sum.saturating_add(*b))
+    let has = |list: &[(Date, u64)], day: Date| list.iter().any(|(d, _)| *d == day);
+    let mut held = (0_u64, 0_u64);
+    for r in input.raw.iter().filter(|r| r.day >= first) {
+        let tier = if has(&input.cold, r.day) {
+            &mut held.1
+        } else if r.day >= input.today || has(&input.closed, r.day) {
+            &mut held.0
+        } else {
+            continue;
+        };
+        let bytes = r.projects.iter().filter(|(s, _, cut)| s == slug && !cut);
+        *tier = bytes.fold(*tier, |sum, (_, b, _)| sum.saturating_add(*b));
+    }
+    held
 }
 
 /// Raw bytes of `slug` on the days `keep` takes, cut or not.

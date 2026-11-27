@@ -1,4 +1,5 @@
 //! `davy usage` in a terminal.
+use crate::retention::HotDays;
 
 use super::*;
 use crate::usage::tests::{data_with_counts, logs_pending};
@@ -15,6 +16,7 @@ fn davy_usage_prints_the_counts_of_the_window_as_json() {
         logs_days: Some(3),
         logs_bytes_per_day: None,
         log_retention_days: 30,
+        hot_days: HotDays::default(),
         view: View::Summary,
         top: 3,
         json: true,
@@ -62,6 +64,7 @@ fn davy_usage_prints_text_by_default_and_refuses_a_long_window() {
         logs_days: None,
         logs_bytes_per_day: None,
         log_retention_days: 30,
+        hot_days: HotDays::default(),
         view: View::Summary,
         top: 3,
         json: false,
@@ -106,6 +109,7 @@ fn davy_usage_view_savings_prints_the_entries_and_bounds_top() {
         logs_days: None,
         logs_bytes_per_day: None,
         log_retention_days: 30,
+        hot_days: HotDays::default(),
         view: View::Savings,
         top: 3,
         json: false,
@@ -169,6 +173,7 @@ fn lines_live_drop_rules_dropped_show_as_logs_filtered() {
         logs_days: None,
         logs_bytes_per_day: None,
         log_retention_days: 30,
+        hot_days: HotDays::default(),
         view: View::Summary,
         top: 3,
         json: true,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::usage::forecast::Tiers;
 use crate::{
     logs::store::log_days,
     store,
@@ -60,6 +61,7 @@ fn report(logs: Option<Logs>, range: [Option<Date>; 2]) -> Report {
             longest_days: 30,
             shortest_days: 30,
             steady_state: 28_086_932_000,
+            tiers: Tiers::ALL_HOT,
             headroom: 50 * GB,
             days_left: Some(12),
             full_on: Some(day("2026-12-06")),
@@ -92,6 +94,9 @@ fn the_basis_states_its_confidence_and_range_in_json_and_text() {
             "full_on_range": ["2026-12-06", "2026-12-12"],
             "logs": {
                 "basis": "blended",
+                "cold_ratio": 0.2,
+                "hot_days": null,
+                "own_cold_ratio": false,
                 "growth_per_day": {"low": "579.2 MB", "mid": "713.4 MB", "high": "873.8 MB"},
                 "own_days": 3,
                 "possible_days": 7,

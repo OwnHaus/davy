@@ -27,6 +27,8 @@ pub(super) fn errors_only() -> Input {
         total: 500 * GB,
         projects: vec![("api".to_owned(), 30)],
         default_days: 30,
+        cold: Vec::new(),
+        hot_days: None,
         raw: Vec::new(),
         counted_since: Some(time::midnight(day("2026-10-01"))),
         now: time::midnight(day("2026-11-24")) + 12 * time::HOUR_NS,
@@ -89,6 +91,11 @@ fn errors_on_the_benchmark_give_a_medium_forecast() {
         f,
         Forecast {
             growth: 0,
+            tiers: Tiers {
+                hot_days: None,
+                ratio_ppm: 200_000,
+                own: false,
+            },
             errors: Some(Errors {
                 projects: 1,
                 events_per_day: 100_000,

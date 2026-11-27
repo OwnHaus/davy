@@ -69,8 +69,10 @@ impl Gaps {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Disk {
-    /// Each closed log day, oldest first.
+    /// Each closed log day's index, oldest first.
     pub closed: Vec<(Date, u64)>,
+    /// Each cold log day's files, oldest first.
+    pub cold: Vec<(Date, u64)>,
     /// Today's log day, and any after it.
     pub today: u64,
     /// The database with its WAL and shared memory files.
@@ -87,10 +89,21 @@ pub struct Disk {
 }
 
 impl Disk {
+    /// What logs take, hot and cold.
     pub fn logs(&self) -> u64 {
+        self.hot().saturating_add(self.cold_bytes())
+    }
+    /// What the day indexes take.
+    pub fn hot(&self) -> u64 {
         self.closed
             .iter()
             .fold(self.today, |sum, (_, b)| sum.saturating_add(*b))
+    }
+    /// What the cold days take.
+    pub fn cold_bytes(&self) -> u64 {
+        self.cold
+            .iter()
+            .fold(0, |sum, (_, b)| sum.saturating_add(*b))
     }
     /// What Davy's files take.
     pub fn davy(&self) -> u64 {
@@ -171,12 +184,14 @@ pub(crate) fn measure_within(data: &Path, today: Date, limits: Limits) -> Result
         Ok(())
     })?;
     disk.closed.sort_unstable();
+    disk.cold.sort_unstable();
     disk.gaps = walk.gaps;
     Ok(disk)
 }
 
 /// Sorts the entries of `logs` in `root`: a directory named for a day
-/// before `today` is a closed day, one for today or later is today's.
+/// before `today` is a closed day, one for today or later is today's, and
+/// `cold` holds the cold days.
 fn measure_logs(walk: &mut Walk, root: &Opened, today: Date, disk: &mut Disk) -> Result<()> {
     let name = OsStr::new(logs::DIR);
     let before = walk.gaps.skipped_count;
@@ -191,6 +206,9 @@ fn measure_logs(walk: &mut Walk, root: &Opened, today: Date, disk: &mut Disk) ->
         return Ok(());
     };
     walk.each(&dir, |walk, name| {
+        if name == logs::store::cold::DIR && Walk::is_dir(&dir, name) {
+            return measure_cold(walk, &dir, disk);
+        }
         let bytes = walk.size(&dir, name)?;
         // A day is a directory: a file or link named like one is not.
         let day = name
@@ -210,6 +228,46 @@ fn measure_logs(walk: &mut Walk, root: &Opened, today: Date, disk: &mut Disk) ->
     })?;
     disk.logs_gap |= walk.gaps.skipped_count != before;
     Ok(())
+}
+
+/// Adds each day directory in `cold` under `logs` to the cold days, and
+/// anything else to other. A link named `cold` is no directory to the
+/// walk, which follows none, and counts as other. So does a segment still
+/// being written, `.N.tmp`, whose logs the hot day holds, and a day with
+/// no segment.
+fn measure_cold(walk: &mut Walk, logs: &Opened, disk: &mut Disk) -> Result<()> {
+    let Some(dir) = walk.open(logs, OsStr::new(logs::store::cold::DIR))? else {
+        return Ok(());
+    };
+    walk.each(&dir, |walk, name| {
+        let day = name
+            .to_str()
+            .and_then(logs::store::parse_day)
+            .filter(|_| Walk::is_dir(&dir, name));
+        let opened = match day {
+            Some(_) => walk.open(&dir, name)?,
+            None => None,
+        };
+        let (Some(day), Some(day_dir)) = (day, opened) else {
+            disk.other = disk.other.saturating_add(walk.size(&dir, name)?);
+            return Ok(());
+        };
+        let (mut kept, mut aside) = (0_u64, 0_u64);
+        walk.each(&day_dir, |walk, entry| {
+            let bytes = walk.size(&day_dir, entry)?;
+            if entry.to_str().is_some_and(logs::store::cold::segment_name) {
+                kept = kept.saturating_add(bytes);
+            } else {
+                aside = aside.saturating_add(bytes);
+            }
+            Ok(())
+        })?;
+        disk.other = disk.other.saturating_add(aside);
+        if kept > 0 {
+            disk.cold.push((day, kept));
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]

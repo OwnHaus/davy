@@ -174,6 +174,7 @@ fn an_agent_may_only_keep_data_longer() {
     let defaults = Defaults {
         logs: Days::new(30).unwrap(),
         errors: Days::new(365).unwrap(),
+        hot_days: HotDays::default(),
     };
     let agent = |ch: Change| set(&c, &ch, By::Agent(defaults)).unwrap();
     let days = |n| Some(Days::new(n).unwrap());
@@ -230,6 +231,7 @@ fn an_agent_cannot_return_a_projects_own_retention_to_the_default() {
     let defaults = Defaults {
         logs: Days::new(30).unwrap(),
         errors: Days::new(365).unwrap(),
+        hot_days: HotDays::default(),
     };
     let agent = |ch: Change| set(&c, &ch, By::Agent(defaults)).unwrap();
     let default = Setting::Default(ServerDefault::Default);
@@ -264,6 +266,7 @@ fn what_a_project_keeps_falls_back_to_the_server_default() {
     let defaults = Defaults {
         logs: Days::new(30).unwrap(),
         errors: Days::new(400).unwrap(),
+        hot_days: HotDays::default(),
     };
     let now = 1_000 * DAY_MS;
     let all = all(&c, defaults, now).unwrap();

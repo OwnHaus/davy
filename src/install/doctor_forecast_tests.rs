@@ -1,4 +1,5 @@
 use super::*;
+use crate::usage::forecast::Tiers;
 use crate::usage::{
     footprint::FIXTURE,
     forecast::{ErrorBasis, Errors, Estimate, Fill, Lean, Logs, Spread},
@@ -18,6 +19,7 @@ fn full_in(basis: Basis, days: u64) -> Forecast {
         longest_days: 30,
         shortest_days: 30,
         steady_state: 100 * GIB,
+        tiers: Tiers::ALL_HOT,
         headroom: 10 * GIB,
         days_left: Some(days),
         full_on,
@@ -354,6 +356,8 @@ fn a_first_log_line_does_not_clear_a_failing_errors_forecast() {
         total: 500 * GIB,
         projects: vec![("api".to_owned(), 30)],
         default_days: 30,
+        cold: Vec::new(),
+        hot_days: None,
         raw: Vec::new(),
         counted_since: Some(crate::time::midnight(day("2026-11-10"))),
         now: crate::time::midnight(day("2026-11-25")) + 12 * HOUR,

@@ -470,6 +470,7 @@ fn forecast_report(kept: (u32, u32), days_left: Option<u64>) -> Report {
             shortest_days: kept.0,
             longest_days: kept.1,
             steady_state: 3_663_000_000_000,
+            tiers: forecast::Tiers::ALL_HOT,
             headroom: 100_000_000_000,
             days_left,
             full_on: days_left.map(|_| day("2027-01-19")),

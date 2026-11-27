@@ -41,6 +41,23 @@ fn the_disk_splits_into_log_days_sqlite_uploads_and_the_rest() {
     fs::remove_dir_all(&data).unwrap();
 }
 
+#[test]
+fn a_cold_day_counts_its_segments_and_the_rest_counts_as_other() {
+    let data = scratch("usage-disk-cold");
+    file(&data, "logs/cold/2026-11-10/1/1.dlc", 100_000);
+    // A segment being written, whose logs its hot day holds.
+    file(&data, "logs/cold/2026-11-10/.2.tmp/1.dlc", 20_000);
+    file(&data, "logs/cold/2026-11-11/.1.tmp/1.dlc", 50_000);
+    fs::create_dir_all(data.join("logs/cold/2026-11-12")).unwrap();
+    let disk = measure(&data, day("2026-11-24")).unwrap();
+    let days: Vec<Date> = disk.cold.iter().map(|(d, _)| *d).collect();
+    assert_eq!(days, [day("2026-11-10")], "{disk:?}");
+    let near = |got: u64, want: u64| got >= want && got < want + 40_000;
+    assert!(near(disk.cold[0].1, 100_000), "{disk:?}");
+    assert!(near(disk.other, 70_000), "{disk:?}");
+    fs::remove_dir_all(&data).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn a_logs_link_to_another_directory_is_not_walked() {

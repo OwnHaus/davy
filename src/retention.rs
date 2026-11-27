@@ -28,6 +28,9 @@ pub const DEFAULT_LOG_DAYS: u32 = 30;
 /// the most there is, so agents can ask about any error ever seen.
 pub const DEFAULT_ERROR_DAYS: u32 = MAX_DAYS;
 pub const DAY_MS: i64 = 86_400_000;
+/// Closed days of logs kept as day indexes before they turn cold, see
+/// "Cold tier" in docs/design.md.
+pub const DEFAULT_HOT_DAYS: u32 = 7;
 
 /// How long the log writer waits for the lock on the data directory before
 /// it gives up the pass and tries again later. It writes logs on the same
@@ -195,11 +198,64 @@ impl Days {
     }
 }
 
-/// The server's defaults, for projects without a setting of their own.
+/// `--hot-days`: closed days of logs kept as day indexes before they
+/// turn cold, 1 to [`MAX_DAYS`], or `off` to keep every day hot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HotDays(Option<u32>);
+
+impl HotDays {
+    pub const OFF: Self = Self(None);
+
+    pub fn new(days: u32) -> Result<Self, String> {
+        if (1..=MAX_DAYS).contains(&days) {
+            Ok(Self(Some(days)))
+        } else {
+            Err(format!("hot days are 1 to {MAX_DAYS} or off, not {days}"))
+        }
+    }
+
+    /// The days, `None` for off.
+    pub fn get(self) -> Option<u32> {
+        self.0
+    }
+}
+
+impl Default for HotDays {
+    fn default() -> Self {
+        Self(Some(DEFAULT_HOT_DAYS))
+    }
+}
+
+impl std::str::FromStr for HotDays {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        if s == "off" {
+            return Ok(Self::OFF);
+        }
+        let days = s
+            .parse()
+            .map_err(|e| format!("hot days are 1 to {MAX_DAYS} or off, not {s:?}: {e}"))?;
+        Self::new(days)
+    }
+}
+
+impl std::fmt::Display for HotDays {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(days) => write!(f, "{days}"),
+            None => f.write_str("off"),
+        }
+    }
+}
+
+/// The server's defaults, for projects without a setting of their own,
+/// and the days its logs stay hot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Defaults {
     pub logs: Days,
     pub errors: Days,
+    pub hot_days: HotDays,
 }
 
 impl Default for Defaults {
@@ -207,6 +263,7 @@ impl Default for Defaults {
         Self {
             logs: Days(DEFAULT_LOG_DAYS),
             errors: Days(DEFAULT_ERROR_DAYS),
+            hot_days: HotDays::default(),
         }
     }
 }

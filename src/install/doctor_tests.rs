@@ -89,6 +89,7 @@ async fn a_healthy_install_passes_every_check() {
                 "no SMTP server set, alerts go to webhooks and Slack only"
             ),
             ok("logs", "every day of logs is a directory of its own"),
+            ok("cold", "hot logs take 0 B, no day is cold yet"),
             ok(
                 "davy",
                 "no crash, error or warning of Davy's own in the last 24 hours"
@@ -444,6 +445,7 @@ fn full_in(days: Option<u64>) -> Forecast {
         longest_days: 30,
         shortest_days: 30,
         steady_state: 100 * GIB,
+        tiers: usage::forecast::Tiers::ALL_HOT,
         headroom: 10 * GIB,
         days_left: days,
         full_on,
