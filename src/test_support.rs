@@ -2,12 +2,35 @@ use std::path::{Path, PathBuf};
 
 /// A fresh path under `target/`, not created yet. Canonical, so it equals the
 /// data directory setup and doctor resolve it to.
+///
+/// Most tests leave their data behind, and a failed one keeps it for a look
+/// afterwards. The first call in a run removes what earlier runs left,
+/// anything older than an hour, so `target/` stops growing by a folder per
+/// test per run.
 pub fn scratch(name: &str) -> PathBuf {
+    static SWEEP: std::sync::Once = std::sync::Once::new();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
     std::fs::create_dir_all(&root).unwrap();
-    root.canonicalize()
-        .unwrap()
-        .join(format!("test-{name}-{}", uuid::Uuid::new_v4()))
+    let root = root.canonicalize().unwrap();
+    SWEEP.call_once(|| sweep(&root, std::time::Duration::from_secs(3600)));
+    root.join(format!("test-{name}-{}", uuid::Uuid::new_v4()))
+}
+
+/// Removes the `test-*` folders in `root` last changed more than `age` ago.
+/// Another run may be removing the same ones, so errors are ignored.
+fn sweep(root: &Path, age: std::time::Duration) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t.elapsed().is_ok_and(|e| e > age));
+        if old && entry.file_name().to_string_lossy().starts_with("test-") {
+            drop(std::fs::remove_dir_all(entry.path()));
+        }
+    }
 }
 
 pub fn fixture(path: &str) -> Vec<u8> {
@@ -74,4 +97,22 @@ pub async fn away_from_midnight() {
             tokio::task::yield_now().await;
         }
     }
+}
+
+#[test]
+fn sweep_removes_old_test_folders_and_nothing_else() {
+    let root = scratch("sweep");
+    for dir in ["test-a", "test-b/inner", "keep"] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    sweep(&root, std::time::Duration::from_secs(3600));
+    assert!(root.join("test-a").exists(), "a fresh folder stays");
+    sweep(&root, std::time::Duration::ZERO);
+    let mut left: Vec<_> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    left.sort();
+    assert_eq!(left, ["keep"]);
+    std::fs::remove_dir_all(&root).unwrap();
 }
