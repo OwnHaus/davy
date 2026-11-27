@@ -76,6 +76,7 @@ What changes for someone who runs Davy, per release. The format follows [Keep a 
 ### Changed
 
 - The web UI wears the look of the website: warm dark surfaces, cream text and brass in dark, deep brass ink on daylight paper in light, with its own fonts, which the binary serves itself and which add 92 KB. Every text and status color keeps WCAG AA in both themes, warning and error now read orange and rose red, apart from the brass accent, and the heat strip and the log histogram are brass, light to dark.
+- Davy's mark is a lamp now. Login, welcome, setup and the page for a wrong address show it in a lit window, the bar and empty lists show the lamp alone, and the browser tab has it as its icon.
 
 ## 0.1.0 (2026-11-23)
 

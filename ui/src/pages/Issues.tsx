@@ -10,7 +10,7 @@ import { plural, shown } from "../lib/text";
 import { ago, stamp } from "../lib/time";
 import { StatusButtons, statusKey } from "../parts/Actions";
 import { Axis, Strip } from "../parts/HeatStrip";
-import { Icon } from "../parts/Icon";
+import { Brand, Icon } from "../parts/Icon";
 import { Discarded, Level, StatusMark } from "../parts/Marks";
 import { rememberList, saveSort, savedSort, type IssuesSearch } from "../search";
 import { Inspector } from "./Inspector";
@@ -289,6 +289,7 @@ export function Issues() {
                 <tr>
                   <td colSpan={9}>
                     <div className="empty">
+                      {list.isPending || list.error ? null : <Brand size={28} />}
                       {list.isPending ? "Loading issues" : list.error ? list.error.message : "No issues match. Clear the search or pick another status."}
                     </div>
                   </td>

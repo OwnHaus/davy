@@ -7,6 +7,7 @@ import { liveRegion } from "../lib/live";
 import { Legend, Tip } from "../parts/HeatStrip";
 import { Brand, Icon } from "../parts/Icon";
 import { Hatch } from "../parts/Uptime";
+import { LitWindow } from "../parts/Window";
 import { lastList, saveSort, type IssuesSearch, type StatusFilter } from "../search";
 
 /** A key and what it does, for the footer. */
@@ -41,7 +42,7 @@ export function Shell({ crumb, keys, note, rail, inspector, children }: ShellPro
           </button>
         ) : null}
         <Link className="brand" to="/issues" aria-label="Davy, issues">
-          <Brand />
+          <Brand size={20} />
           <span>Davy</span>
         </Link>
         <nav className="views" aria-label="Views">
@@ -260,6 +261,10 @@ export function NotFound() {
   }, []);
   return (
     <main className="lone">
+      <div className="lone-brand">
+        <LitWindow />
+        <span className="plate">Davy</span>
+      </div>
       <h1>There is no such page</h1>
       <p>
         <Link to="/issues">Go to the issues</Link>

@@ -8,6 +8,7 @@ import { announce } from "../lib/live";
 import { plural } from "../lib/text";
 import { msOf, nsOf, sameDay, span } from "../lib/time";
 import { Histogram } from "../parts/Histogram";
+import { Brand } from "../parts/Icon";
 import { LogRowView, sameness, type LogRow } from "../parts/LogRows";
 import { LEVELS, RANGES, type LogsSearch, type Range } from "../search";
 import { RailButton, Shell, type KeyHint } from "./Shell";
@@ -286,7 +287,10 @@ export function Logs() {
               />
             ))}
             {rows.length === 0 && !problem ? (
-              <li className="empty">{list.isPending ? "Loading logs" : "No logs match in this range. Widen the range or clear the search."}</li>
+              <li className="empty">
+                {list.isPending ? null : <Brand size={28} />}
+                {list.isPending ? "Loading logs" : "No logs match in this range. Widen the range or clear the search."}
+              </li>
             ) : null}
             {hasNextPage ? (
               <li ref={sentinel} className="more">

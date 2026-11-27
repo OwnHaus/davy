@@ -137,8 +137,29 @@ svg { display: block; flex: none; }
 
 /* Shell */
 .app { display: grid; grid-template-rows: 40px minmax(0, 1fr) 26px; height: 100vh; }
-.top { display: flex; align-items: center; gap: 16px; background: var(--rail); padding: 0 16px 0 14px; }
-.brand { display: flex; align-items: center; gap: 9px; width: 172px; font-weight: 650; font-size: 15px; letter-spacing: .01em; }
+.top { position: relative; display: flex; align-items: center; gap: 16px; background: var(--rail); padding: 0 16px 0 14px; }
+/* The engraved brass rule under the bar, brightest under the mark. */
+.top::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background: linear-gradient(90deg, var(--brass-line) 0, var(--brass-line-hi) 90px, var(--brass-line) 260px, var(--line) 62%); pointer-events: none; }
+.brand { display: flex; align-items: center; gap: 8px; width: 172px; font-family: var(--font-display); font-weight: 650; font-size: 16px; letter-spacing: -.01em; }
+
+/* Davy's lamp. The parts take the theme's brass; the flame stays lit. */
+.lamp .lm, .lamp .lm-hi { fill: var(--lamp); }
+.lamp .lm-hi { fill: var(--lamp-hi); }
+.lamp .lm-lo { fill: var(--lamp-lo); }
+.lamp .lm-ring { fill: none; stroke: var(--lamp-hi); stroke-width: .75; }
+.lamp .lm-glass { fill: var(--flame); fill-opacity: .16; stroke: var(--lamp); stroke-width: .55; }
+.lamp .lm-flame { fill: var(--flame); }
+.lamp .lm-core { fill: var(--flame-core); }
+/* Hung in the lit window, the lamp is a dark shape against the glow. */
+.lamp.in .lm, .lamp.in .lm-hi, .lamp.in .lm-lo { fill: #2a1d0e; }
+.lamp.in .lm-ring { stroke: #2a1d0e; }
+.lamp.in .lm-glass { fill: #3a2812; fill-opacity: 1; stroke: none; }
+.lamp.in .lm-flame { fill: #ffe7a8; }
+.lamp.in .lm-core { fill: #fffaf0; }
+.window .wn-line { fill: none; stroke: var(--brass-line-hi); stroke-width: 1.2; }
+.window .wn-bar { fill: none; stroke: #3a2812; stroke-width: 2.4; }
+.window .wn-wire { fill: none; stroke: #2a1d0e; stroke-width: .8; }
+.window .wn-sill { fill: var(--lamp); }
 .crumb { display: flex; align-items: center; gap: 8px; color: var(--muted); min-width: 0; }
 .crumb b { color: var(--ink); font-weight: 600; }
 .asof { margin-left: auto; color: var(--faint); font-size: 12px; }
@@ -246,6 +267,7 @@ td.rel { color: var(--muted); }
 .dim { color: var(--faint); }
 tr.row.done td.title a { color: var(--muted); font-weight: 400; }
 .empty { padding: 40px 20px; color: var(--muted); }
+.empty > .lamp { margin-bottom: 12px; opacity: .9; }
 
 /* Inspector */
 #insp { background: var(--panel); overflow: auto; padding: 14px 16px 16px; min-height: 0; }
@@ -356,7 +378,6 @@ tr.row.done td.title a { color: var(--muted); font-weight: 400; }
 .none { color: var(--muted); }
 .aside-note { margin-top: 14px; color: var(--muted); }
 /* Parts the React port adds to the prototype */
-.accent-fill { fill: var(--accent); }
 .reg.flush { margin-left: 0; }
 .dsc { color: var(--faint); font-size: 11.5px; flex: none; margin-left: 8px; }
 .ihead .tags .dsc, #insp .meta .dsc { margin-left: 0; }
@@ -390,7 +411,10 @@ tr.more td { padding: 10px 14px; height: auto; border-bottom: 0; }
 
 /* Login, welcome and not found */
 .lone { height: 100vh; overflow: auto; max-width: 400px; margin: 0 auto; padding: 14vh 20px 40px; }
-.lone-brand { display: flex; align-items: center; gap: 9px; font-weight: 650; font-size: 15px; }
+.lone-brand { position: relative; display: flex; align-items: flex-end; gap: 16px; padding-bottom: 0; }
+/* The window's sill rests on an engraved brass line that fades out. */
+.lone-brand::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background: linear-gradient(90deg, var(--brass-line-hi), var(--brass-line) 55%, transparent); }
+.lone-brand .plate { font-family: var(--font-display); font-weight: 650; font-size: 22px; letter-spacing: -.015em; line-height: 1; padding-bottom: 12px; }
 .lone h1 { font-family: var(--font-display); font-size: 26px; font-weight: 600; letter-spacing: -.025em; line-height: 1.15; margin: 28px 0 14px; }
 .lone p { color: var(--muted); }
 .lone a { color: var(--accent); font-weight: 600; }
@@ -510,8 +534,10 @@ table.iss th.lead, table.iss td.lead { padding-left: 14px; }
 .snip pre { margin: 0; padding: 4px 10px 10px; font-size: 12px; line-height: 1.55; overflow-x: auto; }
 .steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .steps li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 12px; padding: 12px 14px; border-radius: var(--r-card); background: var(--panel); }
-.steps .num { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: var(--btn); color: var(--muted); font-size: 12px; font-weight: 600; }
-.steps li.done .num { color: var(--ink); background: var(--btn-hover); }
+.steps .num { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; box-shadow: inset 0 0 0 1px var(--brass-line-hi); color: var(--accent); font-family: var(--font-display); font-size: 12px; font-weight: 650; }
+.steps li.done .num { color: var(--accent-ink); background: linear-gradient(180deg, #f3d9a2, #c9a161); box-shadow: inset 0 0 0 1px rgb(110 80 36 / .45); }
+.setup-head { display: flex; align-items: flex-end; gap: 14px; margin-bottom: 16px; }
+.setup-head .ph { margin: 0 0 6px; }
 .steps h2 { display: flex; align-items: baseline; gap: 10px; margin: 2px 0 4px; font-size: 13.5px; font-weight: 600; }
 .steps h2 span { font-size: 12px; font-weight: 400; color: var(--faint); }
 .steps p { margin: 0 0 6px; line-height: 1.5; }

@@ -922,7 +922,7 @@ The look was decided on a prototype of the issue page and the issues list, built
 
 **The heat strip.** It is the one signature of the look. The last 24 hours of an issue are 24 small cells in one hue, light to dark, on one scale for every row. In a column of rows the eye finds a spike without reading a number. Hover or the arrow keys read out the hour and the count, and the same numbers sit in a visually hidden table. The issue page shows the strip large, with an hour axis and the count in each cell. Cells with few events stay faint on purpose, at the 2:1 against the surface that the ordinal check asks, and their counts are in the readout and the table.
 
-**Color.** The app wears the same night as the website: warm dark surfaces, cream ink and brass. Dark is that night; light is daylight paper with deep brass ink, a tint of the same brass rather than a cream sheet. Brass is the one accent, for focus, the cursor row, links and the selected state. Regions part by tone, the rail and the panels a step off the list surface, not by a border on every box. Shadows only lift tooltips and popovers. Contrast measured against the list surface, and the lowest on the cursor row:
+**Color.** The app wears the same night as the website: warm dark surfaces, cream ink and brass. Dark is that night; light is daylight paper with deep brass ink, a tint of the same brass rather than a cream sheet. Brass is the one accent, for focus, the cursor row, links and the selected state. Regions part by tone, the rail and the panels a step off the list surface, not by a border on every box. The bar ends on an engraved brass rule, brightest under the mark. Shadows only lift tooltips and popovers. Contrast measured against the list surface, and the lowest on the cursor row:
 
 | Token | Light | Dark | Contrast (light, dark) | On the cursor row |
 |---|---|---|---|---|
@@ -944,7 +944,7 @@ Every text color keeps at least 4.5:1 on the cursor row and on a button too. Fat
 
 **Type.** Three faces the binary serves itself, never from a CDN, all under the SIL Open Font License and subset to Latin: Mona Sans at 13 px for text, Hubot Sans at a width of 108 and weight 600 for page titles and the name, and Commit Mono for code, frames, ids and times. Tabular figures for every count. Weight and size make the hierarchy below the titles. The subsets carry their own family names, as the license asks of a modified font, and `ui/src/fonts/README.md` says how they were made. Together they weigh 92 KB, and `scripts/ui-pack.mjs` fails a build whose fonts pass 100 KB.
 
-**Marks.** The Davy mark is a D built from five rounded bars, its middle bar in the accent, like rows of the strip. Icons for levels, statuses, folding, copying and the source-map origin are drawn for Davy.
+**Marks.** The Davy mark is the brass safety lamp with its flame lit that heads the README, drawn on a 16 grid, in the same colors per theme. Login, welcome, setup and the page for a wrong address hang it in a lit window drawn as a brass engraving, its sill on an engraved line. The working pages carry only the small lamp, in the bar and above an empty list, and nothing on them moves. The tab icon is the same lamp in fixed colors. Icons for levels, statuses, folding, copying and the source-map origin are drawn for Davy.
 
 ### Front-end dependencies
 

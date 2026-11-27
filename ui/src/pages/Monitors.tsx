@@ -8,6 +8,7 @@ import { useNow } from "../lib/live";
 import { plural, shown } from "../lib/text";
 import { ago, every, stamp } from "../lib/time";
 import { Axis } from "../parts/HeatStrip";
+import { Brand } from "../parts/Icon";
 import { StateMark } from "../parts/Marks";
 import { ResponseStrip, UptimeLegend } from "../parts/Uptime";
 import { RailButton, Shell, type KeyHint } from "./Shell";
@@ -163,9 +164,16 @@ export function Monitors() {
 function Empty({ loading, error, filtered }: { loading: boolean; error: string | null; filtered: boolean }) {
   if (loading) return <div className="empty">Loading monitors</div>;
   if (error) return <div className="empty">{error}</div>;
-  if (filtered) return <div className="empty">This project has no monitors.</div>;
+  if (filtered)
+    return (
+      <div className="empty">
+        <Brand size={28} />
+        This project has no monitors.
+      </div>
+    );
   return (
     <div className="empty">
+      <Brand size={28} />
       <p>No monitors yet. Add one on the server. Davy checks a URL every minute and opens an incident when it fails.</p>
       <pre className="cmd">davy monitor add my-app home --url https://example.com/health --data /var/lib/davy</pre>
       <p>For a cron job, add a heartbeat with --heartbeat. The job pings the path Davy prints, and a missed ping opens an incident.</p>

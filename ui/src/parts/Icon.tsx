@@ -85,15 +85,28 @@ export function Icon({ name, size = 13 }: { name: IconName; size?: number }) {
   );
 }
 
-export function Brand() {
+/** The parts of Davy's mark, a brass safety lamp with its flame lit, on a
+    16 grid. The classes color it, so it follows the theme. */
+export function LampParts() {
   return (
-    <svg width="20" height="20" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-      <g fill="currentColor">
-        <rect x="1.5" y="1" width="7" height="2.1" rx="1.05" />
-        <rect x="1.5" y="4.4" width="10.5" height="2.1" rx="1.05" />
-        <rect x="1.5" y="7.8" width="13" height="2.1" rx="1.05" className="accent-fill" />
-        <rect x="1.5" y="11.2" width="10.5" height="2.1" rx="1.05" />
-      </g>
+    <>
+      <circle className="lm-ring" cx="8" cy="2" r="1.05" />
+      <path className="lm" d="M5.4 4.6 8 3.1l2.6 1.5z" />
+      <rect className="lm-hi" x="4.9" y="4.5" width="6.2" height="1.05" rx="0.4" />
+      <rect className="lm-glass" x="5.5" y="5.55" width="5" height="5.6" />
+      <path className="lm-flame" d="M8 6.5c.75 1 1.25 1.65 1.25 2.5a1.25 1.25 0 0 1-2.5 0c0-.85.5-1.5 1.25-2.5z" />
+      <path className="lm-core" d="M8 8.3c.3.4.5.65.5 1a.5.5 0 0 1-1 0c0-.35.2-.6.5-1z" />
+      <rect className="lm" x="4.7" y="11.15" width="6.6" height="2.9" rx="0.6" />
+      <rect className="lm-lo" x="4.7" y="12.3" width="6.6" height="0.5" />
+    </>
+  );
+}
+
+/** Davy's mark, cropped to the lamp so it stands as tall as the name. */
+export function Brand({ size = 22 }: { size?: number }) {
+  return (
+    <svg className="lamp" width={Math.round((size * 9) / 14)} height={size} viewBox="3.5 0.5 9 14" aria-hidden="true" focusable="false">
+      <LampParts />
     </svg>
   );
 }

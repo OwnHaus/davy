@@ -5,6 +5,7 @@ import type { First, Step } from "../api/types";
 import { announce } from "../lib/live";
 import { stamp } from "../lib/time";
 import { Icon } from "../parts/Icon";
+import { LitWindow } from "../parts/Window";
 import { connectQuery } from "./Projects";
 import { Shell, setupQuery, type KeyHint } from "./Shell";
 
@@ -87,7 +88,10 @@ export function SetupPage() {
     <Shell keys={KEYS} inspector={false}>
       <main className="page" aria-label="Setup">
         <div className="col">
-          <h1 className="ph">Set up Davy</h1>
+          <div className="setup-head">
+            <LitWindow height={56} />
+            <h1 className="ph">Set up Davy</h1>
+          </div>
           {setup.error ? (
             <p className="none">{setup.error.message}</p>
           ) : !setup.data ? (

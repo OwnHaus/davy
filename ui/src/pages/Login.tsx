@@ -3,7 +3,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Refused, get, post } from "../api/client";
 import type { LoggedIn, Login as LoginBody, Me } from "../api/types";
 import { plural } from "../lib/text";
-import { Brand } from "../parts/Icon";
+import { LitWindow } from "../parts/Window";
 
 const route = getRouteApi("/login");
 
@@ -39,8 +39,8 @@ export function Lone({ title, children }: { title: string; children: ReactNode }
   return (
     <main className="lone">
       <div className="lone-brand">
-        <Brand />
-        <span>Davy</span>
+        <LitWindow />
+        <span className="plate">Davy</span>
       </div>
       <h1>{title}</h1>
       {children}
