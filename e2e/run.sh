@@ -605,6 +605,23 @@ QUIET_ROWS=$("$BIN" sql "SELECT (SELECT count(*) FROM projects), (SELECT count(*
 [ "$(ls "$QUIET/crashes" | wc -l | tr -d ' ')" = 1 ] || { echo 'with --no-self-report the crash file was taken'; ls -la "$QUIET/crashes"; exit 1; }
 kill "$PID"; wait "$PID" || true; PID=''
 echo 'self report: with --no-self-report a crash file and a warning of the log writer are not recorded, and no project is made'
+# The cold tier: logs for a day three days back, searched hot, then the
+# server restarts with --hot-days 1 and the same searches read it cold.
+COLD="$SCRATCH/cold"
+up() {
+  DAVY_TOKEN="$TOKEN" "$BIN" serve --data "$COLD" --listen "127.0.0.1:$PORT" --public-url "$URL" "$@" >>"$SCRATCH/cold.log" 2>&1 &
+  PID=$!
+  for i in {1..100}; do
+    if curl -s -o /dev/null "$URL/"; then break; fi
+    sleep 0.1
+  done
+}
+up
+node "$ROOT/e2e/cold.mjs" before "$BIN" "$COLD" "$URL" "$TOKEN" "$SCRATCH/cold-before.json"
+kill "$PID"; wait "$PID" || true; PID=''
+up --hot-days 1
+node "$ROOT/e2e/cold.mjs" after "$BIN" "$COLD" "$URL" "$TOKEN" "$SCRATCH/cold-before.json" || { cat "$SCRATCH/cold.log"; exit 1; }
+kill "$PID"; wait "$PID" || true; PID=''
 OPEN=$(find "$SCRATCH/data" \( -perm -004 -o -perm -040 \) -print)
 [ -z "$OPEN" ] || { echo "readable by other users: $OPEN"; exit 1; }
 echo 'data directory: no file is readable by other users'
