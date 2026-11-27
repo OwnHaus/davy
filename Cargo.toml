@@ -3,6 +3,8 @@ name = "davy"
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-only"
+homepage = "https://ownhaus.dev/davy/"
+repository = "https://github.com/OwnHaus/davy"
 
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "multipart", "original-uri"] }
