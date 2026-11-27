@@ -1,5 +1,5 @@
 use super::{LogLevel, LogRecord, LogSource, ORIGINAL_TIMESTAMP, patterns};
-use crate::time::{DAY_NS, day_of, rfc3339};
+use crate::time::{DAY_NS, day_of};
 use anyhow::{Result, anyhow};
 use jiff::civil::Date;
 use serde::Serialize;
@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tantivy::{
-    Document, Index, IndexSettings, IndexWriter, Order, TantivyDocument, Term,
+    Index, IndexSettings, IndexWriter, Order, TantivyDocument, Term,
     collector::TopDocs,
     query::{BooleanQuery, EmptyQuery, Occur, Query, QueryParser, RangeQuery, TermQuery},
     schema::{FAST, Field, INDEXED, IndexRecordOption, STORED, STRING, Schema, TEXT},
@@ -58,6 +58,13 @@ struct Fields {
 }
 
 fn schema() -> (Schema, Fields) {
+    variant(true, true)
+}
+
+/// The schema of a day index with or without `values` and `pattern`, as
+/// older days lack them. Without `values`, [`Fields::values`] names no
+/// field of it.
+fn variant(values: bool, pattern: bool) -> (Schema, Fields) {
     let mut b = Schema::builder();
     let f = Fields {
         project: b.add_u64_field("project", INDEXED | FAST | STORED),
@@ -70,12 +77,18 @@ fn schema() -> (Schema, Fields) {
         span_id: b.add_text_field("span_id", STRING | STORED),
         message: b.add_text_field("message", TEXT | STORED),
         attributes: b.add_json_field("attributes", TEXT | STORED),
-        values: b.add_text_field("values", TEXT),
+        values: if values {
+            b.add_text_field("values", TEXT)
+        } else {
+            Field::from_field_id(10)
+        },
     };
     // The id of the record's pattern, [`patterns::OTHER`] past the bound.
     // Days written before it existed lack it, so it is looked up by name in
     // each day: see [`pattern_field`].
-    b.add_u64_field("pattern", INDEXED | STORED);
+    if values && pattern {
+        b.add_u64_field("pattern", INDEXED | STORED);
+    }
     (b.build(), f)
 }
 
@@ -567,45 +580,18 @@ fn search_once(root: &Path, q: &LogQuery) -> Result<Vec<LogHit>> {
                 break;
             }
             let doc: TantivyDocument = day.searcher.doc(address)?;
-            hits.push(hit(&day.index.schema(), &f, &doc)?);
+            hits.push(hit::hit(&day.index.schema(), &f, &doc)?);
         }
     }
     hits.reverse();
     Ok(hits)
 }
 
-fn hit(schema: &Schema, f: &Fields, doc: &TantivyDocument) -> Result<LogHit> {
-    let v: Value = serde_json::from_str(&doc.to_json(schema))?;
-    let first = |field: Field| {
-        v.get(schema.get_field_name(field))
-            .and_then(|a| a.get(0))
-            .cloned()
-    };
-    let int = |field: Field| first(field).and_then(|v| v.as_i64()).unwrap_or(0);
-    let uint = |field: Field| first(field).and_then(|v| v.as_u64()).unwrap_or(0);
-    let string = |field: Field| first(field).and_then(|v| v.as_str().map(str::to_owned));
-    let ts = int(f.ts);
-    Ok(LogHit {
-        timestamp: rfc3339(ts),
-        timestamp_ns: ts,
-        project_id: uint(f.project).cast_signed(),
-        source: LogSource::from_code(uint(f.source)),
-        level: LogLevel::from_code(uint(f.level)),
-        service: string(f.service),
-        message: string(f.message).unwrap_or_default(),
-        trace_id: string(f.trace_id),
-        span_id: string(f.span_id),
-        // By name: in a day without the field its id names another one.
-        pattern: v
-            .get("pattern")
-            .and_then(|a| a.get(0)?.as_u64())
-            .map(patterns::show),
-        attributes: match first(f.attributes) {
-            Some(Value::Object(m)) => m,
-            _ => Map::new(),
-        },
-    })
-}
+#[path = "hit.rs"]
+mod hit;
+
+#[path = "cold.rs"]
+pub mod cold;
 
 #[path = "log_writer.rs"]
 mod log_writer;

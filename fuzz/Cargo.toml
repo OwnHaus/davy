@@ -88,3 +88,10 @@ path = "fuzz_targets/sourcemap.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "cold_file"
+path = "fuzz_targets/cold_file.rs"
+test = false
+doc = false
+bench = false

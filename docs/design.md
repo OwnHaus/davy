@@ -1983,3 +1983,22 @@ Schema version 24 adds both tables in one entry, so a branch that takes the same
 ### Tested end to end
 
 - `e2e/drops.mjs`, run by `e2e/run.sh` against the running server, adds two live rules with `davy drop add` (debug and below, and half of the lines holding "health check") and sees a rule naming both a level and a message refused. Over MCP it sees `drop_rule_shadow` refuse a `live` field, adds a shadow rule on "poll tick" whose `make_live` names `davy drop live`, and sees `drop_rule_remove` refuse a person's rule, and `drop_rule_shadow` refuse a rule on Davy's own project and a level rule of warn. After the 5 s reload it posts 19 Logtail lines and checks the exact counts in `davy drop list` (4 and 2 dropped, 10 would drop), the 13 lines `davy logs` finds, `logs_filtered` of 6 in `davy usage`, and the shadow entry of the savings view: sizes as strings over MCP, bytes from the CLI, no `saves_per_day` in its first hour, and, as a message rule can drop warnings, no command but `hides`. The info pattern of the poll lines gets keep 1% with its `davy drop add` command, the warn line no suggestion. It then runs the command the listing prints with `sh` and no terminal: it prints the rule and what it would have dropped, refuses and says to add `--yes`, and the rule stays a shadow rule. With `--yes` the rule is live and the person's, and the agent can no longer remove it. A person who adds the same shadow rule as an agent takes it over, with `taken_over` true and no expiry.
+
+## Cold tier
+
+Agents search the last days most, and want old logs kept long and still searchable. Day indexes are fast but take 0.55× to 1.03× of the raw bytes. So a closed day older than the hot days turns into cold files: compressed, read by the same queries, slower to search, and 0.05× to 0.16× the size of the index. Recent days stay as they are. The format is ready for object storage (9b): a file is immutable, says what it is and its version, and has a footer from which a reader fetches one block by its byte range.
+
+### Files
+
+- `data/logs/cold/YYYY-MM-DD/N/<project>.dlc` holds a project's logs of the day, with its pattern counters next to it in `patterns-<project>.json`. `N` is the segment, from 1 up: logs that arrive for a day already cold become the next segment.
+- A file is a head (`DAVYCOLD`, version), blocks, an optional zstd dictionary, a footer and a trailer (`DAVYCOLD`, version, footer length). Every number is little endian. `src/logs/cold_format.rs` has the layout.
+- A block is a 25-byte header and a zstd frame of about 1 MiB of rows, stored column by column: timestamps as deltas, levels, sources, pattern ids, then the strings. The header holds the rows, the size decompressed, the oldest and newest timestamp and a bit per level, so a search skips a block by its header and a count takes whole blocks from it.
+- The footer repeats each header with the block's offset, length and checksum (64 bits of BLAKE3), and ends with a checksum of itself. A file is written once, synced with its directory, and never changed.
+- zstd level 9, 1 MiB blocks and no dictionary, chosen by `examples/cold_bench.rs` on the six real corpora and the synthetic rows of the footprint benchmark (`docs/storage-benchmark.md`, "Cold tier"). Cold files take 0.05× to 0.12× of the raw bytes, 0.05× to 0.16× of the day index. Level 19 saved up to 17% more and converted 7 to 21 times slower. A dictionary trained per file never paid for the bytes it takes.
+
+### Security
+
+- Only Davy's data directory is read: only real directories and regular files with the canonical names, never a symlink, as in the hot root.
+- Every length in a file is checked against the file and against caps before it is used: a block decompresses into at most the size its header claims and never more than 16 MiB, a block holds at most 262,144 rows, a footer at most 16 MiB, a dictionary at most 1 MiB. A crafted or cut file fails with an error in bounded memory.
+- A block's rows must lie within the times its header gives and be of exactly the levels it gives, with info's bit for a block of no known level, or the block fails, so a count or a skip by header never disagrees with a read (`a_block_with_a_row_outside_its_header_is_refused`, `a_block_whose_rows_are_of_other_levels_than_its_header_gives_is_refused`).
+- `fuzz/fuzz_targets/cold_file.rs` reads arbitrary bytes as a cold file: the footer, then every block checked, decompressed and matched against a query.

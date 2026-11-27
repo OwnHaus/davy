@@ -63,7 +63,7 @@ What runs when. Items marked planned have a milestone in `docs/design.md`.
 
 **Before release 0.1.0 (planned).**
 
-- Fuzz targets with `cargo fuzz` for every parser: the envelope, the event, Logtail JSON and msgpack, OTLP protobuf and JSON, the Sentry log and check-in items, crontabs, artifact bundles and source maps. Each runs for at least an hour before the release, and CI runs each for a few minutes every night. A crash becomes a fixture and a unit test.
+- Fuzz targets with `cargo fuzz` for every parser: the envelope, the event, Logtail JSON and msgpack, OTLP protobuf and JSON, the Sentry log and check-in items, crontabs, artifact bundles, source maps and cold log files. Each runs for at least an hour before the release, and CI runs each for a few minutes every night. A crash becomes a fixture and a unit test.
 - An internal penetration test of a running server, against OWASP ASVS 5.0 level 2 and the OWASP API Security Top 10, with a written report. Open findings stay private until fixed. Fixed ones are summarized under Security in the changelog.
 - Signed releases with SBOM and build provenance, as described in `RELEASING.md`.
 

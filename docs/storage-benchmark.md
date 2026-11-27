@@ -210,6 +210,52 @@ The store compacts to 241 bytes per event (measured). Reading an issue's newest 
 
 Rerun on 2026-11-25 with the code of `469fd53` at a load average of 2.2 to 3.0 (measured): `store` gave 271 bytes per event at 1 and at 64 events per transaction, compacting to 241. The writer took 54.6 µs per event at 64 per transaction and 159.4 µs at 1 per transaction, where the commit's fsync dominates. The old layout no longer runs through the writer. As bare SQL (`sim current`) it gave 2,168 and 572 bytes per event, the same as the writer gave before.
 
+## Cold tier
+
+Measured on 2026-11-27 with `examples/cold_bench.rs` on the corpora of the footprint benchmark, on the same M2 Max, at background priority (`taskpolicy -b`) with other agents working, load average 4.1 to 14.8. Background priority slows the CPU numbers, not the sizes. "Cold tier" in `docs/design.md` has the format and how a day turns cold.
+
+### Method
+
+- Each corpus goes through the log writer into one day index, as `line` (each line a message), `nginx` (an access log line split into attributes, like `nginx-parsed` above) or `json` (a synthetic pino row). The size of that index is Hot.
+- The day is then converted with each zstd level (3, 9, 19), block size (256 KiB, 1 MiB, 4 MiB) and with or without a dictionary trained on the day (112 KiB from 20,000 samples). Spark, HDFS and the synthetic rows ran without a dictionary, as it lost on every smaller corpus, and the synthetic rows at level 19 with 1 MiB blocks only, as level 19 took minutes per setting.
+- Disk is the allocated size of the files. Convert is the time to read the day index and write the files, on one thread. A full scan decompresses every block and reads every row. A text query also matches each row the way the day index would (see "Search over cold days" in `docs/design.md`), with no time budget.
+
+### Results
+
+At the chosen setting, level 9 with 1 MiB blocks and no dictionary:
+
+| Corpus | Lines | Hot / raw | Cold / raw | Cold / hot | Convert rows/s | Full scan | Text query |
+|---|---|---|---|---|---|---|---|
+| apache | 56,482 | 0.88× | 0.050× | 0.057 | 166k | 8 ms | `error` 472 ms (38,081 hits) |
+| linux | 25,567 | 1.08× | 0.071× | 0.066 | 139k | 4 ms | `authentication failure` 92 ms (4,094 hits) |
+| nginx-parsed | 51,462 | 1.17× | 0.054× | 0.047 | 53k | 8 ms | `attributes.status:404` 1,545 ms (33,876 hits) |
+| openssh | 655,147 | 0.95× | 0.056× | 0.059 | 131k | 132 ms | `"Failed password"` 3,941 ms (218,071 hits), `webmaster` 283 ms (36) |
+| spark-1m | 1,000,000 | 0.77× | 0.059× | 0.076 | 161k | 216 ms | `Exception` 527 ms (408 hits) |
+| hdfs-2m | 2,000,000 | 0.73× to 0.76× | 0.098× | 0.129 to 0.135 | 96k to 98k | 603 to 674 ms | `PacketResponder` 7,481 ms (633,032 hits), the block id 1,002 ms (269) |
+| synthetic-2m | 2,000,000 | 0.75× to 0.76× | 0.121× | 0.159 to 0.162 | 46k | 648 to 817 ms | `"database timeout"` 4,442 to 4,534 ms (60,209 hits) |
+
+HDFS and the synthetic rows ran twice, the second time after a change to the word filter, so both runs are given; the day index came out up to 4.2% smaller in the second run, the cold files the same to the byte.
+
+The synthetic rows across settings, without a dictionary:
+
+| Level, block | Cold / raw | Cold / hot | Convert rows/s | Full scan |
+|---|---|---|---|---|
+| 3, 256 KiB | 0.163× | 0.214 | 57k | 874 ms |
+| 3, 1 MiB | 0.163× | 0.214 | 62k | 891 ms |
+| 3, 4 MiB | 0.162× | 0.213 | 65k | 872 ms |
+| 9, 256 KiB | 0.129× | 0.169 | 49k | 810 ms |
+| 9, 1 MiB | 0.121× | 0.159 | 46k | 817 ms |
+| 9, 4 MiB | 0.122× | 0.160 | 49k | 902 ms |
+| 19, 1 MiB | 0.117× | 0.153 | 6.9k | 918 ms |
+
+- **Cold files take 0.05× to 0.12× of the raw bytes, 0.05× to 0.16× of the day index (measured).** Logs with long repeated text pack best, as in the day index. The synthetic rows, all attributes, pack worst, and set the prior of the forecast: 0.2, the largest cold-to-hot ratio, 0.162, with a margin.
+- **Level 9 over level 3.** Level 9 took 13% to 26% less disk on the large corpora (hdfs 0.098× against 0.113×, spark 0.059× against 0.079×, synthetic 0.121× against 0.163×) and converted at 46k to 166k rows/s against 62k to 280k. A day of 2M rows converts in about 20 to 45 s on one background thread, far inside a day.
+- **Not level 19.** Its files were up to 17% smaller than level 9's, 3% for the synthetic rows, and it converted 7 to 21 times slower: 4k to 13k rows/s, 260 to 292 s for a day of 2M rows.
+- **1 MiB blocks.** Against 256 KiB they took 2% to 16% less disk at level 9 on the large corpora. 4 MiB saved at most 5% more (hdfs 0.093× against 0.098×), and in the synthetic rows nothing, while a search that needs one row decompresses 4 times as much and a fetch by byte range from object storage reads 4 times as much.
+- **No dictionary.** A dictionary trained per file is stored in that file, and in every corpus measured it took more disk than it saved: apache 0.071× against 0.050× at level 9, linux 0.113× against 0.071×, nginx-parsed 0.068× against 0.054×, openssh 0.057× against 0.056×. It also converted 2 to 4.5 times slower on the three small corpora.
+- **A full scan reads 2.4 to 7.0M rows a second at the chosen setting (noisy).** A text query reads as fast while the word filter leaves few rows; rows it lets through are indexed in memory to run the query, at about 30k to 90k rows a second, so `PacketResponder`, held by a third of HDFS, takes 7.5 s, and `"Failed password"` on OpenSSH 3.9 s. The 5 s budget of a search stops such a scan and says where.
+- **The word filter matters for phrases.** In the first run the block id phrase of HDFS took 37.6 s: in a query over two fields the filter took each field's first word, `blk`, which every line holds. It now takes the list whose shortest word is longest, and the same query takes 1.0 s.
+
 ## Rerun
 
 ```sh
@@ -227,4 +273,6 @@ python3 -I bench/footprint-report.py --tables bench/footprint.json   # the footp
 cargo build --release --example error_footprint
 target/release/examples/error_footprint store .scratch/hot 10 10000 64   # error disk per event, about 15 s
 target/release/examples/error_footprint sim side .scratch/side 10 10000 64   # one design as bare SQL: current, table, side or autovacuum
+cargo build --release --example cold_bench
+target/release/examples/cold_bench CORPUS line .scratch/cold 'Failed password'   # cold tier settings; COLD_LEVELS, COLD_BLOCKS, COLD_DICTS and COLD_QUERY_AT narrow the run
 ```

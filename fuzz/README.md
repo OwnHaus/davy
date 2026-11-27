@@ -13,6 +13,7 @@ One `cargo fuzz` target per parser that reads untrusted bytes, as `SECURITY.md` 
 | `otlp_protobuf`, `otlp_json` | OTLP log export requests |
 | `artifact_bundle` | the zip `sentry-cli` uploads, with a 1 MiB unpack limit |
 | `sourcemap` | a source map, a minified file and a frame position, through symbolication |
+| `cold_file` | a cold log file ("Cold tier" in `docs/design.md`): footer, blocks and a query over them |
 
 `fuzz/seed` fills `fuzz/corpus/` from the requests in `e2e/fixtures`.
 
