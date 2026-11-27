@@ -147,6 +147,35 @@ pub struct LogPage {
     pub logs: Vec<LogLine>,
     /// The cursor of the page before this one, when it is full.
     pub before: Option<String>,
+    /// What the search left out of cold days, none when it read them all.
+    pub cut: Option<ColdCut>,
+}
+
+/// What a read of cold days left out, for the page to say.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct ColdCut {
+    /// When the read ran out of time, in nanoseconds: logs from the start
+    /// of the range to here may be missing.
+    pub unscanned_to: Option<String>,
+    /// Rows, blocks and files left out because they failed a check.
+    pub corrupt_rows: u64,
+    pub corrupt_blocks: u64,
+    pub corrupt_files: u64,
+}
+
+impl ColdCut {
+    /// The cut of `scan`, none when it read every cold file whole.
+    pub fn of(scan: Option<&log_store::cold::ColdScan>) -> Option<Self> {
+        let s = scan?;
+        let cut = s.unscanned_to_ns.is_some() || s.corrupt_files + s.corrupt_blocks > 0;
+        cut.then(|| Self {
+            unscanned_to: s.unscanned_to_ns.map(|ns| ns.to_string()),
+            corrupt_rows: s.corrupt_rows,
+            corrupt_blocks: s.corrupt_blocks,
+            corrupt_files: s.corrupt_files,
+        })
+    }
 }
 
 async fn list(State(reads): State<Arc<Reads>>, uri: Uri) -> Result<Response, Refusal> {
@@ -188,17 +217,19 @@ async fn read_page(
     // Recorded once the search holds its permit, so a search turned away
     // as busy is not counted.
     let writes = asked.then(|| reads.writes().clone());
-    let page = searching(reads, move |dir| {
+    let found = searching(reads, move |dir| {
         if let Some(writes) = &writes {
             searches::record(writes, searches::By::Ui, &query);
         }
         if query.since > query.until {
-            return Ok(Vec::new());
+            return Ok(log_store::Found::default());
         }
-        log_store::search(dir, &query)
+        log_store::search_for(dir, &query, log_store::cold::BUDGET)
     })
     .await?;
-    json(&page_of(page, PAGE, before.as_ref(), &slugs))
+    let mut page = page_of(found.hits, PAGE, before.as_ref(), &slugs);
+    page.cut = ColdCut::of(found.cold.as_ref());
+    json(&page)
 }
 
 /// The page of `hits`, oldest first as the store gives them, past the logs
@@ -230,6 +261,7 @@ fn page_of(
     LogPage {
         logs: hits.into_iter().map(|h| LogLine::new(h, slugs)).collect(),
         before: older.map(|b| b.encode()),
+        cut: None,
     }
 }
 
@@ -241,6 +273,8 @@ pub struct LogHistogram {
     pub from: String,
     pub step: String,
     pub counts: Vec<u64>,
+    /// What the count left out of cold days, none when it read them all.
+    pub cut: Option<ColdCut>,
 }
 
 async fn histogram(State(reads): State<Arc<Reads>>, uri: Uri) -> Result<Response, Refusal> {
@@ -251,6 +285,7 @@ async fn histogram(State(reads): State<Arc<Reads>>, uri: Uri) -> Result<Response
     json(&LogHistogram {
         from: h.from.to_string(),
         step: h.step.to_string(),
+        cut: ColdCut::of(h.cold.as_ref()),
         counts: h.counts,
     })
 }

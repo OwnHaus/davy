@@ -83,6 +83,7 @@ async fn a_log_time_keeps_every_nanosecond_through_the_api() {
                 "attributes": {},
             }],
             "before": null,
+            "cut": null,
         })
     );
     let r = read(&s, &cookie, &format!("/ui/api/logs/histogram?{window}")).await;
@@ -91,7 +92,7 @@ async fn a_log_time_keeps_every_nanosecond_through_the_api() {
     counts[24] = 1;
     assert_eq!(
         r.body,
-        json!({ "from": "1763600000000000000", "step": "5000000", "counts": counts }),
+        json!({ "from": "1763600000000000000", "step": "5000000", "counts": counts, "cut": null }),
         "5 ms buckets, the log 123 ms in"
     );
 }
@@ -399,5 +400,44 @@ async fn the_first_page_is_recorded_as_a_search_and_later_pages_are_not() {
     assert_eq!(
         rows,
         [("ui".into(), 1, AT - 1_000_000, AT, 4, "card".into())]
+    );
+}
+
+#[test]
+fn a_cold_scan_read_whole_tells_the_page_nothing() {
+    use super::super::logs::ColdCut;
+    use crate::logs::store::cold::ColdScan;
+    let whole = ColdScan {
+        rows: 9,
+        ..ColdScan::default()
+    };
+    assert_eq!(ColdCut::of(None), None);
+    assert_eq!(ColdCut::of(Some(&whole)), None);
+    let stopped = ColdScan {
+        unscanned_to_ns: Some(AT),
+        ..whole.clone()
+    };
+    assert_eq!(
+        ColdCut::of(Some(&stopped)),
+        Some(ColdCut {
+            unscanned_to: Some(AT.to_string()),
+            corrupt_rows: 0,
+            corrupt_blocks: 0,
+            corrupt_files: 0
+        })
+    );
+    let corrupt = ColdScan {
+        corrupt_blocks: 1,
+        corrupt_rows: 14,
+        ..whole
+    };
+    assert_eq!(
+        ColdCut::of(Some(&corrupt)),
+        Some(ColdCut {
+            unscanned_to: None,
+            corrupt_rows: 14,
+            corrupt_blocks: 1,
+            corrupt_files: 0
+        })
     );
 }

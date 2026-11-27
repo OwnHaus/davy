@@ -689,3 +689,6 @@ mod issue_tests;
 
 #[path = "mcp_drops_tests.rs"]
 mod drops_tests;
+
+#[path = "mcp_cold_tests.rs"]
+mod cold_tests;

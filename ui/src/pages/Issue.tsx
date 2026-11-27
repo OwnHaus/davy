@@ -350,7 +350,7 @@ function EventBody({ ev, logs, logsError }: { ev: EventView; logs: Logs | undefi
           <Exceptions ev={ev} eventKey={ev.event_id} />
           <Breadcrumbs cut={ev.breadcrumbs} />
           {logs ? (
-            <LogLines scope={logs.scope} logs={logs.logs} />
+            <LogLines scope={logs.scope} logs={logs.logs} cut={logs.cut} />
           ) : (
             <section className="sec">
               <h3>Logs around the event</h3>

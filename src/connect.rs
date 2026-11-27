@@ -143,6 +143,11 @@ pub struct Status {
     pub issue_count: i64,
     /// RFC 3339, null before the first log line.
     pub last_log_time: Option<String>,
+    /// What the search for the last log line read of cold days, absent
+    /// when it read none. With `unscanned_to` there, a null
+    /// `last_log_time` may miss older lines.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_log_cold: Option<logs::store::cold::ColdNote>,
     /// How long the project keeps its logs and errors.
     pub retention: retention::Retention,
     /// Davy's own warnings, errors and crashes of the last 24 hours, kept in
@@ -175,15 +180,15 @@ pub fn status(data: &Path, slug: &str, defaults: retention::Defaults) -> anyhow:
         limit: 1,
         skip: 0,
     };
-    let last_log_time = logs::store::search(&logs::dir(data), &q)?
-        .first()
-        .map(|h| time::rfc3339(h.timestamp_ns));
+    let found = logs::store::search_for(&logs::dir(data), &q, logs::store::cold::BUDGET)?;
+    let last_log_time = found.hits.first().map(|h| time::rfc3339(h.timestamp_ns));
     Ok(Status {
         scrub: crate::scrub::settings::read(&c, id)?,
         event_count,
         last_event_time: last_seen.map(time::rfc3339_ms),
         issue_count,
         last_log_time,
+        last_log_cold: found.cold.as_ref().map(logs::store::cold::ColdNote::from),
         retention,
         davy: crate::self_report::status::Davy::read(&c, data, time::now_ms()),
     })

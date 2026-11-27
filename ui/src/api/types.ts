@@ -103,6 +103,17 @@ export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in
 
 export type LogLine = { timestamp: string, timestamp_ns: string, project: string, source: LogSource, level: LogLevel, service: string | null, message: string, trace_id: string | null, span_id: string | null, attributes: { [key in string]: JsonValue }, };
 
+export type ColdCut = { 
+/**
+ * When the read ran out of time, in nanoseconds: logs from the start
+ * of the range to here may be missing.
+ */
+unscanned_to: string | null, 
+/**
+ * Rows, blocks and files left out because they failed a check.
+ */
+corrupt_rows: number, corrupt_blocks: number, corrupt_files: number, };
+
 export type Logs = { 
 /**
  * Which logs these are, in words.
@@ -111,7 +122,11 @@ scope: string,
 /**
  * Oldest first.
  */
-logs: Array<LogLine>, };
+logs: Array<LogLine>, 
+/**
+ * What the search left out of cold days, none when it read them all.
+ */
+cut: ColdCut | null, };
 
 export type LogPage = { 
 /**
@@ -121,9 +136,17 @@ logs: Array<LogLine>,
 /**
  * The cursor of the page before this one, when it is full.
  */
-before: string | null, };
+before: string | null, 
+/**
+ * What the search left out of cold days, none when it read them all.
+ */
+cut: ColdCut | null, };
 
-export type LogHistogram = { from: string, step: string, counts: Array<number>, };
+export type LogHistogram = { from: string, step: string, counts: Array<number>, 
+/**
+ * What the count left out of cold days, none when it read them all.
+ */
+cut: ColdCut | null, };
 
 export type StatusChange = { issues: Array<number>, status: Status, release?: string, };
 

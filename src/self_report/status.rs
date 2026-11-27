@@ -108,6 +108,8 @@ pub fn health(c: &Connection, data: &Path, now_ms: i64) -> anyhow::Result<Health
             limit: 0,
             skip: 0,
         };
+        // No cold note: 24 hours lie in today and yesterday, and the
+        // newest cold day is at least two days old, so no cold file is read.
         Ok(histogram(&logs::dir(data), &q)?.counts.iter().sum())
     };
     let errors_24h = count(LogLevel::Error)?;

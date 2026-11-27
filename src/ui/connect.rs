@@ -160,6 +160,8 @@ async fn any_log(reads: &Arc<Reads>) -> Result<Option<Timestamp>, Refusal> {
                 limit: 1,
                 skip: 0,
             };
+            // No cold note: with no text, the first block read holds the
+            // newest log, so the budget never cuts this search short.
             let at = search(dir, &query)?.first().map(|h| h.timestamp_ns);
             newest = newest.max(at);
         }

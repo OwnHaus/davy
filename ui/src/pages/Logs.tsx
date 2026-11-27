@@ -6,6 +6,7 @@ import type { LogHistogram, LogPage, Project } from "../api/types";
 import { useKeys } from "../lib/keys";
 import { announce } from "../lib/live";
 import { plural } from "../lib/text";
+import { cutText, joinCuts } from "../lib/cold";
 import { msOf, nsOf, sameDay, span } from "../lib/time";
 import { Histogram } from "../parts/Histogram";
 import { Brand } from "../parts/Icon";
@@ -101,6 +102,9 @@ export function Logs() {
     );
   }, [list.data, fresh]);
 
+  // Cold days are read for 5 s at most; the page says where that stopped.
+  const stopped = cutText(joinCuts(list.data?.pages.map((p) => p.cut) ?? []), "The search");
+  const counted = cutText(hist.data?.cut, "The count");
   const [cursor, setCursor] = useState<string | null>(null);
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const [liveProblem, setLiveProblem] = useState<string | null>(null);
@@ -272,6 +276,11 @@ export function Logs() {
           </p>
         ) : null}
         {hist.data ? <Histogram data={hist.data} onZoom={zoom} /> : <div className="hist" />}
+        {counted ? (
+          <p className="qerr hcut" role="status">
+            {counted}
+          </p>
+        ) : null}
         <div className="tscroll" ref={scroller}>
           <ol className={days ? "lrows days" : "lrows"} aria-label="Logs, newest first">
             {rows.map((r) => (
@@ -292,6 +301,7 @@ export function Logs() {
                 {list.isPending ? "Loading logs" : "No logs match in this range. Widen the range or clear the search."}
               </li>
             ) : null}
+            {stopped ? <li className="empty">{stopped}</li> : null}
             {hasNextPage ? (
               <li ref={sentinel} className="more">
                 <button type="button" className="btn" disabled={isFetchingNextPage} onClick={() => void fetchNextPage()}>

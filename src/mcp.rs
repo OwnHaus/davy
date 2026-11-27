@@ -10,7 +10,9 @@ use crate::{
     logs::{
         self, LogLevel, patterns,
         store::{
-            LogCounts, LogQuery, MAX_PATTERN_ROWS, PatternQuery, histogram, search, top_patterns,
+            LogCounts, LogQuery, MAX_PATTERN_ROWS, PatternQuery,
+            cold::{self, ColdNote},
+            histogram, search_for, top_patterns,
         },
     },
     query,
@@ -29,7 +31,7 @@ use axum::{
 use rmcp::{
     RoleServer, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{ServerCapabilities, ServerConfig},
+    model::{CallToolResult, ContentBlock, ServerCapabilities, ServerConfig},
     schemars::JsonSchema,
     service::RequestContext,
     tool, tool_handler, tool_router,
@@ -322,7 +324,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Confirm ingest for a project slug: events kept, time of the last event, issue count and time of the last log line, RFC 3339, and how long the project keeps logs and errors. Times are null before the first record; poll after sending a test event. davy, whatever the slug, is what Davy reported of itself over the last 24 hours: project (the slug of Davy's own project, usually davy), warnings_24h, errors_24h (error and fatal), crashes_24h (issue_id, title, last_seen, recorded_at, event_count; the latest 5 recorded, open one with issue_context) and crashes_waiting (crash files davy serve has not recorded yet), or error when it could not be read."
+        description = "Confirm ingest for a project slug: events kept, time of the last event, issue count and time of the last log line, RFC 3339, and how long the project keeps logs and errors. Times are null before the first record; poll after sending a test event. last_log_cold, present when the search for the last log line read cold days, is the cold note of search_logs. davy, whatever the slug, is what Davy reported of itself over the last 24 hours: project (the slug of Davy's own project, usually davy), warnings_24h, errors_24h (error and fatal), crashes_24h (issue_id, title, last_seen, recorded_at, event_count; the latest 5 recorded, open one with issue_context) and crashes_waiting (crash files davy serve has not recorded yet), or error when it could not be read."
     )]
     async fn project_status(&self, Parameters(req): Parameters<ProjectStatus>) -> Reply {
         let defaults = self.retention;
@@ -424,21 +426,33 @@ impl Tools {
     }
 
     #[tool(
-        description = "Search logs from every source (Sentry, OpenTelemetry, Logtail shippers, Vercel Log Drains, and Davy itself: its own warnings and errors are in its own project, davy unless project_status names another under davy.project, with the part of Davy that wrote them in attributes.component). Returns hits oldest first with level, service, message, trace_id and attributes."
+        description = "Search logs from every source (Sentry, OpenTelemetry, Logtail shippers, Vercel Log Drains, and Davy itself: its own warnings and errors are in its own project, davy unless project_status names another under davy.project, with the part of Davy that wrote them in attributes.component). Returns hits oldest first with level, service, message, trace_id and attributes. Days older than the server's hot days are cold: compressed, searched the same, slower, and newest first, so a search filled by newer days reads none. When it read cold days, a second text holds {\"cold\": {cold_from, cold_to, scan_ms, rows_read}}; unscanned_to there means the 5 s budget ran out and logs up to it may be missing, so narrow since and until."
     )]
-    async fn search_logs(&self, Parameters(req): Parameters<SearchLogs>) -> Reply {
+    async fn search_logs(
+        &self,
+        Parameters(req): Parameters<SearchLogs>,
+    ) -> Result<CallToolResult, String> {
         let writes = self.writes.clone();
-        self.blocking(move |data| {
-            let limit = req.limit.unwrap_or(100).min(MAX_LOGS);
-            let q = req.filter.query(data, limit)?;
-            searches::record(&writes, searches::By::Agent, &q);
-            json(&search(&logs::dir(data), &q)?)
-        })
-        .await
+        let texts = self
+            .blocking_with(move |data| {
+                let limit = req.limit.unwrap_or(100).min(MAX_LOGS);
+                let q = req.filter.query(data, limit)?;
+                searches::record(&writes, searches::By::Agent, &q);
+                let found = search_for(&logs::dir(data), &q, cold::BUDGET)?;
+                let mut texts = vec![json(&found.hits)?];
+                if let Some(scan) = &found.cold {
+                    texts.push(json(&serde_json::json!({"cold": ColdNote::from(scan)}))?);
+                }
+                Ok(texts)
+            })
+            .await?;
+        Ok(CallToolResult::success(
+            texts.into_iter().map(ContentBlock::text).collect(),
+        ))
     }
 
     #[tool(
-        description = "Count the logs that match, per time bucket, with the filters of search_logs. Returns the total, the bucket width and each bucket that has logs as [start, count], oldest first, at most 200 buckets. Use it to see how often something happens and since when, then read examples with search_logs."
+        description = "Count the logs that match, per time bucket, with the filters of search_logs. Returns the total, the bucket width and each bucket that has logs as [start, count], oldest first, at most 200 buckets, and cold as search_logs gives it when it read cold days. Use it to see how often something happens and since when, then read examples with search_logs."
     )]
     async fn count_logs(&self, Parameters(filter): Parameters<LogFilter>) -> Reply {
         let writes = self.writes.clone();
@@ -495,7 +509,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Everything needed to start fixing one issue: the issue, its newest event cut to the useful parts (stack with source lines of in-app frames, breadcrumbs, tags, user, request, runtime), the last 10 events, the releases it appeared in, the logs of the same trace or from just before the error, and the newest 10 things users wrote about it through the SDK's feedback. A crash of Davy itself is an issue of Davy's own project, its stack the Rust backtrace of the panic. issue.discarded_at is when a person discarded the issue, null when not: Davy counts its new events and stores none, so last_seen and the events stop there while the error may go on."
+        description = "Everything needed to start fixing one issue: the issue, its newest event cut to the useful parts (stack with source lines of in-app frames, breadcrumbs, tags, user, request, runtime), the last 10 events, the releases it appeared in, the logs of the same trace or from just before the error (logs_cold, when they came from cold days, is the cold note of search_logs), and the newest 10 things users wrote about it through the SDK's feedback. A crash of Davy itself is an issue of Davy's own project, its stack the Rust backtrace of the panic. issue.discarded_at is when a person discarded the issue, null when not: Davy counts its new events and stores none, so last_seen and the events stop there while the error may go on."
     )]
     async fn issue_context(&self, Parameters(Issue { issue_id }): Parameters<Issue>) -> Reply {
         self.blocking(move |data| {

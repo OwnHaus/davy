@@ -4,8 +4,8 @@
     {
       "id": "cold-tier",
       "title": "A cold tier for old logs",
-      "what": "Old days of logs become compressed segments that stay searchable and can live on object storage.",
-      "status": "next"
+      "what": "Old days of logs become compressed files that stay searchable, on the local disk now and on object storage next.",
+      "status": "in progress"
     },
     {
       "id": "oidc",

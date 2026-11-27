@@ -1,4 +1,5 @@
 use super::*;
+use crate::retention::HotDays;
 use std::collections::HashMap;
 
 fn dir() -> PathBuf {
@@ -14,6 +15,7 @@ fn args(data: &Path, listen: Option<&str>, public_url: Option<&str>) -> Args {
         public_url: public_url.map(|u| Url::parse(u).unwrap()),
         log_retention_days: 30,
         error_retention_days: 36_500,
+        hot_days: HotDays::default(),
         mail_from: None,
         no_self_report: false,
     }

@@ -11,7 +11,7 @@ use crate::{
     issues::{self, Cursor, Filter, IssueIds, MAX_TEXT, Sort, Status},
     logs::{
         LogLevel, LogSource,
-        store::{LogHit, search},
+        store::{self as log_store, LogHit},
     },
     store::{self, IssueDetail, IssueStatus, Job, ReleaseCount},
     time,
@@ -382,6 +382,8 @@ pub struct Logs {
     pub scope: String,
     /// Oldest first.
     pub logs: Vec<LogLine>,
+    /// What the search left out of cold days, none when it read them all.
+    pub cut: Option<super::logs::ColdCut>,
 }
 
 async fn logs(
@@ -408,11 +410,16 @@ async fn logs(
         let at_ns = moment.at.saturating_mul(1_000_000);
         let (scope, query) =
             context::logs_around(moment.project, at_ns, moment.trace_id.as_deref());
-        let logs = search(&dir, &query)?
-            .into_iter()
-            .map(|h| LogLine::new(h, &slugs))
-            .collect();
-        anyhow::Ok(Logs { scope, logs })
+        let found = log_store::search_for(&dir, &query, log_store::cold::BUDGET)?;
+        anyhow::Ok(Logs {
+            scope,
+            cut: super::logs::ColdCut::of(found.cold.as_ref()),
+            logs: found
+                .hits
+                .into_iter()
+                .map(|h| LogLine::new(h, &slugs))
+                .collect(),
+        })
     })
     .await
     .map_err(internal)?

@@ -4,8 +4,9 @@ use davy::{
     logs::{
         self, LogLevel,
         store::{
-            LogCounts, LogHit, LogQuery, PatternQuery, PatternReport, histogram, search,
-            top_patterns,
+            LogCounts, LogHit, LogQuery, PatternQuery, PatternReport,
+            cold::{self, ColdNote},
+            histogram, search_for, top_patterns,
         },
     },
     monitor::{self, CheckUrl},
@@ -453,16 +454,25 @@ fn logs(out: &mut impl Write, args: Logs) -> anyhow::Result<()> {
         skip: 0,
     };
     if !args.count {
-        return print_logs(out, search(&logs::dir(&args.data), &q)?, args.json);
+        let found = search_for(&logs::dir(&args.data), &q, cold::BUDGET)?;
+        print_logs(out, found.hits, args.json)?;
+        return cold_line(found.cold.as_ref().map(ColdNote::from).as_ref());
     }
     let counts = LogCounts::from(histogram(&logs::dir(&args.data), &q)?);
     if args.json {
         writeln!(out, "{}", serde_json::to_string(&counts)?)?;
-    } else {
-        writeln!(out, "{} logs, {} buckets", counts.total, counts.step)?;
-        for (start, n) in counts.buckets {
-            writeln!(out, "{start}\t{n}")?;
-        }
+        return Ok(());
+    }
+    writeln!(out, "{} logs, {} buckets", counts.total, counts.step)?;
+    for (start, n) in &counts.buckets {
+        writeln!(out, "{start}\t{n}")?;
+    }
+    cold_line(counts.cold.as_ref())
+}
+/// What a search read of cold days, on stderr so that stdout stays rows.
+fn cold_line(note: Option<&ColdNote>) -> anyhow::Result<()> {
+    if let Some(note) = note {
+        writeln!(std::io::stderr(), "{}", note.line())?;
     }
     Ok(())
 }

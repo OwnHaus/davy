@@ -2,7 +2,8 @@
 // passes through `shown` before React renders it as text.
 
 import { useState } from "react";
-import type { Breadcrumb, Context, Cut, EventView, ExceptionView, FrameView, JsonValue, LogLine, Pair } from "../api/types";
+import type { Breadcrumb, ColdCut, Context, Cut, EventView, ExceptionView, FrameView, JsonValue, LogLine, Pair } from "../api/types";
+import { cutText } from "../lib/cold";
 import { announce, copy } from "../lib/live";
 import { plural, shown, webUrl } from "../lib/text";
 import { clock } from "../lib/time";
@@ -219,12 +220,14 @@ const pairsText = (pairs: Pair[]) => pairs.map((p) => `${shown(p.key)}=${shown(p
 
 const jsonText = (v: JsonValue) => (typeof v === "string" ? v : JSON.stringify(v));
 
-export function LogLines({ scope, logs }: { scope: string; logs: LogLine[] }) {
+export function LogLines({ scope, logs, cut }: { scope: string; logs: LogLine[]; cut: ColdCut | null }) {
+  const stopped = cutText(cut, "The search");
   return (
     <section className="sec">
       <h3>
         Logs around the event<span>{shown(scope)}</span>
       </h3>
+      {stopped ? <div className="none">{stopped}</div> : null}
       {logs.length === 0 ? (
         <div className="none">No logs in that window.</div>
       ) : (

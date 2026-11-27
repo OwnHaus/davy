@@ -154,7 +154,7 @@ async fn an_issue_shows_its_events_its_latest_event_and_the_logs_around_it() {
         (r.status, r.body),
         (
             200,
-            json!({ "scope": "trace f9e1079522134d8194d62046d471f90c, one hour either side of the event", "logs": [] })
+            json!({ "scope": "trace f9e1079522134d8194d62046d471f90c, one hour either side of the event", "logs": [], "cut": null })
         )
     );
     let refused = [

@@ -3,7 +3,11 @@
 use crate::{
     event::{self, ErrorEvent},
     items::user_feedback::{self, IssueFeedback},
-    logs::store::{LogHit, LogQuery, search},
+    logs::store::{
+        LogHit, LogQuery,
+        cold::{self, ColdNote},
+        search_for,
+    },
     store,
     time::HOUR_NS,
 };
@@ -26,6 +30,9 @@ pub struct IssueContext {
     pub logs_scope: String,
     /// Oldest first.
     pub logs: Vec<LogHit>,
+    /// What the log search read of cold days, as `search_logs` gives it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logs_cold: Option<ColdNote>,
     /// What users wrote about this issue's events, newest first.
     pub feedback: Vec<IssueFeedback>,
 }
@@ -47,14 +54,15 @@ pub fn issue_context(c: &Connection, data: &Path, id: i64) -> Result<Option<Issu
         .saturating_mul(1_000_000);
     let trace = latest.as_ref().and_then(|e| e.trace_id.as_deref());
     let (logs_scope, query) = logs_around(issue.project_id, at_ns, trace);
-    let logs = search(&crate::logs::dir(data), &query)?;
+    let found = search_for(&crate::logs::dir(data), &query, cold::BUDGET)?;
     Ok(Some(IssueContext {
         latest_event: latest.as_ref().map(event::compact),
         recent_events: store::recent_events(c, id)?,
         releases: store::issue_releases(c, id)?,
         issue,
         logs_scope,
-        logs,
+        logs: found.hits,
+        logs_cold: found.cold.as_ref().map(ColdNote::from),
         feedback: user_feedback::of_issue(c, id, FEEDBACK)?,
     }))
 }

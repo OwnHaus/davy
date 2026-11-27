@@ -33,6 +33,11 @@ pub struct Args {
     /// setting of its own, within 10 s and for good.
     #[arg(long, default_value_t = retention::DEFAULT_ERROR_DAYS)]
     pub error_retention_days: u32,
+    /// Closed days of logs kept as day indexes, searched fastest, 1 to
+    /// 36,500, or `off`. An older day turns into compressed cold files of
+    /// a tenth of its size or less, which the same searches read, slower.
+    #[arg(long, default_value_t = retention::HotDays::default())]
+    pub hot_days: retention::HotDays,
     /// The sender of alert e-mail, required when there is an SMTP URL.
     /// Defaults to the sender in DATA/setup.json.
     #[arg(long)]
@@ -109,7 +114,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let retention = retention::Defaults {
         logs: days("log-retention-days", args.log_retention_days)?,
         errors: days("error-retention-days", args.error_retention_days)?,
-        hot_days: retention::HotDays::OFF,
+        hot_days: args.hot_days,
     };
     let env = env(&args.data, |key| std::env::var(key).ok());
     let token = secret::admin_token(&env)?;

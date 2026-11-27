@@ -445,6 +445,7 @@ tr.more td { padding: 10px 14px; height: auto; border-bottom: 0; }
 .hhead .cnt { color: var(--ink); font-weight: 600; }
 .hhead .hint { margin-left: auto; }
 .qerr { margin: 4px 14px 6px; overflow-wrap: anywhere; }
+.hcut { color: var(--muted); }
 .hist { position: relative; height: 84px; margin: 4px 14px 6px; flex: none; }
 .hist svg { touch-action: none; cursor: crosshair; user-select: none; }
 .hist svg:focus-visible { outline-offset: 2px; }

@@ -57,13 +57,20 @@
     <p class="intro">Each shipped part carries the day it landed on <code>main</code>. The same list is in <a href="https://github.com/OwnHaus/davy/blob/main/roadmap.json">roadmap.json</a>, which this page is written from, and the <a href="https://github.com/OwnHaus/davy/blob/main/CHANGELOG.md">changelog</a> has every detail.</p>
   </header>
   <div class="stages"><!--roadmap:start-->
+    <section class="stage building" aria-labelledby="st-building">
+      <div class="stage-h">
+        <h2 id="st-building">Being built</h2>
+      </div>
+      <ol class="items">
+        <li id="cold-tier"><h3>A cold tier for old logs</h3><p>Old days of logs become compressed files that stay searchable, on the local disk now and on object storage next.</p></li>
+      </ol>
+    </section>
     <section class="stage next" aria-labelledby="st-next">
       <div class="stage-h">
         <h2 id="st-next">Next</h2>
         <p>In about this order.</p>
       </div>
       <ol class="items">
-        <li id="cold-tier"><h3>A cold tier for old logs</h3><p>Old days of logs become compressed segments that stay searchable and can live on object storage.</p></li>
         <li id="oidc"><h3>Sign in with any OIDC provider</h3><p>People sign in to the web UI through the identity provider the team already uses.</p></li>
         <li id="scoped-tokens"><h3>Scoped API tokens</h3><p>A token can be limited to some projects and to reading, so an agent gets only the access it needs.</p></li>
         <li id="audit-log"><h3>An audit log of what agents changed</h3><p>Every change an agent or a person makes, such as a resolved issue or a new drop rule, is recorded with who made it.</p></li>

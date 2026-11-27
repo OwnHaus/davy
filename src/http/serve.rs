@@ -30,7 +30,12 @@ fn log_writer(
 ) -> anyhow::Result<LogWriter> {
     let projects = store::open(data)?;
     let overrides = Overrides::new(move || crate::retention::log_days(&projects), lock);
-    LogWriter::start(logs::dir(data), retention.logs.get(), overrides)
+    LogWriter::start_with(
+        logs::dir(data),
+        retention.logs.get(),
+        overrides,
+        retention.hot_days.get(),
+    )
 }
 
 /// Waits for each thread to end, and names the first that panicked.

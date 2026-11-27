@@ -7,7 +7,7 @@ use super::{
     alerts::{Delivery, Notification, NotificationPage},
     connect::{Endpoints, ProjectKey, Setup, Step},
     issues::{IssueView, LogLine, Logs, StatusChange},
-    logs::{LogHistogram, LogPage},
+    logs::{ColdCut, LogHistogram, LogPage},
     monitors::{Check, Hour, Incident, MonitorDetail, MonitorKind, MonitorPage, MonitorRow},
 };
 use crate::{
@@ -63,6 +63,7 @@ fn file() -> String {
         decl::<LogLevel>(&c),
         decl::<serde_json::Value>(&c),
         decl::<LogLine>(&c),
+        decl::<ColdCut>(&c),
         decl::<Logs>(&c),
         decl::<LogPage>(&c),
         decl::<LogHistogram>(&c),
