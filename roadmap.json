@@ -42,7 +42,7 @@
       "title": "Daily quotas and spike protection",
       "what": "Each project gets a daily limit, so one runaway app cannot fill the disk for the others.",
       "status": "shipped",
-      "version": "unreleased",
+      "version": "0.2.0",
       "date": "2026-11-26"
     },
     {
@@ -50,7 +50,7 @@
       "title": "A usage page in the web UI",
       "what": "One page shows the disk used and free, the day it fills, what each project sends and where it could take less.",
       "status": "shipped",
-      "version": "unreleased",
+      "version": "0.2.0",
       "date": "2026-11-26"
     },
     {
@@ -58,7 +58,7 @@
       "title": "Agents propose drop rules",
       "what": "An agent stages a drop rule that only counts what it would drop, and a person makes it live.",
       "status": "shipped",
-      "version": "unreleased",
+      "version": "0.2.0",
       "date": "2026-11-26"
     },
     {
@@ -66,7 +66,7 @@
       "title": "Drop rules with shadow mode",
       "what": "Log lines nobody needs are dropped before they are stored, after a shadow run shows what a rule would drop.",
       "status": "shipped",
-      "version": "unreleased",
+      "version": "0.2.0",
       "date": "2026-11-25"
     },
     {
@@ -74,7 +74,7 @@
       "title": "A savings view",
       "what": "Davy lists the log patterns with the most bytes, logs kept longer than anyone reads and the noisiest issues, with the command that frees the space.",
       "status": "shipped",
-      "version": "unreleased",
+      "version": "0.2.0",
       "date": "2026-11-25"
     },
     {
@@ -82,7 +82,7 @@
       "title": "Search history",
       "what": "Davy records the log searches people and agents run, so it can tell which logs nobody reads.",
       "status": "shipped",
-      "version": "unreleased",
+      "version": "0.2.0",
       "date": "2026-11-25"
     },
     {
@@ -90,7 +90,7 @@
       "title": "Discard an issue",
       "what": "A noisy issue stops storing new events and only counts them.",
       "status": "shipped",
-      "version": "unreleased",
+      "version": "0.2.0",
       "date": "2026-11-25"
     },
     {
@@ -98,7 +98,7 @@
       "title": "Davy watches itself",
       "what": "Davy stores its own warnings and errors in a project of its own, where they can be searched like any app's.",
       "status": "shipped",
-      "version": "unreleased",
+      "version": "0.2.0",
       "date": "2026-11-25"
     },
     {
@@ -106,7 +106,7 @@
       "title": "Logs from Vercel",
       "what": "A Vercel log drain sends a deployment's logs straight to Davy, with its signature checked.",
       "status": "shipped",
-      "version": "unreleased",
+      "version": "0.2.0",
       "date": "2026-11-25"
     },
     {
@@ -114,7 +114,7 @@
       "title": "A disk forecast",
       "what": "Davy tells you the day the disk fills at the current rate, per project, from the first hour of data.",
       "status": "shipped",
-      "version": "unreleased",
+      "version": "0.2.0",
       "date": "2026-11-25"
     },
     {
@@ -122,7 +122,7 @@
       "title": "Usage counters",
       "what": "Davy counts what each project sends per day and signal, and keeps the counts for 400 days.",
       "status": "shipped",
-      "version": "unreleased",
+      "version": "0.2.0",
       "date": "2026-11-24"
     },
     {
@@ -130,7 +130,7 @@
       "title": "Log patterns",
       "what": "Log lines are grouped by shape, so you see which kinds of line fill the logs.",
       "status": "shipped",
-      "version": "unreleased",
+      "version": "0.2.0",
       "date": "2026-11-24"
     },
     {
@@ -138,7 +138,7 @@
       "title": "Scrubbing on by default",
       "what": "Passwords, keys, card numbers and IP addresses are removed on the server before anything is stored.",
       "status": "shipped",
-      "version": "unreleased",
+      "version": "0.2.0",
       "date": "2026-11-24"
     },
     {
@@ -146,7 +146,7 @@
       "title": "Retention per project",
       "what": "Each project keeps its logs and its errors for as many days as it needs.",
       "status": "shipped",
-      "version": "unreleased",
+      "version": "0.2.0",
       "date": "2026-11-24"
     },
     {
@@ -154,7 +154,7 @@
       "title": "Connect an app in one command",
       "what": "One command prints the SDK setup for an app and a command that sends a test event.",
       "status": "shipped",
-      "version": "unreleased",
+      "version": "0.2.0",
       "date": "2026-11-23"
     },
     {
@@ -162,7 +162,7 @@
       "title": "Release health and user feedback",
       "what": "Davy shows crash-free sessions per release, and what users wrote in the feedback widget next to the issue.",
       "status": "shipped",
-      "version": "unreleased",
+      "version": "0.2.0",
       "date": "2026-11-23"
     },
     {
@@ -170,7 +170,7 @@
       "title": "Cron check-ins",
       "what": "A scheduled job that reports in becomes a monitor that alerts when a run is late or fails.",
       "status": "shipped",
-      "version": "unreleased",
+      "version": "0.2.0",
       "date": "2026-11-23"
     },
     {
