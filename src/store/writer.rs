@@ -77,7 +77,7 @@ impl Writer {
             while let Some(batch) = queues.next_batch() {
                 // Held until the change is committed, so the log writer
                 // reads either the old setting before it or the new one.
-                let changes = batch.iter().any(|w| matches!(w.job, Job::SetRetention(..)));
+                let changes = batch.iter().any(|w| w.job.sets_retention());
                 let held = changes.then(|| settings.hold());
                 let outcomes = write_batch(&mut c, &batch);
                 drop(held);

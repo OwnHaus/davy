@@ -16,6 +16,7 @@ pub mod http;
 pub mod install;
 pub mod issues;
 pub mod items;
+pub mod ledger;
 pub mod logs;
 pub mod mcp;
 pub mod monitor;

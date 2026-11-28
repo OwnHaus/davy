@@ -376,6 +376,7 @@ A coding agent should get from "there is an error" to a fix without a human copy
 | `drop_rule_shadow` | `project`, exactly one of `pattern`, `level`, `message`, then `service?`, `keep?` | `{rule, note}`: the shadow rule added, or the equal one the project has. No field makes it live. Refused on Davy's own project and for a level rule of warn or above. |
 | `drop_rule_remove` | `project`, `rule_id` | `{removed}`. Only a shadow rule an agent added; its counts go with it. |
 | `drop_rule_live` | `project`, `rule_id` | `{rule, note}`: the rule, live now and a person's. Only for a token a person unlocked for destructive changes, see [Agent tokens](#agent-tokens). |
+| `ledger` | `actor?`, `before?`, `limit?` | `{rows, next_before}`: what agents and people changed through Davy, newest first, see [Ledger](#ledger). |
 | `release_health` | `project?`, `since?` | Per release and environment, newest first, at most 50: `sessions`, `errored`, `crashed`, `abnormal`, `crash_free_sessions`, `users`, `crashed_users`, `crash_free_users`, `first_hour`, `last_hour`. `since` defaults to `7d`. |
 | `issue_context` | `issue_id` | The issue, its latest event made compact, its recent events and releases, and the logs around the latest event. |
 | `mark_fixed` | `issue_id`, `release?` | A sentence that says which release the fix is expected in. |
@@ -441,7 +442,7 @@ The same library functions back three commands, for agents that run shell comman
 - Unit tests with literal values: `on_event` for every row of the regression rule; `sql` returns exact rows, refuses a write, refuses two statements, cuts at 500 rows, decompresses with `payload_json`, and interrupts a runaway recursive query; compaction of the `sentry-node-10` error fixture gives the exact exception, frames and context lines.
 - A store test resolves an issue in a release and asserts that an event from an older release keeps it resolved and one from a newer release reopens it.
 - HTTP contract tests: `/mcp` is 401 without the token or with a wrong one and 403 for a `Host` or `Origin` it does not serve; with the right one `tools/list` and `tools/call` of `sql` and `mark_fixed` answer. Without a configured admin token it is 401 to every bearer token but a live agent token.
-- `e2e/run.sh` connects with the official MCP TypeScript client (`@modelcontextprotocol/sdk`) over Streamable HTTP with the admin token, lists the sixteen tools it reaches, calls `issue_context` on an issue the Sentry SDKs created and asserts the exception type and an in-app frame, finds a log with `search_logs` and counts it with `count_logs`, finds its pattern with `log_patterns` and its lines by that pattern with `search_logs`, calls `mark_fixed` and reads the status back with `sql`, lengthens a project's retention with `set_retention` and sees a shorter one refused, and reads the counts of the e2e projects with `usage`.
+- `e2e/run.sh` connects with the official MCP TypeScript client (`@modelcontextprotocol/sdk`) over Streamable HTTP with the admin token, lists the seventeen tools it reaches, calls `issue_context` on an issue the Sentry SDKs created and asserts the exception type and an in-app frame, finds a log with `search_logs` and counts it with `count_logs`, finds its pattern with `log_patterns` and its lines by that pattern with `search_logs`, calls `mark_fixed` and reads the status back with `sql` and the row it left with `ledger`, lengthens a project's retention with `set_retention` and sees a shorter one refused, and reads the counts of the e2e projects with `usage`.
 - `scripts/check` passes.
 
 ## Milestone 5: source maps
@@ -860,7 +861,8 @@ Inside the server only `store::Writer` writes SQLite. The writer queue gains the
 - `SetStatus { issues, status }` for resolve, resolve in a release, ignore and reopen, of one issue or up to 500 at once in one transaction, so a bulk change never half applies. `issues` is sorted, without duplicates and holds 1 to 500 ids by construction. The time of a resolve is part of `status`, `Resolved { in_release, at }`, since only a resolve has one. One missing issue refuses the whole change with `no issue {id}`. It replaced `Resolve`, and the MCP tool `mark_fixed` and `davy resolve` use it too.
 - `Login { user, hash, at }`, `Logout { hash }`, `LogoutAll { user, except }`, `Welcome { invite, password, session, at }` and `SetPassword { user, password, keep }`.
 - `Touch { hash, at }`, which writes a session's `used_at` at most once an hour.
-- `SetRetention(change, by)` for how long a project keeps its logs and errors, from `POST /ui/api/retention` (`By::Person`) and the MCP tool `set_retention` (`By::Agent`). An unknown project refuses the change with `unknown project "slug"`, and an agent's change that keeps either kind shorter than now with the reason. The writer decides, so two changes at once cannot slip a shorter one past the check.
+- `Recorded { job, entry }`: one of these with the ledger row that records who made it, written in the same transaction: a person's change from the web UI, and an agent's change that deletes data, see [Ledger](#ledger).
+- `SetRetention(change, by)` for how long a project keeps its logs and errors, from `POST /ui/api/retention` (`By::Person`) and the MCP tool `set_retention` (`By::Agent`, or `By::Unlocked` for a token a person unlocked). An unknown project refuses the change with `unknown project "slug"`, and an agent's change that keeps either kind shorter than now with the reason. The writer decides, so two changes at once cannot slip a shorter one past the check.
 
 During an error storm the ingest queue is full, and that is when the team needs the UI most. The writer takes UI jobs from a second queue of 64, so a full ingest queue does not refuse a login or a resolve. UI jobs go first, but take at most half of a batch of 64 while ingest waits, so people who keep writing cannot stop ingest either.
 
@@ -1432,7 +1434,7 @@ that are null before the first record. The event count and time come from
 the issues index, which holds `event_count` and `last_seen`, and count the
 events the project still keeps. Logs become visible after the log writer
 commits. The two tools brought the MCP tool count to ten, and
-`set_retention` to eleven, `log_patterns` to twelve and `usage` to thirteen, and `drop_rules`, `drop_rule_shadow` and `drop_rule_remove` (see [Drop rules](#drop-rules)) brought it to sixteen, and `drop_rule_live` (see [Agent tokens](#agent-tokens)) to seventeen, of which the admin token lists sixteen. `retention` in `project_status` shows the days
+`set_retention` to eleven, `log_patterns` to twelve and `usage` to thirteen, and `drop_rules`, `drop_rule_shadow` and `drop_rule_remove` (see [Drop rules](#drop-rules)) brought it to sixteen, and `drop_rule_live` (see [Agent tokens](#agent-tokens)) to seventeen, and `ledger` (see [Ledger](#ledger)) to eighteen, of which the admin token lists seventeen. `retention` in `project_status` shows the days
 of logs and errors in effect and the instant before which they are deleted. `scrub` shows the
 project's scrubbing settings.
 
@@ -2090,6 +2092,7 @@ The admin token holds `full` and is never unlocked. It sits in every agent confi
 | `drop_rules` | read | reads |
 | `release_health` | read | reads |
 | `issue_context` | read | reads |
+| `ledger` | read | reads what was changed, no secret and no payload; see [Ledger](#ledger) |
 | `mark_fixed` | triage | a person reopens the issue in a click, and a regression reopens it |
 | `submit_feedback` | triage | stores a note about Davy itself |
 | `drop_rule_shadow` | triage | counts, drops nothing, expires in 14 days |
@@ -2115,3 +2118,54 @@ The admin token holds `full` and is never unlocked. It sits in every agent confi
 - Tokens limited to some projects. A token reaches every project, as the admin token does; see "Tenant scope in agent tools".
 - Expiry dates. A person revokes a token.
 - Rights beyond the MCP tools: an agent token opens no other route, such as the scrub settings or source map upload.
+
+## Ledger
+
+An agent with a token makes changes nobody watched it make. The ledger is the record a person reads afterwards: what changed through Davy, who asked, from which MCP client, and how it ended. It is also the record an agent reads before it acts again, so it does not undo a person's choice.
+
+### A row
+
+Each row has `id`, `at`, `actor_kind` and `actor`, `client`, `action`, `project`, `issue`, `target`, `outcome`, `summary` and `repeats`.
+
+- `actor_kind` is `admin`, `token`, `person` or `cli`. `actor` is the token's name, the person's e-mail, `admin token` or `davy CLI`. A space is in no token name and no e-mail, so the last two never name someone else.
+- `client` is the name the MCP client gave when it connected, such as `claude-code`, null for a person and the CLI.
+- `action` is the MCP tool, or the same change made another way: `issue_status`, `set_retention`, `drop_rule_live`, `drop_rule_add`, `drop_rule_remove`, `token_add`, `token_level`, `token_unlock`, `token_lock` and `token_revoke`.
+- `project` is the project's slug, found from the issue when the change names one. `issue` is the issue's ID when the change named one issue. `target` says what the change was about: `issue 7`, `12 issues`, `rule 3`, `pattern 1a2b3c4d`, `token ci`.
+- `outcome` is `done`, `error` (the tool or the writer refused it, or it failed) or `denied` (the token's level does not reach it).
+- `summary` says the change in a few words, from the arguments as sent, so a call the tool refused for its arguments is described all the same: `resolved, fixed in release 2.0.0`, `ignored: issues 4, 9, 12`, `logs 90 days, errors the default`, `added a shadow rule for level debug and below, service web`, `unlocked destructive changes`. A refused or failed change adds a note after `;`: a person's or the CLI's the reason, an agent's a fixed word (see [What a row never holds](#what-a-row-never-holds)), and a denied one what the call needs and what the token holds: `needs triage, holds read`.
+- `repeats` counts the same row again, by the same actor, with the same client, action, project, issue, target, outcome and summary, each less than a minute after the last, and only while that row is the newest of the whole table. An agent that retries a refused call in a loop leaves one row with a count, and `at` is the time of the last. A change by anyone else in between starts a new row, so a count never hides what came between the first try and the last.
+
+### What leaves a row
+
+- **Over MCP**, every call of a tool that needs more than `read`, as it ended, and every call the token's level refused. A call of a read tool leaves none: an agent reads far more than it changes, and the token's `used_at` says when it last called. A request without a valid token is a `401` and a tool the table has no row for is `tool not found`; neither leaves a row, as neither has an actor or an action to name.
+- **In the web UI**, a person's change of issue status (resolve, resolve in a release, ignore, reopen, one issue or many) and of retention, and on the Tokens page a change of level, an unlock or lock of destructive changes and a revocation. The row says whether the change was done or refused, and why.
+- **With `davy`**, `davy resolve`, `davy project retention` with a setting, `davy drop live`, `davy drop add` of a live rule, `davy drop remove`, and `davy token add`, `level`, `unlock`, `lock` and `revoke`. `davy drop shadow`, `davy drop add --shadow` and `davy drop list` leave none: they stage or count and drop nothing. A remove does leave one: a removed live rule stops dropping, and a removed shadow rule is a person undoing what an agent staged.
+- Logins, password changes, ingest, check-ins and alert deliveries leave none. They are not changes an agent makes, and each has its own record.
+
+### What a row never holds
+
+A summary is built from a few named arguments of each change, never from the arguments as a whole, so a field nobody listed never reaches the ledger. It never holds a token's secret, an event or log payload, or the text of `submit_feedback`. Texts an agent or a person sent are cut: a release, a service or a setting to 40 characters, a log message a rule matches to 60, a pattern to 20, an actor, client, project or target to 100, and the summary with its reason to 200. Control characters and marks that reorder text become spaces. An agent's refused or failed call keeps a fixed note, never the error's text: `tool error` when the tool refused it, `refused` when the writer did, `invalid arguments` when the arguments do not parse, and `protocol error CODE` otherwise. An error text can quote what the agent sent, a file path or a log line, and the agent got the text in its answer already. A person's or the CLI's refused change keeps the reason, cut with the summary: Davy wrote that text, from arguments a signed-in person or the host's operator gave.
+
+### How a row is written
+
+- A change from the web UI or the CLI and its row are written in one transaction, so a row never names a change that did not happen, and a change never lacks its row. The web UI sends both to the writer as one job, `Recorded`, whose row takes the change's outcome. The CLI writes both on its own connection, in one `BEGIN IMMEDIATE` transaction, so it waits for a server that writes.
+- An agent's change that deletes data, an unlocked `drop_rule_live` or a `set_retention` that shortens, goes to the writer as one `Recorded` job too, with the token's row marked `destructive`. The writer reads the token's unlock again in that transaction, so a lock or revocation that came first refuses it, and the row says so. A crash never leaves such a change without its row.
+- Any other change over MCP goes through the writer inside the tool, so its row is a second job, queued when the tool returns. The answer waits until the row is stored, so an agent that reads the ledger next sees it, and a full queue makes the call wait for room, so a busy agent slows down rather than rows piling up in memory. A crash between the change and its row loses the row; the change is in the store.
+- Migration 27 adds `ledger(id, at, actor_kind, actor, client, action, project, issue, target, outcome, summary, repeats, destructive)`, with checks on `actor_kind`, `outcome` and `destructive`, and an index on `(actor, id)` for the filter.
+
+### Retention
+
+The sweep deletes rows older than 180 days. It also caps each agent actor, the admin token and each token name, by kind of row: the newest 5,000 done changes, the newest 500 refused or denied calls, and the newest 2,000 changes that deleted data. Each kind only pushes out older rows of its own kind and actor, so:
+
+- an agent in a loop of refused calls keeps 500 rows and never pushes out its own changes, nor anyone else's rows;
+- a flood of harmless changes never pushes out the record of a change that deleted data;
+- a person's and the CLI's rows have no count cap: a person signs in to make each change, and the CLI runs on the host.
+
+A row is about 200 bytes, so an agent actor holds about 1.5 MB at most, and 50 tokens with the admin token about 76 MB (an estimate, not measured). A token's rows stay after it is revoked, under its name, until they age out. It does not follow a project's retention: a row about a project outlives its logs, as the ledger is about the change, not the data.
+
+### Reading it
+
+- The MCP tool `ledger` takes `actor?`, `before?` and `limit?` (1 to 200, default 50) and returns `{rows, next_before}`, newest first. `next_before` is the ID to pass as `before` for the page before, null on the last page.
+- It needs `read`. The ledger holds no secret and no payload, `sql` reads the table already, and every token reaches every project (see "Tenant scope in agent tools"), so a reading agent learns nothing it could not read. And an agent that reads it before acting sees that a person reopened what it resolved, or which rule another agent staged.
+- `client`, `project`, `target` and `summary` hold text an agent sent: a client name, a slug, a release, a pattern, a message. The tool's description says those fields are data, not instructions, as every tool that returns stored text does.
+- The web UI's Ledger page reads the same rows, see [Views](#views).

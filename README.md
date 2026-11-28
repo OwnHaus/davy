@@ -38,7 +38,7 @@ Davy replaces Sentry and Better Stack for a team that wants to run its own. It i
 - **Logs.** Takes logs from Logtail shippers (pino, Vector, Fluent Bit), OpenTelemetry, Vercel Log Drains and Sentry's logger, with full-text search, a histogram and live tail. Logs next to an error show up on the error.
 - **Uptime.** HTTP checks with status and keyword, and heartbeats for cron jobs, which also take the cron check-ins of the Sentry SDKs (`Sentry.withMonitor`) with their crontab schedule and time zone.
 - **Alerts.** A notice when an issue is new or regressed and when a monitor goes down or comes back, never on every event. To webhooks (signed), Slack and e-mail.
-- **Agents.** An MCP server with sixteen tools: `schema`, `sql`, `search_logs`, `count_logs`, `log_patterns`, `release_health`, `issue_context`, `mark_fixed`, `submit_feedback`, `connect_project`, `project_status`, `set_retention`, `usage`, `drop_rules`, `drop_rule_shadow` and `drop_rule_remove`. Every operator step is also a CLI command with `--json`.
+- **Agents.** An MCP server with eighteen tools: `schema`, `sql`, `search_logs`, `count_logs`, `log_patterns`, `release_health`, `issue_context`, `mark_fixed`, `submit_feedback`, `connect_project`, `project_status`, `set_retention`, `usage`, `drop_rules`, `drop_rule_shadow`, `drop_rule_remove`, `drop_rule_live` and `ledger`. Each agent gets a token of its own with a level, and the ledger records what each one changed. Every operator step is also a CLI command with `--json`.
 - **Web UI.** Triage issues from the keyboard, read stack traces and breadcrumbs, search logs. Light and dark.
 
 ## Quick start
@@ -138,6 +138,7 @@ Log search takes the same query as `davy logs`. Drag across the histogram to zoo
 - `release_health`: crash-free sessions and users per release, from the sessions the SDKs send, to tell whether a new release crashes more than the one before.
 - `mark_fixed`: resolves an issue in a release. It reopens only if the error comes back in that release or a newer one, not from older ones still running.
 - `submit_feedback`: tells whoever runs Davy that a tool was missing or wrong. Davy sends it nowhere else.
+- `ledger`: what agents and people changed through Davy, newest first, with who asked and how it ended.
 
 The same is in the CLI:
 

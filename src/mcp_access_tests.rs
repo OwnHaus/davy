@@ -21,11 +21,12 @@ use tower::ServiceExt;
 
 const ADMIN: &str = "a-test-token-that-is-long-enough!";
 
-const READ_TOOLS: [&str; 11] = [
+const READ_TOOLS: [&str; 12] = [
     "connect_project",
     "count_logs",
     "drop_rules",
     "issue_context",
+    "ledger",
     "log_patterns",
     "project_status",
     "release_health",
@@ -150,11 +151,12 @@ fn sorted(names: &[&[&str]]) -> Vec<String> {
 
 #[test]
 fn the_table_classifies_every_tool_and_no_other_name() {
-    let mut names: Vec<String> = (Tools::tool_router() + Tools::drop_router())
-        .list_all()
-        .into_iter()
-        .map(|t| t.name.to_string())
-        .collect();
+    let mut names: Vec<String> =
+        (Tools::tool_router() + Tools::drop_router() + Tools::ledger_router())
+            .list_all()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
     names.sort();
     let all = sorted(&[
         &READ_TOOLS,
@@ -329,6 +331,52 @@ async fn only_an_unlocked_token_makes_a_drop_rule_live() {
 }
 
 #[tokio::test]
+async fn an_unlocked_change_and_its_row_are_one_write() {
+    let s = server(Some(ADMIN));
+    let mut c = store::open(&s.data).unwrap();
+    let (own, _) = crate::self_report::own::find_or_create(&mut c).unwrap();
+    let project = store::project_by_slug(&c, "api").unwrap();
+    let spec = Spec::new(None, None, Some("noise"), None, None).unwrap();
+    let rule = drops::add(&c, project, &spec, false, By::Agent, time::now_ms())
+        .unwrap()
+        .unwrap()
+        .id;
+    let unlocked = s.token("trusted", Level::Full, true);
+    let live = json!({"project": "api", "rule_id": rule});
+    let shorter = |project: &str| json!({"project": project, "logs_days": 7});
+    for (tool, args) in [
+        ("drop_rule_live", live.clone()),
+        ("drop_rule_live", live),
+        ("set_retention", shorter("api")),
+        ("set_retention", shorter(&own.slug)),
+        ("set_retention", json!({"project": "api", "logs_days": 9})),
+    ] {
+        s.call(&unlocked, tool, args).await;
+    }
+    let mut q = c
+        .prepare("SELECT action, outcome, destructive, summary LIKE '%; refused' FROM ledger ORDER BY id")
+        .unwrap();
+    let rows: Vec<(String, String, bool, bool)> = q
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let row = |action: &str, outcome: &str, destructive, refused| {
+        (action.to_owned(), outcome.to_owned(), destructive, refused)
+    };
+    assert_eq!(
+        rows,
+        [
+            row("drop_rule_live", "done", true, false),
+            row("drop_rule_live", "error", true, true),
+            row("set_retention", "done", true, false),
+            row("set_retention", "error", true, true),
+            row("set_retention", "done", false, false),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn a_revoked_or_made_up_token_gets_401_and_agent_tokens_work_without_an_admin_token() {
     let s = server(None);
     let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
@@ -360,4 +408,87 @@ async fn a_call_records_when_the_token_was_last_used() {
     let c = store::open(&s.data).unwrap();
     let used_at = tokens::one(&c, "reader").unwrap().unwrap().used_at;
     assert!(used_at.is_some());
+}
+
+#[tokio::test]
+async fn changes_and_refusals_leave_a_row_and_reads_do_not() {
+    let s = server(Some(ADMIN));
+    let read = s.token("reader", Level::Read, false);
+    let triage = s.token("triager", Level::Triage, false);
+    for _ in 0..2 {
+        let (_, error) = s.call(&read, "mark_fixed", json!({"issue_id": 99})).await;
+        assert!(error);
+    }
+    s.call(&read, "schema", json!({})).await;
+    let feedback = json!({"tried": "a secret text", "happened": "nothing"});
+    let (text, error) = s.call(&triage, "submit_feedback", feedback).await;
+    assert!(!error, "{text}");
+    let (_, error) = s.call(&triage, "mark_fixed", json!({"issue_id": 99})).await;
+    assert!(error);
+    let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                      "params": {"name": "submit_feedback", "arguments": {"tried": 7, "happened": "a secret text"}}});
+    s.post(Some(&triage), call).await;
+    let (text, error) = s.call(&read, "ledger", json!({"limit": 3})).await;
+    assert!(!error, "{text}");
+    let page: Value = serde_json::from_str(&text).unwrap();
+    assert!(!text.contains("a secret text"), "{text}");
+    let triager =
+        |action, outcome, summary: String| json!(["triager", action, outcome, summary, 1]);
+    let feedback = "sent feedback about Davy";
+    assert_eq!(
+        brief(&page),
+        [
+            triager(
+                "submit_feedback",
+                "error",
+                format!("{feedback}; invalid arguments")
+            ),
+            triager(
+                "mark_fixed",
+                "error",
+                "resolved, fixed in the next release; tool error".into()
+            ),
+            triager("submit_feedback", "done", feedback.into()),
+        ]
+    );
+    let before = page["next_before"].as_i64().unwrap();
+    let (text, _) = s.call(&read, "ledger", json!({"before": before})).await;
+    let page: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        brief(&page),
+        [json!([
+            "reader",
+            "mark_fixed",
+            "denied",
+            "resolved, fixed in the next release; needs triage, holds read",
+            2
+        ])]
+    );
+    assert_eq!(
+        (
+            &page["rows"][0]["actor_kind"],
+            &page["rows"][0]["issue"],
+            &page["next_before"]
+        ),
+        (&json!("token"), &json!(99), &Value::Null)
+    );
+}
+
+/// The actor, action, outcome, summary and repeats of each row of a
+/// ledger page.
+fn brief(page: &Value) -> Vec<Value> {
+    page["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            json!([
+                r["actor"],
+                r["action"],
+                r["outcome"],
+                r["summary"],
+                r["repeats"]
+            ])
+        })
+        .collect()
 }

@@ -81,9 +81,8 @@ pub const DESTRUCTIVE: Need = Need {
 pub fn need(tool: &str) -> Option<Need> {
     Some(match tool {
         "schema" | "sql" | "search_logs" | "count_logs" | "log_patterns" | "connect_project"
-        | "project_status" | "usage" | "drop_rules" | "release_health" | "issue_context" => {
-            Need::at(Level::Read)
-        }
+        | "project_status" | "usage" | "drop_rules" | "release_health" | "issue_context"
+        | "ledger" => Need::at(Level::Read),
         "mark_fixed" | "submit_feedback" | "drop_rule_shadow" | "drop_rule_remove" => {
             Need::at(Level::Triage)
         }
@@ -178,18 +177,20 @@ impl Caller {
         }
     }
 
+    /// Words for what the caller holds: `read`, or `full with destructive
+    /// changes unlocked`.
+    pub fn held(&self) -> String {
+        Need {
+            level: self.grant.level,
+            destructive: self.grant.destructive,
+        }
+        .words()
+    }
+
     /// The tool error for a call `need` does not admit. It names the level
     /// the call needs and the one the caller holds, and who can raise it.
     pub fn refusal(&self, tool: &str, need: Need) -> String {
-        let held = if self.grant.destructive {
-            Need {
-                level: self.grant.level,
-                destructive: true,
-            }
-            .words()
-        } else {
-            self.grant.level.as_str().to_owned()
-        };
+        let held = self.held();
         let who = match self.actor {
             Actor::Admin => {
                 "The admin token never makes a destructive change: a person makes it with the CLI or the web UI, or unlocks it for an agent token of level full".to_owned()

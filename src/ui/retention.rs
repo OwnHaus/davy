@@ -2,13 +2,14 @@
 
 use super::{Refusal, issues::Query, issues::Reads, json, submit};
 use crate::{
+    accounts::Person,
     http::body,
     retention::{self, By, Change, Defaults},
     store::Job,
     time,
 };
 use axum::{
-    Router,
+    Extension, Router,
     body::Body,
     extract::State,
     http::{StatusCode, Uri},
@@ -43,19 +44,22 @@ async fn list(State(s): State<Arc<Settings>>, uri: Uri) -> Result<Response, Refu
 }
 
 /// Stores a [`Change`] and answers with what the project keeps now.
-async fn change(State(s): State<Arc<Settings>>, body: Body) -> Result<Response, Refusal> {
+async fn change(
+    State(s): State<Arc<Settings>>,
+    Extension(person): Extension<Person>,
+    body: Body,
+) -> Result<Response, Refusal> {
     let bytes = body::read_small(body, MAX_BODY, super::account::BODY_TIMEOUT).await?;
     let change: Change = serde_json::from_slice(&bytes).map_err(|e| Refusal::bad(e.to_string()))?;
     change.check().map_err(Refusal::bad)?;
     let slug = change.project.clone();
     let unknown = retention::unknown(&slug);
-    submit(
-        s.reads.writes(),
-        Job::SetRetention(change, By::Person),
-        |why| why == unknown,
-    )
-    .await?
-    .map_err(|why| Refusal::new(StatusCode::NOT_FOUND, why))?;
+    let what = crate::ledger::describe::retention(&change);
+    let job = Job::SetRetention(change, By::Person);
+    let job = super::recorded(&person, "set_retention", what, job);
+    submit(s.reads.writes(), job, |why| why == unknown)
+        .await?
+        .map_err(|why| Refusal::new(StatusCode::NOT_FOUND, why))?;
     let defaults = s.defaults;
     let kept = s
         .reads

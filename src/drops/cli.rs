@@ -317,23 +317,40 @@ pub fn run(
             toggle(out, &store::open_current(&data)?, rule_id, &data, false)?;
         }
         Drop::Remove { rule_id, data } => {
-            if !super::remove(&store::open_current(&data)?, rule_id)? {
-                anyhow::bail!("no rule {rule_id}");
-            }
+            let c = store::open_current(&data)?;
+            let what = crate::ledger::describe::rule_removed(rule_id);
+            let entry = crate::ledger::Entry::of(crate::ledger::Who::Cli, "drop_rule_remove", what);
+            let removed = |c: &Connection| {
+                let gone = super::remove(c, rule_id)?;
+                Ok(gone.then_some(()).ok_or(format!("no rule {rule_id}")))
+            };
+            crate::ledger::recorded(&c, entry, removed)?.map_err(anyhow::Error::msg)?;
             writeln!(out, "{}", text::json(&json!({"removed": rule_id}), false)?)?;
         }
     }
     Ok(())
 }
 
-/// Adds `spec` to `project` as a person and prints the rule.
+/// Adds `spec` to `project` as a person and prints the rule. A live rule
+/// drops lines from then on, so it leaves a row in the ledger; a shadow
+/// rule drops nothing and leaves none.
 fn add(out: &mut impl Write, spec: &Spec, live: bool, data: &Path, project: &str) -> Result<()> {
     let mut c = store::open(data)?;
-    let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let id = store::project_by_slug(&tx, project)?;
-    let added =
-        super::add(&tx, id, spec, live, By::Person, time::now_ms())?.map_err(anyhow::Error::msg)?;
-    tx.commit()?;
+    let change = |tx: &Connection| {
+        let id = store::project_by_slug(tx, project)?;
+        super::add(tx, id, spec, live, By::Person, time::now_ms())
+    };
+    let added = if live {
+        let what = crate::ledger::describe::rule_added(project, &describe(spec));
+        let entry = crate::ledger::Entry::of(crate::ledger::Who::Cli, "drop_rule_add", what);
+        crate::ledger::recorded(&c, entry, change)?
+    } else {
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let added = change(&tx)?;
+        tx.commit()?;
+        added
+    };
+    let added = added.map_err(anyhow::Error::msg)?;
     let mut shown = one(&c, added.id, data)?.json(false);
     shown["created"] = json!(added.created);
     shown["taken_over"] = json!(added.taken_over);
@@ -386,10 +403,22 @@ fn confirm(err: &mut impl Write, answer: Option<&mut dyn BufRead>, rule: &Listed
 }
 
 /// Makes rule `id` live, or with `live` false a shadow rule, and prints it.
+/// Making it live leaves a row in the ledger.
 fn toggle(out: &mut impl Write, c: &Connection, id: i64, data: &Path, live: bool) -> Result<()> {
-    if !super::set_live(c, id, live, time::now_ms())? {
-        anyhow::bail!("no rule {id}, or it expired");
-    }
+    let set = |c: &Connection| {
+        let found = super::set_live(c, id, live, time::now_ms())?;
+        Ok(found
+            .then_some(())
+            .ok_or(format!("no rule {id}, or it expired")))
+    };
+    let set = if live {
+        let what = crate::ledger::describe::rule_live(id);
+        let entry = crate::ledger::Entry::of(crate::ledger::Who::Cli, "drop_rule_live", what);
+        crate::ledger::recorded(c, entry, set)?
+    } else {
+        set(c)?
+    };
+    set.map_err(anyhow::Error::msg)?;
     writeln!(
         out,
         "{}",

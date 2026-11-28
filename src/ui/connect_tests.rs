@@ -154,4 +154,34 @@ async fn retention_shows_every_project_and_changes_one() {
     assert_eq!(status, 400);
     let r = s.get("/ui/api/retention?x=1", &[("cookie", &cookie)]).await;
     assert_eq!(r.status, 400);
+    let rows: Vec<(String, Option<String>, crate::ledger::Outcome, String)> =
+        crate::ledger::list(&s.db, None, None, 50)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.actor, r.project, r.outcome, r.summary))
+            .collect();
+    let ann = "ann@example.com".to_owned();
+    assert_eq!(
+        rows,
+        [
+            (
+                ann.clone(),
+                Some("gone".into()),
+                crate::ledger::Outcome::Error,
+                "logs unchanged, errors 9 days; unknown project \"gone\"".into()
+            ),
+            (
+                ann.clone(),
+                Some("shop".into()),
+                crate::ledger::Outcome::Done,
+                "logs the default, errors unchanged".into()
+            ),
+            (
+                ann,
+                Some("shop".into()),
+                crate::ledger::Outcome::Done,
+                "logs 7 days, errors 90 days".into()
+            ),
+        ]
+    );
 }

@@ -67,7 +67,7 @@ pub struct Listed {
     pub level: Level,
     /// Whether a person unlocked destructive changes for it.
     pub destructive: bool,
-    /// Who unlocked them: a person's e-mail, or `cli`.
+    /// Who unlocked them: a person's e-mail, or `davy CLI`.
     pub unlocked_by: Option<String>,
     pub unlocked_at: Option<String>,
     pub created_at: String,
@@ -88,7 +88,7 @@ pub struct Found {
 
 /// A change to a token. The writer applies it for the web UI, and
 /// `davy token` from its own process. `by` is who asked: a person's
-/// e-mail, or `cli`.
+/// e-mail, or `davy CLI`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change {
     Used { id: i64, at: i64 },

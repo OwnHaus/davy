@@ -500,6 +500,11 @@ impl IssueIds {
     pub fn one(id: i64) -> Self {
         Self(vec![id])
     }
+
+    /// The IDs, ascending.
+    pub fn ids(&self) -> &[i64] {
+        &self.0
+    }
 }
 
 /// Sets the status of every one of `issues`, or of none when one of them

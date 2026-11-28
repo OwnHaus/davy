@@ -52,7 +52,7 @@ fn add_prints_the_secret_once_and_list_never_does() {
             &unlocked["token"]["destructive"],
             &unlocked["token"]["unlocked_by"]
         ),
-        (&json!(true), &json!("cli"))
+        (&json!(true), &json!("davy CLI"))
     );
     assert_eq!(out(list(false)).unwrap(), "ci\tfull\tdestructive\tnever\n");
     let revoke = Token::Revoke {
@@ -62,6 +62,26 @@ fn add_prints_the_secret_once_and_list_never_does() {
     out(revoke).unwrap();
     let text = out(list(false)).unwrap();
     assert!(text.starts_with("ci\tfull\t-\tnever\trevoked"), "{text}");
+    let c = crate::query::open(&data).unwrap();
+    let rows: Vec<(String, String, String)> = crate::ledger::list(&c, None, None, 50)
+        .unwrap()
+        .into_iter()
+        .rev()
+        .map(|r| (r.actor, r.action, r.summary))
+        .collect();
+    let row = |action: &str, summary: &str| {
+        ("davy CLI".to_owned(), action.to_owned(), summary.to_owned())
+    };
+    assert_eq!(
+        rows,
+        [
+            row("token_add", "added at level triage"),
+            row("token_level", "set level full"),
+            row("token_unlock", "unlocked destructive changes"),
+            row("token_revoke", "revoked"),
+        ]
+    );
+    assert!(!format!("{rows:?}").contains(secret));
 }
 
 #[test]

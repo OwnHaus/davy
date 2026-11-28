@@ -105,7 +105,7 @@ pub fn router(
         writes,
         retention,
         usage,
-        tool_router: Tools::tool_router() + Tools::drop_router(),
+        tool_router: Tools::tool_router() + Tools::drop_router() + Tools::ledger_router(),
     };
     let config = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)
@@ -345,13 +345,16 @@ impl Tools {
         let slug = change.project.clone();
         // The writer refuses a change that deletes unless the caller holds
         // the proof, whatever the check before the call found.
-        let by = ctx
-            .extensions
-            .get::<crate::access::Unlocked>()
-            .map_or(By::Agent(self.retention), |u| {
-                By::Unlocked(*u, self.retention)
-            });
-        store::submit(&self.writes, Job::SetRetention(change, by))
+        let destructive = ctx.extensions.get::<access::Destructive>();
+        let by = destructive.map_or(By::Agent(self.retention), |d| {
+            By::Unlocked(d.unlocked, self.retention)
+        });
+        let job = Job::SetRetention(change, by);
+        let job = match destructive {
+            Some(d) => d.recorded(job),
+            None => job,
+        };
+        store::submit(&self.writes, job)
             .await
             .map_err(|e| e.to_string())?;
         let defaults = self.retention;
@@ -619,6 +622,9 @@ mod access;
 
 #[path = "mcp_drops.rs"]
 mod drop_tools;
+
+#[path = "mcp_ledger.rs"]
+mod ledger_rows;
 
 #[cfg(test)]
 #[path = "mcp_tests.rs"]

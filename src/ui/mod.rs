@@ -339,6 +339,22 @@ async fn write(
     submit(writes, store::Job::Account(change), known).await
 }
 
+/// `job` with the ledger row that records `person` making it with
+/// `action`, written in the same transaction. See "Ledger" in
+/// docs/design.md.
+fn recorded(
+    person: &Person,
+    action: &str,
+    what: crate::ledger::What,
+    job: store::Job,
+) -> store::Job {
+    let who = crate::ledger::Who::Person(person.email.as_str().to_owned());
+    store::Job::Recorded {
+        job: Box::new(job),
+        entry: crate::ledger::Entry::of(who, action, what),
+    }
+}
+
 /// Queues `job` on the writer's UI queue and waits until it commits. The
 /// inner error is a reason the job did not apply that `known` accepts as
 /// a person's mistake rather than a fault of the server.

@@ -1,6 +1,6 @@
 // Agent tokens end to end: davy token add gives each agent a token of its
 // own, the running server lists and refuses tools by its level, and only a
-// token a person unlocked makes a drop rule live.
+// token a person unlocked makes a drop rule live. The ledger shows both.
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -52,6 +52,21 @@ assert.equal(live.isError, false, live.text)
 const rule = JSON.parse(live.text).rule
 assert.deepEqual([rule.id, rule.state, rule.by], [shadow.id, 'live', 'person'])
 
+// The ledger, read with the read token, names each token, its client and
+// how each call ended; the change that deleted data was written with its row.
+// The TypeScript SDK sends no client name per request, so the client is its
+// User-Agent, node.
+const rows = async actor => {
+  const page = await read.call('ledger', { actor })
+  assert.equal(page.isError, false, page.text)
+  return JSON.parse(page.text).rows.map(r => [r.actor_kind, r.actor, r.client, r.action, r.outcome])
+}
+assert.deepEqual(await rows('e2e-reader'), [['token', 'e2e-reader', 'node', 'mark_fixed', 'denied']])
+assert.deepEqual(await rows('e2e-ops'), [
+  ['token', 'e2e-ops', 'node', 'drop_rule_live', 'done'],
+  ['token', 'e2e-ops', 'node', 'drop_rule_shadow', 'done'],
+])
+
 await read.client.close()
 await full.client.close()
-console.log('tokens: a read token is refused mark_fixed, an unlocked full token made a drop rule live')
+console.log('tokens: a read token is refused mark_fixed, an unlocked full token made a drop rule live, the ledger shows both')

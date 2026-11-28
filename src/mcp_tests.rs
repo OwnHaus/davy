@@ -1,5 +1,4 @@
 use super::*;
-use crate::retention::Setting;
 use axum::body::{Body, to_bytes};
 use axum::http::header;
 use serde_json::{Value, json};
@@ -11,6 +10,21 @@ struct Server {
     app: Router,
     data: PathBuf,
     writes: crossbeam_channel::Receiver<store::Write>,
+    queue: store::Sender,
+}
+
+impl Server {
+    /// Waits until every job queued so far reached `writes`. The thread of
+    /// [`ledger_writer`] hands jobs on in order, so once it stored a later
+    /// ledger row, they have. That row is the admin's `settle`.
+    async fn settled(&self) {
+        let entry = crate::ledger::Entry::of(
+            crate::ledger::Who::Admin,
+            "settle",
+            crate::ledger::What::default(),
+        );
+        crate::ledger::record(&self.queue, entry).await;
+    }
 }
 
 fn server() -> Server {
@@ -22,12 +36,12 @@ fn server_with(usage: usage::Shared) -> Server {
     let data = crate::test_support::scratch("mcp");
     let c = store::open(&data).unwrap();
     store::create_project(&c, "api").unwrap();
-    let (tx, writes) = crossbeam_channel::bounded(8);
+    let (tx, writes) = ledger_writer(&data);
     Server {
         data: data.clone(),
         app: router(
             data,
-            tx,
+            tx.clone(),
             Some(Token::new(SECRET)),
             &url::Url::parse("https://davy.example/").unwrap(),
             Defaults::default(),
@@ -35,7 +49,27 @@ fn server_with(usage: usage::Shared) -> Server {
         )
         .unwrap(),
         writes,
+        queue: tx,
     }
+}
+
+/// The writer's queue, of which a thread stores every ledger row as the
+/// writer would and hands every other job to the receiver a test reads.
+fn ledger_writer(data: &Path) -> (store::Sender, crossbeam_channel::Receiver<store::Write>) {
+    let (tx, raw) = crossbeam_channel::bounded::<store::Write>(8);
+    let (rest, writes) = crossbeam_channel::bounded(8);
+    let c = store::open(data).unwrap();
+    std::thread::spawn(move || {
+        for w in raw {
+            if let Job::Ledger(entry) = &w.job {
+                crate::ledger::add(&c, entry).unwrap();
+                drop(w.done.send(Ok(())));
+            } else if rest.send(w).is_err() {
+                return;
+            }
+        }
+    });
+    (tx, writes)
 }
 
 /// The next write that is not the first agent's.
@@ -496,127 +530,6 @@ async fn connect_reads_an_existing_key_but_never_creates_a_project() {
 }
 
 #[tokio::test]
-async fn set_retention_stores_the_change_and_shows_what_is_kept() {
-    let s = server();
-    let data = s.data.clone();
-    let writer = std::thread::spawn(move || {
-        let c = store::open(&data).unwrap();
-        // A shorter setting is refused before the writer, see below.
-        for _ in 0..2 {
-            let w = next_job(&s.writes);
-            let Job::SetRetention(change, by) = w.job else {
-                panic!("expected a retention job");
-            };
-            assert_eq!(by, By::Agent(Defaults::default()));
-            let stored = retention::set(&c, &change, by).unwrap();
-            w.done.send(stored.map(drop)).unwrap();
-        }
-    });
-    let (text, error) = tool(
-        &s.app,
-        "set_retention",
-        json!({"project": "api", "logs_days": 90, "errors_days": "default"}),
-    )
-    .await;
-    assert!(!error, "{text}");
-    let kept: Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(kept["project"], "api");
-    assert_eq!(
-        (&kept["logs"]["days"], &kept["logs"]["server_default"]),
-        (&json!(90), &json!(false))
-    );
-    assert_eq!(
-        (&kept["errors"]["days"], &kept["errors"]["server_default"]),
-        (&json!(36_500), &json!(true))
-    );
-    assert!(
-        kept["logs"]["deletes_before"]
-            .as_str()
-            .unwrap()
-            .ends_with('Z')
-    );
-    let unknown = tool(
-        &s.app,
-        "set_retention",
-        json!({"project": "web", "errors_days": 9}),
-    )
-    .await;
-    assert_eq!(unknown, ("unknown project \"web\"".to_owned(), true));
-    let (text, error) = tool(
-        &s.app,
-        "set_retention",
-        json!({"project": "api", "logs_days": 7}),
-    )
-    .await;
-    assert_eq!(
-        (text.as_str(), error),
-        (
-            "an agent may only keep data longer: logs are kept 90 days and 7 would delete what is older for good. A person shortens it with `davy project retention` or in the web UI. set_retention needs level full with destructive changes unlocked, and the admin token holds full. The admin token never makes a destructive change: a person makes it with the CLI or the web UI, or unlocks it for an agent token of level full.",
-            true
-        )
-    );
-    writer.join().unwrap();
-    // Refused before the writer too: nothing to change, or out of range.
-    let (text, error) = tool(&s.app, "set_retention", json!({"project": "api"})).await;
-    assert!(
-        error && text.starts_with("give logs_days, errors_days or both"),
-        "{text}"
-    );
-    let (text, error) = tool(
-        &s.app,
-        "set_retention",
-        json!({"project": "api", "logs_days": 36_501}),
-    )
-    .await;
-    assert_eq!(
-        (text.as_str(), error),
-        ("retention is 1 to 36500 days, not 36501", true)
-    );
-    let (_, error) = tool(
-        &s.app,
-        "set_retention",
-        json!({"project": "api", "logs_days": "forever"}),
-    )
-    .await;
-    assert!(error);
-}
-
-#[tokio::test]
-async fn set_retention_refuses_an_agent_the_default_and_stores_none_of_the_change() {
-    let s = server();
-    let c = store::open(&s.data).unwrap();
-    let own = Change {
-        project: "api".into(),
-        logs_days: Some(Setting::Days(90)),
-        errors_days: Some(Setting::Days(400)),
-    };
-    retention::set(&c, &own, By::Person).unwrap().unwrap();
-    // Refused before the writer, so no job reaches it.
-    let refusal = "an agent may not return errors to the server default: the project keeps them 400 days of its own";
-    // Alone, and with a longer logs setting that must not slip through.
-    for change in [
-        json!({"project": "api", "errors_days": "default"}),
-        json!({"project": "api", "logs_days": 120, "errors_days": "default"}),
-    ] {
-        let (text, error) = tool(&s.app, "set_retention", change).await;
-        assert!(error && text.starts_with(refusal), "{text}");
-    }
-    assert!(
-        s.writes
-            .try_iter()
-            .all(|w| !matches!(w.job, Job::SetRetention(..)))
-    );
-    let kept = retention::stored(&c, "api").unwrap().unwrap();
-    assert_eq!(
-        (
-            kept.logs_days.map(retention::Days::get),
-            kept.errors_days.map(retention::Days::get)
-        ),
-        (Some(90), Some(400))
-    );
-}
-
-#[tokio::test]
 async fn log_patterns_shows_what_fills_the_logs_and_its_id_finds_the_lines() {
     use crate::logs::{LogRecord, LogSource, patterns as masks, store::LogWriter};
     let s = server();
@@ -682,6 +595,9 @@ async fn log_patterns_shows_what_fills_the_logs_and_its_id_finds_the_lines() {
     let (text, is_error) = tool(&s.app, "count_logs", json!({"pattern": "users"})).await;
     assert!(is_error, "{text}");
 }
+
+#[path = "mcp_retention_tests.rs"]
+mod retention_tests;
 
 #[path = "mcp_usage_tests.rs"]
 mod usage_tests;

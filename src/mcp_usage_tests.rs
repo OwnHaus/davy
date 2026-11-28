@@ -277,6 +277,7 @@ async fn search_logs_and_count_logs_record_the_search_for_the_savings_view() {
     assert!(!is_error, "{text}");
     let (text, is_error) = tool(&s.app, "count_logs", json!({"pattern": "other"})).await;
     assert!(!is_error, "{text}");
+    s.settled().await;
     let searches: Vec<_> = s
         .writes
         .try_iter()

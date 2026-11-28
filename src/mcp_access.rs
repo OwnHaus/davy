@@ -4,9 +4,10 @@
 //! above it. Both ask [`access::need`], the one table of what each tool
 //! needs. See "Agent tokens" in docs/design.md.
 
-use super::{INSTRUCTIONS, Tools};
+use super::{INSTRUCTIONS, Tools, client_name, ledger_rows};
 use crate::{
-    access::{self, Actor, Caller, DESTRUCTIVE, Need},
+    access::{self, Actor, Caller, DESTRUCTIVE, Level, Need},
+    ledger::{self, Outcome},
     query,
     retention::{self, Change},
     store::{self, Job, Write},
@@ -25,13 +26,16 @@ use rmcp::{
     handler::server::tool::ToolCallContext,
     model::{
         CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
-        ListToolsResult, PaginatedRequestParams, ProtocolVersion, ResultType, ServerCapabilities,
-        ServerConfig, Tool,
+        ErrorCode, ListToolsResult, PaginatedRequestParams, ProtocolVersion, ResultType,
+        ServerCapabilities, ServerConfig, Tool,
     },
     service::RequestContext,
 };
 use rusqlite::Connection;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 /// What [`require`] checks a bearer token against.
 pub(super) struct Gate {
@@ -112,6 +116,53 @@ impl Gate {
 fn caller(context: &RequestContext<RoleServer>) -> Option<Caller> {
     let parts = context.extensions.get::<axum::http::request::Parts>()?;
     parts.extensions.get::<Caller>().cloned()
+}
+
+/// How rmcp starts the text of a call whose arguments it could not read.
+const UNREADABLE: &str = "failed to deserialize parameters";
+
+/// How a call ended for the ledger, and a fixed note of why it failed.
+/// Never the error's text: it can quote what the agent sent, such as a
+/// feedback text of the wrong type or a project slug, and the agent read
+/// it in its answer already.
+fn outcome(result: &Result<CallToolResponse, ErrorData>) -> (Outcome, Option<String>) {
+    let note = match result {
+        Ok(CallToolResponse::Complete(r)) if r.is_error == Some(true) => {
+            let text = r.content.first().and_then(|c| c.as_text());
+            if text.is_some_and(|t| t.text.starts_with(UNREADABLE)) {
+                "invalid arguments".to_owned()
+            } else {
+                ledger::TOOL_ERROR.to_owned()
+            }
+        }
+        Ok(_) => return (Outcome::Done, None),
+        Err(e) if e.code == ErrorCode::INVALID_PARAMS => "invalid arguments".to_owned(),
+        Err(e) => format!("protocol error {}", e.code.0),
+    };
+    (Outcome::Error, Some(note))
+}
+
+/// What a destructive call hands its tool: the proof, and the call's
+/// ledger row, which the writer stores in the transaction that makes the
+/// change, after it read the token's unlock again. So a change never
+/// lands without its row, and a crash loses both or neither.
+#[derive(Clone)]
+pub(super) struct Destructive {
+    pub(super) unlocked: access::Unlocked,
+    entry: ledger::Entry,
+    /// The tool sent the row with its change, so the call adds none.
+    recorded: Arc<AtomicBool>,
+}
+
+impl Destructive {
+    /// `job` with the row, for the writer.
+    pub(super) fn recorded(&self, job: Job) -> Job {
+        self.recorded.store(true, Ordering::Relaxed);
+        Job::Recorded {
+            job: Box::new(job),
+            entry: self.entry.clone(),
+        }
+    }
 }
 
 fn refused(text: String) -> CallToolResponse {
@@ -199,8 +250,9 @@ impl ServerHandler for Tools {
     }
 
     /// Runs the call when the caller's grant reaches its need, and hands a
-    /// destructive one, and no other, the [`access::Unlocked`] proof. A tool the table
-    /// does not name is not found, whether the router has it or not.
+    /// destructive one, and no other, the proof and its row in
+    /// [`Destructive`]. A tool the table does not name is not found,
+    /// whether the router has it or not.
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
@@ -213,20 +265,49 @@ impl ServerHandler for Tools {
         let Some((need, why)) = self.need_of(&name, &request).await else {
             return Err(ErrorData::invalid_params("tool not found", None));
         };
+        let args = request.arguments.clone().unwrap_or_default();
         if !caller.grant.admits(need) {
+            let note = format!("needs {}, holds {}", need.words(), caller.held());
+            let client = client_name(&context);
+            let entry =
+                ledger_rows::entry(&caller, client, &name, &args, Outcome::Denied, Some(&note));
+            ledger::record(&self.writes, entry).await;
             let refusal = caller.refusal(&name, need);
             return Ok(refused(match why {
                 Some(why) => format!("{why}. {refusal}"),
                 None => refusal,
             }));
         }
+        // Only changes leave a row: a read tool needs no more than read.
+        let client = (need.level > Level::Read).then(|| client_name(&context));
+        let recorded = Arc::new(AtomicBool::new(false));
         if need.destructive
             && let Some(unlocked) = caller.unlocked()
         {
-            context.extensions.insert(unlocked);
+            let entry = ledger_rows::entry(
+                &caller,
+                client.clone().flatten(),
+                &name,
+                &args,
+                Outcome::Done,
+                None,
+            );
+            context.extensions.insert(Destructive {
+                unlocked,
+                entry: entry.destructive(),
+                recorded: Arc::clone(&recorded),
+            });
         }
         let call = ToolCallContext::new(self, request, context);
-        self.tool_router.call(call).await
+        let result = self.tool_router.call(call).await;
+        if let Some(client) = client
+            && !recorded.load(Ordering::Relaxed)
+        {
+            let (outcome, note) = outcome(&result);
+            let entry = ledger_rows::entry(&caller, client, &name, &args, outcome, note.as_deref());
+            ledger::record(&self.writes, entry).await;
+        }
+        result
     }
 }
 

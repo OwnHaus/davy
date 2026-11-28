@@ -365,8 +365,28 @@ pub enum Job {
     Drop(crate::drops::AgentChange),
     /// A change to an agent token, see src/tokens.rs.
     Token(crate::tokens::Change),
+    /// A row of the ledger, see src/ledger.rs.
+    Ledger(crate::ledger::Entry),
+    /// A change and its ledger row, which says how the change ended,
+    /// written in the same transaction: a person's change from the web UI,
+    /// and an agent's change that deletes data.
+    Recorded {
+        job: Box<Job>,
+        entry: crate::ledger::Entry,
+    },
     /// What the quota gate refused, see src/quota.rs.
     Quota(crate::quota::Flush),
+}
+impl Job {
+    /// Whether the job changes a retention setting, so its batch holds the
+    /// retention lock.
+    pub fn sets_retention(&self) -> bool {
+        match self {
+            Self::SetRetention(..) => true,
+            Self::Recorded { job, .. } => job.sets_retention(),
+            _ => false,
+        }
+    }
 }
 pub type Outcome = std::result::Result<(), String>;
 pub struct Write {
@@ -387,6 +407,7 @@ fn sweep(c: &Connection, at: Timestamp, error_days: crate::retention::Days) -> R
     crate::usage::stored::sweep(c, at)?;
     crate::drops::counts::prune(c, at)?;
     crate::tokens::prune(c, at)?;
+    crate::ledger::prune(c, at)?;
     Ok(())
 }
 /// Runs one job. The outer error is a database failure that aborts the batch,
@@ -452,6 +473,12 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
         }
         Job::Account(change) => crate::accounts::store::apply(c, change),
         Job::Token(change) => crate::tokens::apply(c, change),
+        Job::Ledger(entry) => Ok(Ok(crate::ledger::add(c, entry)?)),
+        Job::Recorded { job, entry } => {
+            let outcome = apply(c, job, latest)?;
+            crate::ledger::add(c, &entry.clone().of_result(&outcome))?;
+            Ok(outcome)
+        }
         Job::SetRetention(change, by) => Ok(crate::retention::set(c, change, *by)?.map(drop)),
         Job::First { what, at } => {
             crate::firsts::record(c, *what, *at)?;

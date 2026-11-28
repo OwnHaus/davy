@@ -276,10 +276,11 @@ fn migration_backfills_releases_from_old_events() {
     let e = event(json!({"message":"boom","release":"v1"}));
     store::insert(&c, 1, &e).unwrap();
     c.execute_batch(&format!(
-        "{tokens} {quota} {drops} {} {} DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE releases; DROP TABLE checkin_starts; DROP TABLE checks; DROP TABLE incidents; DROP TABLE monitors; DROP TABLE notifications; DROP TABLE channels; DROP TABLE feedback; DROP TABLE sessions; DROP TABLE invites; DROP TABLE users; DROP TABLE firsts; DROP TABLE client_reports; DROP TABLE user_feedback; DROP TABLE release_sessions; DROP TABLE release_users; DROP TABLE session_seen; ALTER TABLE projects DROP COLUMN scrub; DROP TABLE latest_payloads; DROP TABLE log_days; DROP TABLE store_days; ALTER TABLE projects DROP COLUMN vercel_secret; ALTER TABLE issues DROP COLUMN discarded_at; DROP TABLE discarded_daily; DROP TABLE searches; DROP TABLE search_days; DROP INDEX projects_own; ALTER TABLE projects DROP COLUMN own; PRAGMA user_version=0;",
+        "{ledger} {tokens} {quota} {drops} {} {} DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE releases; DROP TABLE checkin_starts; DROP TABLE checks; DROP TABLE incidents; DROP TABLE monitors; DROP TABLE notifications; DROP TABLE channels; DROP TABLE feedback; DROP TABLE sessions; DROP TABLE invites; DROP TABLE users; DROP TABLE firsts; DROP TABLE client_reports; DROP TABLE user_feedback; DROP TABLE release_sessions; DROP TABLE release_users; DROP TABLE session_seen; ALTER TABLE projects DROP COLUMN scrub; DROP TABLE latest_payloads; DROP TABLE log_days; DROP TABLE store_days; ALTER TABLE projects DROP COLUMN vercel_secret; ALTER TABLE issues DROP COLUMN discarded_at; DROP TABLE discarded_daily; DROP TABLE searches; DROP TABLE search_days; DROP INDEX projects_own; ALTER TABLE projects DROP COLUMN own; PRAGMA user_version=0;",
         crate::usage::UNDO,
         crate::retention::UNDO,
         drops = crate::drops::UNDO,
+        ledger = crate::ledger::UNDO,
         tokens = crate::tokens::UNDO,
         quota = crate::quota::UNDO
     ))
@@ -320,11 +321,12 @@ fn migration_indexes_the_text_and_tags_of_old_issues() {
     )
     .unwrap();
     c.execute_batch(&format!(
-        "{tokens} {quota} {drops} {} {} DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE firsts; DROP TABLE client_reports; DROP TABLE user_feedback; DROP TABLE release_sessions; DROP TABLE release_users; DROP TABLE session_seen; ALTER TABLE notifications DROP COLUMN issue; ALTER TABLE channels DROP COLUMN sdk_dropped; {} ALTER TABLE projects DROP COLUMN scrub; DROP TABLE latest_payloads; DROP TABLE log_days; DROP TABLE store_days; ALTER TABLE projects DROP COLUMN vercel_secret; ALTER TABLE issues DROP COLUMN discarded_at; DROP TABLE discarded_daily; DROP TABLE searches; DROP TABLE search_days; DROP INDEX projects_own; ALTER TABLE projects DROP COLUMN own; PRAGMA user_version=6;",
+        "{ledger} {tokens} {quota} {drops} {} {} DROP TRIGGER events_tags; DROP TRIGGER issues_text_insert; DROP TRIGGER issues_text_update; DROP TRIGGER issues_text_delete; DROP TABLE issue_tags; DROP TABLE issues_text; DROP INDEX issues_status_sorts; DROP INDEX issues_project_sorts; DROP TABLE firsts; DROP TABLE client_reports; DROP TABLE user_feedback; DROP TABLE release_sessions; DROP TABLE release_users; DROP TABLE session_seen; ALTER TABLE notifications DROP COLUMN issue; ALTER TABLE channels DROP COLUMN sdk_dropped; {} ALTER TABLE projects DROP COLUMN scrub; DROP TABLE latest_payloads; DROP TABLE log_days; DROP TABLE store_days; ALTER TABLE projects DROP COLUMN vercel_secret; ALTER TABLE issues DROP COLUMN discarded_at; DROP TABLE discarded_daily; DROP TABLE searches; DROP TABLE search_days; DROP INDEX projects_own; ALTER TABLE projects DROP COLUMN own; PRAGMA user_version=6;",
         crate::usage::UNDO,
         crate::retention::UNDO,
         crate::monitor::checkin_store::UNDO,
         drops = crate::drops::UNDO,
+        ledger = crate::ledger::UNDO,
         tokens = crate::tokens::UNDO,
         quota = crate::quota::UNDO
     ))

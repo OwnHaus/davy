@@ -1,6 +1,6 @@
 use clap::{ArgGroup, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use davy::{
-    alert, context, feedback, install, issues,
+    alert, context, feedback, install, issues, ledger,
     logs::{
         self, LogLevel,
         store::{
@@ -371,12 +371,12 @@ async fn main() -> anyhow::Result<()> {
                 in_release: release,
                 at: time::now_ms(),
             };
-            issues::set_status(
-                &store::open(&data)?,
-                &issues::IssueIds::one(issue_id),
-                &status,
-            )?
-            .map_err(anyhow::Error::msg)?;
+            let ids = issues::IssueIds::one(issue_id);
+            let what = ledger::describe::status(ids.ids(), &status);
+            let entry = ledger::Entry::of(ledger::Who::Cli, "issue_status", what);
+            let c = store::open(&data)?;
+            ledger::recorded(&c, entry, |c| issues::set_status(c, &ids, &status))?
+                .map_err(anyhow::Error::msg)?;
         }
     }
     Ok(())
@@ -420,7 +420,11 @@ fn run_project(out: &mut impl Write, command: Project) -> anyhow::Result<()> {
                     .with_dir(&data)
                     .waiting(retention::CLI_WAIT);
                 let _held = lock.hold_all()?;
-                retention::set(&c, &change, retention::By::Person)?
+                let what = ledger::describe::retention(&change);
+                let entry = ledger::Entry::of(ledger::Who::Cli, "set_retention", what);
+                ledger::recorded(&c, entry, |c| {
+                    retention::set(c, &change, retention::By::Person)
+                })?
             };
             let stored = stored.map_err(anyhow::Error::msg)?;
             let shown = serde_json::json!({

@@ -1,6 +1,6 @@
 # Connect a coding agent
 
-Davy serves MCP at `/mcp` of the public URL. Claude Code, Codex and Cursor connect with the admin token and get sixteen tools: `schema`, `sql`, `search_logs`, `count_logs`, `log_patterns`, `release_health`, `issue_context`, `mark_fixed`, `submit_feedback`, `connect_project`, `project_status`, `set_retention`, `usage`, `drop_rules`, `drop_rule_shadow` and `drop_rule_remove`.
+Davy serves MCP at `/mcp` of the public URL. Claude Code, Codex and Cursor connect with the admin token and get seventeen tools: `schema`, `sql`, `search_logs`, `count_logs`, `log_patterns`, `release_health`, `issue_context`, `mark_fixed`, `submit_feedback`, `connect_project`, `project_status`, `set_retention`, `usage`, `drop_rules`, `drop_rule_shadow`, `drop_rule_remove` and `ledger`.
 
 The token gives full read access to errors and logs. It goes into a file only the person can read and reaches the client through the `DAVY_TOKEN` environment variable, never into a config file or a command line.
 
@@ -64,6 +64,7 @@ It prints the secret once, as JSON. Put it in the file of step 1 instead of the 
 - `mark_fixed` resolves an issue in a release. It reopens when the error comes back in that release or a newer one.
 - `set_retention` makes a project keep its logs or its errors longer, from 1 to 36,500 days, or `"default"` for the server's: 30 days of logs and 100 years of errors unless `davy serve` says otherwise. A shorter retention deletes data for good, so the tool refuses it, and a person shortens it with `davy project retention` or in the web UI. The tool also refuses `"default"` for a project with a retention of its own, because a lower default later would delete what the project was set to keep. An agent's prompt can carry text from someone else's error or log line, and that text must not be able to delete data. An issue whose last event expired is deleted, and the error is a new issue if it returns. `project_status` shows what a project keeps.
 - `usage` returns, per project and signal, the records and bytes received over a window, and when the disk fills: the median daily growth of all logs together over the last 7 days, the most retention lets Davy take, and the day the disk reaches 90% of its size. Its `what_if` recomputes the forecast for another log retention, or another daily log volume of all projects together, without changing anything, so the agent can say what a shorter retention would buy before a person sets it.
+- `ledger` lists what agents and people changed, newest first: every MCP call that changed something or that a token's level refused, and a person's changes to issue status, retention and agent tokens. Reads leave no row. Filter it by actor to see what one agent did.
 - `submit_feedback` reports a tool that was missing, returned the wrong thing or needed a workaround. `davy feedback --data /var/lib/davy` lists the reports. Davy sends them nowhere unless a channel was added with `--feedback`.
 
 ## Connect a new app

@@ -17,7 +17,8 @@ monitor::check::run (task) ──reads due monitors, HTTP GET──> checked sit
                                     alert::deliver::run (task) ──reads due rows, renders digests, HTTP POST or SMTP──> webhook, Slack, e-mail ──result──> store::Writer
 sentry-cli ──HTTP──> upload.rs ──> sourcemaps::Store ──> data/sourcemaps/<debug-id>.{map,js}.zst
 agent ──HTTP /mcp──> mcp.rs ──reads──> query.rs, context.rs, logs::store::search
-                       └── mark_fixed ──> store::Writer
+                       ├── mark_fixed ──> store::Writer
+                       └── every change and refusal (mcp_access.rs) ──> store::Writer ──> ledger
 CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::search
 ```
 
@@ -36,6 +37,7 @@ CLI (main.rs) ──reads──> store.rs, query.rs, context.rs, logs::store::se
 - `src/ui/` is the web UI boundary: the routes, the `Host` and `Origin` guard and the page headers (`mod.rs`), login, logout, welcome and a person's own password and sessions (`account.rs`), the cookie and the SQLite `Accounts` (`session.rs`), and the UI build that `build.rs` embeds from `ui/dist/` (`assets.rs`).
 - `src/token.rs` holds the admin token and the middleware that requires it for the scrub and upload routes.
 - `src/access.rs` is the one table of what each MCP tool needs, the levels `read`, `triage` and `full`, the grant a caller holds and the `Unlocked` proof a destructive change carries. `src/tokens.rs` keeps the agent tokens as hashes, with their level and unlock, and `davy token` (`tokens/cli.rs`). See "Agent tokens" in `design.md`.
+- `src/ledger.rs` keeps the ledger: a row for every change over MCP and every call a level refused, and for a person's matching changes in the web UI and with `davy`, written by the writer or, for the CLI, in the same transaction as the change. `ledger/describe.rs` is the pure wording of a row from a change, the same for all three. See "Ledger" in `design.md`.
 - `src/upload.rs` is the `sentry-cli` boundary: chunk upload and artifact bundle assembly behind the admin token.
 - `src/sourcemaps/` stores uploaded builds per debug ID (`mod.rs`), unpacks artifact bundles (`bundle.rs`) and rewrites minified frames in an event before it is parsed (`symbolicate.rs`, pure apart from the build lookup).
 - `src/mcp.rs` is the MCP boundary: allowed hosts, and the tools as thin calls into `query`, `context`, `logs::store::search` and the writer queue. `src/mcp_access.rs` admits the admin token or a live agent token, lists the tools the caller's grant reaches and refuses a call above it, asking `access::need`.

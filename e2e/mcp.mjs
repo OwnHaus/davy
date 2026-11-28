@@ -13,8 +13,8 @@ const { tools } = await client.listTools()
 // The admin token reaches no tool that discards an issue, shortens a
 // retention or makes a drop rule live: the savings view and the drop tools
 // only show the command for a person to run. drop_rule_live is for an agent
-// token a person unlocked, see tokens.mjs.
-assert.deepEqual(tools.map(t => t.name).sort(), ['connect_project', 'count_logs', 'drop_rule_remove', 'drop_rule_shadow', 'drop_rules', 'issue_context', 'log_patterns', 'mark_fixed', 'project_status', 'release_health', 'schema', 'search_logs', 'set_retention', 'sql', 'submit_feedback', 'usage'])
+// token a person unlocked, see src/mcp_access_tests.rs.
+assert.deepEqual(tools.map(t => t.name).sort(), ['connect_project', 'count_logs', 'drop_rule_remove', 'drop_rule_shadow', 'drop_rules', 'issue_context', 'ledger', 'log_patterns', 'mark_fixed', 'project_status', 'release_health', 'schema', 'search_logs', 'set_retention', 'sql', 'submit_feedback', 'usage'])
 
 async function call(name, args) {
   const result = await client.callTool({ name, arguments: args })
@@ -159,6 +159,9 @@ const fixed = await call('mark_fixed', { issue_id: issue, release: 'e2e@2' })
 assert.deepEqual(fixed, { text: `issue ${issue} resolved in release e2e@2`, isError: false })
 const status = JSON.parse((await call('sql', { query: `SELECT status, resolved_in_release FROM issues WHERE id = ${issue}` })).text)
 assert.deepEqual(status.rows, [['resolved', 'e2e@2']])
+const ledger = JSON.parse((await call('ledger', { limit: 1 })).text)
+assert.deepEqual(ledger.rows.map(r => [r.actor_kind, r.actor, r.action, r.issue, r.target, r.outcome, r.summary]), [['admin', 'admin token', 'mark_fixed', issue, `issue ${issue}`, 'done', 'resolved, fixed in release e2e@2']])
+assert.ok(ledger.rows[0].client, 'a row names the MCP client')
 
 const thanks = await call('submit_feedback', { tried: 'e2e tried', happened: 'e2e happened' })
 assert.deepEqual(thanks, { text: 'Thanks. The feedback is stored for the person who runs Davy.', isError: false })
@@ -168,4 +171,4 @@ assert.deepEqual(feedback.rows[0].slice(1), ['e2e tried', 'e2e happened', null])
 assert.ok(feedback.rows[0][0], 'the client name comes from _meta or User-Agent')
 
 await client.close()
-console.log(`mcp: verified 16 tools, set_retention, usage, the savings view, sql, issue_context, search_logs, count_logs, log_patterns, release_health, mark_fixed on issue ${issue} and submit_feedback from client ${feedback.rows[0][0]}`)
+console.log(`mcp: verified 17 tools, set_retention, usage, the savings view, sql, issue_context, search_logs, count_logs, log_patterns, release_health, mark_fixed on issue ${issue} with its ledger row and submit_feedback from client ${feedback.rows[0][0]}`)

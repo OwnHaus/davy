@@ -330,9 +330,10 @@ fn reading_a_database_of_an_older_davy_asks_for_an_upgrade_and_leaves_it() {
     let c = store::open(&data).unwrap();
     // A store as version 17 left it, before usage_daily, latest_payloads,
     // log_days, the Vercel drain secret, the mark of Davy's own project and
-    // the savings, drop rule, quota and agent token tables.
+    // the savings, drop rule, quota, agent token and ledger tables.
     c.execute_batch(&format!(
-        "DROP TABLE latest_payloads; {} {} {} {} {} {} {} {}",
+        "DROP TABLE latest_payloads; {} {} {} {} {} {} {} {} {}",
+        crate::ledger::UNDO,
         crate::tokens::UNDO,
         crate::quota::UNDO,
         crate::drops::UNDO,
@@ -343,7 +344,7 @@ fn reading_a_database_of_an_older_davy_asks_for_an_upgrade_and_leaves_it() {
         crate::vercel::UNDO
     ))
     .unwrap();
-    let older = store::SCHEMA_VERSION - 9;
+    let older = store::SCHEMA_VERSION - 10;
     c.pragma_update(None, "user_version", older).unwrap();
     let err = open(&data).unwrap_err();
     assert_eq!(

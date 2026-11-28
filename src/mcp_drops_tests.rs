@@ -59,6 +59,7 @@ async fn no_tool_makes_a_drop_rule_live_or_turns_one_live() {
             "drop_rule_shadow",
             "drop_rules",
             "issue_context",
+            "ledger",
             "log_patterns",
             "mark_fixed",
             "project_status",
@@ -92,6 +93,7 @@ async fn no_tool_makes_a_drop_rule_live_or_turns_one_live() {
     let live = json!({"project": "api", "message": "poll", "live": true});
     let (text, is_error) = tool(&s.app, "drop_rule_shadow", live).await;
     assert!(is_error && text.contains("unknown field `live`"), "{text}");
+    s.settled().await;
     assert!(
         s.writes.try_iter().all(|w| !matches!(w.job, Job::Drop(_))),
         "no drop job was queued"

@@ -3,6 +3,7 @@
 
 use super::{Refusal, json, submit};
 use crate::{
+    accounts::Person,
     context,
     event::EventId,
     event_view::{self, EventView},
@@ -17,7 +18,7 @@ use crate::{
     time,
 };
 use axum::{
-    Router,
+    Extension, Router,
     body::Body,
     extract::{Path, State},
     http::{StatusCode, Uri},
@@ -440,7 +441,11 @@ pub struct StatusChange {
     pub release: Option<String>,
 }
 
-async fn set_status(State(reads): State<Arc<Reads>>, body: Body) -> Result<Response, Refusal> {
+async fn set_status(
+    State(reads): State<Arc<Reads>>,
+    Extension(person): Extension<Person>,
+    body: Body,
+) -> Result<Response, Refusal> {
     // Read within a few seconds, so a session that ends meanwhile cannot
     // keep a write pending for long.
     let bytes = body::read_small(body, MAX_STATUS_BODY, super::account::BODY_TIMEOUT).await?;
@@ -461,7 +466,13 @@ async fn set_status(State(reads): State<Arc<Reads>>, body: Body) -> Result<Respo
         (Status::Unresolved, None) => IssueStatus::Unresolved,
         (Status::Ignored, None) => IssueStatus::Ignored,
     };
-    let job = Job::SetStatus { issues, status };
+    let what = crate::ledger::describe::status(issues.ids(), &status);
+    let job = super::recorded(
+        &person,
+        "issue_status",
+        what,
+        Job::SetStatus { issues, status },
+    );
     submit(&reads.writes, job, |why| why.starts_with("no issue "))
         .await?
         .map_err(not_found)?;

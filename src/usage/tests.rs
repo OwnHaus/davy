@@ -208,10 +208,11 @@ fn the_migration_goes_down_and_up_again() {
     write(&c, &[row("2026-11-24", 1, Signal::Logs, 1, 1)]).unwrap();
     // usage_daily is 18; the newest payload table, 19, the stored log counts,
     // 20, the drain secret, 21, Davy's own project, 22, savings, 23, and
-    // drop rules, 24, quotas, 25, and agent tokens, 26, too.
-    let before = store::SCHEMA_VERSION - 9;
+    // drop rules, 24, quotas, 25, agent tokens, 26, and the ledger, 27, too.
+    let before = store::SCHEMA_VERSION - 10;
     c.execute_batch(&format!(
-        "DROP TABLE latest_payloads; {UNDO} {} {} {} {} {} {} {} PRAGMA user_version={before};",
+        "DROP TABLE latest_payloads; {UNDO} {} {} {} {} {} {} {} {} PRAGMA user_version={before};",
+        crate::ledger::UNDO,
         crate::tokens::UNDO,
         crate::quota::UNDO,
         crate::drops::UNDO,

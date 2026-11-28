@@ -25,7 +25,9 @@
       "id": "audit-log",
       "title": "An audit log of what agents changed",
       "what": "Every change an agent or a person makes, such as a resolved issue or a new drop rule, is recorded with who made it.",
-      "status": "next"
+      "status": "shipped",
+      "version": "unreleased",
+      "date": "2026-11-28"
     },
     {
       "id": "backup",

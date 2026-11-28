@@ -145,10 +145,15 @@ impl Tools {
         ctx: RequestContext<RoleServer>,
         Parameters(req): Parameters<DropRuleLive>,
     ) -> Reply {
-        let proof = ctx.extensions.get::<crate::access::Unlocked>().copied();
+        let destructive = ctx.extensions.get::<super::access::Destructive>();
         let id = req.rule_id;
-        let change = live_change(proof, req.project.clone(), id, time::now_ms())?;
-        store::submit(&self.writes, Job::Drop(change))
+        let proof = destructive.map(|d| d.unlocked);
+        let job = Job::Drop(live_change(proof, req.project.clone(), id, time::now_ms())?);
+        let job = match destructive {
+            Some(d) => d.recorded(job),
+            None => job,
+        };
+        store::submit(&self.writes, job)
             .await
             .map_err(|e| e.to_string())?;
         self.blocking(move |data| {

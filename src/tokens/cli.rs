@@ -1,17 +1,22 @@
 //! `davy token`: the agent tokens of `/mcp`. Writes from its own process,
 //! like `davy user`. `add` opens the store as `davy project` does, `list`
 //! reads it read-only, and the changes open it without creating or
-//! upgrading it, as `davy drop live` does. Whoever runs it on the host counts as a person, so it
-//! may unlock destructive changes for a token, as the web UI does.
+//! upgrading it, as `davy drop live` does. Whoever runs it on the host
+//! counts as a person, so it may unlock destructive changes for a token, as
+//! the web UI does. Every change leaves a row in the ledger.
 
 use super::{Change, Listed, Name, apply, create, list, one};
-use crate::{access::Level, time};
+use crate::{
+    access::Level,
+    ledger::{self, Entry, Who, describe},
+    time,
+};
 use anyhow::Context as _;
 use clap::Subcommand;
 use std::{io::Write, path::PathBuf};
 
 /// Who `davy token unlock` records as the one who unlocked.
-pub const BY: &str = "cli";
+pub const BY: &str = ledger::CLI;
 
 #[derive(Subcommand)]
 pub enum Token {
@@ -73,7 +78,10 @@ pub fn run(out: &mut impl Write, command: Token) -> anyhow::Result<()> {
             let name = Name::parse(&name).map_err(anyhow::Error::msg)?;
             let level = Level::parse(&level).map_err(anyhow::Error::msg)?;
             let c = crate::store::open(&data)?;
-            let (token, secret) = create(&c, &name, level, now)?.map_err(anyhow::Error::msg)?;
+            let what = describe::token_added(name.as_str(), level);
+            let entry = Entry::of(Who::Cli, "token_add", what);
+            let (token, secret) = ledger::recorded(&c, entry, |c| create(c, &name, level, now))?
+                .map_err(anyhow::Error::msg)?;
             let v = serde_json::json!({ "token": token, "secret": secret });
             writeln!(out, "{v}")?;
             return Ok(());
@@ -91,7 +99,12 @@ pub fn run(out: &mut impl Write, command: Token) -> anyhow::Result<()> {
         Token::Lock { name, data } => (data, name.clone(), Change::Lock { name }),
     };
     let c = crate::store::open_current(&data)?;
-    apply(&c, &change)?.map_err(anyhow::Error::msg)?;
+    let entry = Entry::of(
+        Who::Cli,
+        describe::token_action(&change),
+        describe::token(&change),
+    );
+    ledger::recorded(&c, entry, |c| apply(c, &change))?.map_err(anyhow::Error::msg)?;
     let token = one(&c, &name)?.context("token vanished")?;
     writeln!(out, "{}", serde_json::json!({ "token": token }))?;
     Ok(())

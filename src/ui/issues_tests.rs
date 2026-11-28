@@ -254,6 +254,19 @@ async fn a_status_change_applies_to_every_named_issue_or_to_none() {
     let fixed = json!({ "issues": [2], "status": "resolved", "release": "v2" });
     assert_eq!(post(fixed).await, (204, Value::Null));
     assert_eq!(status(2), ("resolved", Some("v2".to_owned())));
+    // Every row is ann's issue_status: its project, issue and summary.
+    assert_eq!(
+        status_rows(&s.db),
+        [
+            json!(["shop", 2, "resolved, fixed in release v2"]),
+            json!([
+                null,
+                null,
+                "resolved, fixed in the next release: issues 1, 99; no issue 99"
+            ]),
+            json!([null, null, "ignored: issues 1, 2"]),
+        ]
+    );
     let refused = [
         (
             json!({ "issues": [1], "status": "ignored", "release": "v2" }),
@@ -316,4 +329,19 @@ async fn the_event_of_an_issue_past_its_sample_is_its_newest() {
             json!({ "error": "Davy kept no payload of that event" })
         )
     );
+}
+
+/// The project, issue and summary of each ledger row, newest first, each
+/// checked to be ann's status change.
+fn status_rows(db: &rusqlite::Connection) -> Vec<Value> {
+    let rows = crate::ledger::list(db, None, None, 50).unwrap();
+    rows.into_iter()
+        .map(|r| {
+            assert_eq!(
+                (r.actor.as_str(), r.action.as_str()),
+                ("ann@example.com", "issue_status")
+            );
+            json!([r.project, r.issue, r.summary])
+        })
+        .collect()
 }
