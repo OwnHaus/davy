@@ -268,9 +268,11 @@ impl SelfReport {
 }
 
 /// Serves ingest, and with a token `/mcp` and the source map upload.
-/// `public_url` is where clients reach this server.
+/// `public_url` is where clients reach this server. It serves the data
+/// directory of `claim`, which the caller holds until this returns, so no
+/// restore runs under it.
 pub async fn serve(
-    data: &std::path::Path,
+    claim: &crate::backup::swap::Claim,
     listen: &str,
     public_url: &url::Url,
     retention: crate::retention::Defaults,
@@ -278,6 +280,7 @@ pub async fn serve(
     smtp: Option<alert::mail::Smtp>,
     self_report: bool,
 ) -> anyhow::Result<()> {
+    let data = claim.data();
     let early = self_report.then(|| Early::install(data));
     let writer = store::Writer::start(store::open(data)?, 1024);
     let log_writer = log_writer(data, retention, writer.retention.clone().with_dir(data))?;

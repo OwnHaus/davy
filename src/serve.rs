@@ -105,6 +105,9 @@ pub fn env(data: &Path, var: impl Fn(&str) -> Option<String>) -> impl Fn(&str) -
 }
 
 pub async fn run(args: Args) -> anyhow::Result<()> {
+    // Before anything reads the data directory: a restore stopped halfway
+    // finishes here, so the settings and token below are the restored ones.
+    let claim = crate::backup::swap::Claim::serve(&args.data)?;
     if !args.no_self_report {
         crate::self_report::crash::install_hook(&args.data);
     }
@@ -125,7 +128,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         (None, None) => None,
     };
     http::serve(
-        &args.data,
+        &claim,
         &settings.listen,
         &settings.public_url,
         retention,

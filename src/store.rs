@@ -99,8 +99,10 @@ pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Opens the database in `data`, and creates a missing `data` readable by
 /// its owner only, because it holds events, logs and keys. Pending migrations
 /// run only while no other process has the database open, see
-/// `docs/design.md`, "Migrations".
+/// `docs/design.md`, "Migrations". Refuses while a restore runs on `data` or
+/// one stopped halfway, see [`crate::backup::swap::idle`].
 pub fn open(data: &Path) -> Result<Connection> {
+    drop(crate::backup::swap::idle(data)?);
     let mut dir = std::fs::DirBuilder::new();
     dir.recursive(true);
     #[cfg(unix)]
@@ -126,8 +128,10 @@ pub fn open_current(data: &Path) -> Result<Connection> {
     Ok(c)
 }
 /// The database file in `data`, or an error that says to start a server
-/// there first, for a command that does not create one.
+/// there first, for a command that does not create one. Refuses as
+/// [`open`] does.
 pub(crate) fn exists(data: &Path) -> Result<std::path::PathBuf> {
+    drop(crate::backup::swap::idle(data)?);
     let path = data.join(DB_FILE);
     anyhow::ensure!(
         path.exists(),
@@ -141,6 +145,23 @@ pub(crate) fn exists(data: &Path) -> Result<std::path::PathBuf> {
 /// server. Only for a database that exists.
 pub fn in_use(data: &Path) -> Result<bool> {
     migrate::in_use(&data.join(DB_FILE))
+}
+/// Writes a database into the directory `data` that lacks only the newest
+/// migration, like one the previous Davy wrote. It is built from the first
+/// schema and the migrations before the newest, so it stays one behind when
+/// later releases add some.
+#[cfg(test)]
+pub(crate) fn one_behind(data: &Path) -> u32 {
+    std::fs::create_dir_all(data).unwrap();
+    let c = Connection::open(data.join(DB_FILE)).unwrap();
+    c.execute_batch(SCHEMA).unwrap();
+    let behind = MIGRATIONS.len() - 1;
+    for sql in &MIGRATIONS[..behind] {
+        c.execute_batch(sql).unwrap();
+    }
+    c.execute_batch(&format!("PRAGMA user_version={behind}"))
+        .unwrap();
+    u32::try_from(behind).unwrap()
 }
 /// Refuses a database at schema `version` that this build did not
 /// migrate to: a newer one, see [`refuse_newer`], or an older one, which

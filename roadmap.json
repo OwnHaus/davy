@@ -33,7 +33,9 @@
       "id": "backup",
       "title": "Backup and restore",
       "what": "One command takes a consistent copy of a running server and another brings it back.",
-      "status": "next"
+      "status": "shipped",
+      "version": "unreleased",
+      "date": "2026-11-28"
     },
     {
       "id": "hosted",

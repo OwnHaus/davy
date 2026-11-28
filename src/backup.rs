@@ -1,10 +1,13 @@
-//! `davy backup`: a consistent copy of a data directory, taken while the
-//! server runs, as one file. See "Backup and restore" in docs/design.md.
+//! `davy backup` and `davy restore`: a consistent copy of a data directory,
+//! taken while the server runs, as one file, and that file put back. See
+//! "Backup and restore" in docs/design.md.
 
 pub mod archive;
 pub mod cli;
 mod link;
 pub mod pause;
+pub mod restore;
+pub mod swap;
 pub mod take;
 
 use anyhow::{Context as _, Result};
@@ -53,7 +56,8 @@ impl Record {
 }
 
 /// Refuses a data directory `data` the user this runs as does not own. As
-/// root, a backup would leave files in it the server cannot open.
+/// root, a backup would leave files in it the server cannot open, and a
+/// restore would put files there the server cannot read.
 #[cfg(unix)]
 fn owned(data: &Path, what: &str) -> Result<()> {
     use std::os::unix::fs::MetadataExt as _;
@@ -72,23 +76,4 @@ fn owned(data: &Path, what: &str) -> Result<()> {
 #[cfg(not(unix))]
 fn owned(_data: &Path, _what: &str) -> Result<()> {
     Ok(())
-}
-
-/// Writes the files of `backup` into the directory `into`, as a restore
-/// would, for the tests.
-#[cfg(test)]
-pub(crate) fn unpack(backup: &[u8], into: &Path) {
-    struct Unpack<'a>(&'a Path);
-    impl archive::Sink for Unpack<'_> {
-        fn header(&mut self, _: &archive::Header) -> Result<()> {
-            Ok(())
-        }
-        fn file(&mut self, path: &Path, _: u64, data: &mut dyn std::io::Read) -> Result<()> {
-            let to = self.0.join(path);
-            std::fs::create_dir_all(to.parent().context("a path with no parent")?)?;
-            std::io::copy(data, &mut std::fs::File::create(to)?)?;
-            Ok(())
-        }
-    }
-    archive::read(backup, &mut Unpack(into)).unwrap();
 }

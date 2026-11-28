@@ -81,6 +81,8 @@ pub(super) fn take_with<W: Write>(
 ) -> Result<(W, Taken)> {
     super::owned(data, "backup")?;
     store::exists(data)?;
+    // Held shared, so no restore starts under the backup.
+    let _claim = super::swap::idle(data)?;
     let root = crate::logs::dir(data);
     link::mkdir_all(&root)?;
     let run = Run::new(&root)?;

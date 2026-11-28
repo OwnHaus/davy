@@ -137,3 +137,61 @@ fn no_self_report_installs_no_panic_hook() {
     };
     assert_eq!((saved(true), saved(false)), (0, 1));
 }
+
+/// `davy serve` on `data`, listening on an address another socket holds,
+/// so a server that gets past its checks fails at once instead of serving.
+fn serve_on(data: &Path, flags: bool) -> String {
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let listen = taken.local_addr().unwrap().to_string();
+    let mut a = if flags {
+        args(data, Some(&listen), Some("https://davy.example/"))
+    } else {
+        args(data, None, None)
+    };
+    a.no_self_report = true;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let e = rt.block_on(run(a)).unwrap_err();
+    format!("{e:#}")
+}
+
+#[test]
+fn a_server_does_not_start_while_a_restore_runs() {
+    let data = dir();
+    let _restore = crate::backup::swap::Claim::restore(&data).unwrap();
+    assert_eq!(
+        serve_on(&data, true),
+        format!(
+            "a restore into {} runs: start the server when it ends",
+            data.display()
+        )
+    );
+}
+
+/// A restore stopped right after its commit: the old settings and token are
+/// still in place, and the restored ones wait in the journal. The server
+/// must read the restored ones, here a token too short to start with.
+#[test]
+fn a_server_finishes_a_stopped_restore_before_it_reads_its_settings() {
+    let data = dir();
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let setup = format!(
+        r#"{{"public_url":"https://davy.example/","listen":"{}"}}"#,
+        taken.local_addr().unwrap()
+    );
+    std::fs::write(data.join("setup.json"), &setup).unwrap();
+    std::fs::write(data.join(TOKEN_FILE), "o".repeat(40)).unwrap();
+    let ready = data.join(".restore-ready");
+    std::fs::create_dir(&ready).unwrap();
+    std::fs::write(ready.join("setup.json"), &setup).unwrap();
+    std::fs::write(ready.join(TOKEN_FILE), "short").unwrap();
+    std::fs::write(ready.join(".aside"), ".replaced-T-1").unwrap();
+    assert_eq!(
+        serve_on(&data, false),
+        "the admin token has 5 characters and needs 32, `davy setup` writes one to DATA/token"
+    );
+    assert_eq!(
+        std::fs::read_to_string(data.join(TOKEN_FILE)).unwrap(),
+        "short"
+    );
+    assert!(!ready.exists());
+}

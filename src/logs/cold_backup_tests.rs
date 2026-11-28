@@ -6,7 +6,7 @@ use super::{
     super::layout,
     tests::{hot, read, record},
 };
-use crate::backup::{take::take, unpack};
+use crate::backup::{restore::restore, take::take};
 use crate::logs::store::{State, no_overrides};
 use crate::test_support::scratch;
 use crate::time::{DAY_NS, day_of, midnight, now_ns};
@@ -17,7 +17,7 @@ const HALFWAY: Duration = Duration::from_secs(60);
 /// Restores `backup` into a new data directory and returns its logs.
 fn restored(backup: &[u8]) -> PathBuf {
     let data = scratch("cold-backup-restored");
-    unpack(backup, &data);
+    restore(backup, &data, false).unwrap();
     crate::logs::dir(&data)
 }
 

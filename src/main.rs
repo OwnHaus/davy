@@ -113,6 +113,8 @@ enum Command {
     /// Writes a consistent copy of a data directory to one file, whether the
     /// server runs or not. It holds the server's secrets.
     Backup(davy::backup::cli::Backup),
+    /// Puts a backup into a new or empty data directory, with no server on it.
+    Restore(davy::backup::cli::Restore),
     /// Runs one read-only SQL query against the error store. `davy sql schema`
     /// prints the tables and notes on units.
     Sql {
@@ -353,6 +355,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Crash { data } => davy::self_report::crash::test_panic(&data),
         Command::Usage(args) => davy::usage::run(&mut out.lock(), &args)?,
         Command::Backup(args) => davy::backup::cli::backup(&mut out.lock(), args)?,
+        Command::Restore(args) => davy::backup::cli::restore(&mut out.lock(), &args)?,
         Command::Sql { query, data, json } => {
             let c = query::open(&data)?;
             if query.trim() == "schema" {

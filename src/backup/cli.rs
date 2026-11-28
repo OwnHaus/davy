@@ -1,35 +1,70 @@
-//! `davy backup`. A backup holds
+//! `davy backup`, `davy backup verify` and `davy restore`. A backup holds
 //! every secret of the server, so only whoever runs commands on the host
 //! takes one: no MCP tool or HTTP route does. See docs/design.md.
 
 use super::{
-    Record, archive,
+    Record,
+    archive::{self, Check, Header},
+    restore::{self as put, Restored},
     take::{self, Taken},
 };
-use crate::text::size;
+use crate::{store::SCHEMA_VERSION, text::size};
 use anyhow::{Context as _, Result, ensure};
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, BufWriter, Write},
+    io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     time::Instant,
 };
 
 #[derive(clap::Args)]
+#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
 pub struct Backup {
+    #[command(subcommand)]
+    command: Option<Verb>,
     /// The data directory of the server, running or not.
+    #[arg(long, required = true)]
+    data: Option<PathBuf>,
+    /// The file to write, outside the data directory, or - for stdout.
+    #[arg(required = true, value_name = "OUT")]
+    out: Option<PathBuf>,
+}
+
+#[derive(clap::Subcommand)]
+enum Verb {
+    /// Reads a backup through and checks every file against its manifest,
+    /// without restoring it.
+    Verify {
+        /// The backup, or - for stdin.
+        file: PathBuf,
+    },
+}
+
+#[derive(clap::Args)]
+pub struct Restore {
+    /// The data directory to restore into: missing or empty, and no server
+    /// on it.
     #[arg(long)]
     data: PathBuf,
-    /// The file to write, outside the data directory, or - for stdout.
-    #[arg(value_name = "OUT")]
-    out: PathBuf,
+    /// The backup, or - for stdin.
+    #[arg(value_name = "IN")]
+    input: PathBuf,
+    /// Restore into a directory that holds something, after moving what it
+    /// holds into DATA/.replaced-TIME-PID.
+    #[arg(long)]
+    replace: bool,
 }
 
 /// What a backup says about itself when it is done.
 pub const SECRETS: &str = "It holds the secrets of this server, such as its admin token, the SMTP URL, alert channel URLs, password hashes and sign-in sessions: keep it where only you can read it.";
 
 pub fn backup(out: &mut impl Write, args: Backup) -> Result<()> {
-    let (data, to) = (args.data, args.out);
+    let (Some(data), Some(to)) = (args.data, args.out) else {
+        let Some(Verb::Verify { file }) = args.command else {
+            unreachable!("clap requires --data and OUT without a subcommand")
+        };
+        return verify(out, &file);
+    };
     let start = Instant::now();
     let stdout = to == Path::new("-");
     let shown = if stdout {
@@ -170,6 +205,79 @@ fn summary(data: &Path, to: &str, taken: &Taken, written: u64, start: Instant) -
         s.push_str(&taken.long.join(", "));
     }
     s
+}
+
+fn verify(out: &mut impl Write, file: &Path) -> Result<()> {
+    let (header, manifest) = archive::read(input(file)?, &mut Check)?;
+    writeln!(
+        out,
+        "the backup is whole: {} files, {}, {}",
+        manifest.files.len(),
+        size(manifest.bytes),
+        about(&header)
+    )?;
+    if header.schema > SCHEMA_VERSION {
+        writeln!(
+            out,
+            "this Davy {} knows schema versions up to {SCHEMA_VERSION}: restore it with Davy {} or newer",
+            env!("CARGO_PKG_VERSION"),
+            header.davy_version
+        )?;
+    }
+    Ok(())
+}
+
+pub fn restore(out: &mut impl Write, args: &Restore) -> Result<()> {
+    if let Some(aside) = put::finish(&args.data)? {
+        writeln!(
+            out,
+            "finished the restore into {} that stopped halfway; {}. Nothing was read from {}: to restore it over the one just finished, run davy restore again with --replace",
+            args.data.display(),
+            super::swap::replaced(&aside),
+            args.input.display()
+        )?;
+        return Ok(());
+    }
+    let r: Restored = put::restore(input(&args.input)?, &args.data, args.replace)?;
+    writeln!(
+        out,
+        "restored {} files, {}, into {}: {}",
+        r.files,
+        size(r.bytes),
+        args.data.display(),
+        about(&r.header)
+    )?;
+    if let Some(aside) = &r.replaced {
+        writeln!(
+            out,
+            "what {} held is in {}",
+            args.data.display(),
+            aside.display()
+        )?;
+    }
+    if r.header.schema < SCHEMA_VERSION {
+        writeln!(
+            out,
+            "davy serve upgrades its database from schema version {} to {SCHEMA_VERSION} when it starts",
+            r.header.schema
+        )?;
+    }
+    Ok(())
+}
+
+fn about(h: &Header) -> String {
+    format!(
+        "taken {} by Davy {} at schema version {}",
+        h.created_at, h.davy_version, h.schema
+    )
+}
+
+fn input(path: &Path) -> Result<Box<dyn Read>> {
+    if path == Path::new("-") {
+        return Ok(Box::new(BufReader::new(io::stdin().lock())));
+    }
+    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    Ok(Box::new(BufReader::with_capacity(1 << 16, file)))
 }
 
 /// A writer that counts what it writes.

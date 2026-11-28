@@ -160,7 +160,7 @@ fn a_backup_during_ingest_restores_to_a_moment_of_the_source() {
     let mut seen = Vec::new();
     for backup in [first, second] {
         let into = scratch("backup-restored");
-        super::super::unpack(&backup, &into);
+        super::super::restore::restore(backup.as_slice(), &into, false).unwrap();
         let logs = logged(&crate::logs::dir(&into));
         let made = projects(&into);
         assert!(a_moment(&logs), "{} logs, not 0..n", logs.len());
@@ -243,7 +243,7 @@ fn a_killed_backups_staging_directory_goes_with_the_next_backup() {
     let (backup, _) = take(&data, Vec::new()).unwrap();
     assert!(!left.exists());
     let into = scratch("backup-restored");
-    super::super::unpack(&backup, &into);
+    super::super::restore::restore(backup.as_slice(), &into, false).unwrap();
 }
 
 #[test]
@@ -277,7 +277,7 @@ fn a_database_an_older_server_holds_is_refused() {
 /// The slugs of the projects in a backup, restored.
 fn restored_projects(backup: &[u8]) -> BTreeSet<u64> {
     let into = scratch("backup-restored");
-    super::super::unpack(backup, &into);
+    super::super::restore::restore(backup, &into, false).unwrap();
     projects(&into)
 }
 
@@ -336,7 +336,7 @@ fn a_backup_holds_the_rows_and_the_logs_of_one_moment() {
     drop(writer.queue);
     writer.thread.join().unwrap();
     let into = scratch("backup-restored");
-    super::super::unpack(&backup, &into);
+    super::super::restore::restore(backup.as_slice(), &into, false).unwrap();
     assert_eq!(projects(&into), BTreeSet::from([0, 1, 2, 3]));
     assert_eq!(logged(&crate::logs::dir(&into)), (0..60).collect());
 }

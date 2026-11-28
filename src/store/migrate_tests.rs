@@ -1,4 +1,4 @@
-use super::super::{MIGRATIONS, SCHEMA};
+use super::super::MIGRATIONS;
 use crate::store;
 use rusqlite::Connection;
 use std::{
@@ -15,19 +15,11 @@ const REFUSED: &str = "is open in another process, and this Davy must migrate it
 /// The version of a database that lacks only the newest migration.
 const BEHIND: usize = MIGRATIONS.len() - 1;
 
-/// A data directory whose database lacks the newest migration, like one the
-/// previous Davy wrote. It is built from the first schema and the migrations
-/// before the newest, so it stays one behind when later releases add some.
+/// A data directory whose database lacks the newest migration, see
+/// [`store::one_behind`].
 fn behind() -> PathBuf {
     let data = crate::test_support::scratch("migrate");
-    std::fs::create_dir_all(&data).unwrap();
-    let c = Connection::open(data.join(store::DB_FILE)).unwrap();
-    c.execute_batch(SCHEMA).unwrap();
-    for sql in &MIGRATIONS[..BEHIND] {
-        c.execute_batch(sql).unwrap();
-    }
-    c.execute_batch(&format!("PRAGMA user_version={BEHIND}"))
-        .unwrap();
+    store::one_behind(&data);
     data
 }
 
