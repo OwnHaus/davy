@@ -318,22 +318,54 @@ pub fn run(
         }
         Drop::Remove { rule_id, data } => {
             let c = store::open_current(&data)?;
-            let what = crate::ledger::describe::rule_removed(rule_id);
-            let entry = crate::ledger::Entry::of(crate::ledger::Who::Cli, "drop_rule_remove", what);
-            let removed = |c: &Connection| {
-                let gone = super::remove(c, rule_id)?;
-                Ok(gone.then_some(()).ok_or(format!("no rule {rule_id}")))
-            };
-            crate::ledger::recorded(&c, entry, removed)?.map_err(anyhow::Error::msg)?;
+            crate::ledger::recorded_as(&c, |tx| remove(tx, rule_id))?
+                .map_err(anyhow::Error::msg)?;
             writeln!(out, "{}", text::json(&json!({"removed": rule_id}), false)?)?;
         }
     }
     Ok(())
 }
 
+/// Removes rule `id` in `tx`, and gives its ledger row: the project, the
+/// rule's id and what it dropped, read before it goes.
+fn remove(
+    tx: &Connection,
+    id: i64,
+) -> Result<(
+    std::result::Result<(), String>,
+    Option<crate::ledger::Entry>,
+)> {
+    let found = match super::get(tx, id)? {
+        Some(r) => {
+            let slug: String = tx.query_row(
+                "SELECT slug FROM projects WHERE id=?1",
+                [r.project],
+                |row| row.get(0),
+            )?;
+            Some((slug, r.live, describe(&r.spec)))
+        }
+        None => None,
+    };
+    let removed = found
+        .as_ref()
+        .map(|(project, live, words)| crate::ledger::describe::Removed {
+            project,
+            live: *live,
+            words,
+        });
+    let what = crate::ledger::describe::rule_removed(id, removed);
+    let entry = crate::ledger::Entry::of(crate::ledger::Who::Cli, "drop_rule_remove", what);
+    let gone = super::remove(tx, id)?;
+    Ok((
+        gone.then_some(()).ok_or(format!("no rule {id}")),
+        Some(entry),
+    ))
+}
+
 /// Adds `spec` to `project` as a person and prints the rule. A live rule
-/// drops lines from then on, so it leaves a row in the ledger; a shadow
-/// rule drops nothing and leaves none.
+/// drops lines from then on, so it leaves a row in the ledger with its id;
+/// a shadow rule drops nothing and leaves none, and neither does a live
+/// rule the project had already, as nothing changed.
 fn add(out: &mut impl Write, spec: &Spec, live: bool, data: &Path, project: &str) -> Result<()> {
     let mut c = store::open(data)?;
     let change = |tx: &Connection| {
@@ -341,9 +373,16 @@ fn add(out: &mut impl Write, spec: &Spec, live: bool, data: &Path, project: &str
         super::add(tx, id, spec, live, By::Person, time::now_ms())
     };
     let added = if live {
-        let what = crate::ledger::describe::rule_added(project, &describe(spec));
-        let entry = crate::ledger::Entry::of(crate::ledger::Who::Cli, "drop_rule_add", what);
-        crate::ledger::recorded(&c, entry, change)?
+        crate::ledger::recorded_as(&c, |tx| {
+            let added = change(tx)?;
+            if added.as_ref().is_ok_and(|a| !a.created) {
+                return Ok((added, None));
+            }
+            let id = added.as_ref().ok().map(|a| a.id);
+            let what = crate::ledger::describe::rule_added(project, id, &describe(spec));
+            let entry = crate::ledger::Entry::of(crate::ledger::Who::Cli, "drop_rule_add", what);
+            Ok((added, Some(entry)))
+        })?
     } else {
         let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let added = change(&tx)?;

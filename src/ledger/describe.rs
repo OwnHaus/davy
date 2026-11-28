@@ -157,20 +157,44 @@ pub fn rule_live(id: i64) -> What {
 }
 
 /// A live rule a person added to `project` with `davy drop add`, in the
-/// words `davy drop list` uses.
-pub fn rule_added(project: &str, words: &str) -> What {
+/// words `davy drop list` uses, with its id once it was added.
+pub fn rule_added(project: &str, id: Option<i64>, words: &str) -> What {
+    let summary = match id {
+        Some(id) => format!("added live rule {id} for {words}"),
+        None => format!("added a live rule for {words}"),
+    };
     What {
         project: Some(project.to_owned()),
-        summary: format!("added a live rule for {words}"),
+        target: id.map(|id| format!("rule {id}")),
+        summary,
         ..What::default()
     }
 }
 
-/// A rule removed with `davy drop remove`.
-pub fn rule_removed(id: i64) -> What {
+/// A rule a person removes with `davy drop remove`.
+pub struct Removed<'a> {
+    pub project: &'a str,
+    pub live: bool,
+    /// The rule in the words `davy drop list` uses.
+    pub words: &'a str,
+}
+
+/// Rule `id` removed with `davy drop remove`, and what it was when there
+/// was one.
+pub fn rule_removed(id: i64, removed: Option<Removed<'_>>) -> What {
+    let target = Some(format!("rule {id}"));
+    let Some(r) = removed else {
+        return What {
+            target,
+            summary: format!("removed rule {id}"),
+            ..What::default()
+        };
+    };
+    let kind = if r.live { "live" } else { "shadow" };
     What {
-        target: Some(format!("rule {id}")),
-        summary: format!("removed rule {id}"),
+        project: Some(r.project.to_owned()),
+        target,
+        summary: format!("removed {kind} rule {id} for {}", r.words),
         ..What::default()
     }
 }

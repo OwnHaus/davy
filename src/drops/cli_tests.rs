@@ -257,7 +257,7 @@ fn the_commands_that_change_a_rule_neither_create_nor_upgrade_a_store() {
 }
 
 #[test]
-fn a_live_add_and_a_remove_leave_a_row_and_a_shadow_add_does_not() {
+fn a_live_add_and_a_remove_leave_a_row_naming_the_rule_and_no_change_leaves_none() {
     let data = on_disk("drop-ledger");
     let add = |shadow, message: &str| Drop::Add {
         pattern: None,
@@ -274,11 +274,18 @@ fn a_live_add_and_a_remove_leave_a_row_and_a_shadow_add_does_not() {
         rule_id,
         data: data.clone(),
     };
-    let ran: Vec<bool> = [add(true, "tick"), add(false, "poll"), remove(1), remove(9)]
-        .into_iter()
-        .map(|command| run(&mut Vec::new(), &mut Vec::new(), None, command).is_ok())
-        .collect();
-    assert_eq!(ran, [true, true, true, false]);
+    // Adding the live rule again changes nothing and leaves no row.
+    let ran: Vec<bool> = [
+        add(true, "tick"),
+        add(false, "poll"),
+        add(false, "poll"),
+        remove(1),
+        remove(9),
+    ]
+    .into_iter()
+    .map(|command| run(&mut Vec::new(), &mut Vec::new(), None, command).is_ok())
+    .collect();
+    assert_eq!(ran, [true, true, true, true, false]);
     let c = store::open_current(&data).unwrap();
     let rows: Vec<_> = crate::ledger::list(&c, None, None, 50)
         .unwrap()
@@ -303,18 +310,18 @@ fn a_live_add_and_a_remove_leave_a_row_and_a_shadow_add_does_not() {
             (
                 cli(),
                 "drop_rule_remove".into(),
-                None,
+                Some("shop".into()),
                 rule(1),
                 done,
-                "removed rule 1".into()
+                "removed shadow rule 1 for level debug and below, drop all".into()
             ),
             (
                 cli(),
                 "drop_rule_add".into(),
                 Some("shop".into()),
-                None,
+                rule(3),
                 done,
-                r#"added a live rule for message contains "poll", drop all"#.into()
+                r#"added live rule 3 for message contains "poll", drop all"#.into()
             ),
         ]
     );

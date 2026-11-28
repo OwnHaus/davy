@@ -406,12 +406,22 @@ pub fn recorded<T>(
     entry: Entry,
     change: impl FnOnce(&Connection) -> Result<std::result::Result<T, String>>,
 ) -> Result<std::result::Result<T, String>> {
+    recorded_as(c, |tx| Ok((change(tx)?, Some(entry))))
+}
+
+/// Like [`recorded`], where the change also gives its row, from what it
+/// found in the transaction: the rule it removed, say. No row when it
+/// gives none, for a change that changed nothing.
+pub fn recorded_as<T>(
+    c: &Connection,
+    change: impl FnOnce(&Connection) -> Result<(std::result::Result<T, String>, Option<Entry>)>,
+) -> Result<std::result::Result<T, String>> {
     let tx = rusqlite::Transaction::new_unchecked(c, TransactionBehavior::Immediate)?;
-    let result = change(&tx)?;
-    add(
-        &tx,
-        &entry.of_result(&result.as_ref().map(drop).map_err(Clone::clone)),
-    )?;
+    let (result, entry) = change(&tx)?;
+    if let Some(entry) = entry {
+        let ended = result.as_ref().map(drop).map_err(Clone::clone);
+        add(&tx, &entry.of_result(&ended))?;
+    }
     tx.commit()?;
     Ok(result)
 }
