@@ -150,18 +150,28 @@ fn outcome(result: &Result<CallToolResponse, ErrorData>) -> (Outcome, Option<Str
 pub(super) struct Destructive {
     pub(super) unlocked: access::Unlocked,
     entry: ledger::Entry,
-    /// The tool sent the row with its change, so the call adds none.
+    /// The writer took the row with the change, so the call adds none.
     recorded: Arc<AtomicBool>,
 }
 
 impl Destructive {
-    /// `job` with the row, for the writer.
-    pub(super) fn recorded(&self, job: Job) -> Job {
-        self.recorded.store(true, Ordering::Relaxed);
-        Job::Recorded {
+    /// Queues `job` with the row and waits until the writer applied it.
+    /// A job the queue refused never reached the writer, so the call
+    /// records its refused row as any other call does; once queued, the
+    /// writer writes the row with the change, done or refused, and a
+    /// database failure rolls back both.
+    pub(super) async fn submit(
+        &self,
+        writes: &store::Sender,
+        job: Job,
+    ) -> Result<(), store::Refused> {
+        let job = Job::Recorded {
             job: Box::new(job),
             entry: self.entry.clone(),
-        }
+        };
+        let queued = store::queue(writes, job)?;
+        self.recorded.store(true, Ordering::Relaxed);
+        queued.applied().await
     }
 }
 

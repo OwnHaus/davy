@@ -149,13 +149,11 @@ impl Tools {
         let id = req.rule_id;
         let proof = destructive.map(|d| d.unlocked);
         let job = Job::Drop(live_change(proof, req.project.clone(), id, time::now_ms())?);
-        let job = match destructive {
-            Some(d) => d.recorded(job),
-            None => job,
-        };
-        store::submit(&self.writes, job)
-            .await
-            .map_err(|e| e.to_string())?;
+        match destructive {
+            Some(d) => d.submit(&self.writes, job).await,
+            None => store::submit(&self.writes, job).await,
+        }
+        .map_err(|e| e.to_string())?;
         self.blocking(move |data| {
             let c = query::open(data)?;
             let project = store::project_by_slug(&c, &req.project)?;

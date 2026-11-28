@@ -350,13 +350,11 @@ impl Tools {
             By::Unlocked(d.unlocked, self.retention)
         });
         let job = Job::SetRetention(change, by);
-        let job = match destructive {
-            Some(d) => d.recorded(job),
-            None => job,
-        };
-        store::submit(&self.writes, job)
-            .await
-            .map_err(|e| e.to_string())?;
+        match destructive {
+            Some(d) => d.submit(&self.writes, job).await,
+            None => store::submit(&self.writes, job).await,
+        }
+        .map_err(|e| e.to_string())?;
         let defaults = self.retention;
         self.blocking(move |data| {
             let kept = retention::one(&query::open(data)?, &slug, defaults, time::now_ms())?;

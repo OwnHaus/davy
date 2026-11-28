@@ -492,3 +492,61 @@ fn brief(page: &Value) -> Vec<Value> {
         })
         .collect()
 }
+
+/// A destructive call whose job the queue refused leaves the call to add
+/// its refused row; a queued one hands the row to the writer.
+#[tokio::test]
+async fn a_destructive_job_the_queue_refused_leaves_the_row_to_the_call() {
+    use super::Destructive;
+    use crate::{
+        access::{Actor, Caller, Grant},
+        ledger::{Entry, What, Who},
+        store::{Job, Write},
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let caller = Caller {
+        actor: Actor::Token {
+            id: 1,
+            name: "ci".into(),
+        },
+        grant: Grant {
+            level: Level::Full,
+            destructive: true,
+        },
+    };
+    let recorded = Arc::new(AtomicBool::new(false));
+    let d = Destructive {
+        unlocked: caller.unlocked().unwrap(),
+        entry: Entry::of(Who::Token("ci".into()), "set_retention", What::default()).destructive(),
+        recorded: Arc::clone(&recorded),
+    };
+    let cut = || {
+        let change = retention::Change {
+            project: "api".into(),
+            logs_days: Some(retention::Setting::Days(7)),
+            errors_days: None,
+        };
+        Job::SetRetention(change, retention::By::Agent(Defaults::default()))
+    };
+    let (writes, jobs) = crossbeam_channel::bounded(1);
+    let (done, _) = tokio::sync::oneshot::channel();
+    writes.try_send(Write { job: cut(), done }).unwrap();
+    let busy = d.submit(&writes, cut()).await;
+    assert!(matches!(busy, Err(store::Refused::Full)), "{busy:?}");
+    assert!(!recorded.load(Ordering::Relaxed));
+    drop(jobs.recv().unwrap());
+    let call = tokio::spawn({
+        let (d, writes) = (d.clone(), writes.clone());
+        async move { d.submit(&writes, cut()).await }
+    });
+    let taken = tokio::task::spawn_blocking(move || jobs.recv().unwrap())
+        .await
+        .unwrap();
+    assert!(recorded.load(Ordering::Relaxed));
+    assert!(matches!(&taken.job, Job::Recorded { entry, .. } if entry.destructive));
+    taken.done.send(Ok(())).unwrap();
+    assert!(call.await.unwrap().is_ok());
+}
