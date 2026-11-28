@@ -84,6 +84,10 @@ export const alertsSearch = (s: Record<string, unknown>): AlertsSearch => ({
   channel: typeof s.channel === "string" && /^\d{1,18}$/.test(s.channel) ? s.channel : undefined,
 });
 
+/** The ledger: one actor's rows, or everyone's. */
+export type LedgerSearch = { actor?: string | undefined };
+export const ledgerSearch = (s: Record<string, unknown>): LedgerSearch => ({ actor: text(s.actor) });
+
 export type ProjectsSearch = { project?: string | undefined; sdk?: Sdk | undefined };
 export const projectsSearch = (s: Record<string, unknown>): ProjectsSearch => ({
   project: text(s.project),

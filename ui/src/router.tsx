@@ -4,18 +4,21 @@ import { AccountPage } from "./pages/Account";
 import { Alerts } from "./pages/Alerts";
 import { Issue } from "./pages/Issue";
 import { Issues } from "./pages/Issues";
+import { Ledger } from "./pages/Ledger";
 import { Login } from "./pages/Login";
 import { Logs } from "./pages/Logs";
 import { Monitor } from "./pages/Monitor";
 import { Monitors } from "./pages/Monitors";
 import { Projects } from "./pages/Projects";
 import { SetupPage } from "./pages/Setup";
+import { Tokens } from "./pages/Tokens";
 import { NotFound, setupOpen, setupQuery } from "./pages/Shell";
 import { Welcome } from "./pages/Welcome";
 import {
   alertsSearch,
   issueSearch,
   issuesSearch,
+  ledgerSearch,
   loginSearch,
   logsSearch,
   monitorsSearch,
@@ -47,6 +50,8 @@ const routes = [
   createRoute({ getParentRoute: () => root, path: "/monitors/$id", component: Monitor }),
   createRoute({ getParentRoute: () => root, path: "/alerts", validateSearch: alertsSearch, component: Alerts }),
   createRoute({ getParentRoute: () => root, path: "/projects", validateSearch: projectsSearch, component: Projects }),
+  createRoute({ getParentRoute: () => root, path: "/tokens", component: Tokens }),
+  createRoute({ getParentRoute: () => root, path: "/ledger", validateSearch: ledgerSearch, component: Ledger }),
   // The usage page draws its own charts and loads only when opened.
   createRoute({
     getParentRoute: () => root,

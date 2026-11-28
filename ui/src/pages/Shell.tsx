@@ -64,6 +64,12 @@ export function Shell({ crumb, keys, note, rail, inspector, children }: ShellPro
           <Link to="/usage" data-text="Usage">
             Usage
           </Link>
+          <Link to="/tokens" data-text="Tokens">
+            Tokens
+          </Link>
+          <Link to="/ledger" data-text="Ledger">
+            Ledger
+          </Link>
           <SetupLink />
         </nav>
         {crumb ? (

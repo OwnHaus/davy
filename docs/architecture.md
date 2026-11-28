@@ -67,7 +67,7 @@ Seven kinds of caller reach the server. Each route belongs to exactly one.
 | Coding agent | Admin token, secret | `/mcp`, `/api/projects/{project}/scrub` | Read everything, mark issues fixed, keep a project's logs and errors longer, tighten project scrubbing |
 | Coding agent | Agent token, secret, `davy_agent_...` | `/mcp` | What its level reaches: `read` reads everything, `triage` also marks issues fixed and stages shadow drop rules, `full` also keeps data longer. With destructive changes a person unlocked, it also shortens retention and makes drop rules live |
 | `sentry-cli` | Admin token, secret | `/api/0/organizations/{org}/chunk-upload/`, `.../artifactbundle/assemble/` | Write source map builds |
-| Person in a browser | Session cookie `__Host-davy_session`, secret, from a login or a welcome link | `/ui/api/*` but login, logout and welcome | Read everything, change the status of issues, set how long a project keeps its logs and errors, change their own password, end their own sessions |
+| Person in a browser | Session cookie `__Host-davy_session`, secret, from a login or a welcome link | `/ui/api/*` but login, logout and welcome | Read everything, change the status of issues, set how long a project keeps its logs and errors, change their own password, end their own sessions, change the level of an agent token, unlock or lock its destructive changes, revoke it, and read the ledger |
 
 The pages under `/ui/` and the login, logout and welcome routes need no credential. The admin token opens nothing under `/ui/`, and the session cookie opens nothing outside it. A UI write also needs `Content-Type: application/json` and the exact `Origin` of the public URL.
 

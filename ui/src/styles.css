@@ -264,6 +264,7 @@ td.title a:focus-visible { outline-offset: 0; }
 .fn { font-family: var(--font-mono); font-size: 12px; }
 td.cul { color: var(--ink); }
 td.rel { color: var(--muted); }
+.inline { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .dim { color: var(--faint); }
 tr.row.done td.title a { color: var(--muted); font-weight: 400; }
 .empty { padding: 40px 20px; color: var(--muted); }
@@ -500,6 +501,7 @@ table.iss th.lead, table.iss td.lead { padding-left: 14px; }
 .since { margin-left: 8px; font-size: 12px; }
 .w-state { width: 132px; } .w-target { width: 260px; } .w-every { width: 64px; }
 .w-when { width: 172px; } .w-lasted { width: 104px; } .w-result { width: 96px; } .w-code { width: 64px; } .w-ms { width: 92px; }
+.w-token { width: 180px; } .w-levels { width: 220px; } .w-used { width: 140px; } .w-acts { width: 220px; } .w-actor { width: 240px; } .w-action { width: 140px; }
 .w-id { width: 44px; } .w-kind { width: 88px; } .w-project { width: 128px; } .w-yes { width: 108px; } .w-num { width: 72px; } .w-num-wide { width: 108px; }
 .w-chan { width: 168px; } .w-event { width: 136px; } .w-next { width: 136px; }
 .ustrip.sm { width: 166px; }

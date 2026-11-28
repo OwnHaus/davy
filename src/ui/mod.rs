@@ -3,6 +3,7 @@
 //! for the person first. Writes need JSON and the exact public origin.
 
 mod account;
+mod agents;
 mod alerts;
 mod assets;
 mod connect;
@@ -92,6 +93,7 @@ fn protected(
         .merge(retention::routes(Arc::clone(&reads), retention))
         .merge(monitors::routes(Arc::clone(&reads)))
         .merge(alerts::routes(Arc::clone(&reads)))
+        .merge(agents::routes(Arc::clone(&reads)))
         .merge(connect::routes(Arc::clone(&reads), public_url))
         .merge(usage::routes(Arc::clone(&reads), retention))
         .merge(issues::routes(reads))
@@ -120,6 +122,9 @@ pub(crate) const PROTECTED: &[(&str, &str)] = &[
     ("GET", "/ui/api/monitors/1"),
     ("GET", "/ui/api/channels"),
     ("GET", "/ui/api/notifications"),
+    ("GET", "/ui/api/tokens"),
+    ("POST", "/ui/api/tokens"),
+    ("GET", "/ui/api/ledger"),
     ("GET", "/ui/api/connect"),
     ("GET", "/ui/api/setup"),
     ("GET", "/ui/api/retention"),

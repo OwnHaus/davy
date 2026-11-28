@@ -61,7 +61,7 @@ impl Name {
 /// A token as `davy token list` and the web UI show it. Never its secret
 /// or hash.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(rename = "AgentToken"))]
 pub struct Listed {
     pub name: String,
     pub level: Level,

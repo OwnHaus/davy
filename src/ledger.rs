@@ -213,7 +213,7 @@ impl Entry {
 
 /// A row as the web UI and the `ledger` tool show it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(rename = "LedgerRow"))]
 pub struct Row {
     pub id: i64,
     pub at: String,

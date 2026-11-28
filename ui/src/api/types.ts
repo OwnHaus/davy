@@ -489,3 +489,41 @@ projects: Array<ProjectDays>,
  * are no more or one project was asked for.
  */
 other: OtherDays | null, };
+
+export type Level = "read" | "triage" | "full";
+
+export type AgentToken = { name: string, level: Level, 
+/**
+ * Whether a person unlocked destructive changes for it.
+ */
+destructive: boolean, 
+/**
+ * Who unlocked them: a person's e-mail, or `davy CLI`.
+ */
+unlocked_by: string | null, unlocked_at: string | null, created_at: string, 
+/**
+ * The last call, to the minute, or null before the first.
+ */
+used_at: string | null, revoked_at: string | null, };
+
+export type TokenChange = { "do": "level", name: string, level: Level, } | { "do": "unlock", name: string, } | { "do": "lock", name: string, } | { "do": "revoke", name: string, };
+
+export type ActorKind = "admin" | "token" | "person" | "cli";
+
+export type Outcome = "done" | "error" | "denied";
+
+export type LedgerRow = { id: number, at: string, actor_kind: ActorKind, actor: string, client: string | null, action: string, project: string | null, issue: number | null, target: string | null, outcome: Outcome, summary: string, 
+/**
+ * How often the same row came within a minute of the one before.
+ */
+repeats: number, };
+
+export type LedgerPage = { rows: Array<LedgerRow>, 
+/**
+ * Every actor with a row, for the filter.
+ */
+actors: Array<string>, 
+/**
+ * The `before` of the next, older page, when there is one.
+ */
+next_before: number | null, };

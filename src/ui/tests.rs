@@ -599,6 +599,9 @@ mod logs;
 #[path = "uptime_tests.rs"]
 mod uptime;
 
+#[path = "agents_tests.rs"]
+mod agents;
+
 #[path = "alerts_tests.rs"]
 mod alerts;
 

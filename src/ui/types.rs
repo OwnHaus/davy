@@ -4,6 +4,7 @@
 
 use super::{
     account::{LoggedIn, Login, Me, NewPassword, Welcome},
+    agents::{LedgerPage, TokenChange},
     alerts::{Delivery, Notification, NotificationPage},
     connect::{Endpoints, ProjectKey, Setup, Step},
     issues::{IssueView, LogLine, Logs, StatusChange},
@@ -11,14 +12,17 @@ use super::{
     monitors::{Check, Hour, Incident, MonitorDetail, MonitorKind, MonitorPage, MonitorRow},
 };
 use crate::{
+    access::Level,
     alert::{Kind, store::Listed},
     event_view::{Breadcrumb, Context, Cut, EventView, ExceptionView, FrameView, Pair, Request},
     firsts::First,
     issues::{EventItem, EventPage, IssuePage, IssueRow, Project, Sort, Status},
+    ledger::{ActorKind, Outcome, Row},
     logs::{LogLevel, LogSource},
     monitor::State,
     retention::{Change, Kept, Retention, ServerDefault, Setting},
     store::{IssueDetail, ReleaseCount},
+    tokens,
     usage::days::{Counts, OtherDays, ProjectDays, ProjectStored, UsageDays},
 };
 use ts_rs::{Config, TS};
@@ -96,6 +100,13 @@ fn file() -> String {
         decl::<ProjectStored>(&c),
         decl::<OtherDays>(&c),
         decl::<UsageDays>(&c),
+        decl::<Level>(&c),
+        decl::<tokens::Listed>(&c),
+        decl::<TokenChange>(&c),
+        decl::<ActorKind>(&c),
+        decl::<Outcome>(&c),
+        decl::<Row>(&c),
+        decl::<LedgerPage>(&c),
     ];
     format!("{HEADER}{}", decls.concat())
 }

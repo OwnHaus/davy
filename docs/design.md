@@ -886,6 +886,9 @@ The routes, all behind the session:
 | `GET /ui/api/logs/histogram?q&from&to&project&level` | `LogHistogram`, the matches counted in at most 200 round buckets |
 | `GET /ui/api/usage?view&project&since&top` | what `davy usage --json` prints, see [The usage page](#the-usage-page) |
 | `GET /ui/api/usage/days?project&since` | `UsageDays`, each project's counts per UTC day, see [The usage page](#the-usage-page) |
+| `GET /ui/api/tokens` | `AgentToken[]`, every agent token by name, revoked ones too, never a secret or hash |
+| `POST /ui/api/tokens` | `TokenChange` in (`level`, `unlock`, `lock` or `revoke` of one token by name), `AgentToken[]` out |
+| `GET /ui/api/ledger?actor&before` | `LedgerPage`, 50 rows newest first, every actor in the ledger and the `before` of the page before, see [Ledger](#ledger) |
 
 A route takes only the query keys it names, each at most once, and answers `400` naming the keys it takes. The project filter takes a slug. Environment and release filter through `issue_tags` (see "Load check"). There is no list of environments, since it would need a scan of every event, so environment is typed. Writes answer `404` when an issue is missing, without a read before the write, because the writer already refuses the whole change.
 
@@ -904,6 +907,10 @@ A route takes only the query keys it names, each at most once, and answers `400`
 **Uptime** (`/ui/monitors`). Monitors with their state, last check or ping and the response times of the last 24 hours from `checks`, each hour as a cell with a table form. A monitor's page (`/ui/monitors/{id}`) adds 7 and 30 day uptime, never rounded up so 99.999% does not read as 100%, its newest incidents with reasons, the newest checks of an HTTP monitor, and for a heartbeat the last ping and when it is late. Monitors are added with `davy monitor add`, so the empty list shows that command.
 
 **Alerts** (`/ui/alerts`). Channels with their kind, project and host, how many notifications wait, failed or were dropped, apart from the dropped notices of monitors made by check-ins, and the notifications newest first with their delivery state, tries, when they were sent or retry next, and the last error. The rail filters by channel. A channel's URL path and secret are never shown.
+
+**Tokens** (`/ui/tokens`). The agent tokens, live ones first, each with its level as three buttons (read, triage, full; each names what it adds), whether destructive changes are unlocked, by whom and since when, when it was last used, and **Revoke**. **Unlock** works only on a token of level `full` and asks first, saying what the agent may then delete; **Revoke** asks too. A refused change shows Davy's reason under the table. Revoked tokens follow, dimmed, kept so the ledger still names them. Tokens are added with `davy token add`, which prints the secret once, so the empty page shows that command and the page never shows a secret. Each change goes to the writer with its ledger row as one job, so the row names the person and says whether it was done or why not: `404` for a token that is missing or revoked, `409` for an unlock of a token below `full`, `400` for a name that is no token name.
+
+**Ledger** (`/ui/ledger`). The ledger, newest first, 50 rows a page with **Load older changes**: when, the actor and the name the MCP client gave itself, shown as `client says NAME` as nothing verifies it, the action, the target with a link to its issue or project, the outcome (`error` and `denied` stand out) and the summary with how many times it repeated. The rail filters by actor, with every actor the ledger names, and `?actor=` keeps the filter in the address. A row's actor links to that filter. The page asks again every 30 seconds.
 
 **Projects** (`/ui/projects`). The server's public URL and its Logs, OpenTelemetry and MCP endpoints, then each project's DSN and key, each with a copy button, and the setup code from `docs/connect/` for the SDK picked in a tab list (Node, the browser, Python, Go, Logtail, OpenTelemetry). The project and the SDK are in the URL.
 
@@ -2128,7 +2135,7 @@ An agent with a token makes changes nobody watched it make. The ledger is the re
 Each row has `id`, `at`, `actor_kind` and `actor`, `client`, `action`, `project`, `issue`, `target`, `outcome`, `summary` and `repeats`.
 
 - `actor_kind` is `admin`, `token`, `person` or `cli`. `actor` is the token's name, the person's e-mail, `admin token` or `davy CLI`. A space is in no token name and no e-mail, so the last two never name someone else.
-- `client` is the name the MCP client gave when it connected, such as `claude-code`, null for a person and the CLI.
+- `client` is the name the MCP client sends with the call, from `io.modelcontextprotocol/clientInfo` in the request's `_meta` and otherwise its `User-Agent`, such as `claude-code` or `node` (see [Feedback from agents](#feedback-from-agents)), null for a person and the CLI. Nothing verifies it, as any client can give any name: the token says who acted, the client only what it called itself.
 - `action` is the MCP tool, or the same change made another way: `issue_status`, `set_retention`, `drop_rule_live`, `drop_rule_add`, `drop_rule_remove`, `token_add`, `token_level`, `token_unlock`, `token_lock` and `token_revoke`.
 - `project` is the project's slug, found from the issue when the change names one. `issue` is the issue's ID when the change named one issue. `target` says what the change was about: `issue 7`, `12 issues`, `rule 3`, `pattern 1a2b3c4d`, `token ci`.
 - `outcome` is `done`, `error` (the tool or the writer refused it, or it failed) or `denied` (the token's level does not reach it).
