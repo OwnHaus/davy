@@ -509,6 +509,11 @@ assert ctx['issue']['title'].startswith('TypeError: Cannot read properties of un
 print('source maps: sentry-cli upload, symbolicated top frame parseOrder at ../src/app.js:5')
 PY
 node "$ROOT/e2e/alerts.mjs" "$BIN" "$SCRATCH/alerts"
+# Backup and restore of the running server, while it takes logs, and a
+# second server on the restored directory. See "Backup and restore" in
+# docs/design.md.
+mkdir -p "$SCRATCH/backup"
+node "$ROOT/e2e/backup.mjs" "$BIN" "$SCRATCH/data" "$URL" "$TOKEN" "$SCRATCH/backup"
 # Davy monitors itself. With the server stopped, a panic is saved as a crash
 # file and a stray file in the log root makes the log writer warn at its next
 # start. The restarted server records both in Davy's own project, and a panic
