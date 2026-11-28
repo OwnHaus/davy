@@ -119,10 +119,11 @@ fn behind(data: &Path) {
     let version: i64 = c
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    // latest_payloads came nine migrations before the newest: then come
+    // latest_payloads came ten migrations before the newest: then come
     // log_days and store_days, the Vercel drain secret, the mark of
     // Davy's own project, the savings tables, the drop rules, the quotas,
-    // the agent tokens and the ledger, so the store goes back nine versions.
+    // the agent tokens, the ledger and its caps, which go with the ledger,
+    // so the store goes back ten versions.
     c.execute_batch(&format!(
         "DROP TABLE latest_payloads; DROP TABLE log_days; DROP TABLE store_days; {} {} {} {} {} {} {} PRAGMA user_version={};",
         davy::ledger::UNDO,
@@ -132,7 +133,7 @@ fn behind(data: &Path) {
         davy::usage::savings::UNDO,
         davy::self_report::own::UNDO,
         davy::vercel::UNDO,
-        version - 9
+        version - 10
     ))
     .unwrap();
 }

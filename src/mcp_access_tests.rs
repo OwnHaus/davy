@@ -368,9 +368,9 @@ async fn an_unlocked_change_and_its_row_are_one_write() {
         rows,
         [
             row("drop_rule_live", "done", true, false),
-            row("drop_rule_live", "error", true, true),
+            row("drop_rule_live", "error", false, true),
             row("set_retention", "done", true, false),
-            row("set_retention", "error", true, true),
+            row("set_retention", "error", false, true),
             row("set_retention", "done", false, false),
         ]
     );

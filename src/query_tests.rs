@@ -344,7 +344,7 @@ fn reading_a_database_of_an_older_davy_asks_for_an_upgrade_and_leaves_it() {
         crate::vercel::UNDO
     ))
     .unwrap();
-    let older = store::SCHEMA_VERSION - 10;
+    let older: u32 = 17;
     c.pragma_update(None, "user_version", older).unwrap();
     let err = open(&data).unwrap_err();
     assert_eq!(

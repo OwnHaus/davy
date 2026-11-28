@@ -1,6 +1,6 @@
 /// Schema changes after the first release, applied in order. `PRAGMA
 /// user_version` counts how many ran.
-pub(super) const MIGRATIONS: [&str; 27] = [
+pub(super) const MIGRATIONS: [&str; 28] = [
     "CREATE TABLE releases(project_id INTEGER NOT NULL REFERENCES projects(id), version TEXT NOT NULL, first_seen INTEGER NOT NULL, PRIMARY KEY(project_id, version));
 INSERT INTO releases SELECT project_id, release, min(received_at) FROM events WHERE release IS NOT NULL GROUP BY project_id, release;",
     "CREATE TABLE monitors(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), name TEXT NOT NULL, kind TEXT NOT NULL, url TEXT, expect TEXT, keyword TEXT, heartbeat_token TEXT UNIQUE, every_s INTEGER NOT NULL, timeout_s INTEGER, grace_s INTEGER, state TEXT NOT NULL, last_check_at INTEGER, last_ping_at INTEGER, created_at INTEGER NOT NULL);
@@ -97,4 +97,8 @@ CREATE INDEX session_seen_started ON session_seen(started);",
     // What agents and people changed, and the calls a token's level
     // refused, see src/ledger.rs.
     crate::ledger::MIGRATION,
+    // The ledger's indexes by age, by capped group and of the changes that
+    // deleted data, so its upkeep costs the same at any size, see
+    // src/ledger.rs.
+    crate::ledger::CAPS,
 ];

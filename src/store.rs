@@ -410,6 +410,20 @@ fn sweep(c: &Connection, at: Timestamp, error_days: crate::retention::Days) -> R
     crate::ledger::prune(c, at)?;
     Ok(())
 }
+/// Whether `job`, a change an agent's call asked for as destructive, would
+/// delete data as the store stands now, read before the writer applies it:
+/// a cut of retention, or a rule made live. Another change may have come
+/// first, so the ledger marks the row by what the change did, not by what
+/// it was admitted as.
+fn deletes(c: &Connection, job: &Job) -> Result<bool> {
+    Ok(match job {
+        Job::SetRetention(change, crate::retention::By::Unlocked(_, defaults)) => {
+            crate::retention::destructive(c, change, *defaults)?.is_some()
+        }
+        Job::Drop(crate::drops::AgentChange::Live { .. }) => true,
+        _ => false,
+    })
+}
 /// Runs one job. The outer error is a database failure that aborts the batch,
 /// the inner one a problem with this job alone.
 fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Outcome> {
@@ -475,8 +489,11 @@ fn apply<'a>(c: &Connection, job: &'a Job, latest: &mut Latest<'a>) -> Result<Ou
         Job::Token(change) => crate::tokens::apply(c, change),
         Job::Ledger(entry) => Ok(Ok(crate::ledger::add(c, entry)?)),
         Job::Recorded { job, entry } => {
+            let deletes = entry.destructive && deletes(c, job)?;
             let outcome = apply(c, job, latest)?;
-            crate::ledger::add(c, &entry.clone().of_result(&outcome))?;
+            let mut row = entry.clone().of_result(&outcome);
+            row.destructive = deletes && outcome.is_ok();
+            crate::ledger::add(c, &row)?;
             Ok(outcome)
         }
         Job::SetRetention(change, by) => Ok(crate::retention::set(c, change, *by)?.map(drop)),

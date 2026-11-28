@@ -52,7 +52,7 @@ export function Ledger() {
         <h1 className="ph">Ledger</h1>
         <p className="lede">
           What agents and people changed, newest first: every MCP call that changed something or that a token's level refused, and a person's changes to issues, retention and{" "}
-          <Link to="/tokens">agent tokens</Link>. Reads leave no row. Rows are kept 180 days. The client is the name an MCP client gave itself, which nothing verifies: the token says who it is.
+          <Link to="/tokens">agent tokens</Link>. Reads leave no row. Rows are kept 180 days; each agent token and the admin token keep at most their newest 5,000 changes and 500 refused calls, and a change that deleted data stays the full 180 days. The client is the name an MCP client gave itself, which nothing verifies: the token says who it is.
         </p>
         <section className="sec" aria-labelledby="rows">
           <h3 id="rows">

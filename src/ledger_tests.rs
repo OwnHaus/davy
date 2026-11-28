@@ -1,6 +1,6 @@
 use super::{
-    ActorKind, COLLAPSE_MS, Entry, KEEP_DESTRUCTIVE, KEEP_DONE, KEEP_MS, KEEP_REFUSED, MAX_SUMMARY,
-    Outcome, REFUSED, Row, What, Who, actors, add, cut, list, prune, recorded,
+    ActorKind, COLLAPSE_MS, DONE, Entry, KEEP_DONE, KEEP_MS, KEEP_REFUSED, MAX_SUMMARY, Outcome,
+    PRUNE_BATCH, REFUSED, REFUSED_ROWS, Row, What, Who, actors, add, cut, list, prune, recorded,
 };
 
 const T: i64 = 1_800_000_000_000;
@@ -266,21 +266,33 @@ fn the_cli_records_its_change_and_its_refusal_with_it() {
     assert_eq!(title, "changed");
 }
 
-/// Adds `n` rows of `actor` of `kind` that ended as `outcome`, marked
-/// `destructive`, from `at` on.
+/// Adds `n` rows of the actor of `kind` that ended as `outcome`, marked
+/// `destructive`, from `at` on: `ann@example.com` for a person, `davy CLI`
+/// for the CLI and the admin token otherwise. The admin token's rows of a
+/// capped group take its next numbers, as [`add`] would give them.
 fn many(c: &rusqlite::Connection, n: i64, kind: &str, outcome: &str, destructive: bool, at: i64) {
-    let actor = if kind == "person" {
-        "ann@example.com"
-    } else {
-        "admin token"
+    let (actor, group) = match (kind, outcome, destructive) {
+        ("person", ..) => ("ann@example.com", None),
+        ("cli", ..) => ("davy CLI", None),
+        (_, "done", true) => ("admin token", None),
+        (_, "done", false) => ("admin token", Some(DONE.0)),
+        _ => ("admin token", Some(REFUSED_ROWS.0)),
     };
+    let next: Option<i64> = group.map(|terms| {
+        c.query_row(&super::numbered(terms), [actor], |r| r.get(0))
+            .unwrap()
+    });
     c.execute(
         "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?1)
-         INSERT INTO ledger(at, actor_kind, actor, action, outcome, summary, destructive)
-         SELECT ?2+i, ?3, ?4, 'mark_fixed', ?5, 'x', ?6 FROM n",
-        rusqlite::params![n, at, kind, actor, outcome, destructive],
+         INSERT INTO ledger(at, actor_kind, actor, action, outcome, summary, destructive, seq)
+         SELECT ?2+i, ?3, ?4, 'mark_fixed', ?5, 'x', ?6, ?7+i-1 FROM n",
+        rusqlite::params![n, at, kind, actor, outcome, destructive, next],
     )
     .unwrap();
+}
+
+fn count(c: &rusqlite::Connection, sql: &str) -> i64 {
+    c.query_row(sql, [], |r| r.get(0)).unwrap()
 }
 
 #[test]
@@ -296,6 +308,17 @@ fn the_sweep_keeps_half_a_year() {
 }
 
 #[test]
+fn one_sweep_deletes_one_batch_of_the_oldest() {
+    let c = memory();
+    many(&c, PRUNE_BATCH + 3, "person", "done", false, T);
+    prune(&c, T + KEEP_MS + PRUNE_BATCH + 10).unwrap();
+    assert_eq!(count(&c, "SELECT count(*) FROM ledger"), 3);
+    assert_eq!(count(&c, "SELECT min(at) FROM ledger"), T + PRUNE_BATCH + 1);
+    prune(&c, T + KEEP_MS + PRUNE_BATCH + 10).unwrap();
+    assert_eq!(count(&c, "SELECT count(*) FROM ledger"), 0);
+}
+
+#[test]
 fn an_agents_flood_pushes_out_only_its_own_rows_of_the_same_kind() {
     let c = memory();
     many(&c, 3, "person", "done", false, T);
@@ -303,25 +326,183 @@ fn an_agents_flood_pushes_out_only_its_own_rows_of_the_same_kind() {
     add(&c, &entry(Who::Token("ci".into()), "mark_fixed", T + 20)).unwrap();
     many(&c, KEEP_REFUSED + 7, "admin", "denied", false, T + 30);
     many(&c, KEEP_DONE + 5, "admin", "done", false, T + 40_000);
-    many(&c, KEEP_DESTRUCTIVE + 2, "admin", "done", true, T + 50_000);
-    prune(&c, T + 60_000).unwrap();
-    let count = |sql: &str| -> i64 { c.query_row(sql, [], |r| r.get(0)).unwrap() };
+    many(&c, 2_500, "admin", "done", true, T + 50_000);
+    // Rows are capped as they come: one more of each kind.
+    for (outcome, destructive) in [
+        (Outcome::Denied, false),
+        (Outcome::Done, false),
+        (Outcome::Done, true),
+    ] {
+        let row = Entry {
+            outcome,
+            destructive,
+            ..entry(Who::Admin, "mark_fixed", T + 60_000)
+        };
+        add(&c, &row).unwrap();
+    }
     assert_eq!(
-        count("SELECT count(*) FROM ledger WHERE actor_kind='person'"),
+        count(&c, "SELECT count(*) FROM ledger WHERE actor_kind='person'"),
         3
     );
-    assert_eq!(count("SELECT count(*) FROM ledger WHERE actor='ci'"), 1);
+    assert_eq!(count(&c, "SELECT count(*) FROM ledger WHERE actor='ci'"), 1);
     let admin = |group: &str| {
-        count(&format!(
-            "SELECT count(*) FROM ledger WHERE actor='admin token' AND {group}"
-        ))
+        count(
+            &c,
+            &format!("SELECT count(*) FROM ledger WHERE actor='admin token' AND {group}"),
+        )
     };
     assert_eq!(admin("outcome='denied'"), KEEP_REFUSED);
     assert_eq!(admin("outcome='done' AND destructive=0"), KEEP_DONE);
-    assert_eq!(admin("outcome='done' AND destructive=1"), KEEP_DESTRUCTIVE);
+    // No count pushes out a change that deleted data, so a token cannot
+    // erase the record of its own.
+    assert_eq!(admin("outcome='done' AND destructive=1"), 3 + 2_500 + 1);
     // The newest of each kind are the ones kept.
     assert_eq!(
-        count("SELECT min(at) FROM ledger WHERE actor='admin token' AND outcome='denied'"),
-        T + 30 + 8
+        count(
+            &c,
+            "SELECT min(at) FROM ledger WHERE actor='admin token' AND outcome='denied'"
+        ),
+        T + 30 + 9
     );
+}
+
+#[test]
+fn a_persons_rows_and_the_clis_have_no_cap() {
+    let c = memory();
+    many(&c, KEEP_DONE + 5, "person", "done", false, T);
+    many(&c, KEEP_REFUSED + 5, "cli", "error", false, T + 10_000);
+    add(
+        &c,
+        &entry(
+            Who::Person("ann@example.com".into()),
+            "mark_fixed",
+            T + 20_000,
+        ),
+    )
+    .unwrap();
+    let refused = Entry {
+        outcome: Outcome::Error,
+        ..entry(Who::Cli, "mark_fixed", T + 20_001)
+    };
+    add(&c, &refused).unwrap();
+    assert_eq!(
+        count(&c, "SELECT count(*) FROM ledger WHERE actor_kind='person'"),
+        KEEP_DONE + 6
+    );
+    assert_eq!(
+        count(&c, "SELECT count(*) FROM ledger WHERE actor_kind='cli'"),
+        KEEP_REFUSED + 6
+    );
+    // Nor are they numbered, as no cap counts them.
+    assert_eq!(count(&c, "SELECT count(seq) FROM ledger"), 0);
+}
+
+#[test]
+fn a_change_that_deleted_data_never_counts_on_one_that_did_not() {
+    let c = memory();
+    let row = entry(Who::Token("ci".into()), "set_retention", T);
+    add(&c, &row).unwrap();
+    add(&c, &Entry { at: T + 1, ..row }.destructive()).unwrap();
+    let got: Vec<i64> = all(&c).into_iter().map(|r| r.repeats).collect();
+    assert_eq!(got, [1, 1]);
+}
+
+/// The steps SQLite plans for `sql`.
+fn plan(c: &rusqlite::Connection, sql: &str) -> Vec<String> {
+    let mut q = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+    let n = q.parameter_count();
+    q.query_map(rusqlite::params_from_iter(vec![1_i64; n]), |r| r.get(3))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+#[test]
+fn the_caps_and_the_sweep_read_their_own_indexes() {
+    let c = memory();
+    for ((group, _), index) in [(DONE, "ledger_done"), (REFUSED_ROWS, "ledger_refused")] {
+        // One search each, for the newest number and for the range past
+        // the cap: no step walks the rows the cap keeps.
+        for (sql, search) in [
+            (super::numbered(group), format!("INDEX {index} (actor=?)")),
+            (
+                super::capped(group),
+                format!("INDEX {index} (actor=? AND seq<?)"),
+            ),
+        ] {
+            let steps = plan(&c, &sql);
+            assert!(
+                steps.len() == 1
+                    && steps[0].starts_with("SEARCH ledger")
+                    && steps[0].contains(&search),
+                "{sql}: {steps:?}"
+            );
+        }
+    }
+    let steps = plan(&c, super::PRUNE);
+    assert!(
+        steps.iter().any(|s| s.contains("INDEX ledger_at")),
+        "{steps:?}"
+    );
+}
+
+/// Migration 28 numbers the rows a ledger of migration 27 holds, so the
+/// first row added after it pushes out the oldest past the cap.
+#[test]
+fn the_migration_numbers_the_rows_there_and_caps_go_on_from_them() {
+    let c = memory();
+    c.execute_batch(&format!("{} {}", super::UNDO, super::MIGRATION))
+        .unwrap();
+    for (kind, actor, outcome, destructive) in [
+        ("admin", "admin token", "done", 0),
+        ("token", "ci", "denied", 0),
+        ("token", "ci", "done", 0),
+        ("token", "ci", "error", 0),
+        ("token", "ci", "done", 1),
+        ("person", "ann@example.com", "done", 0),
+        ("token", "ci", "done", 0),
+    ] {
+        c.execute(
+            "INSERT INTO ledger(at, actor_kind, actor, action, outcome, summary, destructive)
+             VALUES (?1, ?2, ?3, 'mark_fixed', ?4, 'x', ?5)",
+            rusqlite::params![T, kind, actor, outcome, destructive],
+        )
+        .unwrap();
+    }
+    c.execute_batch(super::CAPS).unwrap();
+    let mut q = c.prepare("SELECT seq FROM ledger ORDER BY id").unwrap();
+    let got: Vec<Option<i64>> = q
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        got,
+        [Some(1), Some(1), Some(1), Some(2), None, None, Some(2)]
+    );
+    c.execute(
+        "WITH RECURSIVE n(i) AS (SELECT 3 UNION ALL SELECT i+1 FROM n WHERE i<?1)
+         INSERT INTO ledger(at, actor_kind, actor, action, outcome, summary, seq)
+         SELECT ?2+i, 'token', 'ci', 'mark_fixed', 'done', 'x', i FROM n",
+        rusqlite::params![KEEP_DONE, T],
+    )
+    .unwrap();
+    let ci = |c: &rusqlite::Connection, what: &str| {
+        count(
+            c,
+            &format!(
+                "SELECT {what} FROM ledger WHERE actor='ci' AND outcome='done' AND destructive=0"
+            ),
+        )
+    };
+    assert_eq!(ci(&c, "count(*)"), KEEP_DONE);
+    add(
+        &c,
+        &entry(Who::Token("ci".into()), "mark_fixed", T + 10_000),
+    )
+    .unwrap();
+    // The row numbered 1 by the migration is the one pushed out.
+    assert_eq!(ci(&c, "count(*)"), KEEP_DONE);
+    assert_eq!(ci(&c, "min(seq)"), 2);
+    assert_eq!(ci(&c, "max(seq)"), KEEP_DONE + 1);
 }

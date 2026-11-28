@@ -490,26 +490,26 @@ pub fn set(c: &Connection, change: &Change, by: By) -> Result<Result<Stored, Str
 }
 
 /// Why `by` may not make `change` to a project that keeps `before`, if
-/// it may not. A person may make any change. An agent may not delete, and
-/// an unlocked one may, unless the project is Davy's own, whose warnings
-/// and errors davy doctor reads, or the token was locked or revoked since
-/// the call was admitted.
+/// it may not. A person may make any change. An agent may not delete. An
+/// unlocked one, whose call was admitted as destructive, may, unless the
+/// token was locked or revoked since or made too many destructive changes,
+/// see [`crate::tokens::refusal`], which is asked whatever the change
+/// would do now, or unless the change deletes on Davy's own project, whose
+/// warnings and errors davy doctor reads.
 fn refusal(c: &Connection, change: &Change, before: Stored, by: By) -> Result<Option<String>> {
     Ok(match by {
         By::Person => None,
         By::Agent(defaults) => refused(change, before, defaults),
         By::Unlocked(proof, defaults) => {
-            if refused(change, before, defaults).is_none() {
-                None
-            } else if crate::self_report::own::find(c)?
-                .is_some_and(|own| own.slug == change.project)
+            if let Some(why) = crate::tokens::refusal(c, proof)? {
+                Some(why)
+            } else if refused(change, before, defaults).is_some()
+                && crate::self_report::own::find(c)?.is_some_and(|own| own.slug == change.project)
             {
                 Some(format!(
                     "project {:?} is Davy's own, whose warnings and errors davy doctor and project_status read: an agent never shortens its retention, a person can with `davy project retention`",
                     change.project
                 ))
-            } else if !crate::tokens::still_unlocked(c, proof)? {
-                Some(crate::tokens::NO_LONGER_UNLOCKED.to_owned())
             } else {
                 None
             }

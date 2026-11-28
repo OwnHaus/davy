@@ -63,8 +63,8 @@ pub fn apply(c: &Connection, change: &AgentChange) -> Result<Result<(), String>>
             unlocked,
             ..
         } => {
-            if !crate::tokens::still_unlocked(c, *unlocked)? {
-                return Ok(Err(crate::tokens::NO_LONGER_UNLOCKED.to_owned()));
+            if let Some(why) = crate::tokens::refusal(c, *unlocked)? {
+                return Ok(Err(why));
             }
             live(c, project, slug, *rule, *at_ms)?
         }

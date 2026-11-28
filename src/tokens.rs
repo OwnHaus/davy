@@ -171,19 +171,43 @@ pub fn find(c: &Connection, hash: &[u8; 32], now: i64) -> Result<Option<Found>> 
     }))
 }
 
-/// Whether the token `proof` names is still live and unlocked. The writer
-/// asks it before a destructive change, in the change's transaction.
-pub fn still_unlocked(c: &Connection, proof: Unlocked) -> Result<bool> {
-    Ok(c.query_row(
-        "SELECT EXISTS(SELECT 1 FROM agent_tokens WHERE id=?1 AND revoked_at IS NULL AND unlocked_at IS NOT NULL)",
-        [proof.token()],
-        |r| r.get(0),
-    )?)
+/// The changes that delete data one token makes per unlock, at most. The
+/// ledger keeps the row of each until it ages out, as no later row pushes
+/// one out, so this bounds the rows a looping agent leaves: a person who
+/// read them locks the token and unlocks it again for more.
+pub const MAX_DESTRUCTIVE: i64 = 2_000;
+
+/// Why the writer refuses a change the token `proof` names asked for as
+/// destructive, if it does: the token is no longer live and unlocked, or
+/// it made [`MAX_DESTRUCTIVE`] destructive changes since a person unlocked
+/// it. The writer asks it in the change's transaction, after the ledger
+/// rows of every change before, so two calls at once cannot pass the
+/// limit together. The count reads `ledger_destructive`, at most
+/// [`MAX_DESTRUCTIVE`] entries.
+pub fn refusal(c: &Connection, proof: Unlocked) -> Result<Option<String>> {
+    let made: Option<i64> = c
+        .query_row(MADE, [proof.token()], |r| r.get(0))
+        .optional()?;
+    Ok(match made {
+        None => Some(NO_LONGER_UNLOCKED.to_owned()),
+        Some(n) if n >= MAX_DESTRUCTIVE => Some(TOO_MANY.to_owned()),
+        Some(_) => None,
+    })
 }
+
+/// The destructive changes token `?1` made since its unlock, or no row
+/// when it is not live and unlocked. The inner `WHERE` repeats the terms
+/// of the partial index `ledger_destructive`, so SQLite reads it.
+const MADE: &str = "SELECT (SELECT count(*) FROM ledger WHERE actor=t.name AND outcome='done' AND destructive=1 AND at>=t.unlocked_at)
+     FROM agent_tokens t WHERE t.id=?1 AND t.revoked_at IS NULL AND t.unlocked_at IS NOT NULL";
 
 /// The refusal of a destructive change whose token was locked or revoked
 /// after the call was admitted.
 pub const NO_LONGER_UNLOCKED: &str = "the token was locked or revoked while the call waited for the writer, so the change was not made: a person unlocks destructive changes again on the Tokens page of the web UI or with davy token unlock";
+
+/// The refusal of a destructive change past [`MAX_DESTRUCTIVE`] in one
+/// unlock.
+pub const TOO_MANY: &str = "the token made 2000 changes that delete data since a person unlocked it, so the change was not made: a person reads them with the ledger tool or on the Ledger page of the web UI, then locks the token and unlocks it again on the Tokens page or with davy token lock and davy token unlock";
 
 const COLUMNS: &str =
     "name, level, unlocked_at, unlocked_by, created_at, used_at, revoked_at FROM agent_tokens";
@@ -311,3 +335,7 @@ pub fn prune(c: &Connection, at: i64) -> Result<()> {
 #[cfg(test)]
 #[path = "tokens_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tokens/unlock_tests.rs"]
+mod unlock_tests;

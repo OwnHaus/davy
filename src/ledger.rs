@@ -19,12 +19,30 @@ use serde::Serialize;
 /// Migration 27. `repeats` counts the same row again within
 /// [`COLLAPSE_MS`], so an agent that retries a refused call in a loop
 /// leaves one row. `destructive` marks a change that deleted data, which
-/// [`prune`] keeps apart from an agent's other rows.
+/// no later row pushes out, see [`add`].
 pub const MIGRATION: &str = "CREATE TABLE ledger(id INTEGER PRIMARY KEY, at INTEGER NOT NULL, actor_kind TEXT NOT NULL CHECK(actor_kind IN ('admin','token','person','cli')), actor TEXT NOT NULL, client TEXT, action TEXT NOT NULL, project TEXT, issue INTEGER, target TEXT, outcome TEXT NOT NULL CHECK(outcome IN ('done','error','denied')), summary TEXT NOT NULL, repeats INTEGER NOT NULL DEFAULT 1, destructive INTEGER NOT NULL DEFAULT 0 CHECK(destructive IN (0,1)));
 CREATE INDEX ledger_actor ON ledger(actor, id);";
 
-/// Undoes [`MIGRATION`], for tests that run the migrations again.
+/// Undoes [`MIGRATION`], for tests that run the migrations again. It
+/// undoes [`CAPS`] with the table.
 pub const UNDO: &str = "DROP TABLE ledger;";
+
+/// Migration 28: what keeps the ledger's upkeep small whatever its size.
+/// `seq` numbers each agent actor's rows of one group of [`add`]'s caps,
+/// 1, 2, 3 and on in the order they came, and is null on every other row;
+/// the `UPDATE` numbers the rows already there. The partial indexes hold
+/// those rows by actor and number, so a cap is a range of one index.
+/// `ledger_at` finds the rows [`prune`] ages out, and `ledger_destructive`
+/// the changes that deleted data, which the writer counts per unlock, see
+/// [`crate::tokens::refusal`]. A query uses a partial index only when its
+/// `WHERE` repeats the index's terms, so [`DONE`], [`REFUSED_ROWS`] and
+/// that count repeat them word for word.
+pub const CAPS: &str = "ALTER TABLE ledger ADD COLUMN seq INTEGER;
+UPDATE ledger SET seq=n.seq FROM (SELECT id, row_number() OVER (PARTITION BY actor, outcome='done' ORDER BY id) AS seq FROM ledger WHERE actor_kind IN ('admin','token') AND NOT (outcome='done' AND destructive=1)) AS n WHERE ledger.id=n.id;
+CREATE INDEX ledger_at ON ledger(at);
+CREATE INDEX ledger_done ON ledger(actor, seq) WHERE actor_kind IN ('admin','token') AND outcome='done' AND destructive=0;
+CREATE INDEX ledger_refused ON ledger(actor, seq) WHERE actor_kind IN ('admin','token') AND outcome<>'done';
+CREATE INDEX ledger_destructive ON ledger(actor, at) WHERE outcome='done' AND destructive=1;";
 
 /// Rows older than this are deleted.
 pub const KEEP_MS: i64 = 180 * 86_400_000;
@@ -34,9 +52,10 @@ pub const KEEP_DONE: i64 = 5_000;
 /// The newest refused or failed calls kept per agent actor: a loop of
 /// refusals says the same thing over and over.
 pub const KEEP_REFUSED: i64 = 500;
-/// The newest changes that deleted data kept per agent actor. Only the
-/// token's own later destructive changes push one out.
-pub const KEEP_DESTRUCTIVE: i64 = 2_000;
+/// The oldest rows [`prune`] deletes in one sweep, at most, so a backlog,
+/// such as after the server was down for days, holds up the writer for
+/// one batch per sweep.
+pub const PRUNE_BATCH: i64 = 5_000;
 /// The same row again within this long counts on the newest one.
 pub const COLLAPSE_MS: i64 = 60_000;
 /// The longest summary, in characters.
@@ -157,7 +176,8 @@ pub struct Entry {
     pub target: Option<String>,
     pub outcome: Outcome,
     pub summary: String,
-    /// The change deleted data, so the row is kept apart, see [`prune`].
+    /// The change deleted data, so no later row pushes this one out, see
+    /// [`add`].
     pub destructive: bool,
 }
 
@@ -179,7 +199,9 @@ impl Entry {
         }
     }
 
-    /// The same entry marked as a change that deletes data.
+    /// The same entry marked as a change that deletes data. In a
+    /// [`Job::Recorded`] it marks a call admitted as destructive, and the
+    /// writer keeps the mark only when the change was made and deleted.
     #[must_use]
     pub fn destructive(mut self) -> Self {
         self.destructive = true;
@@ -246,7 +268,10 @@ pub fn cut(s: &str, max: usize) -> String {
 /// Records `e`, or counts it on the newest row of the table when that row
 /// is the same change by the same actor less than [`COLLAPSE_MS`] before.
 /// Only the newest of all, so a count never hides that another change
-/// came in between.
+/// came in between. A new row of an agent actor, the admin token or a
+/// token, then pushes out the oldest of its group past the cap, see
+/// [`insert`], so the writer's cost per row stays the same however many rows
+/// the ledger holds.
 pub fn add(c: &Connection, e: &Entry) -> Result<()> {
     let (kind, actor) = e.who.parts();
     let actor = cut(actor, MAX_SHORT);
@@ -284,13 +309,69 @@ pub fn add(c: &Connection, e: &Entry) -> Result<()> {
         [values.as_slice(), &[&COLLAPSE_MS]].concat().as_slice(),
     )?;
     if same == 0 {
-        c.execute(
-            "INSERT INTO ledger(at, actor_kind, actor, client, action, project, issue, target, outcome, summary, destructive)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            values.as_slice(),
-        )?;
+        insert(c, &actor, e, &values)?;
     }
     Ok(())
+}
+
+/// The done changes of an agent actor that deleted nothing, and the rows
+/// [`insert`] keeps of them.
+const DONE: (&str, i64) = (
+    "actor_kind IN ('admin','token') AND outcome='done' AND destructive=0",
+    KEEP_DONE,
+);
+/// The refused, denied and failed calls of an agent actor, and the rows
+/// [`insert`] keeps of them.
+const REFUSED_ROWS: (&str, i64) = (
+    "actor_kind IN ('admin','token') AND outcome<>'done'",
+    KEEP_REFUSED,
+);
+
+/// Inserts the row of `e` and deletes the rows of `actor` in its group
+/// past the group's cap, oldest first. Each group only pushes out rows of
+/// its own, so a loop of refusals never pushes out a change. A change that
+/// deleted data is in no group: nothing but age deletes it, so a token
+/// cannot erase the record of its own destructive changes, and the writer
+/// refuses more than [`crate::tokens::MAX_DESTRUCTIVE`] of them per unlock
+/// instead. A person's rows and the CLI's, made at a person's pace, are in
+/// none either. The row takes the next number of its group, see [`CAPS`],
+/// so the rows past the cap are those numbered up to the cap below it:
+/// the newest number and that range each take one search of one index,
+/// whatever the ledger's size.
+fn insert(c: &Connection, actor: &str, e: &Entry, values: &[&dyn ToSql; 11]) -> Result<()> {
+    let group = match (&e.who, e.outcome) {
+        (Who::Person(_) | Who::Cli, _) => None,
+        (Who::Admin | Who::Token(_), Outcome::Done) if e.destructive => None,
+        (Who::Admin | Who::Token(_), Outcome::Done) => Some(DONE),
+        (Who::Admin | Who::Token(_), Outcome::Error | Outcome::Denied) => Some(REFUSED_ROWS),
+    };
+    let seq: Option<i64> = match group {
+        Some((terms, _)) => Some(
+            c.prepare_cached(&numbered(terms))?
+                .query_row([actor], |r| r.get(0))?,
+        ),
+        None => None,
+    };
+    c.prepare_cached(
+        "INSERT INTO ledger(at, actor_kind, actor, client, action, project, issue, target, outcome, summary, destructive, seq)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+    )?
+    .execute([values.as_slice(), &[&seq]].concat().as_slice())?;
+    if let (Some((terms, keep)), Some(seq)) = (group, seq) {
+        c.prepare_cached(&capped(terms))?
+            .execute(params![actor, seq - keep])?;
+    }
+    Ok(())
+}
+
+/// The number the next row of an actor in `group` takes.
+fn numbered(group: &str) -> String {
+    format!("SELECT coalesce(max(seq), 0) + 1 FROM ledger WHERE actor=?1 AND {group}")
+}
+
+/// Deletes an actor's rows in `group` numbered up to a number.
+fn capped(group: &str) -> String {
+    format!("DELETE FROM ledger WHERE actor=?1 AND {group} AND seq <= ?2")
 }
 
 /// Queues `entry` on `writes` and waits until the writer stored it, so
@@ -374,36 +455,17 @@ pub fn actors(c: &Connection) -> Result<Vec<String>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// The groups of an agent actor's rows [`prune`] caps apart, each with
-/// the rows it keeps, so a flood of one kind never pushes out another.
-const CAPPED: [(&str, i64); 3] = [
-    ("outcome='done' AND destructive=0", KEEP_DONE),
-    ("outcome<>'done'", KEEP_REFUSED),
-    ("outcome='done' AND destructive=1", KEEP_DESTRUCTIVE),
-];
-
-/// Deletes rows older than [`KEEP_MS`], and of each agent actor, the
-/// admin token or a token, all but the newest rows of each group of
-/// [`CAPPED`]. A person's rows and the CLI's are kept 180 days whatever
-/// their number: a person makes them at a person's pace, and an agent's
-/// loop cannot push them out.
+/// Deletes up to [`PRUNE_BATCH`] rows older than [`KEEP_MS`], oldest
+/// first, found by `ledger_at`. [`add`] keeps the caps as rows come, so
+/// the sweep reads only the rows it deletes.
 pub fn prune(c: &Connection, at: i64) -> Result<()> {
-    c.execute("DELETE FROM ledger WHERE at < ?1", [at - KEEP_MS])?;
-    let actors: Vec<String> = c
-        .prepare("SELECT DISTINCT actor FROM ledger WHERE actor_kind IN ('admin','token')")?
-        .query_map([], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    for (group, keep) in CAPPED {
-        let mine = format!("actor=?1 AND actor_kind IN ('admin','token') AND {group}");
-        let mut delete = c.prepare(&format!(
-            "DELETE FROM ledger WHERE {mine} AND id <= (SELECT id FROM ledger WHERE {mine} ORDER BY id DESC LIMIT 1 OFFSET ?2)"
-        ))?;
-        for actor in &actors {
-            delete.execute(params![actor, keep])?;
-        }
-    }
+    c.execute(PRUNE, params![at - KEEP_MS, PRUNE_BATCH])?;
     Ok(())
 }
+
+/// Deletes up to `?2` rows older than `?1`, oldest first.
+const PRUNE: &str =
+    "DELETE FROM ledger WHERE id IN (SELECT id FROM ledger WHERE at < ?1 ORDER BY at LIMIT ?2)";
 
 #[cfg(test)]
 #[path = "ledger_tests.rs"]
