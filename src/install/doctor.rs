@@ -151,6 +151,7 @@ pub async fn checks(data: &Path, defaults: retention::Defaults) -> Vec<Check> {
     checks.push(cold::cold(data, &d, today));
     checks.push(davy::davy(data, &d, crate::time::now_ms()));
     checks.push(quota::quotas(data, &d, crate::time::now_ns()));
+    checks.push(backup::backup(data, &d, crate::time::now_ms()));
     let (forecast, assumed) = forecast(data, defaults, crate::time::now_ns()).unzip();
     let errors_only = matches!(&forecast, Some(Ok(f)) if f.errors_only());
     let disk = disk(data, fs4::available_space(data).ok(), forecast);
@@ -643,6 +644,9 @@ pub(super) fn open_mode(path: &Path) -> Option<u32> {
 pub(super) fn open_mode(_path: &Path) -> Option<u32> {
     None
 }
+
+#[path = "doctor_backup.rs"]
+mod backup;
 
 #[path = "doctor_cold.rs"]
 mod cold;

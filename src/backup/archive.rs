@@ -27,13 +27,18 @@ const MAX_HEADER: u64 = 64 * 1024;
 const MAX_MANIFEST: u64 = 256 * 1024 * 1024;
 /// Names a backup never holds at the top of the data directory: SQLite's
 /// files beside the database, which would pair with a database they do
-/// not belong to.
-const NOT_AT_TOP: [&str; 4] = [
+/// not belong to, the record of the last backup, and [`LOST_FOUND`].
+const NOT_AT_TOP: [&str; 6] = [
     "davy.sqlite-wal",
     "davy.sqlite-shm",
     "davy.sqlite-journal",
     "davy.sqlite.lock",
+    super::RECORD,
+    LOST_FOUND,
 ];
+/// What `mkfs.ext4` makes at the top of a volume. A data directory that is
+/// one has it, and a restore into one would find it in the way.
+pub const LOST_FOUND: &str = "lost+found";
 /// The longest name a tar header holds, `data/` included. A longer one
 /// needs an extension entry, which the tar crate reads whole into memory
 /// before any cap applies, so the writer writes none and the reader
@@ -310,7 +315,7 @@ fn entry_name<R: Read>(entry: &tar::Entry<'_, R>) -> Result<PathBuf> {
 /// `name` under [`DATA`], as a path in the data directory that cannot
 /// leave it: only normal components, at least one. A backup holds no name
 /// that starts with a dot, which is what restore keeps for itself, and
-/// none of [`NOT_AT_TOP`] at the top.
+/// nothing at or under a name of [`NOT_AT_TOP`] at the top.
 fn data_path(name: &Path) -> Result<PathBuf> {
     let shown = || name.display().to_string();
     let rest = name
@@ -329,7 +334,10 @@ fn data_path(name: &Path) -> Result<PathBuf> {
         shown()
     );
     ensure!(
-        !(rest.components().count() == 1 && NOT_AT_TOP.iter().any(|n| rest == Path::new(n))),
+        !rest
+            .components()
+            .next()
+            .is_some_and(|top| NOT_AT_TOP.iter().any(|n| top.as_os_str() == *n)),
         "the backup holds {}, which no backup holds",
         shown()
     );

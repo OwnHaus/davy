@@ -306,11 +306,13 @@ impl Cache {
 }
 
 /// Writes to a temporary name and renames, so a reader never sees half a file.
+/// The temporary name starts with a dot, so a backup leaves it out.
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = path.with_file_name(format!(".{name}.tmp-{}", uuid::Uuid::new_v4()));
     fs::write(&tmp, bytes)?;
     fs::rename(&tmp, path)
 }

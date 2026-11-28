@@ -110,6 +110,9 @@ enum Command {
     /// Prints what each project stores, how fast it grows and when the disk
     /// fills. Opens the database read-only, so it runs next to `davy serve`.
     Usage(davy::usage::Args),
+    /// Writes a consistent copy of a data directory to one file, whether the
+    /// server runs or not. It holds the server's secrets.
+    Backup(davy::backup::cli::Backup),
     /// Runs one read-only SQL query against the error store. `davy sql schema`
     /// prints the tables and notes on units.
     Sql {
@@ -349,6 +352,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Logs(args) => logs(&mut out.lock(), args)?,
         Command::Crash { data } => davy::self_report::crash::test_panic(&data),
         Command::Usage(args) => davy::usage::run(&mut out.lock(), &args)?,
+        Command::Backup(args) => davy::backup::cli::backup(&mut out.lock(), args)?,
         Command::Sql { query, data, json } => {
             let c = query::open(&data)?;
             if query.trim() == "schema" {

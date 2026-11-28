@@ -368,6 +368,15 @@ fn names_that_start_with_a_dot_or_sit_beside_the_database_are_refused() {
             "data/davy.sqlite-shm",
             "data/davy.sqlite-shm, which no backup holds",
         ),
+        (
+            "data/last-backup.json",
+            "data/last-backup.json, which no backup holds",
+        ),
+        ("data/lost+found", "data/lost+found, which no backup holds"),
+        (
+            "data/lost+found/x",
+            "data/lost+found/x, which no backup holds",
+        ),
     ];
     for (name, want) in cases {
         let bytes = raw(&[(HEADER, REG, &header_json()), (name, REG, b"")]);

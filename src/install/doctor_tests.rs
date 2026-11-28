@@ -63,7 +63,7 @@ async fn run(data: &Path) -> Vec<Check> {
     checks(data, retention::Defaults::default())
         .await
         .into_iter()
-        .filter(|c| c.name != "disk")
+        .filter(|c| !["disk", "backup"].contains(&c.name))
         .collect()
 }
 

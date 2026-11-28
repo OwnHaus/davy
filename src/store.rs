@@ -137,6 +137,11 @@ pub(crate) fn exists(data: &Path) -> Result<std::path::PathBuf> {
     );
     Ok(path)
 }
+/// Whether another process has the database in `data` open, such as a
+/// server. Only for a database that exists.
+pub fn in_use(data: &Path) -> Result<bool> {
+    migrate::in_use(&data.join(DB_FILE))
+}
 /// Refuses a database at schema `version` that this build did not
 /// migrate to: a newer one, see [`refuse_newer`], or an older one, which
 /// a server upgrades.

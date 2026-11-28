@@ -610,3 +610,7 @@ mod tests;
 #[cfg(test)]
 #[path = "cold_turn_fail_tests.rs"]
 mod fail_tests;
+
+#[cfg(test)]
+#[path = "cold_backup_tests.rs"]
+mod backup_tests;

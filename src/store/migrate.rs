@@ -114,6 +114,24 @@ fn alone(path: &Path) -> Result<()> {
     init(&mut c)
 }
 
+/// Whether another process has the database at `path` open: an exclusive
+/// lock, as a migration takes, fails while it does. Opens no missing file.
+pub(super) fn in_use(path: &Path) -> Result<bool> {
+    let c = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    c.busy_timeout(LOCK_WAIT)?;
+    c.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
+    match c.execute_batch("BEGIN EXCLUSIVE; COMMIT;") {
+        Ok(()) => Ok(false),
+        Err(e) => {
+            let e = anyhow::Error::from(e);
+            if busy(&e) { Ok(true) } else { Err(e) }
+        }
+    }
+}
+
 fn busy(e: &anyhow::Error) -> bool {
     e.downcast_ref::<rusqlite::Error>()
         .and_then(rusqlite::Error::sqlite_error_code)
