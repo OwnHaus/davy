@@ -4,9 +4,7 @@
 use super::{SMTP_FILE, Settings, TOKEN_FILE, encrypted_or_local, loopback, sh};
 use crate::{
     alert::mail::Smtp,
-    retention,
-    secret::{self, MIN_TOKEN_CHARS},
-    text,
+    retention, secret, text,
     usage::{
         self,
         forecast::{Basis, Forecast, NoForecast},
@@ -126,7 +124,7 @@ pub async fn checks(data: &Path, defaults: retention::Defaults) -> Vec<Check> {
     let d = sh(&data.to_string_lossy());
     let mut checks = vec![data_dir(data, &d, current_user())];
     let token = std::fs::read_to_string(data.join(TOKEN_FILE)).ok();
-    checks.push(token_file(&data.join(TOKEN_FILE), token.as_deref(), &d));
+    checks.push(token::file(&data.join(TOKEN_FILE), token.as_deref(), &d));
     match Settings::load(data) {
         Err(e) => checks.push(not_ok(
             "settings",
@@ -217,38 +215,6 @@ fn data_dir(data: &Path, d: &str, me: u32) -> Check {
             format!("chmod 700 {d}"),
         ),
         None => ok("data", format!("{d} is readable by its owner only")),
-    }
-}
-
-fn token_file(path: &Path, token: Option<&str>, d: &str) -> Check {
-    let p = sh(&path.to_string_lossy());
-    let Some(token) = token else {
-        return not_ok(
-            "token",
-            Status::Fail,
-            format!("{p} is missing"),
-            format!("davy setup --data {d} --public-url URL"),
-        );
-    };
-    let chars = secret::line(token).chars().count();
-    if chars < MIN_TOKEN_CHARS {
-        return not_ok(
-            "token",
-            Status::Fail,
-            format!("{p} holds {chars} characters and needs {MIN_TOKEN_CHARS}"),
-            format!(
-                "rm {p} && davy setup --data {d} --public-url URL, then update every client of the old token"
-            ),
-        );
-    }
-    match open_mode(path) {
-        Some(mode) => not_ok(
-            "token",
-            Status::Warn,
-            format!("{p} can be read by other users (mode {mode:o})"),
-            format!("chmod 600 {p}"),
-        ),
-        None => ok("token", format!("{p} holds a token of {chars} characters")),
     }
 }
 
@@ -667,14 +633,14 @@ fn other_owner(_path: &Path, _me: u32) -> Option<u32> {
 
 /// The permission bits that let other users in, when there are any.
 #[cfg(unix)]
-fn open_mode(path: &Path) -> Option<u32> {
+pub(super) fn open_mode(path: &Path) -> Option<u32> {
     use std::os::unix::fs::PermissionsExt as _;
     let mode = std::fs::metadata(path).ok()?.permissions().mode() & 0o777;
     (mode & 0o077 != 0).then_some(mode)
 }
 
 #[cfg(not(unix))]
-fn open_mode(_path: &Path) -> Option<u32> {
+pub(super) fn open_mode(_path: &Path) -> Option<u32> {
     None
 }
 
@@ -686,6 +652,9 @@ mod davy;
 
 #[path = "doctor_quota.rs"]
 mod quota;
+
+#[path = "doctor_token.rs"]
+mod token;
 
 #[cfg(test)]
 #[path = "doctor_tests.rs"]
