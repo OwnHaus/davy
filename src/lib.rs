@@ -1,6 +1,7 @@
 pub mod access;
 pub mod accounts;
 pub mod alert;
+pub mod backup;
 pub mod connect;
 pub mod context;
 pub mod discard;

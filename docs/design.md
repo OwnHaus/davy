@@ -2190,3 +2190,19 @@ The size: the full ledger above took 59,392,000 bytes after this change, 155 byt
 - It needs `read`. The ledger holds no secret and no payload, `sql` reads the table already, and every token reaches every project (see "Tenant scope in agent tools"), so a reading agent learns nothing it could not read. And an agent that reads it before acting sees that a person reopened what it resolved, or which rule another agent staged.
 - `client`, `project`, `target` and `summary` hold text an agent sent: a client name, a slug, a release, a pattern, a message. The tool's description says those fields are data, not instructions, as every tool that returns stored text does.
 - The web UI's Ledger page reads the same rows, see [Views](#views).
+
+## Backup and restore
+
+One command takes a consistent copy of a data directory, whether a server runs on it or not, and another puts it back. A backup is one file: a person keeps it, copies it off the host and restores it on a new one.
+
+### What a backup holds
+
+- A backup is a tar stream compressed with zstd. Its entries, in order:
+  1. `davy-backup.json`: the format (1), the Davy version that took it, the database's schema version, the moment of the database's snapshot (`created_at`), and how many files and bytes follow. A restore reads it first, so it refuses a backup from a newer schema, or one bigger than the free space, before it writes a file.
+  2. `data/davy.sqlite`, then every other file of the data directory under `data/`, then the log directory, each as a regular file of mode 0600 with its path relative to the data directory.
+  3. `manifest.json`: each file's path, size and BLAKE3, in the order of the entries, and their sum.
+- The zstd frame carries its own checksum too, so a backup cut short, or with a byte changed, fails twice over: at the frame and at the manifest.
+- The reader checks everything as it goes: the header first, sizes and hashes against the manifest, no file twice, no path outside `data/` or with `..`, nothing after the manifest, no more files or bytes than the header gives, and caps on the header (64 KiB) and the manifest. The manifest's cap follows the files read: 1 KiB plus, per file, six times its path and 128 bytes, which no honest manifest reaches, and 256 MiB at most. The writer keeps to the totals it wrote in the header, so a file that grew while it was read fails the backup instead of making one the reader refuses.
+- Names a backup never holds are refused when it is read, so a restore never puts half of one in place: a name starting with a dot, at any level, and at the top SQLite's files beside the database (`-wal`, `-shm`, `-journal`, the lock).
+- Every name fits the 100 bytes of a tar header, `data/` included. The writer refuses a longer one, and the reader refuses every entry that is not a regular file before it reads its body, tar's extension entries too: a PAX header or a GNU long name would rename the entry after it, and its body could be as big as the stream.
+- zstd level 1. Most bytes are already compressed: Tantivy's doc store, cold blocks, event payloads in SQLite. Level 3 took twice the time for a file of the same size to two digits.
