@@ -67,13 +67,23 @@ Use `codex` or `cursor` for those clients. The config reads the token from `DAVY
 
 ## Back up and upgrade
 
-Stop the container to take a consistent copy of the data:
+`davy backup` writes the whole volume to one file while the container runs: the database, the logs, the source maps, the settings and the admin token. The server stops writing logs for under a second on a fast disk, a few seconds on a slow or busy one. With `-` it writes to stdout, so the file lands on the host:
+
+```sh
+(umask 077 && docker exec davy /davy backup --data /data - > "davy-$(date +%F).tar.zst")
+```
+
+It prints what it backed up on stderr. The file holds the server's secrets, such as the admin token, the SMTP URL, alert channel URLs, password hashes and sign-in sessions, so keep it where only you can read it, as the `umask` does, and copy it off the host. Davy 0.2.0 and older cannot pause for a backup: for those, stop the container and back up with the new image as in the restore below, `docker run --rm -v davy:/data ghcr.io/ownhaus/davy:VERSION backup --data /data - > FILE`, with `VERSION` the release you upgrade to. [Backups](install.md#backups) in the install guide has a daily timer, an off-site copy and a restore drill; in a timer use the `docker exec` line above. `docker exec -i davy /davy backup verify - < FILE` checks a backup without restoring it.
+
+To restore, stop the container and restore into the volume. `--replace` moves what the volume held into `/data/.replaced-TIME-PID`; into a new, empty volume leave it out:
 
 ```sh
 docker stop davy
-docker cp davy:/data ./davy-backup
+docker run --rm -i -v davy:/data ghcr.io/ownhaus/davy:VERSION restore --data /data --replace - < davy-2026-11-28.tar.zst
 docker start davy
 ```
+
+`VERSION` is the image the container runs, at least as new as the Davy that took the backup and no older than the first release with `davy restore`. A backup from an older Davy is upgraded when the server starts.
 
 To upgrade, back up first, then start the new version on the same volume:
 

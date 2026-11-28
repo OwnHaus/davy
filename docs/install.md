@@ -207,10 +207,109 @@ Then follow the page for the app's language. Each uses the official SDK and chan
 
 Follow [connect/agents.md](connect/agents.md). The agent then reads errors and logs over MCP and marks issues fixed.
 
+## Backups
+
+`davy backup` writes the whole data directory to one file: the database, the logs, the source maps, the settings and the admin token. The server keeps running and taking requests; it stops writing logs for under a second on a fast disk, a few seconds on a slow or busy one, while the backup takes its snapshot. With no server running it works the same.
+
+A backup holds the server's secrets: the admin token, the SMTP URL, alert channel URLs, password hashes and sign-in sessions. Anyone who reads the file can act as the server's admin, so keep it where only you can read it. Davy writes it for its owner only.
+
+```sh
+sudo install -d -o davy -g davy -m 700 /var/backups/davy
+sudo runuser -u davy -- davy backup --data /var/lib/davy "/var/backups/davy/davy-$(date +%F).tar.zst"
+```
+
+It prints how many files and bytes it backed up, how long the log writer paused, and that the file holds secrets. Run it as the user that owns the data directory, or it says which user to run it as, and write the file outside the data directory. `davy backup --data /var/lib/davy -` writes to stdout instead, to pipe it somewhere. Davy 0.2.0 and older cannot pause for a backup: while one of those runs, `davy backup` refuses and says to stop it first.
+
+### Every day
+
+A systemd timer takes a backup every night and keeps two weeks of them:
+
+```sh
+sudo tee /etc/systemd/system/davy-backup.service > /dev/null <<'EOF'
+[Unit]
+Description=Back up Davy
+
+[Service]
+Type=oneshot
+User=davy
+UMask=0077
+ExecStart=/bin/sh -c 'davy backup --data /var/lib/davy /var/backups/davy/davy-$$(date +%%F).tar.zst && find /var/backups/davy -name "davy-*.tar.zst" -mtime +14 -delete'
+EOF
+sudo tee /etc/systemd/system/davy-backup.timer > /dev/null <<'EOF'
+[Unit]
+Description=Back up Davy every night
+
+[Timer]
+OnCalendar=*-*-* 03:00
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now davy-backup.timer
+sudo systemctl start davy-backup.service
+```
+
+The last command takes a backup now and returns when it is done; `sudo journalctl -u davy-backup -n 20` shows what it printed. `davy doctor` warns when the last backup is 7 days old or more, so a timer that stopped working shows there.
+
+Without systemd, a line in `/etc/cron.d/davy-backup` does the same:
+
+<!-- e2e: skip, the test uses the systemd timer -->
+```sh
+echo '0 3 * * * davy davy backup --data /var/lib/davy /var/backups/davy/davy-$(date +\%F).tar.zst > /dev/null && find /var/backups/davy -name "davy-*.tar.zst" -mtime +14 -delete' | sudo tee /etc/cron.d/davy-backup > /dev/null
+```
+
+On a Mac for one person, run `crontab -e` and add a line such as `0 3 * * * $HOME/.local/bin/davy backup --data $HOME/.local/share/davy $HOME/Backups/davy-$(date +\%F).tar.zst > /dev/null`.
+
+### Off the host
+
+A backup on the server's disk is lost with the disk. Copy it to another machine or a bucket after each run, for example with `rsync` over SSH, or with `rclone`:
+
+<!-- e2e: skip, the test has no other host -->
+```sh
+sudo rsync -a /var/backups/davy/ backup@backup.example.com:davy/
+```
+
+Wherever it goes, only you should read it. To encrypt it on the way, pipe the stream through `age` and keep the key off this server:
+
+<!-- e2e: skip, the test has no age key -->
+```sh
+sudo runuser -u davy -- davy backup --data /var/lib/davy - | age -r age1yourpublickey > "davy-$(date +%F).tar.zst.age"
+```
+
+### A restore drill
+
+A backup is only as good as its restore. Once a month, check the newest backup and restore it next to the server, which keeps running:
+
+```sh
+latest="/var/backups/davy/$(sudo ls -1 /var/backups/davy | grep '^davy-.*\.tar\.zst$' | tail -n 1)"
+sudo runuser -u davy -- davy backup verify "$latest"
+sudo runuser -u davy -- davy restore --data /var/tmp/davy-drill "$latest"
+sudo runuser -u davy -- davy issues --data /var/tmp/davy-drill
+sudo rm -r /var/tmp/davy-drill
+```
+
+`verify` reads the whole file, checks every file in it against its checksum and prints which Davy took it. `restore` checks the same before it puts anything in place, and `davy issues` lists the issues the backup holds.
+
+### Restore
+
+On the same host, stop the server, restore over its data, and start it again. `--replace` moves what the data directory held into `/var/lib/davy/.replaced-TIME-PID`, which you delete once the server runs well:
+
+<!-- e2e: skip, the test keeps its data -->
+```sh
+sudo systemctl stop davy
+sudo runuser -u davy -- davy restore --data /var/lib/davy --replace /var/backups/davy/davy-2026-11-28.tar.zst
+sudo systemctl start davy
+```
+
+On a new host, follow steps 1 to 3, copy the backup over, run the same `davy restore` without `--replace` into the empty `/var/lib/davy`, skip steps 4 and 5, and go on with step 6. The token and the settings come from the backup. Restore refuses a directory a server runs on, and one that holds anything unless you pass `--replace`. It refuses a backup from a newer Davy than itself; one from an older Davy is upgraded when `davy serve` starts, as after an update. The server does not start while a restore runs. A restore stopped after it checked the backup, by a crash or a full disk, is finished by the next `davy restore` or `davy serve` on the directory, which says so.
+
 ## Updating
 
 Repeat steps 1 and 2 with the new version, then `sudo systemctl restart davy` and step 8. On a Mac, restart with `launchctl kickstart -k "gui/$(id -u)/davy"`. The data directory and the token stay.
 
 A release that migrates data says so in the [changelog](../CHANGELOG.md). Under systemd the server reports it is ready only once the migration is done, and systemd stops a start that takes longer than 90 s and starts it again from the beginning. Before such an upgrade of a large database, run `sudo systemctl edit davy` and add `TimeoutStartSec=15min` under `[Service]`.
 
-A new version that changes the schema migrates the data the first time it opens it, and only while no other process has the database open. Restart the service before you run any other `davy` command with the new binary. Until then such a command waits 10 s, stops with an error that another process has the database open, and changes nothing. `sudo lsof /var/lib/davy/davy.sqlite` lists what holds it. Back up the data directory first: an older Davy refuses migrated data, so a downgrade means restoring that backup.
+A new version that changes the schema migrates the data the first time it opens it, and only while no other process has the database open. Restart the service before you run any other `davy` command with the new binary. Until then such a command waits 10 s, stops with an error that another process has the database open, and changes nothing. `sudo lsof /var/lib/davy/davy.sqlite` lists what holds it. Take a backup first, as in [Backups](#backups): an older Davy refuses migrated data, so a downgrade means restoring that backup with the new binary's `davy restore --replace`, then starting the old version. To back up before an update from 0.2.0 or older, which cannot pause for a backup, run `sudo systemctl stop davy` after step 2, then the backup with the new binary, then the restart.

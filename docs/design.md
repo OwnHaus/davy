@@ -2207,7 +2207,7 @@ One command takes a consistent copy of a data directory, whether a server runs o
 - Every name fits the 100 bytes of a tar header, `data/` included. The writer refuses a longer one, and the reader refuses every entry that is not a regular file before it reads its body, tar's extension entries too: a PAX header or a GNU long name would rename the entry after it, and its body could be as big as the stream.
 - Left out when it is taken: those same SQLite files, which the copy makes needless; every name starting with a dot, at every level, which is what recovery removes or ignores (`.trash`, a cold segment being written, Tantivy's lock files, a source map being written under `.NAME.tmp-UUID`, the backup's own staging, the files a restore leaves); and `last-backup.json`, the record of the last backup, which would say a restored server was backed up when it was not. `lost+found` at the top, which a file system makes on a mounted volume, owned by root and unreadable to the server. Symbolic links, other entries that are neither files nor directories, and a file whose name is longer than a tar header holds are left out and named in the summary; Davy makes none of them.
 - Secrets are in it: the admin token (`token`), the SMTP URL (`smtp-url`), the settings, and in the database alert channel URLs with their secrets, password hashes, sign-in sessions and agent token hashes. A backup restores a server whole, which needs them, and one without them would need each re-entered by hand after a disaster. So the summary says it holds secrets, the file is written 0600, and the docs say to keep it where only the operator reads it. A backup is not encrypted: an operator who wants that pipes `-` through `age` or `gpg`, which keeps the key out of Davy.
-- zstd level 1. Most bytes are already compressed: Tantivy's doc store, cold blocks, event payloads in SQLite. Level 3 took twice the time for a file of the same size to two digits.
+- zstd level 1. Most bytes are already compressed: Tantivy's doc store, cold blocks, event payloads in SQLite. Level 3 took twice the time for a file of the same size to two digits, see Measurements.
 
 ### Consistent while the server runs
 
@@ -2261,7 +2261,7 @@ A backup holds every secret of the server. An agent that could trigger one could
 ### Rejected
 
 - **Asking the server over HTTP to take the backup.** It would need a route that hands out every secret, and a backup of a stopped server would need a second path anyway.
-- **Copying the logs during the pause.** Correct, but the pause would last as long as the copy, minutes for a large store. The pause with links lasts as long as linking the files, which is a metadata write each.
+- **Copying the logs during the pause.** Correct, but the pause would last as long as the copy, minutes for a large store. The pause with links took 0.4 to 2.5 s on a store of 2.9 GB, see Measurements.
 - **Holding open file descriptors instead of links.** It keeps deleted files readable too, but needs one descriptor per file, past the open file limit on a large store, and a crash of the backup leaves nothing to sweep.
 - **`VACUUM INTO`.** It writes a compact copy, but rebuilds every table and index to do so, which takes longer than the backup API's copy of the pages as they are.
 - **The retention lock as the gate.** It stops retention but not ingest or the cold tier's renames, and other processes than the writer take it.
@@ -2270,3 +2270,26 @@ A backup holds every secret of the server. An agent that could trigger one could
 - **No pause, walking the files and checking them afterwards.** A merge or a cold rename can happen between any two reads, and the walk would have to start over each time, without end on a busy server.
 - **A restore that renames the old directory away and the staging directory into its place.** Two renames of the data directory itself, which may be a mount point or held open by a container, and a crash between them leaves no data directory at all.
 - **A backup tool over MCP**, see above.
+
+### Measurements
+
+On an Apple M2 Max with 32 GB and an internal SSD, macOS 26.5, shared with other work (load average 5 to 9 throughout), every step under `taskpolicy -b`, which throttles disk I/O, so the times are on the slow side. `bench/backup.sh` with its defaults. Sizes are decimal; `du` printed binary units, converted here.
+
+1. `examples/fill_logs` writes 20 million synthetic pino-shaped logs over the last 96 hours straight into the store, `davy serve --hot-days 2` starts on it, and `examples/load_events` sends 100,000 error events of about 1.1 KB. The server turns the older days cold before the timings start. The store then: 2.6 GB in 452 files, 2.5 GB of logs and 22 MB of database.
+2. Ingest alone: `examples/load_logs` sends 3 million logs over HTTP with 4 workers.
+3. The same load again, with `davy backup` to a file started 2 s after the load starts sending. The two runs grow the store to 2.9 GB in 498 files, which every backup below took.
+4. Five backups with no ingest, for the pause.
+5. `davy backup verify` and, with the server stopped, `davy restore` into a new directory.
+6. The backup's tar compressed again with `zstd -T1` at level 1 and level 3.
+
+| step | result |
+| --- | --- |
+| ingest alone | 9,793 logs/s, 3,290 responses 429 |
+| ingest with a backup during it | 11,814 logs/s, 2,566 responses 429: no slower, within the noise of the machine |
+| backup during ingest | 2.9 GB in 498 files, written as 2.2 GB in 42.2 s; the log writer paused 902 ms |
+| backups with no ingest | 2.9 GB in 498 files: 26.7 to 29.0 s for the last three, pauses 398, 463 and 498 ms; the first two took 102.5 and 53.0 s with pauses of 1,836 and 2,457 ms, which the run does not explain; the server had just taken 6 million logs and may still have been merging them |
+| verify | 12.8 s, 230 MB/s |
+| restore | 24.9 s, 120 MB/s |
+| zstd on the 2.9 GB tar | level 1: 2.1 GB in 15.1 s; level 3: 2.1 GB in 28.6 s |
+
+A backup reads about 100 MB/s and writes three quarters of what it reads, as the logs are compressed already. The pause is the time to open the snapshot and link about 500 files; on the throttled, shared disk it varies between 0.4 and 2.5 s, well under the 30 s `WRITER_WAIT`, and the server takes requests all along, as logs queue while the writer pauses. In `e2e/run.sh`, on a store of a few MB, the pause was 41 to 110 ms. These numbers were taken before the pause gained the read of the loose count and the links of the crash reports, a few small file operations, so they were not taken again.
