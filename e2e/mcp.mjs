@@ -70,13 +70,19 @@ assert.equal(typeof used.projects[0].logs_stored.records, 'number')
 assert.deepEqual([used.basis.logs.basis, used.basis.confidence, used.no_forecast ?? null], ['errors_only', 'low', null])
 assert.match(used.basis.why, /^logs are not in this forecast yet, so it rests on errors alone and counts logs as 0: Davy has counted raw log bytes for \d+ minutes; a first forecast needs an hour of them, or closed log days on disk; confidence is low while logs are left out$/)
 assert.notEqual(used.estimate, null)
-assert.equal(used.disk.beyond_10_years, false)
+// Whether the disk fills, and when, depends on the host's free disk, so
+// only the shape is asserted, as run.sh does for the CLI.
+const shaped = disk => {
+  assert.equal(typeof disk.beyond_10_years, 'boolean', JSON.stringify(disk))
+  assert.ok(!(disk.beyond_10_years && disk.full_on != null), JSON.stringify(disk))
+}
+shaped(used.disk)
 const whatIf = JSON.parse((await call('usage', { what_if: { logs_bytes_per_day: 1000000 } })).text)
 assert.equal(whatIf.growth_per_day, '1.0 MB')
 assert.equal(whatIf.basis, null)
 // A total daily volume cannot be split by project: no estimate.
 assert.equal(whatIf.estimate, null)
-assert.equal(whatIf.disk.beyond_10_years, false)
+shaped(whatIf.disk)
 console.log(`PASS usage: 1 error counted for e2e-connect, ${used.projects[0].signals.errors.bytes}, forecast: ${whatIf.forecast}`)
 
 const schema = await call('schema', {})
