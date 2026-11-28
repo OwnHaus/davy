@@ -21,7 +21,7 @@
 
 <p align="center">
   <a href="https://github.com/OwnHaus/davy/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/OwnHaus/davy/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/OwnHaus/davy/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/OwnHaus/davy?label=release&color=orange"></a>
+  <a href="https://github.com/OwnHaus/davy/releases/latest"><img alt="Latest release" src="https://img.shields.io/badge/release-v0.1.0-orange"></a>
   <a href="LICENSE"><img alt="License AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue"></a>
 </p>
 
